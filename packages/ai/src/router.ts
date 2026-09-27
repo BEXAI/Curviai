@@ -94,10 +94,12 @@ export class ProviderTimeoutError extends ProviderError {
   }
 }
 
-/** RouteOptions plus the caps hook and injectable effects for tests. */
+/** RouteOptions plus the caps hooks and injectable effects for tests. */
 export interface CallWithFailoverOptions extends RouteOptions {
-  /** Reserve against SpendCaps before invoke; see CapsHook. */
-  caps?: CapsHook;
+  /** Reserve against SpendCaps before invoke; see CapsHook. An array layers
+   * several caps (for example pack plus global day): every layer must allow
+   * the call, and a blocked layer releases the ones already reserved. */
+  caps?: CapsHook | CapsHook[];
   /** Injectable sleep for backoff, defaults to real setTimeout. */
   sleep?: (ms: number) => Promise<void>;
   /** Injectable jitter source in [0, 1), defaults to Math.random. */
@@ -193,6 +195,7 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
   }
 
   const retry: RetryOptions = { ...DEFAULT_RETRY_OPTIONS, ...opts.retry };
+  const capsHooks: CapsHook[] = opts.caps ? (Array.isArray(opts.caps) ? opts.caps : [opts.caps]) : [];
   const breaker = new CircuitBreaker(breakerStore, opts.breaker);
   const sleep = opts.sleep ?? defaultSleep;
   const random = opts.random ?? Math.random;
@@ -223,7 +226,7 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
     // Cost controls. An estimate is required whenever a cost ceiling or a
     // caps reservation is in play; a provider that cannot estimate fails
     // closed with a hard ProviderError, never a silent uncapped pass.
-    const needsEstimate = opts.maxCostMicros !== undefined || opts.caps !== undefined;
+    const needsEstimate = opts.maxCostMicros !== undefined || capsHooks.length > 0;
     let estimateMicros: number | undefined;
     if (needsEstimate) {
       if (typeof provider.estimateCostMicros === "function") {
@@ -252,12 +255,19 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
       continue;
     }
 
-    // Reserve the estimated spend before invoking. Reconciled to the actual
-    // cost on success, released in full when this provider fails.
-    let reservation: CapReservation | undefined;
-    if (opts.caps) {
-      reservation = await reserveForCaps(opts.caps, req, estimateMicros ?? 0);
+    // Reserve the estimated spend against every cap layer before invoking.
+    // Reconciled to the actual cost on success, released in full when this
+    // provider fails; a blocked layer releases the layers already reserved.
+    const reservations: Array<{ hook: CapsHook; reservation: CapReservation }> = [];
+    let capBlocked = false;
+    for (const hook of capsHooks) {
+      const reservation = await reserveForCaps(hook, req, estimateMicros ?? 0);
       if (!reservation.allowed) {
+        for (const held of reservations) {
+          if (held.reservation.reservedMicros !== 0) {
+            await held.hook.spendCaps.release(held.reservation.key, held.reservation.reservedMicros);
+          }
+        }
         errors.push(
           new ProviderError(
             `Spend cap blocked call: ${reservation.reason ?? `over cap of ${reservation.capMicros} micros`}`,
@@ -266,8 +276,13 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
             false,
           ),
         );
-        continue;
+        capBlocked = true;
+        break;
       }
+      reservations.push({ hook, reservation });
+    }
+    if (capBlocked) {
+      continue;
     }
 
     let succeeded = false;
@@ -292,14 +307,14 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
             at: new Date(),
           });
           await breaker.recordSuccess(providerName);
-          if (opts.caps && reservation) {
-            // Reconcile the reservation with the actual cost: release the
+          for (const held of reservations) {
+            // Reconcile each reservation with the actual cost: release the
             // over reserved difference, or charge the shortfall when the
             // call cost more than estimated (release of a negative amount
             // adds to the running total).
-            const overReservedMicros = reservation.reservedMicros - res.costMicros;
+            const overReservedMicros = held.reservation.reservedMicros - res.costMicros;
             if (overReservedMicros !== 0) {
-              await opts.caps.spendCaps.release(reservation.key, overReservedMicros);
+              await held.hook.spendCaps.release(held.reservation.key, overReservedMicros);
             }
           }
           succeeded = true;
@@ -342,8 +357,12 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
         }
       }
     } finally {
-      if (!succeeded && reservation && opts.caps && reservation.reservedMicros !== 0) {
-        await opts.caps.spendCaps.release(reservation.key, reservation.reservedMicros);
+      if (!succeeded) {
+        for (const held of reservations) {
+          if (held.reservation.reservedMicros !== 0) {
+            await held.hook.spendCaps.release(held.reservation.key, held.reservation.reservedMicros);
+          }
+        }
       }
     }
   }

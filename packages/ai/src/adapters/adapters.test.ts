@@ -233,4 +233,57 @@ describe("estimateCostMicros", () => {
     // At least the full output budget priced at the output rate.
     expect(provider.estimateCostMicros(req)).toBeGreaterThanOrEqual(15_000);
   });
+
+  it("sends the recipe selected model and prices it from its own table", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchFn = (async (_url: unknown, init?: { body?: string }) => {
+      bodies.push(JSON.parse(init?.body ?? "{}") as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1_000_000, output_tokens: 0 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+    const provider = new AnthropicLLMProvider({
+      name: "claude",
+      tasks: ["qc"],
+      apiKey: "test-key",
+      model: "default-model",
+      priceTable: { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 5_000_000 },
+      priceTables: { "escalation-model": { inputMicrosPerMTok: 4_000_000, outputMicrosPerMTok: 20_000_000 } },
+      fetchFn,
+    });
+    const res = await provider.invoke({
+      task: "qc",
+      input: { messages: [{ role: "user", content: "judge" }], model: "escalation-model" },
+    });
+    expect(bodies[0].model).toBe("escalation-model");
+    // One million input tokens at the escalation rate, not the default rate.
+    expect(res.costMicros).toBe(4_000_000);
+  });
+
+  it("fails closed for a recipe model with no price entry", async () => {
+    const provider = new AnthropicLLMProvider({
+      name: "claude",
+      tasks: ["qc"],
+      apiKey: "test-key",
+      model: "default-model",
+      priceTable: { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 5_000_000 },
+    });
+    await expect(
+      provider.invoke({
+        task: "qc",
+        input: { messages: [{ role: "user", content: "judge" }], model: "unpriced-model" },
+      }),
+    ).rejects.toThrow(/no price table/);
+    expect(() =>
+      provider.estimateCostMicros({
+        task: "qc",
+        input: { messages: [{ role: "user", content: "judge" }], model: "unpriced-model" },
+      }),
+    ).toThrow(/no price table/);
+  });
 });

@@ -67,11 +67,23 @@ function dayStamp(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+export interface SpendCapsOverrides {
+  /** Raised hard stop, the plan's "until the founder raises it" knob. Wired
+   * from DAILY_SPEND_HARD_STOP_USD at runtime. */
+  globalDailyHardStopMicros?: number;
+}
+
 export class SpendCaps {
+  private readonly globalDailyHardStopMicros: number;
+
   constructor(
     private readonly store: CapStore,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+    overrides: SpendCapsOverrides = {},
+  ) {
+    this.globalDailyHardStopMicros =
+      overrides.globalDailyHardStopMicros ?? SPEND_CAPS.globalDailyHardStopMicros;
+  }
 
   private async reserve(key: string, costMicros: number, capMicros: number): Promise<CapReservation> {
     if (costMicros < 0) throw new Error("costMicros must be non negative");
@@ -135,7 +147,7 @@ export class SpendCaps {
    */
   async checkAndReserveGlobalDay(costMicros: number): Promise<CapReservation> {
     const key = `caps:global:${dayStamp(this.now())}`;
-    const result = await this.reserve(key, costMicros, SPEND_CAPS.globalDailyHardStopMicros);
+    const result = await this.reserve(key, costMicros, this.globalDailyHardStopMicros);
     if (result.totalMicros >= SPEND_CAPS.globalDailyAlertMicros) {
       result.alert = true;
     }

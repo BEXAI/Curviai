@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   AllProvidersFailedError,
   InMemoryBreakerStore,
+  InMemoryCapStore,
   InMemoryCostMeter,
   ProviderError,
   ProviderRegistry,
+  SpendCaps,
 } from "@curvi/ai";
 import { MockProvider } from "@curvi/ai/testing";
 import { planShots, solidCanvas, type PlanOptions, type Shot } from "@curvi/pipeline";
@@ -410,6 +412,21 @@ describe("runShot", () => {
     expect(restored.packAsset?.buffer.equals(outcome.packAsset!.buffer)).toBe(true);
     expect(restored.packAsset?.specId).toBe(outcome.specId);
     expect(restored.status).toBe("passed");
+  });
+
+  it("marks a shot needs review when its generation cost passes the asset cap", async () => {
+    // The per image asset cap is $0.60; a $0.70 generation must never reach
+    // QC or the pack (plan 4.4 and the 5.6 cost cap branch).
+    const demo = new DemoShotGenerator();
+    const generator: ShotGenerator = {
+      generate: async (args) => ({ ...(await demo.generate(args)), costMicros: 700_000 }),
+    };
+    const ai = { ...makeAi(), caps: new SpendCaps(new InMemoryCapStore()) };
+    const deps = makeDeps({ ai, generator });
+    const outcome = await runShot(mainShot as Shot, ctx, deps);
+    expect(outcome.status).toBe("needs_review");
+    expect(outcome.verdict.repairHint).toContain("Cost cap");
+    expect(outcome.attempts).toBe(1);
   });
 
   it("fails closed when a composite generation omits its product reference (rule 3)", async () => {

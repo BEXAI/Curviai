@@ -109,4 +109,15 @@ describe("SpendCaps", () => {
     const { caps } = setup();
     await expect(caps.checkAndReservePack("job1", -1)).rejects.toThrow(/non negative/);
   });
+
+  it("honors a raised global hard stop, the founder's env knob", async () => {
+    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date("2026-09-27T12:00:00Z"), {
+      globalDailyHardStopMicros: 200_000_000,
+    });
+    const big = await caps.checkAndReserveGlobalDay(180_000_000);
+    expect(big.allowed).toBe(true);
+    expect(big.alert).toBe(true);
+    const over = await caps.checkAndReserveGlobalDay(30_000_000);
+    expect(over.allowed).toBe(false);
+  });
 });

@@ -8,8 +8,8 @@
  * runnable end to end without credentials.
  */
 
-import { InMemoryBreakerStore, InMemoryCostMeter, ProviderRegistry } from "@curvi/ai";
-import type { Provider, ProviderRequest, ProviderResponse, RoutingTable } from "@curvi/ai";
+import { InMemoryBreakerStore, InMemoryCapStore, InMemoryCostMeter, ProviderRegistry, SpendCaps } from "@curvi/ai";
+import type { CostAwareProvider, ProviderRequest, ProviderResponse, RoutingTable } from "@curvi/ai";
 import {
   encodeJpeg,
   encodePng,
@@ -66,13 +66,18 @@ export const demoProfile: ProductProfile = {
  * shot planner answer is intentionally not a valid ShotList so the pipeline
  * exercises its deterministic planner fallback in demo mode.
  */
-export class DemoLlmProvider implements Provider {
+export class DemoLlmProvider implements CostAwareProvider {
   readonly name = "demo-llm";
   readonly kind = "llm" as const;
   private readonly tasks = recipeSeedRows.filter((r) => r.active).map((r) => r.key);
 
   supports(task: string): boolean {
     return this.tasks.includes(task);
+  }
+
+  /** Demo calls are free; the estimate keeps the caps machinery exercised. */
+  estimateCostMicros(): number {
+    return 0;
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
@@ -204,17 +209,30 @@ export const DEMO_MODE_NOTICE =
 export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   const registry = new ProviderRegistry();
   registry.register(new DemoLlmProvider());
+  // The founder raises the $150 global hard stop through this env var
+  // (plan 4.4). The other cap amounts are platform constants in @curvi/ai.
+  const hardStopUsd = Number(optionalEnv("DAILY_SPEND_HARD_STOP_USD") ?? "");
+  const caps = new SpendCaps(new InMemoryCapStore(), () => new Date(), {
+    globalDailyHardStopMicros:
+      Number.isFinite(hardStopUsd) && hardStopUsd > 0 ? Math.round(hardStopUsd * 1_000_000) : undefined,
+  });
   return {
     ai: {
       registry,
       routing: demoRoutingTable(),
       meter: new InMemoryCostMeter(),
       breakerStore: new InMemoryBreakerStore(),
+      caps,
     },
     store: new InMemoryJobStore(),
     clock: systemClock,
     generator: new DemoShotGenerator(),
     packOutDir: opts.packOutDir,
+    onSpendAlert: (totalMicros) => {
+      console.warn(
+        `[caps] Global daily provider spend is at $${(totalMicros / 1_000_000).toFixed(2)}, past the alert line.`,
+      );
+    },
   };
 }
 

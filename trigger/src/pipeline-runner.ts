@@ -17,9 +17,11 @@ import {
   AllProvidersFailedError,
   callWithFailover,
   type BreakerStore,
+  type CapsHook,
   type CostMeter,
   type ProviderRegistry,
   type RoutingTable,
+  type SpendCaps,
 } from "@curvi/ai";
 import {
   buildPack,
@@ -62,6 +64,22 @@ export interface AiDeps {
   routing: RoutingTable;
   meter: CostMeter;
   breakerStore: BreakerStore;
+  /** When present, every routed call reserves against the pack and global
+   * day caps, and each shot's generation cost is gated by the per asset caps
+   * (plan 4.4). Providers must estimate costs; unestimated calls fail closed. */
+  caps?: SpendCaps;
+}
+
+/** The cap layers for a routed LLM call: the job's pack budget plus the
+ * global daily provider spend. */
+function llmCapsHooks(ai: AiDeps): CapsHook[] | undefined {
+  if (!ai.caps) {
+    return undefined;
+  }
+  return [
+    { spendCaps: ai.caps, capKind: "pack" },
+    { spendCaps: ai.caps, capKind: "global_day" },
+  ];
 }
 
 export interface Clock {
@@ -267,6 +285,9 @@ export interface PipelineDeps {
   runShots?: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>;
   /** Where buildPack writes zips. A temp dir when omitted. */
   packOutDir?: string;
+  /** Called when the global daily spend crosses the alert line (plan 4.4:
+   * $50 alert). Defaults to a console warning in the runtime wiring. */
+  onSpendAlert?: (totalMicros: number) => void;
 }
 
 export interface GeneratePackInput {
@@ -361,6 +382,7 @@ async function llmJson<T>(
       jobId: ctx.jobId,
       stepId: ctx.stepId,
     },
+    { caps: llmCapsHooks(ai) },
   );
   const raw = extractJsonOutput(result.output);
   const parsed = schema.safeParse(raw);
@@ -395,6 +417,52 @@ const COMPOSITE_METHODS: ReadonlySet<Shot["method"]> = new Set([
   "edit_generate",
 ]);
 
+interface GenerationSpendResult {
+  allowed: boolean;
+  reason?: string;
+  alert?: boolean;
+  alertTotalMicros?: number;
+}
+
+/** Reserves a shot generation's actual cost against the per asset, pack and
+ * global day caps, releasing the layers already reserved when one blocks. */
+async function reserveGenerationSpend(
+  caps: SpendCaps,
+  shot: Shot,
+  ctx: ShotContext,
+  costMicros: number,
+): Promise<GenerationSpendResult> {
+  const isVideo = shot.type.startsWith("video_") || shot.method === "video_generate" || shot.method === "avatar";
+  const held: Array<{ key: string; micros: number }> = [];
+  const layers = [
+    () =>
+      isVideo
+        ? caps.checkAndReserveVideoAsset(shot.id, costMicros)
+        : caps.checkAndReserveImageAsset(shot.id, costMicros),
+    () => caps.checkAndReservePack(ctx.jobId, costMicros),
+    () => caps.checkAndReserveGlobalDay(costMicros),
+  ];
+  let alert = false;
+  let alertTotalMicros: number | undefined;
+  for (const layer of layers) {
+    const reservation = await layer();
+    if (!reservation.allowed) {
+      for (const h of held) {
+        await caps.release(h.key, h.micros);
+      }
+      return { allowed: false, reason: reservation.reason };
+    }
+    if (reservation.reservedMicros !== 0) {
+      held.push({ key: reservation.key, micros: reservation.reservedMicros });
+    }
+    if (reservation.alert) {
+      alert = true;
+      alertTotalMicros = reservation.totalMicros;
+    }
+  }
+  return { allowed: true, alert, alertTotalMicros };
+}
+
 /**
  * Generate and QC one shot: generate, run pixelChecks against the shot's
  * channel spec, run fidelityReport for composite methods, ask the qc judge
@@ -424,6 +492,40 @@ export async function runShot(
       workspaceId: ctx.workspaceId,
     });
     costMicros += generation.costMicros;
+
+    // Spend caps on the generation cost (plan 4.4). A cost capped shot goes
+    // to needs review and releases its credits, per the 5.6 retry policy.
+    if (deps.ai.caps && generation.costMicros > 0) {
+      const spend = await reserveGenerationSpend(deps.ai.caps, shot, ctx, generation.costMicros);
+      if (spend.alert && spend.alertTotalMicros !== undefined) {
+        deps.onSpendAlert?.(spend.alertTotalMicros);
+      }
+      if (!spend.allowed) {
+        const verdict: QCVerdict = {
+          pass: false,
+          fidelity: 0,
+          issues: ["other"],
+          repairHint: `Cost cap reached: ${spend.reason ?? "spend cap"}`.slice(0, 300),
+        };
+        const outcome: ShotOutcome = {
+          shotId: shot.id,
+          shotType: shot.type,
+          specId,
+          credits: shot.credits,
+          status: "needs_review",
+          attempts: attempt,
+          usedFallbackProvider: useFallbackProvider,
+          costMicros,
+          verdict,
+          pixelPass: false,
+          fidelityPass: null,
+          digitalSource: digitalSourceFor(shot.method, ctx.mode),
+          measured: { fillPct: null, background: null },
+        };
+        await deps.store.saveAsset(toStoredAsset(outcome, ctx));
+        return outcome;
+      }
+    }
 
     const pixel = await pixelChecks(generation.image, generation.mask, spec, {
       encoded: { bytes: generation.encoded.buffer.length, format: generation.encoded.format },

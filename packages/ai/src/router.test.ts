@@ -354,6 +354,48 @@ describe("callWithFailover", () => {
     expect(p1.invocations).toBe(0);
   });
 
+  it("layers several caps hooks: all reserve on success, all reconcile", async () => {
+    const store = new InMemoryCapStore();
+    const spendCaps = new SpendCaps(store);
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 100, output: "one", costMicros: 60 });
+    const h = harness([p1]);
+
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      caps: [
+        { spendCaps, capKind: "pack" },
+        { spendCaps, capKind: "global_day" },
+      ],
+      now: () => 0,
+    });
+    expect(result.costMicros).toBe(60);
+    expect(await store.get("caps:pack:j1")).toBe(60);
+    const globalKey = `caps:global:${new Date().toISOString().slice(0, 10)}`;
+    expect(await store.get(globalKey)).toBe(60);
+  });
+
+  it("a blocked layer releases the layers already reserved", async () => {
+    const store = new InMemoryCapStore();
+    const spendCaps = new SpendCaps(store);
+    // Fill the global day counter to the hard stop so the second layer blocks.
+    const globalKey = `caps:global:${new Date().toISOString().slice(0, 10)}`;
+    await store.add(globalKey, 150_000_000);
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 100, output: "one" });
+    const h = harness([p1]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      caps: [
+        { spendCaps, capKind: "pack" },
+        { spendCaps, capKind: "global_day" },
+      ],
+    }).catch((e: AllProvidersFailedError) => e);
+    expect(err).toBeInstanceOf(AllProvidersFailedError);
+    expect(p1.invocations).toBe(0);
+    // The pack layer's reservation was rolled back when global day blocked.
+    expect(await store.get("caps:pack:j1")).toBe(0);
+  });
+
   it("does not record breaker failures for non retryable 400 style errors", async () => {
     // Regression for breaker pollution: one workspace's bad requests used to
     // open the shared breaker for everyone.

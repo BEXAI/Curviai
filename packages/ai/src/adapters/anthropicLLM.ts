@@ -26,9 +26,12 @@ export interface AnthropicPriceTable {
 }
 
 export interface AnthropicLLMConfig extends AdapterCommonConfig {
-  /** Model ID, injected from seed data, e.g. a recipes table row. */
+  /** Default model ID, injected from seed data, e.g. a recipes table row. */
   model: string;
   priceTable: AnthropicPriceTable;
+  /** Prices for other model ids the recipes may select via input.model. A
+   * requested model without a price entry fails closed. */
+  priceTables?: Record<string, AnthropicPriceTable>;
   /** API version header value. Override when Anthropic publishes a new one. */
   anthropicVersion?: string;
   defaultMaxTokens?: number;
@@ -37,6 +40,9 @@ export interface AnthropicLLMConfig extends AdapterCommonConfig {
 export interface AnthropicLLMInput {
   system?: string;
   messages: Array<{ role: "user" | "assistant"; content: unknown }>;
+  /** Recipe selected model id. Overrides the adapter default; must have a
+   * price entry in priceTables or match the default model. */
+  model?: string;
   /** Tool definitions; pair with toolChoice for structured output. */
   tools?: unknown[];
   toolChoice?: unknown;
@@ -69,6 +75,7 @@ export class AnthropicLLMProvider implements CostAwareProvider {
   private readonly tasks: string[];
   private readonly model: string;
   private readonly priceTable: AnthropicPriceTable;
+  private readonly priceTables: Record<string, AnthropicPriceTable>;
   private readonly anthropicVersion: string;
   private readonly defaultMaxTokens: number;
 
@@ -80,12 +87,33 @@ export class AnthropicLLMProvider implements CostAwareProvider {
     this.fetchFn = config.fetchFn ?? fetch;
     this.model = config.model;
     this.priceTable = config.priceTable;
+    this.priceTables = config.priceTables ?? {};
     this.anthropicVersion = config.anthropicVersion ?? "2023-06-01";
     this.defaultMaxTokens = config.defaultMaxTokens ?? 4096;
   }
 
   supports(task: string): boolean {
     return this.tasks.includes(task);
+  }
+
+  /** The model a request runs on and its prices. A recipe selected model
+   * without a price entry fails closed: silent misprice is worse than a
+   * refused call. */
+  private resolveModel(input: AnthropicLLMInput, task: string): { model: string; prices: AnthropicPriceTable } {
+    const model = input.model ?? this.model;
+    if (model === this.model) {
+      return { model, prices: this.priceTable };
+    }
+    const prices = this.priceTables[model];
+    if (!prices) {
+      throw new ProviderError(
+        `Model "${model}" has no price table on this adapter; add it to priceTables`,
+        this.name,
+        task,
+        false,
+      );
+    }
+    return { model, prices };
   }
 
   /**
@@ -99,6 +127,7 @@ export class AnthropicLLMProvider implements CostAwareProvider {
    */
   estimateCostMicros(req: ProviderRequest): number {
     const input = req.input as unknown as AnthropicLLMInput;
+    const { prices } = this.resolveModel(input, req.task);
     const promptChars = JSON.stringify({
       system: input.system ?? "",
       messages: input.messages ?? [],
@@ -107,15 +136,15 @@ export class AnthropicLLMProvider implements CostAwareProvider {
     const inputTokens = Math.ceil(promptChars / 3);
     const outputTokens = input.maxTokens ?? this.defaultMaxTokens;
     return Math.ceil(
-      (inputTokens * this.priceTable.inputMicrosPerMTok + outputTokens * this.priceTable.outputMicrosPerMTok) /
-        1_000_000,
+      (inputTokens * prices.inputMicrosPerMTok + outputTokens * prices.outputMicrosPerMTok) / 1_000_000,
     );
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
     const input = req.input as unknown as AnthropicLLMInput;
+    const { model, prices } = this.resolveModel(input, req.task);
     const body: Record<string, unknown> = {
-      model: this.model,
+      model,
       max_tokens: input.maxTokens ?? this.defaultMaxTokens,
       messages: input.messages,
     };
@@ -152,8 +181,7 @@ export class AnthropicLLMProvider implements CostAwareProvider {
       raw: data,
     };
     const costMicros = Math.ceil(
-      (inputTokens * this.priceTable.inputMicrosPerMTok + outputTokens * this.priceTable.outputMicrosPerMTok) /
-        1_000_000,
+      (inputTokens * prices.inputMicrosPerMTok + outputTokens * prices.outputMicrosPerMTok) / 1_000_000,
     );
     return { output: output as TOut, costMicros };
   }
