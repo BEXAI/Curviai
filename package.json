@@ -15,6 +15,7 @@
     "eval": "pnpm --filter @curvi/pipeline run eval",
     "db:generate": "pnpm --filter @curvi/db db:generate",
     "db:migrate": "pnpm --filter @curvi/db db:migrate",
+    "db:seed": "pnpm --filter @curvi/trigger db:seed",
     "trigger:dev": "pnpm --filter @curvi/trigger dev"
   },
   "devDependencies": {

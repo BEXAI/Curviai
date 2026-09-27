@@ -9,19 +9,23 @@
 import { createHash } from "node:crypto";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { tierByKey, type TierKey } from "@curvi/pipeline/seed";
-import { getSpec } from "@curvi/specs";
+import { filenameFor, getSpec } from "@curvi/specs";
 import { planDemoShots } from "./demo-plan";
 import type {
   BrandKitView,
   CreateJobInput,
   CreateJobResult,
+  CreateProductInput,
   IntegrationView,
+  JobFilesView,
+  JobFileView,
   JobShotView,
   JobStatus,
   JobSummary,
   JobView,
   MemberView,
   ProductSummary,
+  RegisterSourceMediaInput,
   SaveResult,
   Services,
   ShotCompliance,
@@ -100,11 +104,17 @@ interface DemoJobRecord {
 export class DemoStore {
   readonly jobs = new Map<string, DemoJobRecord>();
   readonly jobIdByIdempotencyKey = new Map<string, string>();
+  readonly extraProducts: ProductSummary[] = [];
   private counter = 0;
 
   nextJobId(): string {
     this.counter += 1;
     return `00000000-0000-4000-8000-9${String(this.counter).padStart(11, "0")}`;
+  }
+
+  nextProductId(): string {
+    this.counter += 1;
+    return `00000000-0000-4000-8000-8${String(this.counter).padStart(11, "0")}`;
   }
 }
 
@@ -238,15 +248,83 @@ export class DemoService implements Services {
       name: DEMO_WORKSPACE_NAME,
       plan: DEMO_TIER,
       creditBalance: this.balance(),
+      role: "owner",
     };
   }
 
   async listProducts(_workspaceId: string): Promise<ProductSummary[]> {
-    return DEMO_PRODUCTS;
+    return [...this.store.extraProducts, ...DEMO_PRODUCTS];
   }
 
   async getProduct(_workspaceId: string, productId: string): Promise<ProductSummary | null> {
-    return DEMO_PRODUCTS.find((p) => p.id === productId) ?? null;
+    return (
+      this.store.extraProducts.find((p) => p.id === productId) ??
+      DEMO_PRODUCTS.find((p) => p.id === productId) ??
+      null
+    );
+  }
+
+  async createProduct(_workspaceId: string, input: CreateProductInput): Promise<ProductSummary> {
+    const product: ProductSummary = {
+      id: this.store.nextProductId(),
+      title: input.title,
+      mode: input.mode,
+      category: "other",
+      createdAt: this.now().toISOString(),
+    };
+    this.store.extraProducts.unshift(product);
+    return product;
+  }
+
+  async registerSourceMedia(_workspaceId: string, _input: RegisterSourceMediaInput): Promise<SaveResult> {
+    return {
+      ok: true,
+      notice: "Demo mode noted the upload. Files are stored once R2 is configured.",
+    };
+  }
+
+  async listJobFiles(_workspaceId: string, jobId: string): Promise<JobFilesView | null> {
+    const record = this.store.jobs.get(jobId);
+    if (!record) {
+      return null;
+    }
+    const status = jobStatusAt(record.polls, record.shots);
+    if (status !== "done") {
+      return { jobId, status, files: [] };
+    }
+    const files: JobFileView[] = [];
+    const counters = new Map<string, number>();
+    const channels = new Set<string>();
+    for (const shot of record.shots) {
+      const specId = shot.channels[0];
+      const spec = tryGetSpec(specId);
+      if (!spec) {
+        continue;
+      }
+      const channel = specId.split(".")[0];
+      channels.add(channel);
+      const n = (counters.get(specId) ?? 0) + 1;
+      counters.set(specId, n);
+      files.push({
+        name: demoFileName(specId, n),
+        channel,
+        specId,
+        kind: "image",
+        bytes: null,
+        url: demoShotImage(shot.type),
+      });
+    }
+    for (const channel of channels) {
+      files.push({ name: `${channel}.zip`, channel, specId: null, kind: "zip", bytes: null, url: null });
+    }
+    files.push({ name: "compliance-report.json", channel: null, specId: null, kind: "report", bytes: null, url: null });
+    return {
+      jobId,
+      status,
+      files,
+      notice:
+        "Demo mode renders previews only. Zip and report downloads switch on once R2 and a database are configured.",
+    };
   }
 
   async listRecentJobs(_workspaceId: string, limit = 10): Promise<JobSummary[]> {
@@ -330,6 +408,37 @@ export class DemoService implements Services {
   }
 
   private productTitle(productId: string): string {
-    return DEMO_PRODUCTS.find((p) => p.id === productId)?.title ?? "Product";
+    return (
+      this.store.extraProducts.find((p) => p.id === productId)?.title ??
+      DEMO_PRODUCTS.find((p) => p.id === productId)?.title ??
+      "Product"
+    );
   }
+}
+
+function tryGetSpec(specId: string): ReturnType<typeof getSpec> | null {
+  try {
+    return getSpec(specId);
+  } catch {
+    return null;
+  }
+}
+
+function demoFileName(specId: string, n: number): string {
+  const spec = tryGetSpec(specId);
+  if (spec?.naming) {
+    try {
+      return filenameFor(spec, { sku: "DEMO123", seoSlug: "demo-product", n });
+    } catch {
+      // Fall through to the generic name.
+    }
+  }
+  return `${specId.replaceAll(".", "_")}_${String(n).padStart(2, "0")}.jpg`;
+}
+
+/** Tiny inline SVG preview so the reveal works with zero stored files. */
+function demoShotImage(shotType: string): string {
+  const label = shotType.replaceAll("_", " ");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400"><rect width="400" height="400" fill="#ffffff"/><rect x="130" y="90" width="140" height="220" rx="14" fill="#64708c"/><rect x="150" y="150" width="100" height="90" rx="8" fill="#ffffff" stroke="#c5cbd8"/><rect x="162" y="166" width="76" height="10" rx="4" fill="#384153"/><rect x="162" y="186" width="58" height="7" rx="3" fill="#8494ad"/><rect x="162" y="206" width="66" height="7" rx="3" fill="#8494ad"/><text x="200" y="360" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20" fill="#5b6474">${label}</text></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }

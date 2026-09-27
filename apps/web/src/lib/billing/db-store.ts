@@ -5,7 +5,7 @@
  * delivery loses the INSERT ... ON CONFLICT race and never double grants.
  */
 
-import { creditLedger, eq, events, subscriptions, type Db } from "@curvi/db";
+import { creditLedger, eq, events, subscriptions, workspaces, type Db } from "@curvi/db";
 import type { BillingStore, CreditGrant, SubscriptionUpdate } from "./stripe-webhook";
 
 export class DbBillingStore implements BillingStore {
@@ -61,6 +61,13 @@ export class DbBillingStore implements BillingStore {
       expiresAt,
     });
     return true;
+  }
+
+  async linkCustomer(workspaceId: string, stripeCustomerId: string): Promise<void> {
+    await this.db
+      .update(workspaces)
+      .set({ stripeCustomerId, updatedAt: new Date() })
+      .where(eq(workspaces.id, workspaceId));
   }
 
   async upsertSubscription(update: SubscriptionUpdate): Promise<void> {

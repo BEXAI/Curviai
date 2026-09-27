@@ -43,6 +43,10 @@ test("submitting a demo job navigates to the job page and progress advances", as
 
   await expect(status).toHaveText("done", { timeout: 45000 });
   await expect(page.getByTestId("compliance-badge").first()).toBeVisible();
+
+  // The delivery surface: channel tabs with named files and previews.
+  await expect(page.getByTestId("pack-downloads")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId("pack-file").first()).toBeVisible();
 });
 
 test("health endpoint returns provider and breaker state json", async ({ request }) => {

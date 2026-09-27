@@ -3,15 +3,19 @@
  * spec compliant file names plus compliance-report.json listing, per file, the
  * spec id, checks run, pass or fail and measured values. Marketplace bound
  * files are never watermarked (badge only where badgeAllowed and never on a
- * marketplace spec). A PDF version of the report is a follow up; JSON ships now.
+ * marketplace spec). Files that carry a digitalSource kind get their IPTC
+ * DigitalSourceType written before zipping, so delivered bytes are tagged
+ * (plan 5.7.2). A PDF version of the report is a follow up; JSON ships now.
  */
 import { createWriteStream } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import archiver from "archiver";
 import sharp from "sharp";
 import { filenameFor, getSpec, isMarketplaceSpec, type ChannelSpec } from "@curvi/specs";
+import { writeDigitalSourceType, type DigitalSourceKind } from "../metadata/iptc";
 import { pixelChecks, type CheckItem, type PixelCheckReport } from "../qc/pixelChecks";
 import type { RawImage, RawMask } from "../raw";
 
@@ -33,12 +37,21 @@ export interface PackAsset {
   badge?: boolean;
   /** Margin passed to the background check, see PixelCheckOptions. */
   edgeMarginPx?: number;
+  /** Caller reference (the shot id) carried into the report, so persistence
+   * layers can link delivered files back to their asset rows. */
+  ref?: string;
+  /** IPTC DigitalSourceType to embed: "composite" for composited scenes,
+   * "trained" for fully generated images, "none" or omitted for deterministic
+   * edits of the user's photo (plan 5.7.2). */
+  digitalSource?: DigitalSourceKind;
 }
 
 export interface PackFileReport {
   file: string;
   channel: string;
   specId: string;
+  ref: string | null;
+  digitalSource: DigitalSourceKind;
   badge: boolean;
   notes: string[];
   checks: CheckItem[];
@@ -64,6 +77,9 @@ export function channelOf(specId: string): string {
 export interface BuildPackOptions {
   /** Output directory. A fresh temp dir is created when omitted. */
   outDir?: string;
+  /** Also write each delivered file loose under outDir/files/{channel}/{name},
+   * so persistence layers can upload individual files, not only zips. */
+  writeFiles?: boolean;
 }
 
 export async function buildPack(
@@ -96,12 +112,30 @@ export async function buildPack(
     const format = asset.format ?? (await detectFormat(asset.buffer));
     const name = fileNameFor(spec, asset, n, format);
 
+    // Embed the IPTC digital source marking before any bytes leave the
+    // packager, so zips, loose files and checks all see the tagged file.
+    const digitalSource: DigitalSourceKind = asset.digitalSource ?? "none";
+    let buffer = asset.buffer;
+    if (digitalSource !== "none") {
+      const tagPath = path.join(outDir, `.tag-${randomUUID()}.${format}`);
+      await writeFile(tagPath, buffer);
+      await writeDigitalSourceType(tagPath, digitalSource);
+      buffer = await readFile(tagPath);
+      await rm(tagPath, { force: true });
+      notes.push(`iptc digital source type: ${digitalSource}`);
+    }
+    if (opts.writeFiles) {
+      const loosePath = path.join(outDir, "files", channel, name);
+      await mkdir(path.dirname(loosePath), { recursive: true });
+      await writeFile(loosePath, buffer);
+    }
+
     let checks: CheckItem[] = [];
     let measured: PackFileReport["measured"] = null;
     let pass = true;
     if (asset.raw) {
       const report = await pixelChecks(asset.raw, asset.mask ?? null, spec, {
-        encoded: { bytes: asset.buffer.length, format },
+        encoded: { bytes: buffer.length, format },
         edgeMarginPx: asset.edgeMarginPx,
       });
       checks = report.checks;
@@ -116,14 +150,14 @@ export async function buildPack(
         format: report.format,
       };
     } else {
-      const meta = await sharp(asset.buffer).metadata();
-      const bytesOk = !spec.maxBytes || asset.buffer.length <= spec.maxBytes;
+      const meta = await sharp(buffer).metadata();
+      const bytesOk = !spec.maxBytes || buffer.length <= spec.maxBytes;
       const formatOk = !spec.formats || (spec.formats as readonly string[]).includes(format);
       checks = [
         {
           name: "bytes",
           pass: bytesOk,
-          measured: asset.buffer.length,
+          measured: buffer.length,
           limit: spec.maxBytes ? `<= ${spec.maxBytes}` : "none",
         },
         {
@@ -140,15 +174,26 @@ export async function buildPack(
         longestSide: Math.max(meta.width ?? 0, meta.height ?? 0),
         backgroundWhiteShare: null,
         fillRatio: null,
-        bytes: asset.buffer.length,
+        bytes: buffer.length,
         format,
       };
       notes.push("raw pixels not supplied; only file level checks ran");
     }
 
-    fileReports.push({ file: name, channel, specId: asset.specId, badge, notes, checks, measured, pass });
+    fileReports.push({
+      file: name,
+      channel,
+      specId: asset.specId,
+      ref: asset.ref ?? null,
+      digitalSource,
+      badge,
+      notes,
+      checks,
+      measured,
+      pass,
+    });
     const entries = byChannel.get(channel) ?? [];
-    entries.push({ name, buffer: asset.buffer });
+    entries.push({ name, buffer });
     byChannel.set(channel, entries);
   }
 

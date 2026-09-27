@@ -6,6 +6,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   primaryKey,
   text,
@@ -158,8 +159,14 @@ export const generationJobs = pgTable(
       .references(() => products.id, { onDelete: "cascade" }),
     status: text("status").$type<JobStatus>().notNull().default("queued"),
     idempotencyKey: text("idempotency_key").unique(),
-    creditsReserved: integer("credits_reserved").notNull().default(0),
-    creditsCharged: integer("credits_charged").notNull().default(0),
+    // numeric(12,1): the plan prices deterministic assets at 0.5 credit, so
+    // integer columns cannot hold real reservations and charges.
+    creditsReserved: numeric("credits_reserved", { precision: 12, scale: 1, mode: "number" })
+      .notNull()
+      .default(0),
+    creditsCharged: numeric("credits_charged", { precision: 12, scale: 1, mode: "number" })
+      .notNull()
+      .default(0),
     cogsMicros: bigint("cogs_micros", { mode: "number" }).notNull().default(0),
     recipeVersionId: uuid("recipe_version_id").references(() => recipes.id),
     error: text("error"),
@@ -260,7 +267,7 @@ export const creditLedger = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
-    delta: integer("delta").notNull(),
+    delta: numeric("delta", { precision: 12, scale: 1, mode: "number" }).notNull(),
     reason: text("reason").$type<LedgerReason>().notNull(),
     source: text("source").$type<LedgerSource>(),
     jobId: uuid("job_id").references(() => generationJobs.id),
@@ -275,6 +282,34 @@ export const creditLedger = pgTable(
     uniqueIndex("credit_ledger_job_step_charge_uq")
       .on(t.jobId, t.stepKey)
       .where(sql`reason = 'charge' and step_key is not null`),
+  ],
+);
+
+export type PackFileKind = "zip" | "report";
+
+// Delivered pack outputs: one row per channel zip and one for the compliance
+// report, uploaded to R2 by the worker's job store. Individual image files get
+// asset_variants rows; this table holds the pack level artifacts.
+export const packFiles = pgTable(
+  "pack_files",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => generationJobs.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<PackFileKind>().notNull(),
+    channel: text("channel"),
+    filename: text("filename").notNull(),
+    r2Key: text("r2_key").notNull(),
+    bytes: integer("bytes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("pack_files_workspace_id_idx").on(t.workspaceId),
+    index("pack_files_job_id_idx").on(t.jobId),
   ],
 );
 
@@ -420,6 +455,8 @@ export type Recipe = typeof recipes.$inferSelect;
 export type NewRecipe = typeof recipes.$inferInsert;
 export type CreditLedgerEntry = typeof creditLedger.$inferSelect;
 export type NewCreditLedgerEntry = typeof creditLedger.$inferInsert;
+export type PackFile = typeof packFiles.$inferSelect;
+export type NewPackFile = typeof packFiles.$inferInsert;
 export type Subscription = typeof subscriptions.$inferSelect;
 export type NewSubscription = typeof subscriptions.$inferInsert;
 export type Referral = typeof referrals.$inferSelect;

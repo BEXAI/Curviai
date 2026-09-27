@@ -33,6 +33,7 @@ import {
   ProductProfile,
   QCVerdict,
   ShotList,
+  type DigitalSourceKind,
   type FidelityReport,
   type PackAsset,
   type PixelCheckReport,
@@ -42,7 +43,7 @@ import {
   type Shot,
 } from "@curvi/pipeline";
 import { recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
-import { getSpec, hasSpec } from "@curvi/specs";
+import { getSpec, hasSpec, isMarketplaceSpec, listSpecs } from "@curvi/specs";
 import { JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 
 /** Recipe row for a pipeline stage, looked up from seed data so task names,
@@ -76,6 +77,13 @@ export interface JobLedgerEntry extends LedgerAction {
   at: Date;
 }
 
+/** Measured compliance values for the green badge (plan 3.3.3): the exact
+ * fill percentage and background the checks saw, not just pass or fail. */
+export interface MeasuredCompliance {
+  fillPct: number | null;
+  background: [number, number, number] | null;
+}
+
 export interface StoredAsset {
   jobId: string;
   workspaceId: string;
@@ -87,6 +95,7 @@ export interface StoredAsset {
   credits: number;
   costMicros: number;
   verdict: QCVerdict;
+  measured: MeasuredCompliance;
 }
 
 export interface StoredPack {
@@ -162,6 +171,29 @@ export interface ShotContext {
   workspaceId: string;
   sku?: string;
   seoSlug?: string;
+  /** Listing or concept; concept packs mark every generated output as fully
+   * synthetic (plan 2.7). Defaults to listing when omitted. */
+  mode?: "listing" | "concept";
+}
+
+/** IPTC digital source marking per plan 5.7.2: composited scenes carry
+ * compositeSynthetic, fully generated outputs carry trainedAlgorithmicMedia,
+ * deterministic edits of the user's photo carry no AI tag. Concept mode has no
+ * real photo, so every generative method is fully synthetic. */
+export function digitalSourceFor(
+  method: Shot["method"],
+  mode: ShotContext["mode"],
+): DigitalSourceKind {
+  if (method === "deterministic" || method === "template") {
+    return "none";
+  }
+  if (mode === "concept") {
+    return "trained";
+  }
+  if (method === "composite_generate" || method === "edit_generate") {
+    return "composite";
+  }
+  return "trained";
 }
 
 export interface ShotOutcomeBase {
@@ -176,6 +208,8 @@ export interface ShotOutcomeBase {
   verdict: QCVerdict;
   pixelPass: boolean;
   fidelityPass: boolean | null;
+  digitalSource: DigitalSourceKind;
+  measured: MeasuredCompliance;
 }
 
 export interface ShotOutcome extends ShotOutcomeBase {
@@ -217,6 +251,8 @@ export function deserializeShotOutcome(
       format,
       sku: ctx.sku,
       seoSlug: ctx.seoSlug,
+      ref: base.shotId,
+      digitalSource: base.digitalSource,
     },
   };
 }
@@ -237,6 +273,9 @@ export interface GeneratePackInput {
   jobId: string;
   workspaceId: string;
   tier: TierKey;
+  /** Listing (default) or concept. Concept packs never target marketplace
+   * channels and mark every generated output TrainedAlgorithmicMedia. */
+  mode?: "listing" | "concept";
   /** Channel families or spec ids, e.g. ["amazon", "shopify"]. */
   channels: string[];
   creditBudget: number;
@@ -391,12 +430,20 @@ export async function runShot(
       edgeMarginPx: 2,
     });
 
+    // Rule 3 gate, fail closed: a composite or edit method that cannot prove
+    // its paste back (no product reference or no mask) never passes.
     let fidelity: FidelityReport | null = null;
-    if (COMPOSITE_METHODS.has(shot.method) && generation.productReference && generation.mask) {
-      fidelity = await fidelityReport(generation.productReference, generation.image, generation.mask, {
-        kind: qcKindForSpec(spec),
-      });
+    let fidelityInputsMissing = false;
+    if (COMPOSITE_METHODS.has(shot.method)) {
+      if (generation.productReference && generation.mask) {
+        fidelity = await fidelityReport(generation.productReference, generation.image, generation.mask, {
+          kind: qcKindForSpec(spec),
+        });
+      } else {
+        fidelityInputsMissing = true;
+      }
     }
+    const fidelityOk = fidelityInputsMissing ? false : (fidelity?.pass ?? true);
 
     const judged = await llmJson<QCVerdict>(
       deps.ai,
@@ -420,9 +467,25 @@ export async function runShot(
     // checks passed, but can never pass a shot the checks failed.
     const effective: QCVerdict = {
       ...verdict,
-      pass: verdict.pass && pixel.pass && (fidelity?.pass ?? true),
+      pass: verdict.pass && pixel.pass && fidelityOk,
     };
+    if (fidelityInputsMissing) {
+      effective.repairHint =
+        "Composite generation must return the product reference and mask so the paste back can be proven";
+    }
 
+    const digitalSource = digitalSourceFor(shot.method, ctx.mode);
+    const measured: MeasuredCompliance = {
+      fillPct: pixel.fillRatio !== null ? Math.round(pixel.fillRatio * 100) : null,
+      background:
+        pixel.pass && spec.background?.rgb
+          ? ([spec.background.rgb[0], spec.background.rgb[1], spec.background.rgb[2]] as [
+              number,
+              number,
+              number,
+            ])
+          : null,
+    };
     const decision = planRetry(attempt, effective);
     if (decision.action === "accept") {
       const outcome: ShotOutcome = {
@@ -436,7 +499,9 @@ export async function runShot(
         costMicros,
         verdict: effective,
         pixelPass: pixel.pass,
-        fidelityPass: fidelity ? fidelity.pass : null,
+        fidelityPass: fidelityInputsMissing ? false : fidelity ? fidelity.pass : null,
+        digitalSource,
+        measured,
         packAsset: {
           specId,
           buffer: generation.encoded.buffer,
@@ -446,6 +511,8 @@ export async function runShot(
           sku: ctx.sku,
           seoSlug: ctx.seoSlug,
           edgeMarginPx: 2,
+          ref: shot.id,
+          digitalSource,
         },
       };
       await deps.store.saveAsset(toStoredAsset(outcome, ctx));
@@ -463,7 +530,9 @@ export async function runShot(
         costMicros,
         verdict: effective,
         pixelPass: pixel.pass,
-        fidelityPass: fidelity ? fidelity.pass : null,
+        fidelityPass: fidelityInputsMissing ? false : fidelity ? fidelity.pass : null,
+        digitalSource,
+        measured,
       };
       await deps.store.saveAsset(toStoredAsset(outcome, ctx));
       return outcome;
@@ -488,7 +557,18 @@ function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext): StoredAsset {
     credits: outcome.credits,
     costMicros: outcome.costMicros,
     verdict: outcome.verdict,
+    measured: outcome.measured,
   };
+}
+
+/** True when the channel string, a spec id or a channel family, is
+ * marketplace bound. Concept packs never target marketplace channels
+ * (plan 2.7). */
+export function isMarketplaceChannel(channel: string): boolean {
+  if (hasSpec(channel)) {
+    return isMarketplaceSpec(channel);
+  }
+  return listSpecs().some((s) => channelOf(s.id) === channel && isMarketplaceSpec(s.id));
 }
 
 /** An LLM shot list is usable only when it validates, every shot targets a
@@ -572,11 +652,15 @@ export async function runGeneratePack(
     const profile = analysis.value;
 
     // Plan shots: LLM planner recipe first, deterministic planShots when the
-    // response is schema invalid.
+    // response is schema invalid. Concept mode drops marketplace channels
+    // before planning; the exclusion is structural, not a pricing convention.
     state = transition(state, "analysis_done");
     await store.setJobState(input.jobId, state);
+    const conceptExcluded =
+      input.mode === "concept" ? input.channels.filter((c) => isMarketplaceChannel(c)) : [];
+    const effectiveChannels = input.channels.filter((c) => !conceptExcluded.includes(c));
     const planOptions: PlanOptions = {
-      channels: input.channels,
+      channels: effectiveChannels,
       tier: input.tier,
       creditBudget: input.creditBudget,
       hasBoxContents: input.hasBoxContents,
@@ -600,7 +684,13 @@ export async function runGeneratePack(
       plannerSource = "deterministic";
     }
     plannedShots = shotList.shots.length;
-    skipped = shotList.skipped;
+    skipped = [
+      ...conceptExcluded.map((channel) => ({
+        type: channel,
+        reason: "concept mode excludes marketplace channels",
+      })),
+      ...shotList.skipped,
+    ];
 
     // Fan out per shot generation, each shot carrying its own QC retry loop.
     state = transition(state, "plan_ready");
@@ -610,6 +700,7 @@ export async function runGeneratePack(
       workspaceId: input.workspaceId,
       sku: input.sku,
       seoSlug: input.seoSlug,
+      mode: input.mode ?? "listing",
     };
     const runShots =
       deps.runShots ?? ((shots: Shot[], c: ShotContext) => Promise.all(shots.map((s) => runShot(s, c, deps))));
@@ -636,7 +727,10 @@ export async function runGeneratePack(
       .filter((o) => o.status === "passed" && o.packAsset)
       .map((o) => o.packAsset as PackAsset);
     const families = [...new Set(packAssets.map((a) => channelOf(a.specId)))];
-    const built = await buildPack(packAssets, families, { outDir: deps.packOutDir });
+    const built = await buildPack(packAssets, families, {
+      outDir: deps.packOutDir,
+      writeFiles: true,
+    });
     pack = {
       jobId: input.jobId,
       workspaceId: input.workspaceId,

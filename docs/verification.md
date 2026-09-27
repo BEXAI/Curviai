@@ -61,17 +61,32 @@ Anthropic /v1/messages field set and current anthropic-version header value; Gem
 
 A read only security review of wave 1 executed exploit probes against the repo's own PGlite harness and composite pipeline. It confirmed 3 critical RLS privilege escalations (member self grant of credits, PUBLIC executable SECURITY DEFINER ledger functions, client role workspace update and delete), 4 high findings (subscriptions self upgrade, unprotected recipes and channel_specs tables, thin product fidelity bypass through mask erosion, silently bypassable cost caps) and 9 medium or low findings. All 16 were fixed the same day: migration 0002_security_hardening.sql (19 regression tests that re-run the exploits and assert denial), fail closed cost estimation in packages/ai, adaptive paste erosion plus a derived QC erosion invariant and a maxDeltaE guard in packages/pipeline, filename sanitization in packages/specs, an events dedupe unique index (migration 0003) making webhook grants atomic, and a fal poll URL allowlist. Ledger SQL functions are callable only by the service role or the owner connection; the web app was reconciled to call them over DATABASE_URL.
 
+## Full audit and P0 remediation (2026-09-27, second pass)
+
+A 22 agent audit compared all 257 plan requirements against the code; docs/AUDIT_2026-09-27.md holds the verified findings. The three P0 findings were fixed the same day:
+
+1. Web to worker bridge: POST /api/jobs now enqueues generate-pack through the Trigger.dev SDK when TRIGGER_SECRET_KEY is set, and otherwise runs the pack inline after the response through next/server after() with the same runner (apps/web/src/lib/jobs/enqueue.ts). A crashed inline run marks the job failed and releases the hold.
+2. DB credit settlement: DbJobStore (trigger/src/db-store.ts) persists job state, assets, job_steps, and calls charge_credits per passing asset with the shot id as step key and release_credits per failed shot and remainder. Migration 0004 and 0005 move the ledger to numeric(12,1) so the plan's 0.5 credit deterministic assets bill exactly, and release_credits gained an exact amount parameter. Tested end to end against the real migrations in trigger/src/db-store.test.ts.
+3. Pack delivery: buildPack writes loose per channel files, DbJobStore uploads files, zips and the compliance report to R2 under ws/{workspace}/jobs/{job}/, records asset_variants and pack_files rows (new table, member read RLS), and GET /api/jobs/:id/files serves 15 minute signed urls rendered as channel tabs with named downloads and previews (PackDownloads component).
+
+Also landed in the same pass: uploads are now recorded (POST /api/uploads/complete writes source_media; the pack form registers each upload and auto creates a product), Listing Mode refuses to start without a real photo, the client role can no longer create jobs, products or uploads through the app layer, IPTC DigitalSourceType is embedded at package time (composite for composited stills, trained for fully generated and all concept outputs, none for deterministic edits), concept packs structurally exclude marketplace channels in the runner, the rule 3 fidelity gate fails closed when a composite generation omits its product reference or mask, the compliance badge carries measured fill and background from the worker, checkout.session.completed writes workspaces.stripe_customer_id back, and pnpm db:seed (trigger/src/seed-cli.ts) seeds channel specs and recipes into the tables.
+
 ## Open follow ups
 
-- OCR engine and embedding similarity (DINOv2 or CLIP) implementations behind the existing pluggable QC interfaces.
+- OCR engine and embedding similarity (DINOv2 or CLIP) implementations behind the existing pluggable QC interfaces; semanticChecks is still not invoked from the runner.
 - c2pa-node manifest signing once a signing certificate exists.
 - compliance-report.pdf rendering (JSON ships now).
 - Square video channel spec (video.social_1x1) for 1x1 template renders.
-- Half open probe state for the circuit breaker; Upstash backed breaker and cap stores; DB backed cost meter.
-- Badge pixel overlay for social exports (flag is tracked, pixels not composited yet).
+- Half open probe state for the circuit breaker; Upstash backed breaker and cap stores; DB backed cost meter (cogs_micros still not written to the database).
+- Badge pixel overlay for social exports and the Concept render corner label (flags are tracked, pixels not composited yet).
 - Wire SpendCaps reservations inside the trigger runner's per shot loop once real costMicros flow.
-- Real provider routing table and price table seeds for buildRuntimeDeps in trigger (in memory demo runtime ships now).
-- Write workspaces.stripe_customer_id back from checkout.session.completed so the customer portal works without backfill.
-- Ingest side revalidation of uploads (presigned PUT cannot enforce byte caps server side; caps are enforced at sign time only).
+- Real provider routing table and price table seeds: generation still runs on the demo LLM and demo shot generator; DbJobStore makes persistence real either way. Runtime recipe reads still come from the in code seed, not the recipes table, so trafficPct splits stay inert.
+- Ingest side revalidation of uploads (presigned PUT cannot enforce byte caps server side; caps are enforced at sign time only; magic bytes, EXIF strip and the 80 MP cap still need an ingest step that reads the object back).
+- Credit rollover and top up expiry enforcement (expire ledger rows are still never written; top up expiresAt is recorded but not enforced).
+- Free tier 15 credit grant and workspace provisioning at signup (no code path creates a workspace for a new Supabase user yet).
+- Templated video rendering (Remotion renderer is not wired to video shots; the demo generator returns stills), video QC frame sampling, and the pnpm eval --stage video stage.
+- Cancel flow save offers, churn intervention execution, and the churn score daily job against real signals (Stripe keys and real readers needed).
 - Workspace switcher and per request workspace scoping for agency accounts (DbService currently resolves the first membership).
 - Legal pages (terms, privacy) before public launch; waitlist email capture currently falls back to mailto.
+- Eval regression gates against a stored baseline (3 point pass rate and 0.02 fidelity drop) and eval_runs persistence; golden set is 10 synthetic products, not the plan's 40.
+- Marketing pricing UI duplicates seed prices as literals; import from @curvi/pipeline/seed instead.

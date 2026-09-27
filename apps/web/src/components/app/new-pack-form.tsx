@@ -38,12 +38,23 @@ type UploadState =
   | { phase: "notice"; message: string }
   | { phase: "error"; message: string };
 
+async function sha256Hex(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function titleFromFileName(name: string): string {
+  const base = name.replace(/\.[^.]+$/, "").replaceAll(/[-_]+/g, " ").trim();
+  return base.length > 0 ? base.slice(0, 120) : "New product";
+}
+
 export function NewPackForm({ products, channels, tier, creditBalance }: NewPackFormProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [upload, setUpload] = useState<UploadState>({ phase: "idle" });
   const [productUrl, setProductUrl] = useState("");
+  const [productList, setProductList] = useState<ProductOption[]>(products);
   const [productId, setProductId] = useState(products[0]?.id ?? "");
   const [selected, setSelected] = useState<string[]>(
     DEFAULT_CHANNELS.filter((id) => channels.some((c) => c.id === id)),
@@ -95,7 +106,46 @@ export function NewPackForm({ products, channels, tier, creditBalance }: NewPack
         setUpload({ phase: "error", message: "The upload failed. Try again." });
         return;
       }
+
+      // Attach the stored file to a product so the pack has a real photo.
+      let targetProductId = productId;
+      if (!targetProductId) {
+        const created = await fetch("/api/products", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: titleFromFileName(file.name), mode }),
+        });
+        const createdData = (await created.json()) as {
+          product?: { id: string; title: string; mode: "listing" | "concept" };
+          error?: string;
+        };
+        if (!created.ok || !createdData.product) {
+          setUpload({ phase: "error", message: createdData.error ?? "The product could not be created." });
+          return;
+        }
+        const product = createdData.product;
+        setProductList((current) => [product, ...current]);
+        setProductId(product.id);
+        targetProductId = product.id;
+      }
+      const complete = await fetch("/api/uploads/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productId: targetProductId,
+          key: data.key,
+          kind: file.type.startsWith("video/") ? "video" : "image",
+          bytes: file.size,
+          sha256: await sha256Hex(file),
+        }),
+      });
+      if (!complete.ok) {
+        const completeData = (await complete.json()) as { error?: string };
+        setUpload({ phase: "error", message: completeData.error ?? "The upload could not be saved." });
+        return;
+      }
       setUpload({ phase: "uploaded", name: file.name, key: data.key });
+      router.refresh();
     } catch {
       setUpload({ phase: "error", message: "The upload failed. Check your connection and try again." });
     }
@@ -212,7 +262,7 @@ export function NewPackForm({ products, channels, tier, creditBalance }: NewPack
                 onChange={(event) => setProductId(event.target.value)}
                 className="mt-1 flex h-10 w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm"
               >
-                {products.map((product) => (
+                {productList.map((product) => (
                   <option key={product.id} value={product.id}>
                     {product.title}
                   </option>

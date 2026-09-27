@@ -1,15 +1,17 @@
 /**
- * Cloudflare R2 presigning through the S3 compatible API. Only the sign
- * route touches this, and only after isR2Configured() says the credentials
- * exist. Keys follow the ws/{workspaceId}/src/{uuid} layout from the plan.
+ * Cloudflare R2 presigning through the S3 compatible API. Callers check
+ * isR2Configured() before touching this. Source uploads use
+ * ws/{workspaceId}/src/{uuid} keys; pack downloads are signed GET urls that
+ * expire after 15 minutes, the private asset rule from plan 4.2.3.
  */
 
 import { randomUUID } from "node:crypto";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { optionalEnv, requireEnv } from "@/lib/env";
 
 export const UPLOAD_URL_TTL_SECONDS = 600;
+export const DOWNLOAD_URL_TTL_SECONDS = 900;
 
 export function sourceUploadKey(workspaceId: string): string {
   return `ws/${workspaceId}/src/${randomUUID()}`;
@@ -49,4 +51,17 @@ export async function presignSourceUpload(
   });
   const url = await getSignedUrl(r2Client(), command, { expiresIn: UPLOAD_URL_TTL_SECONDS });
   return { url, key, bucket, expiresInSeconds: UPLOAD_URL_TTL_SECONDS };
+}
+
+/** Signed GET url for a stored object, expiring in 15 minutes. */
+export async function presignDownload(key: string): Promise<string> {
+  const bucket = optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+  return getSignedUrl(r2Client(), command, { expiresIn: DOWNLOAD_URL_TTL_SECONDS });
+}
+
+/** True when the key sits inside the workspace's source prefix, the only
+ * place a client reported upload may point. */
+export function isWorkspaceSourceKey(workspaceId: string, key: string): boolean {
+  return key.startsWith(`ws/${workspaceId}/src/`) && !key.includes("..");
 }

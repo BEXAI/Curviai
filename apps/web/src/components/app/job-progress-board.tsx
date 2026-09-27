@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Badge, Card, CardContent } from "@curvi/ui";
+import { PackDownloads } from "@/components/app/pack-downloads";
 import { StatusChip } from "@/components/app/status-chip";
 import type { JobShotView, JobView } from "@/lib/services/types";
 
@@ -124,6 +125,8 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
           </Card>
         ))}
       </div>
+
+      {job.status === "done" ? <PackDownloads jobId={job.id} /> : null}
     </div>
   );
 }

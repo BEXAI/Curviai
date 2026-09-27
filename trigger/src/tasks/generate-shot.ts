@@ -7,13 +7,13 @@
 
 import { task } from "@trigger.dev/sdk/v3";
 import type { Shot } from "@curvi/pipeline";
+import { resolveRuntimeDeps } from "../db-runtime";
 import {
   runShot,
   serializeShotOutcome,
   type SerializableShotOutcome,
   type ShotContext,
 } from "../pipeline-runner";
-import { buildRuntimeDeps } from "../runtime";
 
 export interface GenerateShotPayload extends ShotContext {
   shot: Shot;
@@ -30,7 +30,7 @@ export const generateShot = task({
     randomize: true,
   },
   run: async (payload: GenerateShotPayload): Promise<SerializableShotOutcome> => {
-    const deps = buildRuntimeDeps();
+    const deps = resolveRuntimeDeps();
     const outcome = await runShot(payload.shot, payload, deps);
     return serializeShotOutcome(outcome);
   },

@@ -10,6 +10,9 @@ export * from "./drops";
 export * from "./digest";
 export * from "./pipeline-runner";
 export * from "./runtime";
+export * from "./db-store";
+export * from "./db-runtime";
+export * from "./r2";
 
 export { generatePack } from "./tasks/generate-pack";
 export { generateShot, type GenerateShotPayload } from "./tasks/generate-shot";

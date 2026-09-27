@@ -10,25 +10,42 @@
  * bypasses RLS by design (the plan's service role pattern).
  */
 
-import { createDb, type Db, brandKits, generationJobs, sql, eq } from "@curvi/db";
+import {
+  createDb,
+  type Db,
+  brandKits,
+  generationJobs,
+  products,
+  sourceMedia,
+  sql,
+  eq,
+} from "@curvi/db";
 import { tiers, type TierKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { optionalEnv } from "@/lib/env";
+import { isR2Configured, optionalEnv } from "@/lib/env";
+import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
+import { buildGeneratePackInput } from "@/lib/jobs/payload";
 import { estimatePackCredits } from "@/lib/pack-estimate";
+import { isWorkspaceSourceKey, presignDownload } from "@/lib/r2";
 import type {
   BrandKitView,
   CreateJobInput,
   CreateJobResult,
+  CreateProductInput,
   IntegrationView,
+  JobFilesView,
+  JobFileView,
   JobShotView,
   JobStatus,
   JobSummary,
   JobView,
   MemberView,
   ProductSummary,
+  RegisterSourceMediaInput,
   SaveResult,
   Services,
   ShotStatus,
+  WorkspaceRole,
   WorkspaceSummary,
 } from "./types";
 
@@ -127,7 +144,22 @@ export class DbService implements Services {
       name: workspace.name,
       plan: workspace.plan,
       creditBalance: await this.creditBalance(workspace.id),
+      role: membership.role,
     };
+  }
+
+  /** The signed in member's role in this workspace, or null when they do not
+   * belong to it. Plan 4.3: the client role reads assets but cannot generate
+   * or bill, enforced here because the owner connection bypasses RLS. */
+  private async currentRole(workspaceId: string): Promise<WorkspaceRole | null> {
+    const userId = await this.deps.getUserId();
+    if (!userId) {
+      return null;
+    }
+    const membership = await this.db.query.members.findFirst({
+      where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.userId, userId)),
+    });
+    return membership?.role ?? null;
   }
 
   private async creditBalance(workspaceId: string): Promise<number> {
@@ -259,11 +291,33 @@ export class DbService implements Services {
       return { outcome: "conflict", existingJobId: existing.id };
     }
 
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return {
+        outcome: "rejected",
+        reason: "role_forbidden",
+        message: "Client seats can review assets but cannot start packs or spend credits.",
+      };
+    }
+
     const product = await this.db.query.products.findFirst({
       where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
     });
     if (!product) {
       return { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." };
+    }
+
+    // Plan 2.7: Listing Mode requires at least one real photo. Angles that
+    // were not photographed are skipped by the planner, never invented.
+    const media = await this.db.query.sourceMedia.findMany({
+      where: (t, { eq }) => eq(t.productId, input.productId),
+    });
+    if (input.mode === "listing" && media.length === 0) {
+      return {
+        outcome: "rejected",
+        reason: "needs_photo",
+        message: "Listing Mode needs at least one real photo of this product. Upload one first, or switch to Concept Mode.",
+      };
     }
 
     const workspace = await this.db.query.workspaces.findFirst({
@@ -293,7 +347,7 @@ export class DbService implements Services {
 
     try {
       await this.db.execute(
-        sql`select reserve_credits(${workspaceId}::uuid, ${creditsReserved}::integer, ${inserted.id}::uuid)`,
+        sql`select reserve_credits(${workspaceId}::uuid, ${creditsReserved}::numeric, ${inserted.id}::uuid)`,
       );
     } catch {
       await this.db
@@ -307,11 +361,141 @@ export class DbService implements Services {
       };
     }
 
+    try {
+      await enqueueGeneratePack(
+        buildGeneratePackInput({
+          jobId: inserted.id,
+          workspaceId,
+          tier,
+          channels: input.channels,
+          mode: input.mode,
+          creditBudget: creditsReserved,
+          product: {
+            id: product.id,
+            title: product.title,
+            mode: product.mode,
+            amazonSku: product.amazonSku,
+          },
+          media: media.map((m) => ({ id: m.id, kind: m.kind })),
+        }),
+      );
+    } catch (err) {
+      // The reservation must never strand when the queue is unreachable.
+      await this.db
+        .update(generationJobs)
+        .set({ status: "failed", error: "The pack could not be queued.", updatedAt: new Date() })
+        .where(eq(generationJobs.id, inserted.id));
+      await this.db.execute(
+        sql`select release_credits(${workspaceId}::uuid, ${inserted.id}::uuid)`,
+      );
+      throw err;
+    }
+
     const job = await this.getJob(workspaceId, inserted.id);
     if (!job) {
       return { outcome: "conflict", existingJobId: inserted.id };
     }
     return { outcome: "created", job };
+  }
+
+  async createProduct(workspaceId: string, input: CreateProductInput): Promise<ProductSummary | null> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return null;
+    }
+    const [row] = await this.db
+      .insert(products)
+      .values({ workspaceId, title: input.title, mode: input.mode })
+      .returning();
+    return {
+      id: row.id,
+      title: row.title ?? "Untitled product",
+      mode: row.mode,
+      category: "other",
+      createdAt: row.createdAt.toISOString(),
+    };
+  }
+
+  async registerSourceMedia(workspaceId: string, input: RegisterSourceMediaInput): Promise<SaveResult> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return { ok: false, notice: "Client seats cannot upload product photos." };
+    }
+    if (!isWorkspaceSourceKey(workspaceId, input.r2Key)) {
+      return { ok: false, notice: "That upload does not belong to this workspace." };
+    }
+    const product = await this.db.query.products.findFirst({
+      where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!product) {
+      return { ok: false, notice: "That product does not exist in this workspace." };
+    }
+    await this.db.insert(sourceMedia).values({
+      workspaceId,
+      productId: input.productId,
+      r2Key: input.r2Key,
+      kind: input.kind,
+      width: input.width ?? null,
+      height: input.height ?? null,
+      sha256: input.sha256,
+    });
+    return { ok: true, notice: "Photo saved to this product." };
+  }
+
+  async listJobFiles(workspaceId: string, jobId: string): Promise<JobFilesView | null> {
+    const job = await this.db.query.generationJobs.findFirst({
+      where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!job) {
+      return null;
+    }
+    const assetRows = await this.db.query.assets.findMany({
+      where: (t, { eq }) => eq(t.jobId, job.id),
+    });
+    const assetIds = assetRows.map((a) => a.id);
+    const [variantRows, packRows] = await Promise.all([
+      assetIds.length > 0
+        ? this.db.query.assetVariants.findMany({
+            where: (t, { and, eq, inArray }) =>
+              and(eq(t.workspaceId, workspaceId), inArray(t.assetId, assetIds)),
+          })
+        : Promise.resolve([]),
+      this.db.query.packFiles.findMany({ where: (t, { eq }) => eq(t.jobId, job.id) }),
+    ]);
+
+    const canSign = isR2Configured();
+    const files: JobFileView[] = [];
+    for (const variant of variantRows) {
+      files.push({
+        name: variant.filename,
+        channel: variant.channelSpecId.split(".")[0],
+        specId: variant.channelSpecId,
+        kind: "image",
+        bytes: variant.bytes,
+        url: canSign ? await presignDownload(variant.r2Key) : null,
+      });
+    }
+    for (const pack of packRows) {
+      files.push({
+        name: pack.filename,
+        channel: pack.channel,
+        specId: null,
+        kind: pack.kind === "report" ? "report" : "zip",
+        bytes: pack.bytes,
+        url: canSign ? await presignDownload(pack.r2Key) : null,
+      });
+    }
+    return {
+      jobId: job.id,
+      status: job.status as JobStatus,
+      files,
+      notice:
+        files.length === 0 && job.status === "done"
+          ? "This pack finished but no files were stored. Configure R2 so delivered files persist."
+          : !canSign && files.length > 0
+            ? "Files exist but R2 is not configured on this server, so download links are unavailable."
+            : undefined,
+    };
   }
 
   async getBrandKit(workspaceId: string): Promise<BrandKitView> {

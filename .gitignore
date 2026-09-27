@@ -13,3 +13,4 @@ test-results/
 .env.*.local
 eval/output/
 compass_artifact_*.md
+.claude/worktrees/

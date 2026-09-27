@@ -27,12 +27,13 @@ let wsB: string;
 let productA: string;
 let jobA: string;
 
+// PGlite returns numeric as text, so coerce before comparing.
 async function balanceAsSuperuser(workspaceId: string): Promise<number> {
-  const result = await client.query<{ credit_balance: number }>(
+  const result = await client.query<{ credit_balance: string | number }>(
     "select credit_balance($1)",
     [workspaceId],
   );
-  return result.rows[0].credit_balance;
+  return Number(result.rows[0].credit_balance);
 }
 
 beforeAll(async () => {
@@ -136,11 +137,11 @@ describe("finding 2: ledger functions executable by anyone", () => {
 
   it("still allows the service role to execute the ledger functions", async () => {
     await actAsServiceRole(client);
-    const result = await client.query<{ credit_balance: number }>(
+    const result = await client.query<{ credit_balance: string | number }>(
       "select credit_balance($1)",
       [wsA],
     );
-    expect(result.rows[0].credit_balance).toBe(100);
+    expect(Number(result.rows[0].credit_balance)).toBe(100);
   });
 });
 
@@ -363,24 +364,24 @@ describe("finding 7: charge_credits idempotency", () => {
   });
 
   it("charges once for a retried charge with the same step key", async () => {
-    const first = await client.query<{ charge_credits: number }>(
+    const first = await client.query<{ charge_credits: string | number }>(
       "select charge_credits($1, 40, $2, $3)",
       [wsA, jobB, "asset-1"],
     );
-    expect(first.rows[0].charge_credits).toBe(20);
+    expect(Number(first.rows[0].charge_credits)).toBe(20);
 
-    const retry = await client.query<{ charge_credits: number }>(
+    const retry = await client.query<{ charge_credits: string | number }>(
       "select charge_credits($1, 40, $2, $3)",
       [wsA, jobB, "asset-1"],
     );
     // The retry is a no-op and reports the unchanged held amount.
-    expect(retry.rows[0].charge_credits).toBe(20);
+    expect(Number(retry.rows[0].charge_credits)).toBe(20);
 
-    const charged = await client.query<{ credits_charged: number }>(
+    const charged = await client.query<{ credits_charged: string | number }>(
       "select credits_charged from generation_jobs where id = $1",
       [jobB],
     );
-    expect(charged.rows[0].credits_charged).toBe(40);
+    expect(Number(charged.rows[0].credits_charged)).toBe(40);
 
     const chargeRows = await client.query<{ count: number }>(
       "select count(*)::int as count from credit_ledger where job_id = $1 and reason = 'charge' and step_key = 'asset-1'",
@@ -391,16 +392,16 @@ describe("finding 7: charge_credits idempotency", () => {
   });
 
   it("keeps the legacy 3-argument call working without an idempotency key", async () => {
-    const result = await client.query<{ charge_credits: number }>(
+    const result = await client.query<{ charge_credits: string | number }>(
       "select charge_credits($1, 10, $2)",
       [wsA, jobB],
     );
-    expect(result.rows[0].charge_credits).toBe(10);
-    const charged = await client.query<{ credits_charged: number }>(
+    expect(Number(result.rows[0].charge_credits)).toBe(10);
+    const charged = await client.query<{ credits_charged: string | number }>(
       "select credits_charged from generation_jobs where id = $1",
       [jobB],
     );
-    expect(charged.rows[0].credits_charged).toBe(50);
+    expect(Number(charged.rows[0].credits_charged)).toBe(50);
   });
 
   it("backs the idempotency up with a partial unique index against direct writes", async () => {

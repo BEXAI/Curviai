@@ -23,11 +23,16 @@ export type ShotStatus = "pending" | "generating" | "qc" | "done" | "failed";
 
 export type PackMode = "listing" | "concept";
 
+export type WorkspaceRole = "owner" | "admin" | "editor" | "client";
+
 export interface WorkspaceSummary {
   id: string;
   name: string;
   plan: string;
   creditBalance: number;
+  /** The signed in member's role. The client role reads assets but cannot
+   * generate or bill (plan 4.3). */
+  role: WorkspaceRole;
 }
 
 export interface ProductSummary {
@@ -109,7 +114,45 @@ export type CreateJobResult =
   | { outcome: "created"; job: JobView }
   | { outcome: "replayed"; job: JobView }
   | { outcome: "conflict"; existingJobId: string }
-  | { outcome: "rejected"; reason: "unknown_product" | "insufficient_credits"; message: string };
+  | {
+      outcome: "rejected";
+      reason: "unknown_product" | "insufficient_credits" | "role_forbidden" | "needs_photo";
+      message: string;
+    };
+
+export interface CreateProductInput {
+  title: string;
+  mode: PackMode;
+}
+
+export interface RegisterSourceMediaInput {
+  productId: string;
+  r2Key: string;
+  kind: "image" | "video";
+  bytes: number;
+  sha256: string;
+  width?: number;
+  height?: number;
+}
+
+export interface JobFileView {
+  name: string;
+  /** Channel family, e.g. "amazon"; null for the pack level report. */
+  channel: string | null;
+  specId: string | null;
+  kind: "image" | "zip" | "report";
+  bytes: number | null;
+  /** Signed download url, valid for 15 minutes; null when files are not
+   * stored (demo mode or R2 unset). */
+  url: string | null;
+}
+
+export interface JobFilesView {
+  jobId: string;
+  status: JobStatus;
+  files: JobFileView[];
+  notice?: string;
+}
 
 export interface SaveResult {
   ok: boolean;
@@ -126,6 +169,11 @@ export interface Services {
   /** Reading a job advances the demo simulation by one tick. */
   getJob(workspaceId: string, jobId: string): Promise<JobView | null>;
   createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult>;
+  /** Delivered files for a finished job, with signed download urls. */
+  listJobFiles(workspaceId: string, jobId: string): Promise<JobFilesView | null>;
+  createProduct(workspaceId: string, input: CreateProductInput): Promise<ProductSummary | null>;
+  /** Records an uploaded source file against a product after the R2 PUT. */
+  registerSourceMedia(workspaceId: string, input: RegisterSourceMediaInput): Promise<SaveResult>;
   getBrandKit(workspaceId: string): Promise<BrandKitView>;
   saveBrandKit(workspaceId: string, kit: BrandKitView): Promise<SaveResult>;
   listMembers(workspaceId: string): Promise<MemberView[]>;

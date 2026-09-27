@@ -36,11 +36,15 @@ export interface BillingStore {
   /** Writes the grant unless eventId was already processed. Returns true when written. */
   recordGrantOnce(eventId: string, grant: CreditGrant): Promise<boolean>;
   upsertSubscription(update: SubscriptionUpdate): Promise<void>;
+  /** Stores the Stripe customer id on the workspace, so the customer portal
+   * and customer-id-only events resolve without a backfill. */
+  linkCustomer(workspaceId: string, stripeCustomerId: string): Promise<void>;
 }
 
 export class InMemoryBillingStore implements BillingStore {
   readonly grants: Array<{ eventId: string; grant: CreditGrant }> = [];
   readonly subscriptions = new Map<string, SubscriptionUpdate>();
+  readonly customerLinks = new Map<string, string>();
   private readonly processed = new Set<string>();
 
   async recordGrantOnce(eventId: string, grant: CreditGrant): Promise<boolean> {
@@ -54,6 +58,10 @@ export class InMemoryBillingStore implements BillingStore {
 
   async upsertSubscription(update: SubscriptionUpdate): Promise<void> {
     this.subscriptions.set(update.externalId, update);
+  }
+
+  async linkCustomer(workspaceId: string, stripeCustomerId: string): Promise<void> {
+    this.customerLinks.set(workspaceId, stripeCustomerId);
   }
 }
 
@@ -125,6 +133,14 @@ export async function processStripeEvent(
   switch (event.type) {
     case "checkout.session.completed": {
       const session = event.data.object;
+      // Write the customer id back to the workspace on every completed
+      // checkout, so the portal works without a backfill (audit follow up).
+      const checkoutWorkspaceId =
+        metadataValue(session.metadata, "workspaceId") ?? session.client_reference_id;
+      const checkoutCustomerId = customerIdOf(session.customer);
+      if (checkoutWorkspaceId && checkoutCustomerId) {
+        await store.linkCustomer(checkoutWorkspaceId, checkoutCustomerId);
+      }
       const priceId = metadataValue(session.metadata, "priceId");
       const mapping = priceId ? table[priceId] : undefined;
       if (session.mode === "payment" && mapping?.kind === "topup") {
