@@ -22,7 +22,7 @@ export function UploadBox() {
     <div
       className={cn(
         "rounded-xl border-2 border-dashed p-6 text-center transition-colors",
-        dragOver ? "border-accent-500 bg-accent-50" : "border-ink-200 bg-ink-50",
+        dragOver ? "border-accent-500 bg-accent-500/10" : "border-white/15 bg-white/5",
       )}
       onDragOver={(event) => {
         event.preventDefault();
@@ -35,8 +35,8 @@ export function UploadBox() {
         goToSignup();
       }}
     >
-      <p className="text-sm font-medium text-ink-900">Drop a product photo to see your pack</p>
-      <p className="mt-1 text-sm text-ink-500">One photo in. A full marketplace pack out.</p>
+      <p className="text-sm font-medium text-white">Drop a product photo to see your pack</p>
+      <p className="mt-1 text-sm text-ink-400">One photo in. A full marketplace pack out.</p>
       <div className="mt-4 flex flex-col items-center justify-center gap-3 sm:flex-row">
         <input
           ref={inputRef}

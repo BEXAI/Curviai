@@ -19,21 +19,21 @@ const resourceLinks = [
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-ink-100 bg-ink-50">
+    <footer className="border-t border-white/10 bg-night">
       <div className="mx-auto max-w-6xl px-6 py-12">
         <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
           <div>
-            <Wordmark />
-            <p className="mt-3 max-w-xs text-sm text-ink-500">
+            <Wordmark className="text-white" />
+            <p className="mt-3 max-w-xs text-sm text-ink-400">
               Studio product photos and videos for every marketplace, from one photo, without changing your product.
             </p>
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-ink-900">Product</h3>
+            <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink-300">Product</h3>
             <ul className="mt-3 space-y-2">
               {productLinks.map((link) => (
                 <li key={link.href}>
-                  <Link href={link.href} className="text-sm text-ink-600 hover:text-ink-950">
+                  <Link href={link.href} className="text-sm text-ink-400 transition-colors hover:text-white">
                     {link.label}
                   </Link>
                 </li>
@@ -41,11 +41,11 @@ export function SiteFooter() {
             </ul>
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-ink-900">Resources</h3>
+            <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink-300">Resources</h3>
             <ul className="mt-3 space-y-2">
               {resourceLinks.map((link) => (
                 <li key={link.href}>
-                  <Link href={link.href} className="text-sm text-ink-600 hover:text-ink-950">
+                  <Link href={link.href} className="text-sm text-ink-400 transition-colors hover:text-white">
                     {link.label}
                   </Link>
                 </li>
@@ -53,19 +53,19 @@ export function SiteFooter() {
             </ul>
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-ink-900">Legal</h3>
+            <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink-300">Legal</h3>
             <ul className="mt-3 space-y-2 text-sm text-ink-500">
               <li>Terms of service, published at launch</li>
               <li>Privacy policy, published at launch</li>
               <li>
-                <a href="mailto:hello@curvi.ai" className="text-ink-600 hover:text-ink-950">
+                <a href="mailto:hello@curvi.ai" className="text-ink-400 transition-colors hover:text-white">
                   hello@curvi.ai
                 </a>
               </li>
             </ul>
           </div>
         </div>
-        <p className="mt-10 text-xs text-ink-400">
+        <p className="mt-10 text-xs text-ink-500">
           Curvi is in early access. Copy on this site describes the product as designed. Channel rules are checked
           against official documentation and can change. Always confirm current marketplace policies before publishing.
         </p>

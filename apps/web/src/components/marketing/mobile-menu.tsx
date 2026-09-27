@@ -20,7 +20,7 @@ export function MobileMenu({ links }: { links: MobileMenuLink[] }) {
         aria-controls="mobile-menu"
         aria-label={open ? "Close menu" : "Open menu"}
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-ink-700 transition-colors hover:bg-ink-50"
+        className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-ink-300 transition-colors hover:bg-white/10 hover:text-white"
       >
         <svg viewBox="0 0 20 20" fill="none" className="size-5" aria-hidden="true">
           {open ? (
@@ -33,7 +33,7 @@ export function MobileMenu({ links }: { links: MobileMenuLink[] }) {
       <div
         id="mobile-menu"
         className={cn(
-          "absolute inset-x-0 top-16 border-b border-ink-950/10 bg-white shadow-raised",
+          "absolute inset-x-0 top-16 border-b border-white/10 bg-night/95 shadow-sheen backdrop-blur",
           open ? "block" : "hidden",
         )}
       >
@@ -43,7 +43,7 @@ export function MobileMenu({ links }: { links: MobileMenuLink[] }) {
               key={link.href}
               href={link.href}
               onClick={() => setOpen(false)}
-              className="block rounded-lg px-3 py-2 text-sm font-medium text-ink-700 transition-colors hover:bg-ink-50 hover:text-ink-950"
+              className="block rounded-lg px-3 py-2 text-sm font-medium text-ink-300 transition-colors hover:bg-white/10 hover:text-white"
             >
               {link.label}
             </Link>

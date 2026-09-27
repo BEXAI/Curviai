@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
+import { Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { ComplianceBadgeDemo } from "@/components/marketing/compliance-badge-demo";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
@@ -123,25 +123,25 @@ const faqs = [
 
 export default function HomePage() {
   return (
-    <div>
+    <div className="bg-night text-ink-100">
       <section className="relative overflow-hidden">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(60rem_32rem_at_70%_-20%,rgb(253_127_17/0.08),transparent)]"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(64rem_36rem_at_70%_-20%,rgb(253_127_17/0.16),transparent),radial-gradient(40rem_24rem_at_10%_110%,rgb(253_127_17/0.07),transparent)]"
         />
         <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-6 pb-20 pt-16 lg:grid-cols-2 lg:pt-24">
         <div className="animate-fade-in-up">
-          <Badge variant="outline" className="mb-5">
+          <p className="mb-5 font-mono text-xs font-semibold uppercase tracking-wider text-accent-400">
             Built for marketplace sellers
-          </Badge>
-          <h1 className="font-display text-4xl font-bold tracking-tight text-ink-950 sm:text-5xl">
-            Shot once. Ready everywhere.
+          </p>
+          <h1 className="font-display text-4xl font-bold uppercase leading-tight tracking-tight text-white sm:text-5xl">
+            Shot once. <span className="block text-accent-400">Ready everywhere.</span>
           </h1>
-          <p className="mt-4 text-lg text-ink-600">
+          <p className="mt-4 text-lg text-ink-300">
             Studio product photos and videos for every marketplace, from one photo, without changing
             your product.
           </p>
-          <p className="mt-3 text-base font-medium text-ink-800">
+          <p className="mt-3 text-base font-medium text-ink-200">
             The pack that passes Amazon, Google and Shopify the first time. We keep your real product
             pixels, so labels never warp.
           </p>
@@ -156,24 +156,24 @@ export default function HomePage() {
             beforeLabel="Your photo"
             afterLabel="Curvi output"
           />
-          <p className="mt-2 text-center text-xs text-ink-400">
+          <p className="mt-2 text-center font-mono text-xs text-ink-500">
             Drag the divider. Same bottle, same label, new everything else.
           </p>
         </div>
         </div>
       </section>
 
-      <section className="border-y border-ink-100 bg-ink-50">
+      <section className="border-y border-white/10 bg-white/[0.02]">
         <div className="mx-auto max-w-6xl px-6 py-16">
-          <h2 className="text-center font-display text-3xl font-bold tracking-tight text-ink-950">How it works</h2>
+          <h2 className="text-center font-display text-3xl font-bold uppercase tracking-tight text-white">How it works</h2>
           <div className="mt-10 grid gap-8 md:grid-cols-3">
             {steps.map((step, index) => (
-              <div key={step.title} className="rounded-xl bg-white p-6 shadow-sm">
-                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-accent-500 text-sm font-bold text-white">
+              <div key={step.title} className="rounded-xl bg-white/5 p-6 shadow-sheen ring-1 ring-inset ring-white/10">
+                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-accent-500/15 font-mono text-sm font-bold text-accent-400">
                   {index + 1}
                 </span>
-                <h3 className="mt-4 text-lg font-semibold text-ink-950">{step.title}</h3>
-                <p className="mt-2 text-sm text-ink-600">{step.body}</p>
+                <h3 className="mt-4 text-lg font-semibold text-white">{step.title}</h3>
+                <p className="mt-2 text-sm text-ink-300">{step.body}</p>
               </div>
             ))}
           </div>
@@ -181,37 +181,40 @@ export default function HomePage() {
       </section>
 
       <section className="mx-auto max-w-6xl px-6 py-16">
-        <h2 className="text-center font-display text-3xl font-bold tracking-tight text-ink-950">
+        <h2 className="text-center font-display text-3xl font-bold uppercase tracking-tight text-white">
           Everything a listing needs, nothing you have to prompt
         </h2>
-        <p className="mx-auto mt-3 max-w-2xl text-center text-ink-600">
+        <p className="mx-auto mt-3 max-w-2xl text-center text-ink-300">
           No prompts anywhere. Upload, review, publish.
         </p>
         <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {features.map((feature) => (
-            <Card key={feature.title} className="transition-shadow hover:shadow-raised">
+            <Card
+              key={feature.title}
+              className="border-white/10 bg-white/5 shadow-sheen transition-colors hover:bg-white/[0.08]"
+            >
               <CardHeader>
-                <span className="mb-1 inline-flex size-9 items-center justify-center rounded-lg bg-accent-500/10 text-accent-600">
+                <span className="mb-1 inline-flex size-9 items-center justify-center rounded-lg bg-accent-500/15 text-accent-400">
                   <svg viewBox="0 0 20 20" fill="none" className="size-5" aria-hidden="true">
                     {feature.icon}
                   </svg>
                 </span>
-                <CardTitle className="text-base">{feature.title}</CardTitle>
+                <CardTitle className="text-base text-white">{feature.title}</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-ink-600">{feature.body}</p>
+                <p className="text-sm text-ink-300">{feature.body}</p>
               </CardContent>
             </Card>
           ))}
         </div>
       </section>
 
-      <section className="border-y border-ink-100 bg-ink-50">
+      <section className="border-y border-white/10 bg-white/[0.02]">
         <div className="mx-auto max-w-6xl px-6 py-16">
-          <h2 className="text-center font-display text-3xl font-bold tracking-tight text-ink-950">
+          <h2 className="text-center font-display text-3xl font-bold uppercase tracking-tight text-white">
             Proof on every file, not promises
           </h2>
-          <p className="mx-auto mt-3 max-w-2xl text-center text-ink-600">
+          <p className="mx-auto mt-3 max-w-2xl text-center text-ink-300">
             When the badge turns green it is because the pixels were measured. Here is the report a
             main image ships with.
           </p>
@@ -222,8 +225,8 @@ export default function HomePage() {
       </section>
 
       <section className="mx-auto max-w-6xl px-6 py-16">
-        <h2 className="text-center font-display text-3xl font-bold tracking-tight text-ink-950">Simple credit pricing</h2>
-        <p className="mx-auto mt-3 max-w-2xl text-center text-ink-600">
+        <h2 className="text-center font-display text-3xl font-bold uppercase tracking-tight text-white">Simple credit pricing</h2>
+        <p className="mx-auto mt-3 max-w-2xl text-center text-ink-300">
           Plans from $29 to $349 per month. A typical full pack uses about 40 to 60 credits.
         </p>
         <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -233,27 +236,33 @@ export default function HomePage() {
             { name: "Pro", price: "$149", credits: "1,300 credits" },
             { name: "Agency", price: "$349", credits: "3,500 credits" },
           ].map((tier) => (
-            <div key={tier.name} className="rounded-xl border border-ink-100 p-6 text-center">
-              <p className="text-sm font-semibold text-ink-500">{tier.name}</p>
-              <p className="mt-2 text-3xl font-bold text-ink-950">{tier.price}</p>
-              <p className="mt-1 text-sm text-ink-600">{tier.credits} per month</p>
+            <div
+              key={tier.name}
+              className="rounded-xl bg-white/5 p-6 text-center shadow-sheen ring-1 ring-inset ring-white/10"
+            >
+              <p className="font-mono text-xs font-semibold uppercase tracking-wider text-ink-400">{tier.name}</p>
+              <p className="mt-2 text-3xl font-bold text-white">{tier.price}</p>
+              <p className="mt-1 text-sm text-ink-300">{tier.credits} per month</p>
             </div>
           ))}
         </div>
         <div className="mt-8 text-center">
-          <Link href="/pricing" className={buttonVariants({ size: "lg" })}>
+          <Link href="/pricing" className={buttonVariants({ variant: "secondary", size: "lg" })}>
             See full pricing
           </Link>
         </div>
       </section>
 
-      <section className="border-t border-ink-100">
+      <section className="border-t border-white/10">
         <div className="mx-auto max-w-3xl px-6 py-16">
-          <h2 className="text-center font-display text-3xl font-bold tracking-tight text-ink-950">Questions, answered</h2>
+          <h2 className="text-center font-display text-3xl font-bold uppercase tracking-tight text-white">Questions, answered</h2>
           <div className="mt-8 space-y-3">
             {faqs.map((faq) => (
-              <details key={faq.q} className="group rounded-xl border border-ink-100 bg-white p-5 open:shadow-sm">
-                <summary className="cursor-pointer list-none text-sm font-semibold text-ink-900 marker:content-none">
+              <details
+                key={faq.q}
+                className="group rounded-xl bg-white/5 p-5 ring-1 ring-inset ring-white/10 open:shadow-sheen"
+              >
+                <summary className="cursor-pointer list-none text-sm font-semibold text-white marker:content-none">
                   <span className="flex items-center justify-between gap-4">
                     {faq.q}
                     <svg
@@ -266,16 +275,20 @@ export default function HomePage() {
                     </svg>
                   </span>
                 </summary>
-                <p className="mt-3 text-sm text-ink-600">{faq.a}</p>
+                <p className="mt-3 text-sm text-ink-300">{faq.a}</p>
               </details>
             ))}
           </div>
         </div>
       </section>
 
-      <section className="bg-ink-950">
-        <div className="mx-auto max-w-3xl px-6 py-16 text-center">
-          <h2 className="font-display text-3xl font-bold tracking-tight text-white">
+      <section className="relative overflow-hidden border-t border-white/10">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(48rem_24rem_at_50%_120%,rgb(253_127_17/0.14),transparent)]"
+        />
+        <div className="relative mx-auto max-w-3xl px-6 py-16 text-center">
+          <h2 className="font-display text-3xl font-bold uppercase tracking-tight text-white">
             Your next pack is one photo away
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-ink-300">

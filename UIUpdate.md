@@ -72,6 +72,16 @@ Keep the existing identity (light theme, ink neutrals, orange accent) and upgrad
 - pnpm lint, pnpm typecheck, pnpm test, pnpm e2e per repo rule 6.
 - Visual pass on the deployed Render URL after merge.
 
+### Phase 6: dark cinematic marketing pass (added after review)
+The first pass kept the light theme and read as too conservative. This phase moves the marketing surface to the Higgsfield direction while keeping the Curvi orange as the single electric accent:
+- A near black, blue tinted canvas (night #0b0d14) for the homepage, header and footer.
+- Elevation by inner light: glass cards (white at 5 percent) with hairline white alpha rings and an inset top sheen instead of drop shadows.
+- Uppercase Space Grotesk display headlines with tight tracking; the second headline phrase carries the accent color.
+- Small monospace uppercase eyebrow labels for sections, echoing the channel spec domain.
+- Accent used only through its alpha ramp for chips, icon tiles and hovers.
+- The compliance report demo stays a white card on the dark canvas, a deliberate paper on table contrast.
+- Interior marketing pages keep light bodies under the dark header and footer for now; the app stays light. A full dark pass on those surfaces is the next step if this direction is approved.
+
 ## 4. Explicitly out of scope for this pass
 - Dark mode (needs a semantic token layer first; the alpha border work in Phase 1 is the prerequisite).
 - Real photography or replacing the procedural SVG demo imagery.
