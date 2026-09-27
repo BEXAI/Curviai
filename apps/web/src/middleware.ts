@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { optionalEnv } from "@/lib/env";
 
 /**
  * Refreshes the Supabase session and guards /app routes. When Supabase is not
@@ -7,8 +8,8 @@ import { NextResponse, type NextRequest } from "next/server";
  * keep working.
  */
 export async function middleware(request: NextRequest) {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const url = optionalEnv("NEXT_PUBLIC_SUPABASE_URL");
+  const anonKey = optionalEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
   if (!url || !anonKey) {
     return NextResponse.next();
   }

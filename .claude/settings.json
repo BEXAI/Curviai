@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && jq -r '.tool_input.file_path // empty' | { read f; case \"$f\" in *.ts|*.tsx|*.mjs) pnpm exec eslint --fix \"$f\" >/dev/null 2>&1 || true ;; esac; }"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && pnpm typecheck >/dev/null 2>&1 || echo 'typecheck failing: run pnpm typecheck'"
+          }
+        ]
+      }
+    ]
+  }
+}

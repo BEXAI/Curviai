@@ -1,10 +1,13 @@
 /**
- * Adapters are exercised for construction, key resolution and supports()
- * only; endpoint shapes are verified at first live call as noted in each
- * adapter's docstring. No network calls happen here.
+ * Adapters are exercised for construction, key resolution, supports() and
+ * the pure estimateCostMicros math; endpoint shapes are verified at first
+ * live call as noted in each adapter's docstring. No network calls happen
+ * here.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CostAwareProvider } from "../router";
+import type { ProviderRequest } from "../types";
 import { AnthropicLLMProvider, ANTHROPIC_API_KEY_ENV } from "./anthropicLLM";
 import { BflFluxProvider } from "./bflFlux";
 import { FalGatewayProvider } from "./falGateway";
@@ -119,5 +122,115 @@ describe("adapter construction and supports", () => {
     });
     expect(provider.kind).toBe("video");
     expect(provider.supports("video_i2v")).toBe(true);
+  });
+});
+
+describe("estimateCostMicros", () => {
+  it("every adapter exposes estimateCostMicros returning a positive number for a representative request", async () => {
+    // Regression for the silent cost cap bypass: the router's maxCostMicros
+    // guard only works when adapters can estimate, so every adapter must.
+    const cases: Array<{ provider: CostAwareProvider; req: ProviderRequest }> = [
+      {
+        provider: new AnthropicLLMProvider({
+          name: "claude-analyzer",
+          tasks: ["analyze_product"],
+          apiKey: "test-key",
+          model: "injected-model-id",
+          priceTable: { inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000 },
+        }),
+        req: {
+          task: "analyze_product",
+          input: { messages: [{ role: "user", content: "describe this ceramic mug" }], maxTokens: 1024 },
+        },
+      },
+      {
+        provider: new GeminiImageProvider({
+          name: "nano-banana-2",
+          tasks: ["generate_image"],
+          apiKey: "test-key",
+          model: "injected-model-id",
+          priceTable: price,
+        }),
+        req: { task: "generate_image", input: { prompt: "a mug on a table" } },
+      },
+      {
+        provider: new BflFluxProvider({
+          name: "flux2-pro",
+          tasks: ["scene_plate"],
+          apiKey: "test-key",
+          model: "injected-model-path",
+          priceTable: price,
+        }),
+        req: { task: "scene_plate", input: { prompt: "a kitchen counter" } },
+      },
+      {
+        provider: new OpenaiImageProvider({
+          name: "openai-image",
+          tasks: ["generate_image"],
+          apiKey: "test-key",
+          model: "injected-model-id",
+          priceTable: price,
+        }),
+        req: { task: "generate_image", input: { prompt: "a mug on a table" } },
+      },
+      {
+        provider: new PhotoroomCutoutProvider({
+          name: "photoroom",
+          tasks: ["remove_background"],
+          apiKey: "test-key",
+          priceTable: flat,
+        }),
+        req: { task: "remove_background", input: { imageBytes: new Uint8Array([1, 2, 3]) } },
+      },
+      {
+        provider: new FalGatewayProvider({
+          name: "fal-video",
+          tasks: ["video_i2v"],
+          apiKey: "test-key",
+          modelId: "injected/model-path",
+          kind: "video",
+          priceTable: flat,
+        }),
+        req: { task: "video_i2v", input: { image_url: "https://example.test/in.png" } },
+      },
+    ];
+
+    for (const { provider, req } of cases) {
+      expect(typeof provider.estimateCostMicros).toBe("function");
+      const estimate = await provider.estimateCostMicros?.(req);
+      expect(estimate).toBeDefined();
+      expect(estimate).toBeGreaterThan(0);
+      expect(Number.isFinite(estimate)).toBe(true);
+    }
+  });
+
+  it("scales the OpenAI image estimate with the requested image count", () => {
+    const provider = new OpenaiImageProvider({
+      name: "openai-image",
+      tasks: ["generate_image"],
+      apiKey: "test-key",
+      model: "injected-model-id",
+      priceTable: price,
+    });
+    const one = provider.estimateCostMicros({ task: "generate_image", input: { prompt: "mug" } });
+    const three = provider.estimateCostMicros({ task: "generate_image", input: { prompt: "mug", n: 3 } });
+    expect(one).toBe(price.perImageMicros);
+    expect(three).toBe(price.perImageMicros * 3);
+  });
+
+  it("bounds the Anthropic estimate by the output token budget", () => {
+    const provider = new AnthropicLLMProvider({
+      name: "claude-analyzer",
+      tasks: ["analyze_product"],
+      apiKey: "test-key",
+      model: "injected-model-id",
+      priceTable: { inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000 },
+    });
+    const req: ProviderRequest = {
+      task: "analyze_product",
+      input: { messages: [{ role: "user", content: "hi" }], maxTokens: 1000 },
+    };
+    // At least the full output budget priced at the output rate.
+    expect(provider.estimateCostMicros(req)).toBeGreaterThanOrEqual(15_000);
   });
 });

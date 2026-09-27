@@ -1,6 +1,6 @@
 # Phases 4 and 5: Pipeline core and generative stills
 
-Status: in progress
+Status: complete (2026-09-27). 90 tests green; eval harness 10 of 10 golden mains pass; fidelity lock proven byte identical under a corrupting mock provider.
 Date started: 2026-09-27
 
 ## Plan

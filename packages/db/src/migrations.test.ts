@@ -31,10 +31,6 @@ const EXPECTED_TABLES = [
   "churn_scores",
 ];
 
-const TENANT_TABLES = EXPECTED_TABLES.filter(
-  (t) => t !== "channel_specs" && t !== "recipes",
-);
-
 const USER_A = "00000000-0000-4000-8000-00000000000a";
 const USER_B = "00000000-0000-4000-8000-00000000000b";
 const USER_CLIENT = "00000000-0000-4000-8000-00000000000c";
@@ -96,17 +92,15 @@ describe("migrations", () => {
     }
   });
 
-  it("enable row level security on every tenant table", async () => {
+  it("enable row level security on every table including recipes and channel_specs", async () => {
     const result = await client.query<{ relname: string; relrowsecurity: boolean }>(
       `select relname, relrowsecurity from pg_class
        where relkind = 'r' and relnamespace = 'public'::regnamespace`,
     );
     const rls = new Map(result.rows.map((r) => [r.relname, r.relrowsecurity]));
-    for (const table of TENANT_TABLES) {
+    for (const table of EXPECTED_TABLES) {
       expect(rls.get(table), `${table} should have RLS enabled`).toBe(true);
     }
-    expect(rls.get("channel_specs")).toBe(false);
-    expect(rls.get("recipes")).toBe(false);
   });
 
   it("enforce the one active subscription per workspace constraint", async () => {

@@ -216,7 +216,8 @@ function normalizeFormat(format: string): string {
 
 /**
  * Pluggable OCR check on the non product area. Real engine is a follow up;
- * the pipeline ships with the mock so the report shape is stable.
+ * a mock lives in src/qc/testing for tests and the eval harness, and is
+ * never a default in production code paths.
  */
 export interface OcrTextCheck {
   name: string;
@@ -228,30 +229,12 @@ export interface OcrTextCheck {
 
 /**
  * Pluggable product crop embedding similarity (DINOv2 or CLIP cosine).
- * Real model is a follow up; the mock keeps the interface honest.
+ * Real model is a follow up; the mock in src/qc/testing keeps the interface
+ * honest without ever being a production default.
  */
 export interface EmbeddingCosineCheck {
   name: string;
   cosine(original: RawImage, composed: RawImage, mask: RawMask): Promise<number>;
-}
-
-/** Mock OCR: sees no stray text and reports a perfect label match. */
-export class MockOcrTextCheck implements OcrTextCheck {
-  readonly name = "mock-ocr";
-  async nonProductText(_image: RawImage, _mask: RawMask): Promise<string> {
-    return "";
-  }
-  async labelMatch(_original: RawImage, _composed: RawImage, _mask: RawMask): Promise<number> {
-    return 1;
-  }
-}
-
-/** Mock embedding check: reports perfect similarity. */
-export class MockEmbeddingCosineCheck implements EmbeddingCosineCheck {
-  readonly name = "mock-embedding";
-  async cosine(_original: RawImage, _composed: RawImage, _mask: RawMask): Promise<number> {
-    return 1;
-  }
 }
 
 export interface SemanticCheckResult {
@@ -259,14 +242,20 @@ export interface SemanticCheckResult {
   pass: boolean;
 }
 
-/** Run the pluggable OCR and embedding checks against the section 5.6 thresholds. */
+/**
+ * Run the pluggable OCR and embedding checks against the section 5.6
+ * thresholds. Both engines are REQUIRED: there are no mock defaults, so a
+ * caller cannot silently pass the label and embedding gates by omitting the
+ * arguments. Tests and the eval harness may opt in to the mocks explicitly
+ * via src/qc/testing.
+ */
 export async function semanticChecks(
   original: RawImage,
   composed: RawImage,
   mask: RawMask,
   kind: QcKind,
-  ocr: OcrTextCheck = new MockOcrTextCheck(),
-  embedding: EmbeddingCosineCheck = new MockEmbeddingCosineCheck(),
+  ocr: OcrTextCheck,
+  embedding: EmbeddingCosineCheck,
 ): Promise<SemanticCheckResult> {
   const checks: CheckItem[] = [];
   if (kind === "main") {

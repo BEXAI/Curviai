@@ -1,6 +1,6 @@
 # Phase 0: Verify and scaffold
 
-Status: in progress
+Status: complete (2026-09-27). All acceptance criteria met: lint, typecheck, specs tests green, CI live, verification doc written.
 Date started: 2026-09-27
 
 ## Goal

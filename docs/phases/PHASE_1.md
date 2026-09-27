@@ -1,6 +1,6 @@
 # Phase 1: Data and auth
 
-Status: in progress
+Status: complete (2026-09-27). 24 PGlite tests green including cross workspace RLS isolation under a non superuser role and ledger math.
 Date started: 2026-09-27
 
 ## Plan

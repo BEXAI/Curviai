@@ -9,8 +9,9 @@
  * supports() only.
  */
 
+import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
-import type { Provider, ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const PHOTOROOM_API_KEY_ENV = "PHOTOROOM_API_KEY";
@@ -31,7 +32,7 @@ export interface PhotoroomCutoutOutput {
   contentType: string;
 }
 
-export class PhotoroomCutoutProvider implements Provider {
+export class PhotoroomCutoutProvider implements CostAwareProvider {
   readonly name: string;
   readonly kind: ProviderKind = "cutout";
 
@@ -52,6 +53,14 @@ export class PhotoroomCutoutProvider implements Provider {
 
   supports(task: string): boolean {
     return this.tasks.includes(task);
+  }
+
+  /**
+   * Exact: Photoroom bills a flat injected price per segment call, which is
+   * exactly what invoke meters on success.
+   */
+  estimateCostMicros(): number {
+    return this.priceTable.perCallMicros;
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {

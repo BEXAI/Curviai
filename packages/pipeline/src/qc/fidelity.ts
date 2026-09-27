@@ -5,14 +5,46 @@
  * never regenerated for Listing Mode outputs.
  */
 import { ciede2000, rgbToLab } from "../color";
+import { PASTE_ERODE_PX, PASTE_FEATHER_PX } from "../composite/index";
 import { erode } from "../mask";
 import type { RawImage, RawMask } from "../raw";
 import { QC_THRESHOLDS, type QcKind } from "./pixelChecks";
 
+/**
+ * Default single pixel CIEDE2000 ceiling inside the QC region. A tiny mean
+ * over a large region must not hide extreme local drift (a leaked band of
+ * regenerated pixels).
+ */
+export const DEFAULT_MAX_DELTA_E_LIMIT = 10;
+
+/**
+ * The QC check region must sit STRICTLY inside the pure paste region of the
+ * composite. Paste back uses erode P plus feather F, and the feather ramps
+ * outward from the eroded boundary, so QC must erode by at least
+ * P + ceil(F) + 1 to stay clear of any blended pixel. This is the derived
+ * default erosion for fidelityReport; callers that pasted with other
+ * parameters (or with an adaptively clamped radius, see
+ * CompositeResult.effectivePasteErodePx) derive their own value here.
+ */
+export function deriveQcErodePx(
+  pasteErodePx: number = PASTE_ERODE_PX,
+  pasteFeatherPx: number = PASTE_FEATHER_PX,
+): number {
+  return Math.max(0, Math.floor(pasteErodePx)) + Math.ceil(Math.max(0, pasteFeatherPx)) + 1;
+}
+
+export type FidelityIssue =
+  | "input_mask_empty"
+  | "eroded_mask_empty"
+  | "mean_delta_e_exceeded"
+  | "max_delta_e_exceeded";
+
 export interface FidelityReport {
   /** Pixels compared, after erosion. */
   maskArea: number;
-  /** Share of compared pixels whose RGB bytes match exactly. */
+  /** Nonzero pixels in the input mask, before erosion. */
+  inputMaskArea: number;
+  /** Share of compared pixels whose RGB bytes match exactly. 0 when nothing was compared. */
   exactByteShare: number;
   /** Mean CIEDE2000 over the compared pixels. */
   meanDeltaE: number;
@@ -21,14 +53,23 @@ export interface FidelityReport {
   erodePx: number;
   kind: QcKind;
   threshold: number;
+  /** Single pixel CIEDE2000 ceiling enforced inside the QC region. */
+  maxDeltaELimit: number;
+  /** Empty when the report passes. */
+  issues: FidelityIssue[];
   pass: boolean;
 }
 
 export interface FidelityOptions {
-  /** How far to shrink the mask before comparing. Default 3. */
+  /**
+   * How far to shrink the mask before comparing. Default deriveQcErodePx(),
+   * strictly inside the composite paste region at its default parameters.
+   */
   erodePx?: number;
   /** Which threshold row applies: main 3.0, others 5.0. Default main. */
   kind?: QcKind;
+  /** Single pixel CIEDE2000 ceiling. Default DEFAULT_MAX_DELTA_E_LIMIT. */
+  maxDeltaELimit?: number;
 }
 
 export async function fidelityReport(
@@ -46,9 +87,18 @@ export async function fidelityReport(
     throw new Error("Mask dimensions must match the images");
   }
 
-  const erodePx = opts.erodePx ?? 3;
+  const erodePx = opts.erodePx ?? deriveQcErodePx();
   const kind = opts.kind ?? "main";
+  const maxDeltaELimit = opts.maxDeltaELimit ?? DEFAULT_MAX_DELTA_E_LIMIT;
   const eroded = await erode(mask, erodePx);
+
+  // Same binary convention as erode(): values at or above 128 are product.
+  let inputMaskArea = 0;
+  for (let i = 0; i < mask.data.length; i++) {
+    if (mask.data[i] >= 128) {
+      inputMaskArea++;
+    }
+  }
 
   let area = 0;
   let exact = 0;
@@ -79,14 +129,35 @@ export async function fidelityReport(
 
   const meanDeltaE = area === 0 ? 0 : sumDeltaE / area;
   const threshold = QC_THRESHOLDS[kind].maxMeanDeltaE;
+
+  // A vacuous comparison must never pass: an empty QC region proves nothing
+  // about product fidelity, so it fails with an explicit issue instead of
+  // reporting perfect scores.
+  const issues: FidelityIssue[] = [];
+  if (inputMaskArea === 0) {
+    issues.push("input_mask_empty");
+  } else if (area === 0) {
+    issues.push("eroded_mask_empty");
+  } else {
+    if (meanDeltaE > threshold) {
+      issues.push("mean_delta_e_exceeded");
+    }
+    if (maxDeltaE > maxDeltaELimit) {
+      issues.push("max_delta_e_exceeded");
+    }
+  }
+
   return {
     maskArea: area,
-    exactByteShare: area === 0 ? 1 : exact / area,
+    inputMaskArea,
+    exactByteShare: area === 0 ? 0 : exact / area,
     meanDeltaE,
     maxDeltaE,
     erodePx,
     kind,
     threshold,
-    pass: meanDeltaE <= threshold,
+    maxDeltaELimit,
+    issues,
+    pass: issues.length === 0,
   };
 }

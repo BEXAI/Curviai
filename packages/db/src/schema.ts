@@ -264,12 +264,17 @@ export const creditLedger = pgTable(
     reason: text("reason").$type<LedgerReason>().notNull(),
     source: text("source").$type<LedgerSource>(),
     jobId: uuid("job_id").references(() => generationJobs.id),
+    // Idempotency key for charges: at most one charge row per (job, step).
+    stepKey: text("step_key"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("credit_ledger_workspace_id_idx").on(t.workspaceId),
     index("credit_ledger_job_id_idx").on(t.jobId),
+    uniqueIndex("credit_ledger_job_step_charge_uq")
+      .on(t.jobId, t.stepKey)
+      .where(sql`reason = 'charge' and step_key is not null`),
   ],
 );
 
@@ -342,6 +347,8 @@ export const galleryItems = pgTable(
       .references(() => workspaces.id, { onDelete: "cascade" }),
     shareSlug: text("share_slug").references(() => shareLinks.slug, { onDelete: "set null" }),
     category: text("category"),
+    // Anonymous visitors only ever see rows explicitly published to the gallery.
+    published: boolean("published").notNull().default(false),
     consentAt: timestamp("consent_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

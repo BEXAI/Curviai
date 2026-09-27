@@ -10,8 +10,9 @@
  * only.
  */
 
+import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
-import type { Provider, ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { requestJson, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
@@ -39,7 +40,7 @@ interface GenerationsResponse {
   data?: Array<{ b64_json?: string; url?: string }>;
 }
 
-export class OpenaiImageProvider implements Provider {
+export class OpenaiImageProvider implements CostAwareProvider {
   readonly name: string;
   readonly kind: ProviderKind = "image";
 
@@ -62,6 +63,16 @@ export class OpenaiImageProvider implements Provider {
 
   supports(task: string): boolean {
     return this.tasks.includes(task);
+  }
+
+  /**
+   * Upper bound from the request parameters: the number of requested images
+   * (input.n, default 1) times the injected per image price. Invoke meters
+   * perImageMicros times the returned image count, which never exceeds n.
+   */
+  estimateCostMicros(req: ProviderRequest): number {
+    const input = req.input as unknown as OpenaiImageInput;
+    return this.priceTable.perImageMicros * Math.max(1, input.n ?? 1);
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {

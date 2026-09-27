@@ -1,6 +1,6 @@
 # Phase 2: Uploads and storage
 
-Status: planned, lands with wave 2
+Status: complete (2026-09-27). Presign route with validation caps and magic byte checks shipped; ingest revalidation noted as a follow up on the presign limitation.
 Date started: 2026-09-27
 
 ## Plan

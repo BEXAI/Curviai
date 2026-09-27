@@ -10,8 +10,9 @@
  * https://docs.bfl.ai. Unit tests cover construction and supports() only.
  */
 
+import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
-import type { Provider, ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { requestJson, resolveApiKey, signalOf, sleepMs, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const BFL_API_KEY_ENV = "BFL_API_KEY";
@@ -50,7 +51,7 @@ interface PollResponse {
   result?: { sample?: string };
 }
 
-export class BflFluxProvider implements Provider {
+export class BflFluxProvider implements CostAwareProvider {
   readonly name: string;
   readonly kind: ProviderKind = "image";
 
@@ -77,6 +78,15 @@ export class BflFluxProvider implements Provider {
 
   supports(task: string): boolean {
     return this.tasks.includes(task);
+  }
+
+  /**
+   * Exact bound: each BFL create call yields at most one image, billed at
+   * the injected per image price, which is exactly what invoke meters on
+   * success.
+   */
+  estimateCostMicros(): number {
+    return this.priceTable.perImageMicros;
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {

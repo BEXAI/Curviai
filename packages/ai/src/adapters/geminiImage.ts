@@ -11,8 +11,9 @@
  * construction and supports() only.
  */
 
+import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
-import type { Provider, ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { requestJson, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const GEMINI_API_KEY_ENV = "GEMINI_API_KEY";
@@ -40,7 +41,7 @@ interface GenerateContentResponse {
   }>;
 }
 
-export class GeminiImageProvider implements Provider {
+export class GeminiImageProvider implements CostAwareProvider {
   readonly name: string;
   readonly kind: ProviderKind = "image";
 
@@ -63,6 +64,17 @@ export class GeminiImageProvider implements Provider {
 
   supports(task: string): boolean {
     return this.tasks.includes(task);
+  }
+
+  /**
+   * Estimate: one output image at the injected per image price. Each
+   * generateContent call requests a single image generation; if a response
+   * ever carries more inline images the actual metered cost (perImageMicros
+   * times the returned image count) exceeds this estimate and the router's
+   * caps reconciliation charges the difference after the call.
+   */
+  estimateCostMicros(): number {
+    return this.priceTable.perImageMicros;
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {

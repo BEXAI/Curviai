@@ -15,6 +15,20 @@
       "when": 1790505652283,
       "tag": "0001_rls_and_functions",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790509065912,
+      "tag": "0002_security_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790512000000,
+      "tag": "0003_webhook_dedupe",
+      "breakpoints": true
     }
   ]
 }

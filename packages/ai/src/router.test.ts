@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryBreakerStore } from "./breaker";
+import { InMemoryCapStore, SpendCaps, type CapStore } from "./caps";
 import { InMemoryCostMeter } from "./meter";
 import { ProviderRegistry } from "./registry";
 import { backoffDelayMs, callWithFailover, DEFAULT_RETRY_OPTIONS, ProviderTimeoutError } from "./router";
@@ -265,5 +266,149 @@ describe("callWithFailover", () => {
 
   it("uses default retry options when none are given", () => {
     expect(DEFAULT_RETRY_OPTIONS.retries).toBe(2);
+  });
+
+  it("refuses a capped call on a provider without estimateCostMicros unless allowUnestimatedCost", async () => {
+    // Regression for the silent cost cap bypass: maxCostMicros used to be
+    // ignored whenever the provider had no estimateCostMicros.
+    const p1 = new MockProvider({ name: "p1", output: "one", costMicros: 10 });
+    const h = harness([p1]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      maxCostMicros: 500,
+    }).catch((e: AllProvidersFailedError) => e);
+    expect(err).toBeInstanceOf(AllProvidersFailedError);
+    const inner = (err as AllProvidersFailedError).errors[0];
+    expect(inner.message).toContain("estimateCostMicros");
+    expect(inner.retryable).toBe(false);
+    expect(p1.invocations).toBe(0);
+    expect(h.meter.entries).toHaveLength(0);
+
+    const allowed = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      maxCostMicros: 500,
+      allowUnestimatedCost: true,
+    });
+    expect(allowed.provider).toBe("p1");
+    expect(p1.invocations).toBe(1);
+  });
+
+  it("caps hook reserves the estimate before invoke and releases it when the provider fails", async () => {
+    const backing = new InMemoryCapStore();
+    const adds: number[] = [];
+    const recordingStore: CapStore = {
+      get: (key) => backing.get(key),
+      add: (key, delta) => {
+        adds.push(delta);
+        return backing.add(key, delta);
+      },
+    };
+    const spendCaps = new SpendCaps(recordingStore);
+    const p1 = new MockProvider({
+      name: "p1",
+      estimateMicros: 100,
+      failTimes: Infinity,
+      failWith: () => new ProviderError("boom", "p1", TASK, false),
+    });
+    const h = harness([p1]);
+
+    await expect(
+      callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+        sleep: h.sleep,
+        caps: { spendCaps, capKind: "pack" },
+      }),
+    ).rejects.toThrow(AllProvidersFailedError);
+    expect(p1.invocations).toBe(1);
+    // Reserved the 100 micro estimate before invoke, released it after failure.
+    expect(adds).toEqual([100, -100]);
+    expect(await backing.get("caps:pack:j1")).toBe(0);
+  });
+
+  it("caps hook reconciles the reservation to the actual cost on success", async () => {
+    const store = new InMemoryCapStore();
+    const spendCaps = new SpendCaps(store);
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 100, output: "one", costMicros: 60 });
+    const h = harness([p1]);
+
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      caps: { spendCaps, capKind: "pack" },
+    });
+    expect(result.costMicros).toBe(60);
+    expect(await store.get("caps:pack:j1")).toBe(60);
+  });
+
+  it("caps hook blocks the call before invoke when the reservation is over the cap", async () => {
+    const spendCaps = new SpendCaps(new InMemoryCapStore());
+    // The per pack cap is 8_000_000 micros; a 9_000_000 estimate must block.
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 9_000_000, output: "one" });
+    const h = harness([p1]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      caps: { spendCaps, capKind: "pack" },
+    }).catch((e: AllProvidersFailedError) => e);
+    expect(err).toBeInstanceOf(AllProvidersFailedError);
+    expect((err as AllProvidersFailedError).errors[0].message).toContain("Spend cap blocked");
+    expect(p1.invocations).toBe(0);
+  });
+
+  it("does not record breaker failures for non retryable 400 style errors", async () => {
+    // Regression for breaker pollution: one workspace's bad requests used to
+    // open the shared breaker for everyone.
+    const bad = new MockProvider({
+      name: "p1",
+      failTimes: Infinity,
+      failWith: () => new ProviderError("p1 responded 400: bad input", "p1", TASK, false),
+    });
+    const h = harness([bad]);
+    const opts = { sleep: h.sleep };
+
+    for (let i = 0; i < 7; i++) {
+      await expect(callWithFailover(h.registry, h.routing, h.meter, h.store, req(), opts)).rejects.toThrow(
+        AllProvidersFailedError,
+      );
+    }
+    // Seven failed calls, one attempt each: the provider keeps being invoked
+    // (breaker never opened) and no failure count was ever written.
+    expect(bad.invocations).toBe(7);
+    expect(await h.store.get("breaker:p1:failures")).toBeNull();
+    expect(await h.store.get("breaker:p1:open")).toBeNull();
+    // Non retryable errors still meter as failures.
+    expect(h.meter.entries).toHaveLength(7);
+    expect(h.meter.entries.every((e) => !e.ok)).toBe(true);
+  });
+
+  it("records breaker failures for retryable 500 style errors and opens at the threshold", async () => {
+    const down = new MockProvider({
+      name: "p1",
+      failTimes: Infinity,
+      failWith: () => new ProviderError("p1 responded 500: down", "p1", TASK, true),
+    });
+    const h = harness([down]);
+    const opts = { sleep: h.sleep };
+
+    await expect(callWithFailover(h.registry, h.routing, h.meter, h.store, req(), opts)).rejects.toThrow(
+      AllProvidersFailedError,
+    );
+    await expect(callWithFailover(h.registry, h.routing, h.meter, h.store, req(), opts)).rejects.toThrow(
+      AllProvidersFailedError,
+    );
+    // Two calls of three attempts each cross the threshold of five.
+    expect(down.invocations).toBe(6);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), opts).catch(
+      (e: AllProvidersFailedError) => e,
+    );
+    expect((err as AllProvidersFailedError).errors[0]).toBeInstanceOf(BreakerOpenError);
+    expect(down.invocations).toBe(6);
+
+    // The fake clock moves past openSeconds and the provider is tried again.
+    h.clock.ms += 121_000;
+    await expect(callWithFailover(h.registry, h.routing, h.meter, h.store, req(), opts)).rejects.toThrow(
+      AllProvidersFailedError,
+    );
+    expect(down.invocations).toBe(9);
   });
 });

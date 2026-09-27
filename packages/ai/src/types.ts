@@ -90,8 +90,19 @@ export interface RouteOptions {
   timeoutMs?: number;
   retry?: Partial<RetryOptions>;
   breaker?: Partial<BreakerOptions>;
-  /** Reject the call before invoking when the running cost would exceed this. */
+  /**
+   * Reject the call before invoking when the provider's estimated cost would
+   * exceed this. The guard fails closed: a provider that does not implement
+   * estimateCostMicros is rejected with a non retryable ProviderError rather
+   * than silently invoked uncapped, unless allowUnestimatedCost is true.
+   */
   maxCostMicros?: number;
+  /**
+   * Explicit opt out of the fail closed behavior above: lets a call with
+   * maxCostMicros or a caps hook proceed on a provider that cannot estimate
+   * its cost. Defaults to false (fail closed).
+   */
+  allowUnestimatedCost?: boolean;
 }
 
 export class ProviderError extends Error {

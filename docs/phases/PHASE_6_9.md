@@ -1,6 +1,6 @@
 # Phases 6 to 9: Video and packaging, billing and retention, integrations, launch
 
-Status: partially in scope of this build; the rest is sequenced work
+Status: core delivered (2026-09-27). Phase 6 video templates and packager shipped; Phase 7 ledger, webhooks, tiers, churn scorer and cancel save offers logic shipped (Stripe wiring needs keys); Phase 8 webhook stubs and publish conventions shipped (needs partner accounts); Phase 9 marketing site, free tools, SEO pages and share shell live in the build.
 Date started: 2026-09-27
 
 ## Phase 6: Video and packaging (this build ships the core)

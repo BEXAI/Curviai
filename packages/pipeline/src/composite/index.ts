@@ -28,6 +28,25 @@ export interface CompositeTemplate {
   };
 }
 
+/**
+ * Paste back constants. The QC fidelity check derives its default erosion
+ * from these (see src/qc/fidelity deriveQcErodePx): the QC region must sit
+ * strictly inside the pure paste region, so QC erode >= paste erode +
+ * ceil(paste feather) + 1.
+ */
+/** Default erosion applied to the paste back mask edge. */
+export const PASTE_ERODE_PX = 3;
+/** Default feather width at the paste back edge. */
+export const PASTE_FEATHER_PX = 3;
+/**
+ * Adaptive erosion floor: the eroded paste mask must keep at least this share
+ * of the original mask area, otherwise the radius is reduced (down to 0,
+ * meaning paste the full mask). Protects thin products (chains, cables,
+ * rings) whose mask a fixed erosion would annihilate, leaving the product
+ * entirely regenerated.
+ */
+export const MIN_PASTE_AREA_SHARE = 0.4;
+
 /** Payload contract for image providers used by this pipeline. */
 export interface ScenePlateInput {
   prompt: string;
@@ -60,9 +79,14 @@ export interface CompositeShotArgs {
   template: CompositeTemplate;
   /** Global color transform hook. Defaults to identity. */
   colorTransform?: GlobalColorTransform;
-  /** Erosion applied to the paste back mask edge. Default 3. */
+  /**
+   * Erosion applied to the paste back mask edge. Default PASTE_ERODE_PX.
+   * Clamped adaptively: the radius is reduced until the eroded mask keeps at
+   * least MIN_PASTE_AREA_SHARE of the mask area. The applied radius is
+   * reported as effectivePasteErodePx on the result.
+   */
   pasteErodePx?: number;
-  /** Feather width at the paste back edge. Default 3. */
+  /** Feather width at the paste back edge. Default PASTE_FEATHER_PX. */
   pasteFeatherPx?: number;
   workspaceId?: string;
   jobId?: string;
@@ -82,6 +106,14 @@ export interface CompositeResult {
    * the paste back.
    */
   productReference: RawImage;
+  /**
+   * Paste erosion radius actually applied after the adaptive clamp. Equals
+   * the requested pasteErodePx for chunky products; smaller (down to 0, full
+   * mask paste) for thin products whose mask the requested radius would
+   * annihilate. QC callers should erode by at least this value; the package
+   * default (deriveQcErodePx) covers the unclamped case.
+   */
+  effectivePasteErodePx: number;
   costMicros: number;
 }
 
@@ -93,8 +125,8 @@ export async function compositeShot(args: CompositeShotArgs): Promise<CompositeR
     shot,
     template,
     colorTransform = identityColorTransform,
-    pasteErodePx = 3,
-    pasteFeatherPx = 3,
+    pasteErodePx = PASTE_ERODE_PX,
+    pasteFeatherPx = PASTE_FEATHER_PX,
   } = args;
   if (productRgba.width !== mask.width || productRgba.height !== mask.height) {
     throw new Error("Product and mask dimensions must match");
@@ -204,8 +236,30 @@ export async function compositeShot(args: CompositeShotArgs): Promise<CompositeR
   // Step d: paste the original product pixels back inside the eroded mask
   // with a feathered edge, so nothing the model repainted survives inside the
   // product (CLAUDE.md rule 3).
-  const eroded = await erode(canvasMask, pasteErodePx);
-  const pasteAlpha = await feather(eroded, pasteFeatherPx);
+  //
+  // Adaptive clamp: a fixed erosion radius annihilates the mask of thin
+  // products (chains, cables, rings), after which nothing would be pasted
+  // back and the product in the output would be entirely regenerated pixels.
+  // Reduce the radius until the eroded mask keeps at least
+  // MIN_PASTE_AREA_SHARE of the mask area; the floor of 0 pastes the full
+  // mask.
+  const maskArea = countNonZero(canvasMask.data);
+  const minErodedArea = maskArea * MIN_PASTE_AREA_SHARE;
+  let effectivePasteErodePx = Math.max(0, Math.floor(pasteErodePx));
+  let eroded = await erode(canvasMask, effectivePasteErodePx);
+  while (effectivePasteErodePx > 0 && countNonZero(eroded.data) < minErodedArea) {
+    effectivePasteErodePx--;
+    eroded = await erode(canvasMask, effectivePasteErodePx);
+  }
+  // Feather must only soften the edge OUTWARD: every pixel of the eroded mask
+  // stays at exactly 255 so the pure paste region is byte identical, which is
+  // what fidelityReport asserts inside its (further eroded) QC region.
+  const feathered = await feather(eroded, pasteFeatherPx);
+  const pasteAlpha: RawMask = {
+    data: maxBuffers(feathered.data, eroded.data),
+    width: eroded.width,
+    height: eroded.height,
+  };
   const finalRaw = blendCanvas(harmonized, productReference, pasteAlpha);
 
   return {
@@ -213,8 +267,29 @@ export async function compositeShot(args: CompositeShotArgs): Promise<CompositeR
     finalRaw,
     canvasMask,
     productReference,
+    effectivePasteErodePx,
     costMicros,
   };
+}
+
+/** Count nonzero bytes in a binary mask buffer. */
+function countNonZero(data: Buffer): number {
+  let count = 0;
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] !== 0) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/** Elementwise max of two equal length buffers. */
+function maxBuffers(a: Buffer, b: Buffer): Buffer {
+  const out = Buffer.alloc(a.length);
+  for (let i = 0; i < a.length; i++) {
+    out[i] = a[i] > b[i] ? a[i] : b[i];
+  }
+  return out;
 }
 
 /** Blend a placed product patch onto a canvas using its scaled mask as alpha. */

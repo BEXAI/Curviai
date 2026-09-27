@@ -71,6 +71,13 @@ describe("channel spec registry", () => {
     expect(() => filenameFor(getSpec("amazon.main"), {})).toThrow("requires sku");
   });
 
+  it("sanitizes naming vars against path traversal and zip slip", () => {
+    expect(filenameFor(getSpec("amazon.main"), { sku: "../../evil" })).toBe("evil.MAIN.jpg");
+    expect(filenameFor(getSpec("amazon.main"), { sku: "AB C/12\\3" })).toBe("ABC123.MAIN.jpg");
+    expect(() => filenameFor(getSpec("amazon.main"), { sku: "../.." })).toThrow("empty after sanitization");
+    expect(filenameFor(getSpec("shopify.product"), { seoSlug: "walnut-desk", n: 1 })).toBe("walnut-desk-1.jpg");
+  });
+
   it("derives dimension bounds", () => {
     const bounds = dimensionBounds(getSpec("shopify.product"));
     expect(bounds.maxWidth).toBe(5000);

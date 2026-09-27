@@ -1,14 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { getSpec, type ChannelSpec } from "@curvi/specs";
 import { rawCanvas, rectMask, paintRect } from "../testutil";
-import {
-  MockEmbeddingCosineCheck,
-  MockOcrTextCheck,
-  QC_THRESHOLDS,
-  pixelChecks,
-  qcKindForSpec,
-  semanticChecks,
-} from "./pixelChecks";
+import { QC_THRESHOLDS, pixelChecks, qcKindForSpec, semanticChecks } from "./pixelChecks";
+import { MockEmbeddingCosineCheck, MockOcrTextCheck } from "./testing";
 
 const smallMainSpec: ChannelSpec = {
   id: "amazon.main",
@@ -128,16 +122,40 @@ describe("QC threshold table", () => {
 });
 
 describe("semanticChecks (pluggable OCR and embedding)", () => {
-  it("passes with the mock implementations and runs the stray text check on main", async () => {
+  it("passes with explicitly provided mock engines and runs the stray text check on main", async () => {
     const img = rawCanvas(64, 64, 255, 255, 255);
     const mask = rectMask(64, 64, { left: 8, top: 8, width: 48, height: 48 });
-    const result = await semanticChecks(img, img, mask, "main");
+    const result = await semanticChecks(
+      img,
+      img,
+      mask,
+      "main",
+      new MockOcrTextCheck(),
+      new MockEmbeddingCosineCheck(),
+    );
     expect(result.pass).toBe(true);
     expect(result.checks.map((c) => c.name.split(" ")[0])).toEqual([
       "ocrNonProductText",
       "labelOcrMatch",
       "embeddingCosine",
     ]);
+  });
+
+  it("regression: cannot be called without engines, so omitting them can no longer silently pass the gates", () => {
+    const img = rawCanvas(8, 8, 0, 0, 0);
+    const mask = rectMask(8, 8, { left: 0, top: 0, width: 8, height: 8 });
+    // Type level enforcement, validated by pnpm typecheck. The old signature
+    // defaulted both engines to perfect score mocks; the call below must not
+    // compile anymore. The arrow is never invoked.
+    const illegal = () =>
+      // @ts-expect-error semanticChecks requires explicit ocr and embedding engines
+      semanticChecks(img, img, mask, "main");
+    const alsoIllegal = () =>
+      // @ts-expect-error semanticChecks requires an explicit embedding engine
+      semanticChecks(img, img, mask, "main", new MockOcrTextCheck());
+    expect(typeof illegal).toBe("function");
+    expect(typeof alsoIllegal).toBe("function");
+    expect(semanticChecks.length).toBe(6);
   });
 
   it("fails when a custom embedding check reports low similarity", async () => {

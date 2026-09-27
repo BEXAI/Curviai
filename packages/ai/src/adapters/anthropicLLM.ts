@@ -11,8 +11,9 @@
  * construction and supports().
  */
 
+import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
-import type { Provider, ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { requestJson, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY";
@@ -58,7 +59,7 @@ interface MessagesResponse {
   usage?: { input_tokens?: number; output_tokens?: number };
 }
 
-export class AnthropicLLMProvider implements Provider {
+export class AnthropicLLMProvider implements CostAwareProvider {
   readonly name: string;
   readonly kind: ProviderKind = "llm";
 
@@ -85,6 +86,30 @@ export class AnthropicLLMProvider implements Provider {
 
   supports(task: string): boolean {
     return this.tasks.includes(task);
+  }
+
+  /**
+   * Conservative upper bound on the metered cost. Input tokens are estimated
+   * from the JSON size of the system prompt, messages and tools at one token
+   * per three characters, which overestimates real tokenizers on typical
+   * text. Output tokens are taken at the full max_tokens budget of the
+   * request (input.maxTokens or the adapter default), the hard ceiling the
+   * API enforces. Both sides are priced with the injected per million token
+   * rates, matching how invoke computes the actual cost.
+   */
+  estimateCostMicros(req: ProviderRequest): number {
+    const input = req.input as unknown as AnthropicLLMInput;
+    const promptChars = JSON.stringify({
+      system: input.system ?? "",
+      messages: input.messages ?? [],
+      tools: input.tools ?? [],
+    }).length;
+    const inputTokens = Math.ceil(promptChars / 3);
+    const outputTokens = input.maxTokens ?? this.defaultMaxTokens;
+    return Math.ceil(
+      (inputTokens * this.priceTable.inputMicrosPerMTok + outputTokens * this.priceTable.outputMicrosPerMTok) /
+        1_000_000,
+    );
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {

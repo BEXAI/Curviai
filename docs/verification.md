@@ -57,6 +57,10 @@ Date of this pass: 2026-09-27. Method: two research agents fetching official pag
 
 Anthropic /v1/messages field set and current anthropic-version header value; Gemini generateContent image response casing; BFL flux2 pro create and polling contract; OpenAI images generations response; Photoroom multipart contract; fal.ai queue endpoints. Each adapter carries a docstring flag. Record dates here when first exercised with real keys.
 
+## Security audit (2026-09-27)
+
+A read only security review of wave 1 executed exploit probes against the repo's own PGlite harness and composite pipeline. It confirmed 3 critical RLS privilege escalations (member self grant of credits, PUBLIC executable SECURITY DEFINER ledger functions, client role workspace update and delete), 4 high findings (subscriptions self upgrade, unprotected recipes and channel_specs tables, thin product fidelity bypass through mask erosion, silently bypassable cost caps) and 9 medium or low findings. All 16 were fixed the same day: migration 0002_security_hardening.sql (19 regression tests that re-run the exploits and assert denial), fail closed cost estimation in packages/ai, adaptive paste erosion plus a derived QC erosion invariant and a maxDeltaE guard in packages/pipeline, filename sanitization in packages/specs, an events dedupe unique index (migration 0003) making webhook grants atomic, and a fal poll URL allowlist. Ledger SQL functions are callable only by the service role or the owner connection; the web app was reconciled to call them over DATABASE_URL.
+
 ## Open follow ups
 
 - OCR engine and embedding similarity (DINOv2 or CLIP) implementations behind the existing pluggable QC interfaces.
@@ -65,3 +69,9 @@ Anthropic /v1/messages field set and current anthropic-version header value; Gem
 - Square video channel spec (video.social_1x1) for 1x1 template renders.
 - Half open probe state for the circuit breaker; Upstash backed breaker and cap stores; DB backed cost meter.
 - Badge pixel overlay for social exports (flag is tracked, pixels not composited yet).
+- Wire SpendCaps reservations inside the trigger runner's per shot loop once real costMicros flow.
+- Real provider routing table and price table seeds for buildRuntimeDeps in trigger (in memory demo runtime ships now).
+- Write workspaces.stripe_customer_id back from checkout.session.completed so the customer portal works without backfill.
+- Ingest side revalidation of uploads (presigned PUT cannot enforce byte caps server side; caps are enforced at sign time only).
+- Workspace switcher and per request workspace scoping for agency accounts (DbService currently resolves the first membership).
+- Legal pages (terms, privacy) before public launch; waitlist email capture currently falls back to mailto.

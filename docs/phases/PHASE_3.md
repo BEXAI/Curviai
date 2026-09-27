@@ -1,6 +1,6 @@
 # Phase 3: AI layer
 
-Status: in progress
+Status: complete (2026-09-27). 43 tests green: failover, breaker timing on a fake clock, metering, caps.
 Date started: 2026-09-27
 
 ## Plan

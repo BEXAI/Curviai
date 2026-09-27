@@ -112,7 +112,13 @@ function requireVar(specId: string, name: string, value: string | undefined): st
   if (!value) {
     throw new Error(`Spec ${specId} naming requires ${name}`);
   }
-  return value;
+  // Interpolated values become file and zip entry names. Strip anything that
+  // could traverse paths (zip slip) or break marketplace upload tooling.
+  const sanitized = value.replace(/[^A-Za-z0-9._-]/g, "").replace(/^\.+/, "");
+  if (!sanitized) {
+    throw new Error(`Spec ${specId} naming var ${name} is empty after sanitization`);
+  }
+  return sanitized;
 }
 
 /** The dimension boundaries a rendered file must satisfy for this spec. */

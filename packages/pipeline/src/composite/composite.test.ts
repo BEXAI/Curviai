@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import type { Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
-import { fidelityReport } from "../qc/fidelity";
+import { deriveQcErodePx, fidelityReport } from "../qc/fidelity";
 import { decodeToRgba } from "../raw";
 import { paintRect, rawCanvas, rectMask } from "../testutil";
 import type { QCVerdict, Shot } from "../schemas";
 import {
+  PASTE_ERODE_PX,
   compositeShot,
   identityColorTransform,
   planRetry,
@@ -87,10 +88,57 @@ describe("compositeShot", () => {
     });
 
     expect(provider.harmonizeCalls).toBe(1);
+    // Chunky product: the adaptive clamp must not have kicked in.
+    expect(result.effectivePasteErodePx).toBe(PASTE_ERODE_PX);
     // The mask interior of the final image must be byte identical to the
-    // product reference even though the mock repainted the whole frame.
+    // product reference even though the mock repainted the whole frame. This
+    // is asserted at the DERIVED QC default erosion (paste erode + ceil
+    // feather + 1), the region the production QC checks: exact byte identity,
+    // not just a small mean, so the feathered band can never leak regenerated
+    // pixels into the checked region.
     const fidelity = await fidelityReport(result.productReference, result.finalRaw, result.canvasMask, {
-      erodePx: 8,
+      kind: "main",
+    });
+    expect(fidelity.erodePx).toBe(deriveQcErodePx());
+    expect(fidelity.maskArea).toBeGreaterThan(0);
+    expect(fidelity.exactByteShare).toBe(1);
+    expect(fidelity.meanDeltaE).toBe(0);
+    expect(fidelity.maxDeltaE).toBe(0);
+    expect(fidelity.pass).toBe(true);
+  });
+
+  it("regression: a 4 px thin product survives byte identical via adaptive paste erosion", async () => {
+    // A chain link or cable cross section: 4 px thick. The fixed 3 px erosion
+    // used to annihilate this mask, so the output product was entirely
+    // regenerated pixels and the old fidelityReport vacuously passed.
+    const thinBox = { left: 20, top: 98, width: 160, height: 4 };
+    const product = rawCanvas(200, 200, 255, 255, 255);
+    paintRect(product, thinBox, 160, 30, 90);
+    const mask = rectMask(200, 200, thinBox);
+
+    const result = await compositeShot({
+      productRgba: product,
+      mask,
+      provider: new CorruptingMockProvider(),
+      shot,
+      template: {
+        width: 320,
+        height: 320,
+        scenePrompt: "p",
+        harmonizePrompt: "h",
+        // fill 0.5 of 320 = 160 target long side: scale 1, thickness stays 4.
+        placement: { fill: 0.5 },
+      },
+    });
+
+    // The clamp reduced the radius instead of erasing the paste mask.
+    expect(result.effectivePasteErodePx).toBeLessThan(PASTE_ERODE_PX);
+    expect(result.effectivePasteErodePx).toBeGreaterThanOrEqual(0);
+
+    // Product pixels inside the effective paste region are byte identical
+    // and the report is a real, non vacuous pass over a nonzero area.
+    const fidelity = await fidelityReport(result.productReference, result.finalRaw, result.canvasMask, {
+      erodePx: result.effectivePasteErodePx,
       kind: "main",
     });
     expect(fidelity.maskArea).toBeGreaterThan(0);
@@ -139,10 +187,9 @@ describe("compositeShot", () => {
         return out;
       },
     });
-    const fidelity = await fidelityReport(result.productReference, result.finalRaw, result.canvasMask, {
-      erodePx: 8,
-    });
-    // Reference already includes the transform, so paste back is still exact.
+    const fidelity = await fidelityReport(result.productReference, result.finalRaw, result.canvasMask);
+    // Reference already includes the transform, so paste back is still exact
+    // at the derived QC default erosion.
     expect(fidelity.exactByteShare).toBe(1);
   });
 });

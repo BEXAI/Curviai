@@ -17,7 +17,7 @@ import { getSpec } from "@curvi/specs";
 import type { Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
 import { makeAmazonMain } from "../src/deterministic/whiten";
 import { compositeShot, type HarmonizeInput, type ScenePlateInput } from "../src/composite/index";
-import { fidelityReport } from "../src/qc/fidelity";
+import { deriveQcErodePx, fidelityReport } from "../src/qc/fidelity";
 import { pixelChecks, QC_THRESHOLDS } from "../src/qc/pixelChecks";
 import { decodeToRgba, decodeMask, type RawImage } from "../src/raw";
 import type { Shot } from "../src/schemas";
@@ -313,8 +313,10 @@ async function evalStills(products: GoldenProduct[]): Promise<EvalRow[]> {
       },
     });
     await writeFile(path.join(GOLDEN_DIR, `${product.key}.still.png`), result.png);
+    // QC erosion derived from the paste parameters: strictly inside the pure
+    // paste region, where byte identity is the contract.
     const fidelity = await fidelityReport(result.productReference, result.finalRaw, result.canvasMask, {
-      erodePx: 8,
+      erodePx: deriveQcErodePx(),
       kind: "other",
     });
     rows.push({
