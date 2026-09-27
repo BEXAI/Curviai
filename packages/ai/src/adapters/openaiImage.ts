@@ -1,0 +1,95 @@
+/**
+ * OpenAI image generation adapter (POST {baseUrl}/v1/images/generations with
+ * an Authorization Bearer header). Model ID and per image price are
+ * constructor parameters.
+ *
+ * VERIFY AT FIRST LIVE CALL: current image model availability and the
+ * response encoding (b64_json versus url, response_format support per model)
+ * against https://platform.openai.com/docs. The build plan notes gpt-image-1
+ * shuts down October 23, 2026. Unit tests cover construction and supports()
+ * only.
+ */
+
+import { ProviderError } from "../types";
+import type { Provider, ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import { requestJson, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
+
+export const OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
+
+export interface OpenaiImageConfig extends AdapterCommonConfig {
+  /** Model ID from seed data, e.g. the fallback image model row. */
+  model: string;
+  priceTable: { perImageMicros: number };
+}
+
+export interface OpenaiImageInput {
+  prompt: string;
+  /** e.g. "1024x1024"; provider default when omitted. */
+  size?: string;
+  quality?: string;
+  n?: number;
+}
+
+export interface OpenaiImageOutput {
+  images: Array<{ dataBase64?: string; url?: string }>;
+  raw: unknown;
+}
+
+interface GenerationsResponse {
+  data?: Array<{ b64_json?: string; url?: string }>;
+}
+
+export class OpenaiImageProvider implements Provider {
+  readonly name: string;
+  readonly kind: ProviderKind = "image";
+
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly fetchFn: FetchLike;
+  private readonly tasks: string[];
+  private readonly model: string;
+  private readonly priceTable: { perImageMicros: number };
+
+  constructor(config: OpenaiImageConfig) {
+    this.name = config.name;
+    this.tasks = config.tasks;
+    this.apiKey = resolveApiKey(config.name, config.apiKey, OPENAI_API_KEY_ENV);
+    this.baseUrl = config.baseUrl ?? "https://api.openai.com";
+    this.fetchFn = config.fetchFn ?? fetch;
+    this.model = config.model;
+    this.priceTable = config.priceTable;
+  }
+
+  supports(task: string): boolean {
+    return this.tasks.includes(task);
+  }
+
+  async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
+    const input = req.input as unknown as OpenaiImageInput;
+    const body: Record<string, unknown> = { model: this.model, prompt: input.prompt };
+    if (input.size !== undefined) body.size = input.size;
+    if (input.quality !== undefined) body.quality = input.quality;
+    if (input.n !== undefined) body.n = input.n;
+
+    const data = await requestJson<GenerationsResponse>(
+      this.fetchFn,
+      this.name,
+      req.task,
+      `${this.baseUrl}/v1/images/generations`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: signalOf(req),
+      },
+    );
+
+    const images = (data.data ?? []).map((item) => ({ dataBase64: item.b64_json, url: item.url }));
+    if (images.length === 0) {
+      throw new ProviderError("OpenAI response contained no images", this.name, req.task, true);
+    }
+
+    const output: OpenaiImageOutput = { images, raw: data };
+    return { output: output as TOut, costMicros: this.priceTable.perImageMicros * images.length };
+  }
+}

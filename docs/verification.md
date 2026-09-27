@@ -1,0 +1,67 @@
+# Verification log
+
+Every external fact the build depends on, checked against live sources. Per CLAUDE.md rule 7, any new external API shape or price gets a row here with the date checked.
+
+Date of this pass: 2026-09-27. Method: two research agents fetching official pages where reachable, reputable secondary sources where login walled (marked).
+
+## Blocking findings
+
+| Item | Status | Finding | Action |
+|---|---|---|---|
+| curvi.ai domain | CONTRADICTED | Already registered by a third party since 2025-09-09 (GoDaddy, privacy proxied, expires 2027-09-09). Site returns 503, no visible product. RDAP: rdap.identitydigital.services/rdap/domain/curvi.ai | Name is not registrable. Options: private acquisition attempt, alternate domain (getcurvi.ai, curvi.app, trycurvi.com), or rename. Blocks branding spend. |
+| CURVI trademark | UNKNOWN | tmsearch.uspto.gov is a JS app, not fetchable automatically. The Curvi iOS app (AI fashion recolor app, apps.apple.com id6757593245) is live on the US App Store, a direct name collision in consumer AI imaging. | Manual USPTO Trademark Center search for CURVI and phonetic equivalents in classes 9, 42, 35 before any brand spend. |
+| Veo 3.1 Lite price | CONTRADICTED | Official Gemini API pricing: $0.05 per second at 720p, $0.08 at 1080p. Plan assumed $0.03 and $0.05. An 8 s 1080p hero loop costs about $0.64, not $0.40. 8 s max confirmed. ai.google.dev/gemini-api/docs/pricing | Cost model updated here; pack COGS with hero loop runs roughly $2.80 to $5.00 instead of $2.50 to $4.50. Margin targets still hold. |
+| Kling API terms | PARTIAL | Kling 3.0 about $0.112 per second 1080p confirmed, but direct API access is sold as prepaid packages from $700 with 180 day expiry. | Route Kling through fal.ai or another pay as you go gateway at launch; buy direct only at volume. |
+
+## Confirmed: models and pricing (official pages, fetched 2026-09-27)
+
+| Item | Value | Source |
+|---|---|---|
+| claude-sonnet-5 | $2 in, $10 out per MTok. Retirement not sooner than 2027-06-30 | platform.claude.com/docs models overview |
+| claude-haiku-4-5-20251001 | $1 in, $5 out. Retirement commitment only to 2026-10-15, plan a successor swap | same |
+| claude-opus-5-5 | $4 in, $20 out. Cache reads 5 percent of input on Opus | same |
+| Batch API | 50 percent off, cache reads 10 percent of input | same |
+| gemini-3.1-flash-image (Nano Banana 2) | $0.045 at 512, $0.067 at 1K, $0.101 at 2K, $0.151 at 4K | ai.google.dev/gemini-api/docs/pricing |
+| gemini-3-pro-image (Nano Banana Pro) | $0.134 at 1K and 2K, $0.24 at 4K | same |
+| gemini-2.5-flash-image | Deprecated, shuts down 2026-10-02. Not used anywhere in this codebase | same |
+| FLUX.2 pro / max / klein | From $0.03 create, $0.045 edit per MP; max $0.07; klein 4B from $0.014. No pinned or reproducible endpoint documented: pin via seed plus stored parameters and rely on the eval harness to catch silent model updates | docs.bfl.ai/quick_start/pricing |
+| gpt-image-2 | $8 per M image input tokens ($2 cached), $30 per M output, $5 per M text input; batch half price. gpt-image-1 shuts down 2026-10-23 | developers.openai.com/api/docs/deprecations |
+| OpenAI Sora API | sora-2, sora-2-pro and the entire Videos API shut down 2026-09-24. Not integrated | same |
+| Photoroom API | $0.02 per basic cutout, $0.10 Plus (shadows, relighting). Basic subscribers making Plus calls pay the Plus rate | photoroom.com/api/pricing |
+| Remotion license | Free for individuals and companies up to 3 employees. Recheck at hire 4 | github.com/remotion-dev/remotion LICENSE.md |
+| .ai domains | 2 year minimum initial term, roughly $70 to $100 per year retail | domainnamewire.com 2026-02-02 |
+| Stack entry prices | Supabase Pro $25, Vercel Pro $20 (Hobby bars commercial use), Trigger.dev Hobby $10 Pro $50, Upstash PAYG, Resend Pro $20, Loops from $49 past 1,000 contacts, PostHog and Sentry free tiers. About $55 to $101 per month at zero users, matching the plan estimate | vendor pricing pages |
+
+## Confirmed: channel rules
+
+| Item | Value | Source quality |
+|---|---|---|
+| Amazon main image | Pure white 255,255,255, product 85 percent or more, no text logos props watermarks, 1000 px zoom minimum, 1600 optimal, 10000 max, JPEG sRGB under 10 MB, up to 9 images, MAIN and PT01 to PT08 naming | Secondary (Seller Central G1881 is login walled). Recheck official wording once a seller account exists |
+| Shopify product media | 5000 x 5000, 25 MP, under 20 MB, 2048 square recommended, GLB and USDZ 3D up to 500 MB, video 10 min 1 GB | Official help.shopify.com, exact match |
+| Google Merchant IPTC | DigitalSourceType required for AI images. Three accepted values: TrainedAlgorithmicMedia, CompositeSynthetic, AlgorithmicMedia. Never strip embedded metadata. 500 x 500 minimum enforced 2027-01-31, 1500 x 1500 recommended | Official support.google.com/merchants/answer/6324350 |
+| Shopify CDN IPTC stripping | Was real (community thread May to Sept 2026); Shopify staff say fixed as of 2026-07-27. | Add an empirical runtime check in Phase 8: upload tagged image via stagedUploadsCreate, fetch from CDN, assert tag survives. Keep the cdn.curvi.ai feed fallback in the design |
+| Amazon SP API images | patchListingsItem with main_product_image_locator, other_product_image_locator_1 to 8 confirmed on official docs. $1,400 annual fee cancelled May 2026. Non Amazon CDN URLs can be rejected: serve publish copies from a fetchable public bucket URL | Official developer docs |
+| Shopify app economics | 0 percent on first $1M lifetime revenue (from 2025-01-01), 15 percent above, $19 one time registration, PLUS a 2.9 percent processing fee on all billing. New apps should target Shopify App Pricing rather than the legacy Billing API | Official shopify.dev |
+| eBay | 500 px minimum longest side, 1600 recommended, no watermarks, borders or added text | Official ebay.com help |
+| Etsy | 2000 px shortest side recommended, 4:3 or 1:1 | Official help.etsy.com |
+| Walmart, TikTok Shop | Figures in the registry remain secondary sourced and are flagged verified false there | Recheck when seller accounts exist |
+| EU AI Act Article 50 | In force since 2026-08-02 for generative output marking. Machine readable marking is the provider duty. Curvi ships IPTC plus planned C2PA from day one | artificialintelligenceact.eu, EC digital strategy FAQ |
+
+## Build environment decisions (2026-09-27)
+
+- Registry now serves TypeScript 7, ESLint 10, Vitest 5, Next 16, Stripe SDK 22, Trigger.dev SDK 4. Pinned instead: TypeScript 5.9, Next 15.5, ESLint 9, Vitest 3, Zod 4, Drizzle 0.44, Trigger.dev SDK 3, sharp 0.34, exiftool-vendored 28. Reason: known good combination; upgrades are deliberate follow ups.
+- pnpm 10 ignores dependency build scripts by default; sharp and esbuild load via prebuilt platform binaries, verified working on this machine (vips 8.17.3, exiftool 13.00).
+- sharp 0.34 morphology semantics for white foreground masks are inverted on this platform; packages/pipeline/src/mask.ts documents and pins this with tests.
+
+## Unverified adapter endpoint shapes (verify at first live call)
+
+Anthropic /v1/messages field set and current anthropic-version header value; Gemini generateContent image response casing; BFL flux2 pro create and polling contract; OpenAI images generations response; Photoroom multipart contract; fal.ai queue endpoints. Each adapter carries a docstring flag. Record dates here when first exercised with real keys.
+
+## Open follow ups
+
+- OCR engine and embedding similarity (DINOv2 or CLIP) implementations behind the existing pluggable QC interfaces.
+- c2pa-node manifest signing once a signing certificate exists.
+- compliance-report.pdf rendering (JSON ships now).
+- Square video channel spec (video.social_1x1) for 1x1 template renders.
+- Half open probe state for the circuit breaker; Upstash backed breaker and cap stores; DB backed cost meter.
+- Badge pixel overlay for social exports (flag is tracked, pixels not composited yet).

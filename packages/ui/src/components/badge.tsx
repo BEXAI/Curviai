@@ -1,5 +1,5 @@
 import type { HTMLAttributes } from "react";
-import { cn } from "../cn.js";
+import { cn } from "../cn";
 
 export type BadgeVariant = "default" | "success" | "warning" | "danger" | "outline";
 

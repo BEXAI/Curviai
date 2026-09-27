@@ -1,6 +1,8 @@
+import path from "node:path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
   transpilePackages: ["@curvi/ui", "@curvi/specs", "@curvi/db", "@curvi/pipeline", "@curvi/ai"],
   serverExternalPackages: ["sharp", "exiftool-vendored", "archiver", "postgres"],
   eslint: {

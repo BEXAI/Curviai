@@ -9,7 +9,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "pnpm --filter @curvi/web build && pnpm --filter @curvi/web start -- --port 3100",
+    command: "pnpm --filter @curvi/web build && PORT=3100 pnpm --filter @curvi/web start",
     url: "http://localhost:3100",
     timeout: 300000,
     reuseExistingServer: !process.env.CI,

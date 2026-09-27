@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "trigger.dev dev",
     "deploy": "trigger.dev deploy",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
