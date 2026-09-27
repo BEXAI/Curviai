@@ -1,0 +1,33 @@
+{
+  "name": "@curvi/pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schemas": "./src/schemas.ts",
+    "./seed": "./src/seed/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "eval": "tsx eval/run.ts"
+  },
+  "dependencies": {
+    "@curvi/ai": "workspace:*",
+    "@curvi/specs": "workspace:*",
+    "archiver": "^7.0.1",
+    "exiftool-vendored": "^28.0.0",
+    "sharp": "^0.34.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.2",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}

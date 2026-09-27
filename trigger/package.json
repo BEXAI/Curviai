@@ -1,0 +1,26 @@
+{
+  "name": "@curvi/trigger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "trigger.dev dev",
+    "deploy": "trigger.dev deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@curvi/ai": "workspace:*",
+    "@curvi/db": "workspace:*",
+    "@curvi/pipeline": "workspace:*",
+    "@curvi/specs": "workspace:*",
+    "@trigger.dev/sdk": "^3.3.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "trigger.dev": "^3.3.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}

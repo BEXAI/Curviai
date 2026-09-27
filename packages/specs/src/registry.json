@@ -1,0 +1,192 @@
+{
+  "version": 1,
+  "specs": [
+    {
+      "id": "amazon.main",
+      "verified": true,
+      "source": "Seller Central 2026 via seller guides; verify at build",
+      "width": 2000,
+      "height": 2000,
+      "minLongSide": 1600,
+      "maxLongSide": 10000,
+      "formats": ["jpg", "png", "tif", "gif"],
+      "colorSpace": "sRGB",
+      "maxBytes": 10000000,
+      "background": { "type": "solid", "rgb": [255, 255, 255], "tolerance": 0 },
+      "fill": { "min": 0.85, "max": 0.9 },
+      "textAllowed": false,
+      "propsAllowed": false,
+      "naming": "{sku}.MAIN.jpg"
+    },
+    {
+      "id": "amazon.secondary",
+      "verified": true,
+      "width": 2000,
+      "height": 2000,
+      "minLongSide": 1600,
+      "formats": ["jpg", "png"],
+      "maxBytes": 10000000,
+      "background": { "type": "any" },
+      "textAllowed": true,
+      "maxCount": 8,
+      "naming": "{sku}.PT{nn}.jpg"
+    },
+    {
+      "id": "amazon.aplus.basic_header",
+      "verified": false,
+      "width": 970,
+      "height": 600,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
+      "id": "amazon.aplus.premium_full",
+      "verified": false,
+      "width": 1464,
+      "height": 600,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
+      "id": "shopify.product",
+      "verified": true,
+      "source": "help.shopify.com product media types, Sept 2026",
+      "width": 2048,
+      "height": 2048,
+      "maxWidth": 5000,
+      "maxHeight": 5000,
+      "maxMegapixels": 25,
+      "formats": ["jpg", "png", "webp"],
+      "maxBytes": 20000000,
+      "background": { "type": "consistent" },
+      "textAllowed": true,
+      "naming": "{seoSlug}-{n}.jpg"
+    },
+    {
+      "id": "shopify.hero_banner",
+      "verified": false,
+      "width": 2400,
+      "height": 1000,
+      "formats": ["jpg"],
+      "maxBytes": 20000000,
+      "textAllowed": true
+    },
+    {
+      "id": "google.merchant.main",
+      "verified": true,
+      "minWidth": 500,
+      "minHeight": 500,
+      "formats": ["jpg", "png", "webp"],
+      "maxBytes": 16000000,
+      "background": { "type": "white_or_transparent" },
+      "fill": { "min": 0.75, "max": 0.9 },
+      "textAllowed": false,
+      "overlaysAllowed": false,
+      "iptcDigitalSourceTypeRequiredIfAI": true
+    },
+    {
+      "id": "google.merchant.lifestyle",
+      "verified": true,
+      "minWidth": 500,
+      "minHeight": 500,
+      "formats": ["jpg", "png"],
+      "textAllowed": false,
+      "iptcDigitalSourceTypeRequiredIfAI": true
+    },
+    {
+      "id": "etsy.listing",
+      "verified": false,
+      "width": 2000,
+      "height": 2000,
+      "formats": ["jpg", "png"],
+      "maxBytes": 10000000,
+      "textAllowed": true
+    },
+    {
+      "id": "ebay.listing",
+      "verified": false,
+      "width": 1600,
+      "height": 1600,
+      "minLongSide": 500,
+      "formats": ["jpg", "png"],
+      "maxBytes": 12000000,
+      "textAllowed": false
+    },
+    {
+      "id": "walmart.main",
+      "verified": false,
+      "width": 2200,
+      "height": 2200,
+      "formats": ["jpg", "png"],
+      "background": { "type": "solid", "rgb": [255, 255, 255] },
+      "textAllowed": false
+    },
+    {
+      "id": "tiktokshop.main",
+      "verified": false,
+      "width": 1200,
+      "height": 1200,
+      "formats": ["jpg", "png"],
+      "maxBytes": 5000000,
+      "background": { "type": "white_preferred" },
+      "textAllowed": false
+    },
+    {
+      "id": "meta.feed_1x1",
+      "verified": false,
+      "width": 1080,
+      "height": 1080,
+      "formats": ["jpg", "png"],
+      "textAllowed": true,
+      "badgeAllowed": true
+    },
+    {
+      "id": "meta.feed_4x5",
+      "verified": false,
+      "width": 1080,
+      "height": 1350,
+      "formats": ["jpg", "png"],
+      "textAllowed": true,
+      "badgeAllowed": true
+    },
+    {
+      "id": "meta.story_9x16",
+      "verified": false,
+      "width": 1080,
+      "height": 1920,
+      "safeZone": { "top": 250, "bottom": 340 },
+      "formats": ["jpg", "png", "mp4"],
+      "textAllowed": true,
+      "badgeAllowed": true
+    },
+    {
+      "id": "pinterest.pin",
+      "verified": false,
+      "width": 1000,
+      "height": 1500,
+      "formats": ["jpg", "png"],
+      "textAllowed": true
+    },
+    {
+      "id": "video.amazon_listing",
+      "verified": false,
+      "formats": ["mp4", "mov"],
+      "minWidth": 1280,
+      "minHeight": 720,
+      "maxBytes": 5000000000,
+      "textAllowed": true
+    },
+    {
+      "id": "video.social_9x16",
+      "verified": false,
+      "width": 1080,
+      "height": 1920,
+      "fps": 30,
+      "maxSeconds": 60,
+      "formats": ["mp4"],
+      "badgeAllowed": true
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "curvi",
+  "private": true,
+  "packageManager": "pnpm@10.26.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @curvi/web dev",
+    "build": "pnpm --filter @curvi/web build",
+    "test": "pnpm -r --workspace-concurrency=1 run test",
+    "lint": "eslint .",
+    "typecheck": "pnpm -r run typecheck",
+    "e2e": "playwright test",
+    "eval": "pnpm --filter @curvi/pipeline run eval",
+    "db:generate": "pnpm --filter @curvi/db db:generate",
+    "db:migrate": "pnpm --filter @curvi/db db:migrate",
+    "trigger:dev": "pnpm --filter @curvi/trigger dev"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.15.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.16.0"
+  }
+}
