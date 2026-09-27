@@ -1,0 +1,54 @@
+# Render Blueprint for Curvi.ai
+# Mirrors the dashboard service: project Curvi.ai / Production / web service "Curviai".
+# The service was created manually in the dashboard; this file keeps the config in
+# source control and lets Render recreate it via Blueprints if needed.
+# Docs: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: Curviai
+    runtime: node
+    repo: https://github.com/BEXAI/Curviai
+    branch: main
+    region: oregon
+    plan: free # upgrade to starter or higher for production traffic; free instances spin down when idle
+    buildCommand: pnpm install --frozen-lockfile; pnpm run build
+    startCommand: pnpm run start
+    autoDeploy: true # deploy on every push to main
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Values are set in the Render dashboard, never committed. sync: false makes
+      # Render prompt for them on Blueprint sync.
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: TRIGGER_SECRET_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: NEXT_PUBLIC_POSTHOG_KEY
+        sync: false
