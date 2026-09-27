@@ -561,6 +561,39 @@ function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext): StoredAsset {
   };
 }
 
+/** Wraps seller text in the untrusted data tags the seeded system prompts
+ * reference (plan 4.5.3): user text is data, never instructions. */
+export function wrapUserDescription(description: string | undefined | null): string | null {
+  if (!description || description.length === 0) {
+    return null;
+  }
+  return `<user_description>${description}</user_description>`;
+}
+
+/** Moderation gate (plan 4.5.2): intake flags and analyzer compliance flags
+ * that block generation outright. Returns the reasons, empty when clean. */
+export function moderationBlockReasons(
+  intake: IntakeResult,
+  profile: ProductProfile | null,
+): string[] {
+  const reasons = new Set<string>();
+  for (const image of intake.images) {
+    if (image.flags.nudity) reasons.add("nudity");
+    if (image.flags.weapons) reasons.add("weapons");
+    if (image.flags.drugs) reasons.add("drugs");
+    if (image.flags.prohibited) reasons.add("prohibited goods");
+    if (image.flags.realPersonMainSubject) reasons.add("a real person as the main subject");
+  }
+  for (const flag of profile?.complianceFlags ?? []) {
+    if (flag === "none") continue;
+    if (flag === "possible_counterfeit") reasons.add("a possible counterfeit");
+    else if (flag === "prohibited") reasons.add("prohibited goods");
+    else if (flag === "adult") reasons.add("adult content");
+    else if (flag === "weapon") reasons.add("weapons");
+  }
+  return [...reasons];
+}
+
 /** True when the channel string, a spec id or a channel family, is
  * marketplace bound. Concept packs never target marketplace channels
  * (plan 2.7). */
@@ -627,7 +660,7 @@ export async function runGeneratePack(
       deps.ai,
       "intake",
       IntakeResult,
-      { images: input.images, userDescription: input.userDescription ?? null },
+      { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
     );
     costMicros += intake.costMicros;
@@ -637,12 +670,18 @@ export async function runGeneratePack(
     if (!intake.value.images.some((img) => img.sellableProduct)) {
       throw new Error("Intake found no sellable product in the uploaded images");
     }
+    // Moderation gate on the intake flags (plan 4.5.2): flagged uploads never
+    // reach generation. Credits release through the failure path.
+    const intakeBlock = moderationBlockReasons(intake.value, null);
+    if (intakeBlock.length > 0) {
+      throw new Error(`This upload was flagged for ${intakeBlock.join(", ")} and needs a manual review before a pack can run`);
+    }
 
     const analysis = await llmJson<ProductProfile>(
       deps.ai,
       "analyze",
       ProductProfile,
-      { images: input.images, userDescription: input.userDescription ?? null },
+      { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
     );
     costMicros += analysis.costMicros;
@@ -650,6 +689,10 @@ export async function runGeneratePack(
       throw new Error("Product analysis response failed schema validation");
     }
     const profile = analysis.value;
+    const profileBlock = moderationBlockReasons(intake.value, profile);
+    if (profileBlock.length > 0) {
+      throw new Error(`This product was flagged for ${profileBlock.join(", ")} and needs a manual review before a pack can run`);
+    }
 
     // Plan shots: LLM planner recipe first, deterministic planShots when the
     // response is schema invalid. Concept mode drops marketplace channels

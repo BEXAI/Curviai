@@ -113,7 +113,8 @@ export interface CreateJobInput {
 export type CreateJobResult =
   | { outcome: "created"; job: JobView }
   | { outcome: "replayed"; job: JobView }
-  | { outcome: "conflict"; existingJobId: string }
+  /** existingJobId is only present when the caller may see that job. */
+  | { outcome: "conflict"; existingJobId?: string }
   | {
       outcome: "rejected";
       reason: "unknown_product" | "insufficient_credits" | "role_forbidden" | "needs_photo";

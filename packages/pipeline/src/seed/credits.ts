@@ -98,6 +98,10 @@ export const topUps: TopUp[] = [
 /** Unused subscription credits roll over for one cycle, capped at one month's allowance. */
 export const rolloverPolicy = { cycles: 1, capFactorOfMonthlyAllowance: 1 } as const;
 
+/** Launch offer (plan 9.2 and 9.7): Starter locked for life for the first
+ * founding members. */
+export const foundingMemberOffer = { monthlyUsd: 19, annualUsd: 190, seats: 50 } as const;
+
 export function tierByKey(key: TierKey): TierDefinition {
   const tier = tiers.find((t) => t.key === key);
   if (!tier) {

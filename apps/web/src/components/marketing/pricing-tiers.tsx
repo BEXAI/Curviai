@@ -3,34 +3,25 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Badge, Card, CardContent, CardHeader, CardTitle, cn } from "@curvi/ui";
+import {
+  annualDiscountPct,
+  creditCosts,
+  foundingMemberOffer,
+  tierByKey,
+  tiers as seedTiers,
+  topUps,
+} from "@curvi/pipeline/seed";
 
-interface Tier {
-  id: string;
-  name: string;
-  monthly: number;
-  annualPerMonth: number;
-  credits: number;
-  blurb: string;
-  includes: string[];
-  highlighted?: boolean;
-}
-
-const tiers: Tier[] = [
-  {
-    id: "starter",
+// Prices and credit amounts come from the seed (CLAUDE.md rule 2); only the
+// marketing copy lives here.
+const TIER_COPY: Record<string, { name: string; blurb: string; includes: string[]; highlighted?: boolean }> = {
+  starter: {
     name: "Starter",
-    monthly: 29,
-    annualPerMonth: 24,
-    credits: 200,
     blurb: "For one store getting its catalog compliant.",
     includes: ["1 brand kit", "All image assets", "Templated video", "Compliance report on every file"],
   },
-  {
-    id: "growth",
+  growth: {
     name: "Growth",
-    monthly: 79,
-    annualPerMonth: 66,
-    credits: 600,
     blurb: "For brands shipping fresh creative every week.",
     includes: [
       "Everything in Starter",
@@ -40,39 +31,42 @@ const tiers: Tier[] = [
     ],
     highlighted: true,
   },
-  {
-    id: "pro",
+  pro: {
     name: "Pro",
-    monthly: 149,
-    annualPerMonth: 124,
-    credits: 1300,
     blurb: "For larger catalogs and paid social at volume.",
     includes: ["Everything in Growth", "UGC hook ads", "3 brand kits", "Priority queue"],
   },
-  {
-    id: "agency",
+  agency: {
     name: "Agency",
-    monthly: 349,
-    annualPerMonth: 290,
-    credits: 3500,
     blurb: "For agencies running client stores.",
-    includes: [
-      "Everything in Pro",
-      "10 client workspaces",
-      "Client review links",
-      "White label share pages",
-    ],
+    includes: ["Everything in Pro", "10 client workspaces", "Client review links", "White label share pages"],
   },
-];
+};
+
+const tiers = seedTiers
+  .filter((tier) => tier.key !== "free")
+  .map((tier) => ({
+    id: tier.key,
+    monthly: tier.monthlyUsd,
+    annualPerMonth: tier.annualUsdPerMonth,
+    credits: tier.creditsPerMonth,
+    ...TIER_COPY[tier.key],
+  }));
+
+const freeTier = tierByKey("free");
+
+function creditsLabel(cost: number): string {
+  return cost === 1 ? "1 credit" : `${cost} credits`;
+}
 
 const creditTable: { asset: string; cost: string }[] = [
-  { asset: "Deterministic asset: white main, cutout, resize or sweep", cost: "0.5 credit" },
-  { asset: "One generative still at up to 2K", cost: "1 credit" },
-  { asset: "A 4K or Pro model still", cost: "3 credits" },
-  { asset: "A templated video", cost: "2 credits" },
-  { asset: "Generative video, Lite", cost: "1 credit per second" },
-  { asset: "Generative video, premium", cost: "3 credits per second" },
-  { asset: "A UGC avatar ad", cost: "30 credits" },
+  { asset: "Deterministic asset: white main, cutout, resize or sweep", cost: `${creditCosts.deterministic} credit` },
+  { asset: "One generative still at up to 2K", cost: creditsLabel(creditCosts.generativeStill) },
+  { asset: "A 4K or Pro model still", cost: creditsLabel(creditCosts.pro4kStill) },
+  { asset: "A templated video", cost: creditsLabel(creditCosts.templatedVideo) },
+  { asset: "Generative video, Lite", cost: `${creditCosts.generativeVideoPerSecondLite} credit per second` },
+  { asset: "Generative video, premium", cost: `${creditCosts.generativeVideoPerSecondPremium} credits per second` },
+  { asset: "A UGC avatar ad", cost: creditsLabel(creditCosts.ugcAvatarAd) },
 ];
 
 export function PricingTiers() {
@@ -101,7 +95,7 @@ export function PricingTiers() {
           />
         </button>
         <span className={cn("text-sm font-medium", annual ? "text-ink-900" : "text-ink-400")}>
-          Annual, about 17 percent off
+          Annual, {Math.round(annualDiscountPct * 100)} percent off
         </span>
       </div>
 
@@ -162,7 +156,8 @@ export function PricingTiers() {
       <div className="mx-auto mt-12 max-w-2xl rounded-xl border border-accent-200 bg-accent-50 p-6 text-center">
         <p className="text-sm font-semibold text-ink-900">Founding member pricing</p>
         <p className="mt-1 text-sm text-ink-700">
-          The first 50 customers get Starter for $19 per month for life. Hard cap at 50, then it is gone.
+          The first {foundingMemberOffer.seats} customers get Starter for ${foundingMemberOffer.monthlyUsd} per
+          month for life. Hard cap at {foundingMemberOffer.seats}, then it is gone.
         </p>
       </div>
 
@@ -196,12 +191,16 @@ export function PricingTiers() {
         <div>
           <h2 className="text-xl font-semibold text-ink-950">Top ups and rollover</h2>
           <ul className="mt-4 space-y-3 text-sm text-ink-700">
-            <li className="rounded-lg border border-ink-100 p-4">100 extra credits for $15. 500 extra credits for $60. Top up credits last 12 months.</li>
+            <li className="rounded-lg border border-ink-100 p-4">
+              {topUps.map((t) => `${t.credits} extra credits for $${t.usd}.`).join(" ")} Top up credits last{" "}
+              {topUps[0]?.expiresMonths ?? 12} months.
+            </li>
             <li className="rounded-lg border border-ink-100 p-4">
               Unused subscription credits roll over for one cycle, capped at one month of your allowance.
             </li>
             <li className="rounded-lg border border-ink-100 p-4">
-              Free plan: 15 credits once, enough for 1 compliant main image plus 2 lifestyle shots and a share page.
+              Free plan: {freeTier.creditsOnce} credits once, enough for 1 compliant main image plus 2 lifestyle
+              shots and a share page.
             </li>
           </ul>
         </div>

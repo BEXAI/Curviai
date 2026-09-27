@@ -159,6 +159,10 @@ export const generationJobs = pgTable(
       .references(() => products.id, { onDelete: "cascade" }),
     status: text("status").$type<JobStatus>().notNull().default("queued"),
     idempotencyKey: text("idempotency_key").unique(),
+    // The requested channels and mode, so idempotency replays can verify the
+    // body matches and the progress board can show real channels.
+    channels: jsonb("channels").$type<string[]>(),
+    mode: text("mode").$type<ProductMode>(),
     // numeric(12,1): the plan prices deterministic assets at 0.5 credit, so
     // integer columns cannot hold real reservations and charges.
     creditsReserved: numeric("credits_reserved", { precision: 12, scale: 1, mode: "number" })

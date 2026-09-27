@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
+import { tierByKey } from "@curvi/pipeline/seed";
 import { PricingTiers } from "@/components/marketing/pricing-tiers";
 
 export const metadata: Metadata = {
   title: "Pricing",
-  description:
-    "Credit subscriptions from $29 per month. Every plan includes compliant main images, lifestyle scenes and channel sized exports.",
+  description: `Credit subscriptions from $${tierByKey("starter").monthlyUsd} per month. Every plan includes compliant main images, lifestyle scenes and channel sized exports.`,
 };
 
 export default function PricingPage() {

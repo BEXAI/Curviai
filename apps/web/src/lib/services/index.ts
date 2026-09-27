@@ -22,6 +22,7 @@ export function getServices(): Services {
     return new DbService({
       db: getDb(),
       getUserId: async () => (await getSessionUser())?.id ?? null,
+      getUserEmail: async () => (await getSessionUser())?.email ?? null,
       getSupabase: () => createSupabaseServerClient(),
     });
   }

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Badge, Card, CardContent, CardHeader, CardTitle } from "@curvi/ui";
+import { creditCosts, tierByKey, tiers } from "@curvi/pipeline/seed";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { ComplianceBadgeDemo } from "@/components/marketing/compliance-badge-demo";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
@@ -70,7 +71,7 @@ const faqs = [
   },
   {
     q: "How do credits work?",
-    a: "Simple deterministic assets cost half a credit. A generative still costs one credit, video costs more. A typical full pack uses about 40 to 60 credits, and plans start at 200 credits for $29 per month.",
+    a: `Simple deterministic assets cost half a credit. A generative still costs ${creditCosts.generativeStill} credit, video costs more. A typical full pack uses about 40 to 60 credits, and plans start at ${tierByKey("starter").creditsPerMonth} credits for $${tierByKey("starter").monthlyUsd} per month.`,
   },
   {
     q: "What if a file fails a marketplace check?",
@@ -174,15 +175,18 @@ export default function HomePage() {
       <section className="mx-auto max-w-6xl px-6 py-16">
         <h2 className="text-center text-3xl font-bold tracking-tight text-ink-950">Simple credit pricing</h2>
         <p className="mx-auto mt-3 max-w-2xl text-center text-ink-600">
-          Plans from $29 to $349 per month. A typical full pack uses about 40 to 60 credits.
+          Plans from ${tierByKey("starter").monthlyUsd} to ${tierByKey("agency").monthlyUsd} per month. A
+          typical full pack uses about 40 to 60 credits.
         </p>
         <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          {[
-            { name: "Starter", price: "$29", credits: "200 credits" },
-            { name: "Growth", price: "$79", credits: "600 credits" },
-            { name: "Pro", price: "$149", credits: "1,300 credits" },
-            { name: "Agency", price: "$349", credits: "3,500 credits" },
-          ].map((tier) => (
+          {tiers
+            .filter((t) => t.key !== "free")
+            .map((t) => ({
+              name: t.key.charAt(0).toUpperCase() + t.key.slice(1),
+              price: `$${t.monthlyUsd}`,
+              credits: `${t.creditsPerMonth.toLocaleString("en-US")} credits`,
+            }))
+            .map((tier) => (
             <div key={tier.name} className="rounded-xl border border-ink-100 p-6 text-center">
               <p className="text-sm font-semibold text-ink-500">{tier.name}</p>
               <p className="mt-2 text-3xl font-bold text-ink-950">{tier.price}</p>

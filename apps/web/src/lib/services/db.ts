@@ -20,7 +20,7 @@ import {
   sql,
   eq,
 } from "@curvi/db";
-import { tiers, type TierKey } from "@curvi/pipeline/seed";
+import { tierByKey, tiers, type TierKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isR2Configured, optionalEnv } from "@/lib/env";
 import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
@@ -67,6 +67,8 @@ export interface DbServiceDeps {
   db: Db;
   /** Resolves the signed in Supabase user id, or null. */
   getUserId: () => Promise<string | null>;
+  /** The signed in user's email, used to name a freshly provisioned workspace. */
+  getUserEmail?: () => Promise<string | null>;
   /** Request scoped Supabase client carrying the user's auth context. */
   getSupabase: () => Promise<SupabaseClient | null>;
 }
@@ -127,11 +129,20 @@ export class DbService implements Services {
     if (!userId) {
       return null;
     }
-    const membership = await this.db.query.members.findFirst({
+    const membershipRow = await this.db.query.members.findFirst({
       where: (t, { eq }) => eq(t.userId, userId),
     });
+    let membership: { workspaceId: string; role: WorkspaceRole } | null = membershipRow
+      ? { workspaceId: membershipRow.workspaceId, role: membershipRow.role }
+      : null;
     if (!membership) {
-      return null;
+      // First session after signup: provision a workspace with the free
+      // tier's one time credit grant, so value can land in session one
+      // (plan 9.8 and the 9.1 free tier row).
+      membership = await this.provisionWorkspace(userId);
+      if (!membership) {
+        return null;
+      }
     }
     const workspace = await this.db.query.workspaces.findFirst({
       where: (t, { eq }) => eq(t.id, membership.workspaceId),
@@ -146,6 +157,31 @@ export class DbService implements Services {
       creditBalance: await this.creditBalance(workspace.id),
       role: membership.role,
     };
+  }
+
+  /** Creates the user's first workspace, owner membership and the free tier's
+   * one time credit grant. An advisory lock on the user id makes concurrent
+   * first requests provision exactly once. */
+  private async provisionWorkspace(
+    userId: string,
+  ): Promise<{ workspaceId: string; role: WorkspaceRole } | null> {
+    const email = (await this.deps.getUserEmail?.()) ?? null;
+    const name = email ? `${email.split("@")[0]} workspace` : "Your workspace";
+    const freeCredits = tierByKey("free").creditsOnce;
+    try {
+      const rows = (await this.db.execute(
+        sql`select provision_workspace(${userId}::uuid, ${name}::text, ${freeCredits}::numeric) as workspace_id`,
+      )) as unknown as Array<{ workspace_id: string | null }>;
+      const workspaceId = rows[0]?.workspace_id;
+      if (!workspaceId) {
+        return null;
+      }
+      return { workspaceId, role: "owner" };
+    } catch {
+      // Provisioning is best effort at read time; the caller sees the signed
+      // out state and the next request retries.
+      return null;
+    }
   }
 
   /** The signed in member's role in this workspace, or null when they do not
@@ -268,8 +304,8 @@ export class DbService implements Services {
       productId: job.productId,
       productTitle: product?.title ?? "Untitled product",
       status: job.status as JobStatus,
-      mode: product?.mode ?? "listing",
-      channels: [],
+      mode: job.mode ?? product?.mode ?? "listing",
+      channels: job.channels ?? [],
       creditsReserved: job.creditsReserved,
       creditsCharged: job.creditsCharged,
       createdAt: job.createdAt.toISOString(),
@@ -282,11 +318,23 @@ export class DbService implements Services {
       where: (t, { eq }) => eq(t.idempotencyKey, input.idempotencyKey),
     });
     if (existing) {
-      if (existing.workspaceId === workspaceId && existing.productId === input.productId) {
+      // A replay must match the whole request body, not just the product
+      // (plan 4.4.1); a reused key with different channels or mode is a 409.
+      const sameBody =
+        existing.workspaceId === workspaceId &&
+        existing.productId === input.productId &&
+        (existing.mode ?? input.mode) === input.mode &&
+        JSON.stringify([...(existing.channels ?? input.channels)].sort()) ===
+          JSON.stringify([...input.channels].sort());
+      if (sameBody) {
         const job = await this.getJob(workspaceId, existing.id);
         if (job) {
           return { outcome: "replayed", job };
         }
+      }
+      if (existing.workspaceId !== workspaceId) {
+        // Never leak another workspace's job id.
+        return { outcome: "conflict" };
       }
       return { outcome: "conflict", existingJobId: existing.id };
     }
@@ -342,6 +390,8 @@ export class DbService implements Services {
         productId: input.productId,
         status: "queued",
         idempotencyKey: input.idempotencyKey,
+        channels: input.channels,
+        mode: input.mode,
       })
       .returning();
 

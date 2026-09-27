@@ -43,6 +43,20 @@
       "when": 1790526700000,
       "tag": "0005_numeric_ledger_and_pack_files",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790532254055,
+      "tag": "0006_aspiring_wendigo",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790532300000,
+      "tag": "0007_provision_workspace",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,7 @@ export {
   topUps,
   annualDiscountPct,
   rolloverPolicy,
+  foundingMemberOffer,
   tierByKey,
 } from "./credits";
 export type { CreditCostKey, TierDefinition, TierKey, TopUp } from "./credits";
