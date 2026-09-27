@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Button, Card, CardContent, Input, Label, cn } from "@curvi/ui";
+import { Button, Card, CardContent, Input, Label, Select, cn } from "@curvi/ui";
 import type { BrandKitView, SaveResult } from "@/lib/services/types";
 
 interface BrandKitFormProps {
@@ -106,18 +106,18 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
 
         <div>
           <Label htmlFor="style-preset">Style preset</Label>
-          <select
+          <Select
             id="style-preset"
             value={kit.stylePreset}
             onChange={(event) => setKit({ ...kit, stylePreset: event.target.value })}
-            className="mt-1 flex h-10 w-full max-w-sm rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm"
+            className="mt-1 max-w-sm"
           >
             {presetKeys.map((key) => (
               <option key={key} value={key}>
                 {key.replaceAll("_", " ")}
               </option>
             ))}
-          </select>
+          </Select>
           <p className="mt-1 text-xs text-ink-400">Sets the default look for lifestyle scenes.</p>
         </div>
 

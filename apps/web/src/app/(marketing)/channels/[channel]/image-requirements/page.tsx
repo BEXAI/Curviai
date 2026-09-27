@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ChannelSpec } from "@curvi/specs";
+import { buttonVariants } from "@curvi/ui";
 import { imageSpecs, specDisplayName, specForSlug, specSlug } from "@/components/marketing/spec-slug";
 
 export const dynamicParams = false;
@@ -231,13 +232,13 @@ export default async function ChannelRequirementsPage({
         <div className="mt-5 flex flex-wrap justify-center gap-3">
           <Link
             href="/signup"
-            className="inline-flex h-11 items-center justify-center rounded-lg bg-accent-500 px-6 text-sm font-medium text-white transition-colors hover:bg-accent-600"
+            className={buttonVariants({ variant: "secondary", size: "lg" })}
           >
             Start free
           </Link>
           <Link
             href="/tools/main-image-checker"
-            className="inline-flex h-11 items-center justify-center rounded-lg border border-ink-200 bg-white px-6 text-sm font-medium text-ink-900 transition-colors hover:bg-ink-50"
+            className={buttonVariants({ variant: "outline", size: "lg" })}
           >
             Check your current image free
           </Link>

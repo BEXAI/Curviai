@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Badge } from "@curvi/ui";
+import { Badge, buttonVariants } from "@curvi/ui";
 import { galleryCases } from "@/components/marketing/demo-images";
 
 export const metadata: Metadata = {
@@ -62,7 +62,7 @@ export default function GalleryPage() {
         </p>
         <Link
           href="/signup"
-          className="mt-6 inline-flex h-11 items-center justify-center rounded-lg bg-accent-500 px-6 text-sm font-medium text-white transition-colors hover:bg-accent-600"
+          className={buttonVariants({ variant: "secondary", size: "lg", className: "mt-6" })}
         >
           Start free
         </Link>

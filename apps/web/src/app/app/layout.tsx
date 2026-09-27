@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { AppNav } from "@/components/app/app-nav";
+import { Wordmark } from "@/components/marketing/site-header";
 import { isDbMode } from "@/lib/services";
 
 export const metadata: Metadata = {
@@ -14,8 +15,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     <div className="min-h-screen bg-ink-50">
       <header className="border-b border-ink-100 bg-white">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-3">
-          <Link href="/app" className="text-lg font-bold tracking-tight text-ink-950">
-            Curvi
+          <Link href="/app" aria-label="Curvi app home">
+            <Wordmark />
           </Link>
           <AppNav />
         </div>

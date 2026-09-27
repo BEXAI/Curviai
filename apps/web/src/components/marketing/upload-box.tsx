@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button } from "@curvi/ui";
+import { Button, cn } from "@curvi/ui";
 
 /**
  * Above the fold upload box. It does not process anything on the marketing
@@ -20,10 +20,10 @@ export function UploadBox() {
 
   return (
     <div
-      className={
-        "rounded-xl border-2 border-dashed p-6 text-center transition-colors " +
-        (dragOver ? "border-accent-500 bg-accent-50" : "border-ink-200 bg-ink-50")
-      }
+      className={cn(
+        "rounded-xl border-2 border-dashed p-6 text-center transition-colors",
+        dragOver ? "border-accent-500 bg-accent-50" : "border-ink-200 bg-ink-50",
+      )}
       onDragOver={(event) => {
         event.preventDefault();
         setDragOver(true);

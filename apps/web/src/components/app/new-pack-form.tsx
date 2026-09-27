@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, Card, CardContent, Input, Label, cn } from "@curvi/ui";
+import { Button, Card, CardContent, Input, Label, Select, cn } from "@curvi/ui";
 import type { TierKey } from "@curvi/pipeline/seed";
 import { estimatePackCredits, type EstimateMode } from "@/lib/pack-estimate";
 
@@ -206,18 +206,18 @@ export function NewPackForm({ products, channels, tier, creditBalance }: NewPack
             </div>
             <div>
               <Label htmlFor="product-select">Product</Label>
-              <select
+              <Select
                 id="product-select"
                 value={productId}
                 onChange={(event) => setProductId(event.target.value)}
-                className="mt-1 flex h-10 w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm"
+                className="mt-1"
               >
                 {products.map((product) => (
                   <option key={product.id} value={product.id}>
                     {product.title}
                   </option>
                 ))}
-              </select>
+              </Select>
               <p className="mt-1 text-xs text-ink-400">New uploads attach to the selected product.</p>
             </div>
           </div>

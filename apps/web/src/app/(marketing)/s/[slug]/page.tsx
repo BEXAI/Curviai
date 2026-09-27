@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { buttonVariants } from "@curvi/ui";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
 
@@ -66,7 +67,7 @@ export default async function SharePage({ params }: { params: Promise<{ slug: st
         <div className="mt-6 flex flex-wrap justify-center gap-3">
           <Link
             href="/signup"
-            className="inline-flex h-11 items-center justify-center rounded-lg bg-accent-500 px-6 text-sm font-medium text-white transition-colors hover:bg-accent-600"
+            className={buttonVariants({ variant: "secondary", size: "lg" })}
           >
             Make mine
           </Link>

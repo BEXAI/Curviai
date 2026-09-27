@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Badge, Card, CardContent, CardHeader, CardTitle } from "@curvi/ui";
+import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
 import { StatusChip } from "@/components/app/status-chip";
 import { getServices } from "@/lib/services";
 
@@ -36,7 +36,7 @@ export default async function DashboardPage() {
         </div>
         <Link
           href="/app/new"
-          className="inline-flex h-10 items-center rounded-lg bg-accent-500 px-4 text-sm font-medium text-white transition-colors hover:bg-accent-600"
+          className={buttonVariants({ variant: "secondary" })}
         >
           New pack
         </Link>
@@ -103,7 +103,7 @@ export default async function DashboardPage() {
             </ol>
             <Link
               href="/app/new"
-              className="mt-6 inline-flex h-11 items-center rounded-lg bg-ink-900 px-6 text-sm font-medium text-white transition-colors hover:bg-ink-800"
+              className={buttonVariants({ size: "lg", className: "mt-6" })}
             >
               Start your first pack
             </Link>

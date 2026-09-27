@@ -1,16 +1,65 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Badge, Card, CardContent } from "@curvi/ui";
+import { Badge, Card, CardContent, Progress, Skeleton } from "@curvi/ui";
+import { cn } from "@curvi/ui";
 import { StatusChip } from "@/components/app/status-chip";
 import type { JobShotView, JobView } from "@/lib/services/types";
 
 const POLL_MS = 2000;
 const TERMINAL = new Set(["done", "failed", "canceled"]);
 
+const STAGES = [
+  { key: "queued", label: "Queued" },
+  { key: "analyzing", label: "Analyzing" },
+  { key: "planning", label: "Planning" },
+  { key: "generating", label: "Generating" },
+  { key: "qc", label: "Quality check" },
+  { key: "packaging", label: "Packaging" },
+  { key: "done", label: "Done" },
+] as const;
+
 function shotTitle(shotType: string): string {
   const pretty = shotType.replaceAll("_", " ");
   return pretty.charAt(0).toUpperCase() + pretty.slice(1);
+}
+
+function StageStepper({ status }: { status: string }) {
+  const currentIndex = STAGES.findIndex((stage) => stage.key === status);
+  if (currentIndex === -1) {
+    return null;
+  }
+  return (
+    <ol className="flex flex-wrap items-center gap-x-1 gap-y-2" aria-label="Pipeline stage">
+      {STAGES.map((stage, index) => {
+        const state = index < currentIndex ? "past" : index === currentIndex ? "current" : "ahead";
+        return (
+          <li key={stage.key} className="flex items-center gap-1">
+            {index > 0 ? (
+              <span
+                className={cn("h-px w-4", state === "ahead" ? "bg-ink-200" : "bg-accent-400")}
+                aria-hidden="true"
+              />
+            ) : null}
+            <span
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2 py-0.5 font-mono text-[11px] uppercase tracking-wide",
+                state === "past" && "text-ink-500",
+                state === "current" && "bg-accent-500/10 font-semibold text-accent-700",
+                state === "ahead" && "text-ink-300",
+              )}
+              aria-current={state === "current" ? "step" : undefined}
+            >
+              {state === "current" && stage.key !== "done" ? (
+                <span className="size-1.5 animate-pulse-dot rounded-full bg-accent-500" aria-hidden="true" />
+              ) : null}
+              {stage.label}
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
 }
 
 function ComplianceBadge({ shot }: { shot: JobShotView }) {
@@ -39,6 +88,29 @@ function ComplianceBadge({ shot }: { shot: JobShotView }) {
     <Badge variant="success" data-testid="compliance-badge">
       Passes channel rules
     </Badge>
+  );
+}
+
+function BoardSkeleton() {
+  return (
+    <div className="space-y-6" aria-busy="true" aria-label="Loading your pack">
+      <div className="space-y-3">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-4 w-96 max-w-full" />
+        <Skeleton className="h-2 w-full" />
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {[0, 1, 2, 3, 4, 5].map((i) => (
+          <Card key={i}>
+            <CardContent className="space-y-3 p-5">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-3 w-40" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -84,37 +156,53 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
   }, [jobId]);
 
   if (error) {
-    return <p className="text-sm text-red-600">{error}</p>;
+    return (
+      <Card className="border-red-200">
+        <CardContent className="p-6">
+          <p className="text-sm font-semibold text-red-700">We could not open this job</p>
+          <p className="mt-1 text-sm text-ink-500">{error}</p>
+        </CardContent>
+      </Card>
+    );
   }
   if (!job) {
-    return <p className="text-sm text-ink-500">Loading your pack.</p>;
+    return <BoardSkeleton />;
   }
 
   const doneCount = job.shots.filter((s) => s.status === "done").length;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-ink-950">{job.productTitle}</h1>
-          <p className="mt-1 text-sm text-ink-500">
-            {job.mode === "concept" ? "Concept Mode. Outputs carry the Concept render label." : "Listing Mode."}{" "}
-            {job.creditsReserved} credits reserved. {doneCount} of {job.shots.length} shots done.
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="font-display text-2xl font-bold tracking-tight text-ink-950">{job.productTitle}</h1>
+            <p className="mt-1 text-sm text-ink-500">
+              {job.mode === "concept" ? "Concept Mode. Outputs carry the Concept render label." : "Listing Mode."}{" "}
+              {job.creditsReserved} credits reserved.
+            </p>
+          </div>
+          <StatusChip status={job.status} testId="job-status" />
+        </div>
+        <StageStepper status={job.status} />
+        <div className="flex items-center gap-3">
+          <Progress value={doneCount} max={job.shots.length} className="max-w-md" />
+          <p className="whitespace-nowrap font-mono text-xs text-ink-500">
+            {doneCount} of {job.shots.length} shots done
           </p>
         </div>
-        <StatusChip status={job.status} testId="job-status" />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {job.shots.map((shot) => (
-          <Card key={shot.shotId} data-testid="shot-card">
+          <Card key={shot.shotId} className="transition-shadow hover:shadow-raised" data-testid="shot-card">
             <CardContent className="p-5">
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm font-semibold text-ink-900">{shotTitle(shot.shotType)}</p>
                 <StatusChip status={shot.status} />
               </div>
-              <p className="mt-1 text-xs text-ink-400">{shot.providerStage}</p>
-              <p className="mt-2 text-xs text-ink-500">
+              <p className="mt-1 font-mono text-xs text-ink-400">{shot.providerStage}</p>
+              <p className="mt-2 font-mono text-xs text-ink-500">
                 {shot.channels.length > 0 ? shot.channels.join(", ") : "all selected channels"}
               </p>
               <div className="mt-3 min-h-6">
