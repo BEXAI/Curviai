@@ -71,6 +71,8 @@ A 22 agent audit compared all 257 plan requirements against the code; docs/AUDIT
 
 Also landed in the same pass: uploads are now recorded (POST /api/uploads/complete writes source_media; the pack form registers each upload and auto creates a product), Listing Mode refuses to start without a real photo, the client role can no longer create jobs, products or uploads through the app layer, IPTC DigitalSourceType is embedded at package time (composite for composited stills, trained for fully generated and all concept outputs, none for deterministic edits), concept packs structurally exclude marketplace channels in the runner, the rule 3 fidelity gate fails closed when a composite generation omits its product reference or mask, the compliance badge carries measured fill and background from the worker, checkout.session.completed writes workspaces.stripe_customer_id back, and pnpm db:seed (trigger/src/seed-cli.ts) seeds channel specs and recipes into the tables.
 
+Waves 2 and 3 (same day): provision_workspace (migration 0007) creates the first workspace, owner membership and the free 15 credit grant exactly once per user; the runner blocks flagged uploads and flagged products before generation; seller text reaches the LLMs inside user_description tags; generation_jobs stores channels and mode so idempotency replays verify the whole body and cross workspace conflicts stop leaking job ids; every pricing number on the marketing surface derives from packages/pipeline/seed. Spend caps are live on the call path: layered caps hooks in callWithFailover (pack plus global day on every LLM call), per asset, pack and global reservations on each shot generation with the cost capped needs review branch, the onSpendAlert hook at the $50 line, and DAILY_SPEND_HARD_STOP_USD raising the $150 stop. The Anthropic adapter honors the recipe selected model with per model price tables, failing closed for unpriced models.
+
 ## Open follow ups
 
 - OCR engine and embedding similarity (DINOv2 or CLIP) implementations behind the existing pluggable QC interfaces; semanticChecks is still not invoked from the runner.
@@ -79,14 +81,15 @@ Also landed in the same pass: uploads are now recorded (POST /api/uploads/comple
 - Square video channel spec (video.social_1x1) for 1x1 template renders.
 - Half open probe state for the circuit breaker; Upstash backed breaker and cap stores; DB backed cost meter (cogs_micros still not written to the database).
 - Badge pixel overlay for social exports and the Concept render corner label (flags are tracked, pixels not composited yet).
-- Wire SpendCaps reservations inside the trigger runner's per shot loop once real costMicros flow.
+- Founder email or SMS for the $50 spend alert (onSpendAlert currently logs a console warning).
 - Real provider routing table and price table seeds: generation still runs on the demo LLM and demo shot generator; DbJobStore makes persistence real either way. Runtime recipe reads still come from the in code seed, not the recipes table, so trafficPct splits stay inert.
+- The composite pipeline's scene plate and harmonize calls still invoke providers directly instead of through callWithFailover; wrap them before real image providers land.
 - Ingest side revalidation of uploads (presigned PUT cannot enforce byte caps server side; caps are enforced at sign time only; magic bytes, EXIF strip and the 80 MP cap still need an ingest step that reads the object back).
 - Credit rollover and top up expiry enforcement (expire ledger rows are still never written; top up expiresAt is recorded but not enforced).
-- Free tier 15 credit grant and workspace provisioning at signup (no code path creates a workspace for a new Supabase user yet).
 - Templated video rendering (Remotion renderer is not wired to video shots; the demo generator returns stills), video QC frame sampling, and the pnpm eval --stage video stage.
 - Cancel flow save offers, churn intervention execution, and the churn score daily job against real signals (Stripe keys and real readers needed).
 - Workspace switcher and per request workspace scoping for agency accounts (DbService currently resolves the first membership).
 - Legal pages (terms, privacy) before public launch; waitlist email capture currently falls back to mailto.
 - Eval regression gates against a stored baseline (3 point pass rate and 0.02 fidelity drop) and eval_runs persistence; golden set is 10 synthetic products, not the plan's 40.
-- Marketing pricing UI duplicates seed prices as literals; import from @curvi/pipeline/seed instead.
+- The light asset editor (/api/assets/:id/edit: crop, shadow strength, background swap), the in app before and after reveal slider, share links from finished packs and the referral grant flow.
+- semanticChecks (OCR and embedding gates) still needs real engines and a runner call site.
