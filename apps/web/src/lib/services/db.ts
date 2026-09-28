@@ -227,18 +227,21 @@ export function isInsufficientCreditsError(err: unknown): boolean {
   return pg.code === "P0001" && /insufficient credit balance/.test(pg.message ?? "");
 }
 
-interface PackMedia {
+export interface PackMedia {
   r2Key: string;
   kind: "image" | "video" | "frame" | null;
   angle: AngleRole | null;
 }
 
-/** This request's uploads first, then stored photos, one entry per object,
- * capped at MAX_PACK_MEDIA. */
-function mergePackMedia(uploads: PackMedia[], stored: PackMedia[]): PackMedia[] {
+/** The photos a pack runs on: this request's uploads when it sent any,
+ * otherwise the product's stored photos, one entry per object, capped at
+ * MAX_PACK_MEDIA. Stored photos are never mixed into a pack that sent new
+ * ones: earlier uploads include whatever a failed attempt carried (a wrong
+ * photo, a screenshot), and the seller picked this pack's photos on purpose. */
+export function mergePackMedia(uploads: PackMedia[], stored: PackMedia[]): PackMedia[] {
   const seen = new Set<string>();
   const merged: PackMedia[] = [];
-  for (const item of [...uploads, ...stored]) {
+  for (const item of uploads.length > 0 ? uploads : stored) {
     if (seen.has(item.r2Key)) {
       continue;
     }

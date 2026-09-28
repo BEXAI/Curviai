@@ -97,7 +97,7 @@ export function detectFormat(head: Uint8Array): DetectedFormat | null {
   return null;
 }
 
-export type ImageIngestRefusal = "unsupported_type" | "heic" | "too_many_pixels" | "unreadable";
+export type ImageIngestRefusal = "unsupported_type" | "heic" | "too_many_pixels" | "unreadable" | "screenshot";
 
 export type ImageIngestResult =
   | {
@@ -119,7 +119,44 @@ export const IMAGE_INGEST_MESSAGES: Record<ImageIngestRefusal, string> = {
   heic: "HEIC photos are not supported yet. Export the photo as JPEG or PNG and upload it again.",
   too_many_pixels: "That photo is larger than 80 megapixels. Resize it and upload it again.",
   unreadable: "We could not read that photo. It may be damaged. Export it again and upload the new file.",
+  screenshot:
+    "That looks like a screenshot, not a photo of your product. Take a photo of the product with your camera and upload that instead.",
 };
+
+/** Screen captures are at most this wide on their short edge; phone camera
+ * photos are far larger (a 12 MP photo is 3024 px on its short edge). */
+const SCREENSHOT_MAX_SHORT_EDGE = 1600;
+/** Phone screens are at least 720 px wide; smaller files are graphics. */
+const SCREENSHOT_MIN_SHORT_EDGE = 600;
+/** Phone screens are 19.5:9 or taller; cameras shoot 4:3, 3:2 or 16:9. */
+const SCREENSHOT_MIN_ASPECT = 2;
+
+/**
+ * True for a screen capture rather than a photo of a physical product. iOS
+ * and macOS write "Screenshot" into a capture's EXIF or XMP; other phones
+ * save a tall PNG at screen resolution with no camera metadata. A pack built
+ * from a screenshot cuts out the phone in it and stages that as the product,
+ * so the capture is refused before any credits are held.
+ */
+export function looksLikeScreenshot(meta: sharp.Metadata, detected: DetectedFormat): boolean {
+  for (const block of [meta.exif, meta.xmp]) {
+    if (block && block.toString("latin1").includes("Screenshot")) {
+      return true;
+    }
+  }
+  const width = meta.width ?? 0;
+  const height = meta.height ?? 0;
+  const shortEdge = Math.min(width, height);
+  const aspect = shortEdge > 0 ? Math.max(width, height) / shortEdge : 0;
+  // Camera files carry EXIF; screen captures without the tag carry none.
+  return (
+    detected === "png" &&
+    !meta.exif &&
+    shortEdge >= SCREENSHOT_MIN_SHORT_EDGE &&
+    shortEdge <= SCREENSHOT_MAX_SHORT_EDGE &&
+    aspect >= SCREENSHOT_MIN_ASPECT
+  );
+}
 
 function refuse(reason: ImageIngestRefusal): ImageIngestResult {
   return { ok: false, reason, message: IMAGE_INGEST_MESSAGES[reason] };
@@ -155,6 +192,9 @@ export async function ingestImage(input: Buffer): Promise<ImageIngestResult> {
   }
   if (width * height > INGEST_PIXEL_CAP) {
     return refuse("too_many_pixels");
+  }
+  if (looksLikeScreenshot(meta, detected)) {
+    return refuse("screenshot");
   }
   const orientation = meta.orientation ?? 1;
   // Orientations 5 to 8 swap the axes.

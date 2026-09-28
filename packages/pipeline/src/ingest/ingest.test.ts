@@ -282,3 +282,26 @@ describe("readMovieDurationSeconds", () => {
     expect(await readMovieDurationSeconds(rangeReader(bad).read, bad.length)).toBeNull();
   });
 });
+
+describe("screenshot refusal", () => {
+  it("refuses a tall phone screen PNG and keeps a camera shaped photo", async () => {
+    const screen = await sharp({ create: { width: 1320, height: 2868, channels: 3, background: "#ffffff" } }).png().toBuffer();
+    const refused = await ingestImage(screen);
+    expect(refused.ok).toBe(false);
+    expect(refused.ok ? null : refused.reason).toBe("screenshot");
+
+    const photo = await sharp({ create: { width: 3024, height: 4032, channels: 3, background: "#3366cc" } }).png().toBuffer();
+    expect((await ingestImage(photo)).ok).toBe(true);
+    const jpegTall = await sharp({ create: { width: 1080, height: 2400, channels: 3, background: "#3366cc" } }).jpeg().toBuffer();
+    expect((await ingestImage(jpegTall)).ok).toBe(true);
+  });
+
+  it("refuses a capture tagged Screenshot in its metadata whatever its shape", async () => {
+    const tagged = await sharp({ create: { width: 2000, height: 1500, channels: 3, background: "#ffffff" } })
+      .withExif({ IFD0: { ImageDescription: "Screenshot" } })
+      .jpeg()
+      .toBuffer();
+    const result = await ingestImage(tagged);
+    expect(result.ok ? null : result.reason).toBe("screenshot");
+  });
+});

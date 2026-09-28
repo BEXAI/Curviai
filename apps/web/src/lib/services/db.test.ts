@@ -416,6 +416,24 @@ describe("DbService.createJob writes everything or nothing (Update.md 6.3)", () 
     expect(enqueued[0].images.map((i) => i.mediaId)).toEqual([key]);
   });
 
+  it("an existing product runs only on the new photos when the pack sends some", async () => {
+    const w = await makeWorkspace(500);
+    const old = srcKey(w.id, "old");
+    await db.insert(sourceMedia).values({ workspaceId: w.id, productId: w.productId, r2Key: old, kind: "image", sha256: SHA });
+    const fresh = srcKey(w.id, "fresh");
+
+    const result = await service(w.user).createJob(w.id, {
+      productId: w.productId,
+      channels: CHANNELS,
+      mode: "listing",
+      idempotencyKey: `fresh-${w.id}`,
+      uploads: [{ key: fresh, sha256: SHA, kind: "image" }],
+    });
+
+    expect(result.outcome).toBe("created");
+    expect(enqueued[0].images.map((i) => i.mediaId)).toEqual([fresh]);
+  });
+
   it("ignores uploads outside the workspace source prefix and writes nothing", async () => {
     const w = await makeWorkspace(500);
     const other = await makeWorkspace(0);
