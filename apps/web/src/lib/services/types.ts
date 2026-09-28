@@ -132,7 +132,18 @@ export type CreateJobResult =
   | { outcome: "conflict"; existingJobId?: string }
   | {
       outcome: "rejected";
-      reason: "unknown_product" | "insufficient_credits" | "role_forbidden" | "needs_photo" | "no_media";
+      reason:
+        | "unknown_product"
+        | "insufficient_credits"
+        | "role_forbidden"
+        | "needs_photo"
+        | "no_media"
+        /** A requested feature is not live yet (for example video). */
+        | "feature_unavailable"
+        /** A requested feature is live but not in the workspace's plan. */
+        | "upgrade_required"
+        /** Not a credit problem: the database or the queue failed. Retry. */
+        | "unavailable";
       message: string;
     };
 

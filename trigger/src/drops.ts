@@ -6,7 +6,7 @@
  * retried cron run plans the same drop.
  */
 
-import { creditCosts, presets, tiers, type PresetKey, type TierKey } from "@curvi/pipeline/seed";
+import { creditCosts, isEntitled, presets, type PresetKey, type TierKey } from "@curvi/pipeline/seed";
 
 export const TOP_PRODUCTS_PER_DROP = 3;
 export const DEFAULT_VARIANTS_PER_PRODUCT = 2;
@@ -52,18 +52,12 @@ export interface WeeklyDropResult {
 }
 
 /**
- * The Fresh Creative Drop ships from the tier whose seed row lists it,
- * derived from @curvi/pipeline seed data rather than a hardcoded tier name.
+ * The Fresh Creative Drop ships to tiers whose seed entitlements include it,
+ * derived from @curvi/pipeline seed data rather than a hardcoded tier name or
+ * the wording of the pricing copy.
  */
 export function dropEligible(tier: TierKey): boolean {
-  const firstEligible = tiers.findIndex((t) =>
-    t.includes.some((line) => line.toLowerCase().includes("fresh creative drop")),
-  );
-  if (firstEligible === -1) {
-    return false;
-  }
-  const index = tiers.findIndex((t) => t.key === tier);
-  return index >= firstEligible;
+  return isEntitled(tier, "freshDrop");
 }
 
 /** ISO like week number used only to rotate presets deterministically. */

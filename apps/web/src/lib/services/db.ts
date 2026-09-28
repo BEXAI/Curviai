@@ -24,8 +24,9 @@ import {
   lt,
   notInArray,
 } from "@curvi/db";
-import { tierByKey, tiers, type TierKey } from "@curvi/pipeline/seed";
+import { tierByKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
 import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
 import { buildGeneratePackInput } from "@/lib/jobs/payload";
@@ -80,9 +81,41 @@ export interface DbServiceDeps {
 const TERMINAL_JOB_STATES = new Set(["done", "failed", "canceled"]);
 const STALE_JOB_MS = 30 * 60 * 1000;
 
-function tierKeyOf(plan: string): TierKey {
-  const match = tiers.find((t) => t.key === plan);
-  return match ? match.key : "free";
+/** SQLSTATE reserve_credits raises for an insufficient balance (0012). */
+const INSUFFICIENT_CREDITS_SQLSTATE = "CU402";
+const UNAVAILABLE_MESSAGE = "We could not start this pack right now. Please try again in a minute.";
+
+/** The Postgres error inside a driver or Drizzle error, if any. Drizzle wraps
+ * driver errors (DrizzleQueryError) and keeps the original as cause. */
+function pgErrorOf(err: unknown): { code?: string; message?: string } | null {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+    const candidate = current as { code?: unknown; message?: unknown; cause?: unknown };
+    if (typeof candidate.code === "string") {
+      return {
+        code: candidate.code,
+        message: typeof candidate.message === "string" ? candidate.message : undefined,
+      };
+    }
+    current = candidate.cause;
+  }
+  return null;
+}
+
+/** True only for reserve_credits refusing an underfunded workspace. Anything
+ * else (a dropped connection, a missing workspace, a bad amount) is not a
+ * credit problem and must never read as one (Update.md 1.8). */
+export function isInsufficientCreditsError(err: unknown): boolean {
+  const pg = pgErrorOf(err);
+  if (!pg) {
+    return false;
+  }
+  if (pg.code === INSUFFICIENT_CREDITS_SQLSTATE) {
+    return true;
+  }
+  // Databases that have not applied 0012 raise the same message as a plain
+  // exception (P0001).
+  return pg.code === "P0001" && /insufficient credit balance/.test(pg.message ?? "");
 }
 
 function toShotStatus(value: string | null): ShotStatus {
@@ -195,9 +228,11 @@ export class DbService implements Services {
     return { ok: true, notice: "Workspace name saved." };
   }
 
-  /** Creates the user's first workspace, owner membership and the free tier's
-   * one time credit grant. An advisory lock on the user id makes concurrent
-   * first requests provision exactly once. */
+  /** Creates the user's first workspace and owner membership. The free tier's
+   * one time grant is paid by the database once the email is confirmed, from
+   * the seeded platform setting (migration 0012); the seed value passed here
+   * is only a fallback for a database the seed has not reached. An advisory
+   * lock on the user id makes concurrent first requests provision once. */
   private async provisionWorkspace(
     userId: string,
   ): Promise<{ workspaceId: string; role: WorkspaceRole } | null> {
@@ -240,7 +275,10 @@ export class DbService implements Services {
         sql`select credit_balance(${workspaceId}::uuid) as balance`,
       )) as unknown as Array<{ balance: number | string | null }>;
       return Number(rows[0]?.balance ?? 0);
-    } catch {
+    } catch (err) {
+      // The page still renders, but a zero shown because the read failed must
+      // be visible in the logs, never mistaken for an empty balance.
+      console.error(`[credits] could not read the balance of workspace ${workspaceId}`, err);
       return 0;
     }
   }
@@ -461,6 +499,17 @@ export class DbService implements Services {
       };
     }
 
+    // Plan entitlements, from the seed: channels whose feature is not live or
+    // not in this plan are refused before anything is written.
+    const workspace = await this.db.query.workspaces.findFirst({
+      where: (t, { eq }) => eq(t.id, workspaceId),
+    });
+    const tier = tierKeyOf(workspace?.plan);
+    const entitled = checkChannelEntitlements(input.channels, tier);
+    if (!entitled.ok) {
+      return { outcome: "rejected", reason: entitled.reason, message: entitled.message };
+    }
+
     let product;
     if (input.productId === "new") {
       const [created] = await this.db
@@ -510,12 +559,9 @@ export class DbService implements Services {
       };
     }
 
-    const workspace = await this.db.query.workspaces.findFirst({
-      where: (t, { eq }) => eq(t.id, workspaceId),
-    });
-    const tier = tierKeyOf(workspace?.plan ?? "free");
-    // Reservation is a seed cost estimate; the worker's planner recomputes the
-    // exact plan and charge_credits bills only the assets that pass QC.
+    // Reservation is a seed cost estimate that leaves out shots production
+    // cannot deliver; the worker's planner recomputes the exact plan and
+    // charge_credits bills only the assets that pass QC.
     const creditsReserved = estimatePackCredits(input.channels, input.mode, tier).total;
     if (creditsReserved <= 0) {
       return {
@@ -541,16 +587,21 @@ export class DbService implements Services {
       await this.db.execute(
         sql`select reserve_credits(${workspaceId}::uuid, ${creditsReserved}::numeric, ${inserted.id}::uuid)`,
       );
-    } catch {
-      await this.db
-        .update(generationJobs)
-        .set({ status: "failed", error: "credit reservation failed" })
-        .where(eq(generationJobs.id, inserted.id));
-      return {
-        outcome: "rejected",
-        reason: "insufficient_credits",
-        message: "Not enough credits for this pack. Top up or pick fewer channels.",
-      };
+    } catch (err) {
+      if (isInsufficientCreditsError(err)) {
+        // Nothing was reserved, so there is nothing to give back.
+        await this.failJob(inserted.id, "Not enough credits for this pack.");
+        return {
+          outcome: "rejected",
+          reason: "insufficient_credits",
+          message: "Not enough credits for this pack. Top up or pick fewer channels.",
+        };
+      }
+      console.error(`[jobs] credit reservation failed for job ${inserted.id} in workspace ${workspaceId}`, err);
+      // The reserve may have committed before the error reached us (a
+      // dropped connection), so give back anything the job holds.
+      await this.abandonJob(workspaceId, inserted.id, "The credit reservation could not be made.");
+      return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
     }
 
     // Brand colors are optional styling: a failed lookup must never fail a
@@ -584,15 +635,11 @@ export class DbService implements Services {
         }),
       );
     } catch (err) {
-      // The reservation must never strand when the queue is unreachable.
-      await this.db
-        .update(generationJobs)
-        .set({ status: "failed", error: "The pack could not be queued.", updatedAt: new Date() })
-        .where(eq(generationJobs.id, inserted.id));
-      await this.db.execute(
-        sql`select release_credits(${workspaceId}::uuid, ${inserted.id}::uuid)`,
-      );
-      throw err;
+      // The reservation must never strand when the queue is unreachable, and
+      // a cleanup failure must never hide why the pack did not start.
+      console.error(`[jobs] could not queue job ${inserted.id} in workspace ${workspaceId}`, err);
+      await this.abandonJob(workspaceId, inserted.id, "The pack could not be queued.");
+      return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
     }
 
     const job = await this.getJob(workspaceId, inserted.id);
@@ -600,6 +647,37 @@ export class DbService implements Services {
       return { outcome: "conflict", existingJobId: inserted.id };
     }
     return { outcome: "created", job };
+  }
+
+  /** Marks a job that never started as failed. Best effort: the caller is
+   * already reporting a failure, which this must not replace. */
+  private async failJob(jobId: string, error: string): Promise<void> {
+    try {
+      await this.db
+        .update(generationJobs)
+        .set({ status: "failed", error, updatedAt: new Date() })
+        .where(eq(generationJobs.id, jobId));
+    } catch (err) {
+      console.error(`[jobs] could not mark job ${jobId} failed`, err);
+    }
+  }
+
+  /** Returns everything a job that never started still holds, then marks it
+   * failed. Best effort, so a cleanup error never replaces the error the
+   * caller reports. When the release fails the job stays queued, so the
+   * stale run reconciler fails it and returns the hold later; a failed job
+   * would keep its hold for good. */
+  private async abandonJob(workspaceId: string, jobId: string, error: string): Promise<void> {
+    try {
+      await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`);
+    } catch (err) {
+      console.error(
+        `[jobs] could not release credits held by job ${jobId}; leaving it for the stale run reconciler`,
+        err,
+      );
+      return;
+    }
+    await this.failJob(jobId, error);
   }
 
   async createProduct(workspaceId: string, input: CreateProductInput): Promise<ProductSummary | null> {

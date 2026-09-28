@@ -69,11 +69,23 @@ export class DbJobStore implements JobStore {
   async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<boolean> {
     const error =
       state === "failed" && meta && typeof meta.error === "string" ? meta.error : undefined;
+    const cogsMicros = cogsFrom(meta);
+    // COGS only ever grows: the runner reports its running total of metered
+    // provider spend, and a later, smaller report must not erase earlier spend.
+    const cogs =
+      cogsMicros !== undefined
+        ? { cogsMicros: sql`greatest(${generationJobs.cogsMicros}, ${cogsMicros}::bigint)` }
+        : {};
     const rows = await this.db
       .update(generationJobs)
-      .set({ status: state, updatedAt: new Date(), ...(error !== undefined ? { error } : {}) })
+      .set({ status: state, updatedAt: new Date(), ...(error !== undefined ? { error } : {}), ...cogs })
       .where(and(eq(generationJobs.id, jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)))
       .returning({ id: generationJobs.id });
+    if (rows.length === 0 && cogsMicros !== undefined) {
+      // The job was already settled (for example by the stale run reconciler),
+      // but the provider spend is real, so it still lands on the job's COGS.
+      await this.db.update(generationJobs).set(cogs).where(eq(generationJobs.id, jobId));
+    }
     return rows.length > 0;
   }
 
@@ -236,6 +248,16 @@ export class DbJobStore implements JobStore {
     this.specsSeeded ??= loadChannelSpecs(this.db).then(() => undefined);
     return this.specsSeeded;
   }
+}
+
+/** The runner's metered provider spend for the job (plan 4.4.3 cogsMicros),
+ * passed as meta.costMicros on the done and failed transitions. */
+function cogsFrom(meta?: Record<string, unknown>): number | undefined {
+  const value = meta?.costMicros;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return Math.round(value);
 }
 
 async function exists(file: string): Promise<boolean> {

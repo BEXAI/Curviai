@@ -40,7 +40,9 @@ export type LedgerReason =
   | "refund"
   | "referral"
   | "expire";
-export type LedgerSource = "stripe" | "shopify" | "system";
+/** signup: the free tier's one time grant, paid by grant_signup_credits once
+ * the user's email is confirmed (migration 0012). */
+export type LedgerSource = "stripe" | "shopify" | "system" | "signup";
 export type SubscriptionProvider = "stripe" | "shopify";
 export type IntegrationKind = "shopify" | "amazon" | "gdrive" | "dropbox" | "canva";
 export type ChurnBand = "healthy" | "watch" | "at_risk";
@@ -249,6 +251,41 @@ export const spendCapCounters = pgTable("spend_cap_counters", {
   totalMicros: bigint("total_micros", { mode: "number" }).notNull().default(0),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Platform tunables the database reads directly, such as the free signup
+ * grant (free_signup_credits), seeded from packages/pipeline seed data by
+ * pnpm db:seed (CLAUDE.md rule 2). Platform table: RLS on with no policies
+ * and no client privileges, like spend_cap_counters. */
+export const platformSettings = pgTable("platform_settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").$type<unknown>().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** One row per user once their free signup grant is settled, so the grant
+ * lands exactly once per user even if a workspace is deleted and provisioned
+ * again. email_key is a sha256 of the normalized email (lower case, plus tag
+ * removed, Gmail dots removed): at most one paid grant per key, so plus
+ * addressing cannot farm free credits. A withheld grant keeps credits 0 and
+ * says why. Platform table: RLS on with no policies and no client privileges;
+ * only the SECURITY DEFINER grant functions write it. */
+export const signupGrants = pgTable(
+  "signup_grants",
+  {
+    userId: uuid("user_id").primaryKey(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    emailKey: text("email_key"),
+    credits: numeric("credits", { precision: 12, scale: 1, mode: "number" }).notNull().default(0),
+    withheldReason: text("withheld_reason"),
+    grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("signup_grants_workspace_id_idx").on(t.workspaceId),
+    uniqueIndex("signup_grants_paid_email_key_uq")
+      .on(t.emailKey)
+      .where(sql`credits > 0 and email_key is not null`),
+  ],
+);
 
 export const assetVariants = pgTable(
   "asset_variants",
@@ -485,5 +522,9 @@ export type Integration = typeof integrations.$inferSelect;
 export type NewIntegration = typeof integrations.$inferInsert;
 export type EventRow = typeof events.$inferSelect;
 export type NewEventRow = typeof events.$inferInsert;
+export type PlatformSetting = typeof platformSettings.$inferSelect;
+export type NewPlatformSetting = typeof platformSettings.$inferInsert;
+export type SignupGrant = typeof signupGrants.$inferSelect;
+export type NewSignupGrant = typeof signupGrants.$inferInsert;
 export type ChurnScore = typeof churnScores.$inferSelect;
 export type NewChurnScore = typeof churnScores.$inferInsert;

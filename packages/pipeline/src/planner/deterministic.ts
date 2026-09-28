@@ -4,7 +4,7 @@
  * mode and tests when no LLM is available. Output validates against ShotList.
  */
 import { channelFileLimit, getSpec, hasSpec } from "@curvi/specs";
-import { creditCosts, type TierKey } from "../seed/credits";
+import { creditCosts, isEntitled, type TierKey } from "../seed/credits";
 import { ProductProfile, Shot, ShotList } from "../schemas";
 
 export interface PlanOptions {
@@ -275,10 +275,9 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     skipped.push({ type: "video_spin", reason: "needs photo" });
   }
 
-  // Generative video from Growth up; UGC and long lifestyle video only on Pro or Agency.
-  const generativeVideoTiers: TierKey[] = ["growth", "pro", "agency"];
-  const proTiers: TierKey[] = ["pro", "agency"];
-  if (generativeVideoTiers.includes(opts.tier)) {
+  // Generative video from Growth up; UGC and long lifestyle video only on Pro
+  // or Agency. Tier gates come from the seed entitlements (rule 2).
+  if (isEntitled(opts.tier, "generativeVideo")) {
     shots.push({
       id: nextId("video_hero_6s"),
       type: "video_hero_6s",
@@ -292,7 +291,7 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   } else {
     skipped.push({ type: "video_hero_6s", reason: "not included in this plan tier" });
   }
-  if (proTiers.includes(opts.tier)) {
+  if (isEntitled(opts.tier, "lifestyleVideo")) {
     shots.push({
       id: nextId("video_lifestyle_15s"),
       type: "video_lifestyle_15s",
@@ -303,6 +302,10 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
       credits: creditCosts.generativeVideoPerSecondLite * VIDEO_SECONDS.video_lifestyle_15s,
       priority: 10,
     });
+  } else {
+    skipped.push({ type: "video_lifestyle_15s", reason: "Pro or Agency only" });
+  }
+  if (isEntitled(opts.tier, "ugcAds")) {
     shots.push({
       id: nextId("video_ugc_hook"),
       type: "video_ugc_hook",
@@ -314,7 +317,6 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
       priority: 10,
     });
   } else {
-    skipped.push({ type: "video_lifestyle_15s", reason: "Pro or Agency only" });
     skipped.push({ type: "video_ugc_hook", reason: "Pro or Agency only" });
   }
 

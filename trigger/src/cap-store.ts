@@ -48,4 +48,21 @@ export class PgCapStore implements CapStore {
     }
     return Number(row.total_micros);
   }
+
+  /**
+   * Claims a one time key, for example the founder spend alert of one UTC
+   * day. True only for the first caller across every process sharing the
+   * table; the insert races on the primary key, so exactly one caller wins.
+   */
+  async claim(key: string): Promise<boolean> {
+    const rows = rowsOf(
+      await this.db.execute(
+        sql`insert into spend_cap_counters (key, total_micros, updated_at)
+            values (${key}, 1, now())
+            on conflict (key) do nothing
+            returning total_micros`,
+      ),
+    );
+    return rows.length > 0;
+  }
 }

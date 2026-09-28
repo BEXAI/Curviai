@@ -1,12 +1,15 @@
 /**
  * Production seeding entrypoint: pnpm db:seed with DATABASE_URL set upserts
- * the channel spec registry and the recipe prompt rows, so runtime code reads
- * them from tables per CLAUDE.md rule 2. Idempotent; run it after migrations
- * on every deploy.
+ * the channel spec registry, the recipe prompt rows and the platform settings
+ * (the free signup grant), so runtime code and database functions read them
+ * from tables per CLAUDE.md rule 2. Then it settles the signup grant of any
+ * confirmed user who could not be paid before the settings existed.
+ * Idempotent; run it after migrations on every deploy.
  */
 
 import { createDb, loadChannelSpecs, loadRecipes } from "@curvi/db";
 import { recipeSeedRows } from "@curvi/pipeline/seed";
+import { grantPendingSignupCredits, loadPlatformSettings } from "./platform-settings";
 
 async function main(): Promise<void> {
   const url = process.env.DATABASE_URL;
@@ -18,7 +21,11 @@ async function main(): Promise<void> {
   const db = createDb(url, { max: 1, prepare: false });
   const specs = await loadChannelSpecs(db);
   const recipes = await loadRecipes(db, recipeSeedRows);
-  console.log(`Seeded ${specs} channel specs and ${recipes} recipe rows.`);
+  const settings = await loadPlatformSettings(db);
+  const settled = await grantPendingSignupCredits(db);
+  console.log(
+    `Seeded ${specs} channel specs, ${recipes} recipe rows and ${settings} platform settings. Settled ${settled} pending signup grants.`,
+  );
   process.exit(0);
 }
 
