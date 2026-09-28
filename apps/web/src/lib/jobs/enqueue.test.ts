@@ -131,7 +131,7 @@ describe("settleInterruptedJob", () => {
       jobId: id,
       kind: "report",
       filename: "compliance-report.json",
-      r2Key: `ws/${id}/compliance-report.json`,
+      r2Key: `ws/${ws}/jobs/${id}/compliance-report.json`,
     });
     const before = await balance();
 
