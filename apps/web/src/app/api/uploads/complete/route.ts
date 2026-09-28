@@ -99,4 +99,6 @@ const REFUSED_STATUS: Record<NonNullable<SaveResult["reason"]>, number> = {
   unknown_product: 404,
   conflict: 409,
   upgrade_required: 402,
+  invalid_upload: 422,
+  unavailable: 503,
 };

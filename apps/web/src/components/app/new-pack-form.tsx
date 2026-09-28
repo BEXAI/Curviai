@@ -284,6 +284,11 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
           // fresh job instead of replaying this refusal.
           intentRef.current = null;
         }
+        if (data.reason === "invalid_upload") {
+          // The server refused and removed the file, so it cannot be sent
+          // again; the seller picks a different one.
+          setUpload({ phase: "error", message: data.error ?? "That file could not be used. Choose a different one." });
+        }
         setSubmitError(data.error ?? "The pack could not be started. Try again in a moment.");
         setSubmitting(false);
         return;

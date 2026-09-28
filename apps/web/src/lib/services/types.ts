@@ -156,7 +156,10 @@ export type CreateJobResult =
         /** Not a credit problem: the database or the queue failed. Retry. */
         | "unavailable"
         /** The requested mode is not offered yet (Concept Mode). */
-        | "mode_unavailable";
+        | "mode_unavailable"
+        /** An upload failed the server side ingest check (wrong type,
+         * over a cap, unreadable). The seller uploads a different file. */
+        | "invalid_upload";
       message: string;
     };
 
@@ -210,8 +213,17 @@ export interface SaveResult {
   notice: string;
   /** Why a save was refused, so routes can answer with the right status:
    * forbidden 403, unknown_product 404, foreign_key 403, conflict 409,
-   * upgrade_required 402 (the plan does not include it). */
-  reason?: "forbidden" | "unknown_product" | "foreign_key" | "conflict" | "upgrade_required";
+   * upgrade_required 402 (the plan does not include it), invalid_upload 422
+   * (the upload failed the server side ingest check), unavailable 503 (that
+   * check could not run; retry). */
+  reason?:
+    | "forbidden"
+    | "unknown_product"
+    | "foreign_key"
+    | "conflict"
+    | "upgrade_required"
+    | "invalid_upload"
+    | "unavailable";
 }
 
 export interface Services {

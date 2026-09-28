@@ -155,4 +155,5 @@ const REJECTED_STATUS = {
   feature_unavailable: 422,
   unavailable: 503,
   mode_unavailable: 400,
+  invalid_upload: 422,
 } as const;

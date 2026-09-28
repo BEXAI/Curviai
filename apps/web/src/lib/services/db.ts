@@ -35,6 +35,8 @@ import { estimatePackCredits } from "@/lib/pack-estimate";
 import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
 import { brandKitInputSchema, brandKitIssueNotice } from "@/lib/validation/brand-kit";
 import { isUuid } from "@/lib/validation/ids";
+import { ingestUpload, type IngestOutcome } from "@/lib/trust/ingest";
+import { r2TrustStorage } from "@/lib/trust/storage";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
 import { looksStale, reconcileStaleJobs } from "./reconcile";
@@ -87,6 +89,9 @@ export interface DbServiceDeps {
   getUserEmail?: () => Promise<string | null>;
   /** Request scoped Supabase client carrying the user's auth context. */
   getSupabase: () => Promise<SupabaseClient | null>;
+  /** Server side ingest of an uploaded object (lib/trust/ingest.ts). Left
+   * out, it reads R2 whenever R2 is configured; null skips the check. */
+  ingestUpload?: ((key: string, kind: "image" | "video") => Promise<IngestOutcome>) | null;
 }
 
 /** Most photos a pack sends to the worker: this request's uploads first,
@@ -360,6 +365,16 @@ export class DbService implements Services {
       where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.userId, userId)),
     });
     return membership?.role ?? null;
+  }
+
+  /** Reads an upload back and checks it server side (magic bytes, size and
+   * pixel caps, video length) and strips photo metadata. Null when the
+   * check is skipped: no R2 means no uploads exist to check. */
+  private async ingest(key: string, kind: "image" | "video"): Promise<IngestOutcome | null> {
+    if (this.deps.ingestUpload !== undefined) {
+      return this.deps.ingestUpload ? this.deps.ingestUpload(key, kind) : null;
+    }
+    return isR2Configured() ? ingestUpload(r2TrustStorage(), key, kind) : null;
   }
 
   private async creditBalance(workspaceId: string): Promise<number> {
@@ -637,6 +652,27 @@ export class DbService implements Services {
         (input.uploads ?? []).filter((u) => isWorkspaceSourceKey(workspaceId, u.key)).map((u) => [u.key, u]),
       ).values(),
     ];
+    // Every upload is read back and checked before anything is written; the
+    // stored hash and size are the server's, never the client's. One at a
+    // time, so a pack of large photos never holds them all in memory.
+    const checked = new Map<string, { sha256: string; width: number | null; height: number | null }>();
+    for (const upload of uploadRows) {
+      const outcome = await this.ingest(upload.key, upload.kind);
+      if (outcome && !outcome.ok) {
+        return {
+          outcome: "rejected",
+          reason: outcome.retryable ? "unavailable" : "invalid_upload",
+          message: outcome.notice,
+        };
+      }
+      if (outcome?.ok) {
+        checked.set(upload.key, {
+          sha256: outcome.sha256 ?? upload.sha256,
+          width: outcome.width,
+          height: outcome.height,
+        });
+      }
+    }
     const uploads = uploadRows.map((u) => ({ r2Key: u.key, kind: u.kind }));
     const storedMedia = existingProduct
       ? (
@@ -729,7 +765,9 @@ export class DbService implements Services {
                     productId: product.id,
                     r2Key: u.key,
                     kind: u.kind,
-                    sha256: u.sha256,
+                    sha256: checked.get(u.key)?.sha256 ?? u.sha256,
+                    width: checked.get(u.key)?.width ?? null,
+                    height: checked.get(u.key)?.height ?? null,
                   })),
                 )
                 .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
@@ -928,6 +966,12 @@ export class DbService implements Services {
     if (!product) {
       return { ok: false, reason: "unknown_product", notice: "That product does not exist in this workspace." };
     }
+    // The upload is read back and checked before it is recorded; when the
+    // check ran, its hash and upright size replace the client's.
+    const checked = await this.ingest(input.r2Key, input.kind);
+    if (checked && !checked.ok) {
+      return { ok: false, reason: checked.retryable ? "unavailable" : "invalid_upload", notice: checked.notice };
+    }
     // One row per uploaded object: registering the same upload again is a
     // no op, and an upload saved to another product stays there.
     const inserted = await this.db
@@ -937,9 +981,9 @@ export class DbService implements Services {
         productId: input.productId,
         r2Key: input.r2Key,
         kind: input.kind,
-        width: input.width ?? null,
-        height: input.height ?? null,
-        sha256: input.sha256,
+        width: checked?.ok ? checked.width : (input.width ?? null),
+        height: checked?.ok ? checked.height : (input.height ?? null),
+        sha256: (checked?.ok ? checked.sha256 : null) ?? input.sha256,
       })
       .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
       .returning({ id: sourceMedia.id });
@@ -1132,6 +1176,14 @@ export class DbService implements Services {
     const allowance = checkBrandKitEntitlement(tierKeyOf(workspace?.plan), kits.length, !existing);
     if (!allowance.ok) {
       return { ok: false, reason: allowance.reason, notice: allowance.message };
+    }
+    // A newly uploaded logo gets the same server side check as a product
+    // photo, metadata strip included.
+    if (input.logoKey && input.logoKey !== existing?.logoR2Key) {
+      const checked = await this.ingest(input.logoKey, "image");
+      if (checked && !checked.ok) {
+        return { ok: false, notice: checked.notice };
+      }
     }
     // No new logo keeps the current one, but never a key that fails the
     // prefix check (a legacy row), which the 0011 constraint would reject.
