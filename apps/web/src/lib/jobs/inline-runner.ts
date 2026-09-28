@@ -35,6 +35,14 @@
 export interface InlinePackJob {
   jobId: string;
   workspaceId: string;
+  /** Queue key when one job can have more than one run, such as a pack
+   * follow up queued right after its first run finished. Defaults to jobId. */
+  runKey?: string;
+}
+
+/** The key a payload is queued and deduplicated under. */
+function runKeyOf(payload: InlinePackJob): string {
+  return payload.runKey ?? payload.jobId;
 }
 
 /** Why the runner settled a job itself instead of the pack run finishing it. */
@@ -260,9 +268,10 @@ export class InlinePackRunner<P extends InlinePackJob> {
    * arrives after shutdown began is settled at once instead of run.
    */
   submit(payload: P): Promise<void> {
-    const existing = this.running.get(payload.jobId) ?? this.waiting.find((e) => e.payload.jobId === payload.jobId);
+    const key = runKeyOf(payload);
+    const existing = this.running.get(key) ?? this.waiting.find((e) => runKeyOf(e.payload) === key);
     if (existing) {
-      // The same job twice runs once; the second caller waits on the first.
+      // The same run twice runs once; the second caller waits on the first.
       return existing.done;
     }
     const entry = createEntry(payload);
@@ -331,7 +340,8 @@ export class InlinePackRunner<P extends InlinePackJob> {
 
   private start(entry: Entry<P>): void {
     const { jobId } = entry.payload;
-    this.running.set(jobId, entry);
+    const key = runKeyOf(entry.payload);
+    this.running.set(key, entry);
     entry.timer = setTimeout(() => this.expire(entry), this.maxRunMs);
     entry.timer.unref?.();
     entry.run = (async () => {
@@ -351,8 +361,8 @@ export class InlinePackRunner<P extends InlinePackJob> {
       if (this.overdue.delete(entry)) {
         this.logger.warn(`[jobs] inline pack run for job ${jobId} returned after its time cap; it was already settled`);
       }
-      if (this.running.get(jobId) === entry) {
-        this.running.delete(jobId);
+      if (this.running.get(key) === entry) {
+        this.running.delete(key);
       }
       this.finish(entry);
       this.pump();
@@ -365,12 +375,13 @@ export class InlinePackRunner<P extends InlinePackJob> {
   private expire(entry: Entry<P>): void {
     entry.timer = null;
     const { jobId } = entry.payload;
-    if (entry.finished || entry.settling || this.running.get(jobId) !== entry) {
+    const key = runKeyOf(entry.payload);
+    if (entry.finished || entry.settling || this.running.get(key) !== entry) {
       return;
     }
     entry.timedOut = true;
     this.overdue.add(entry);
-    this.running.delete(jobId);
+    this.running.delete(key);
     this.logger.error(
       `[jobs] inline pack run for job ${jobId} passed its ${Math.round(this.maxRunMs / 60_000)} minute time cap; settling it and freeing its slot`,
     );

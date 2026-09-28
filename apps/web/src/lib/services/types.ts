@@ -72,7 +72,14 @@ export interface JobShotView {
   label?: string | null;
   /** Plain spoken reason for a skipped or needs review shot. */
   note?: string | null;
+  /** What the seller can do with this card on a delivered pack: run a shot
+   * that needs review again, or add the photo a skipped shot waits for. */
+  action?: ShotAction | null;
+  /** How the board names the angle an add_photo card waits for, e.g. "back". */
+  angle?: string | null;
 }
+
+export type ShotAction = "retry" | "add_photo";
 
 export interface JobView {
   id: string;
@@ -92,6 +99,12 @@ export interface JobView {
    * and after reveal. Set only once the pack serves files and the photo is
    * stored; null or absent hides the reveal. */
   sourceImageUrl?: string | null;
+  /** True when the signed in member may cancel the pack, run shots again or
+   * add photos (every role but client seats). */
+  canManage?: boolean;
+  /** True while shots run again on a pack that was already delivered: its
+   * files stay available and only the new shots are held. */
+  followUpRunning?: boolean;
 }
 
 export interface JobSummary {
@@ -164,6 +177,42 @@ export type CreateJobResult =
       message: string;
     };
 
+/** Why a retry or an added photo was refused. Routes map each to a status:
+ * not_found 404, role_forbidden 403, foreign_key 403, not_ready 409,
+ * not_retryable 409, channel_full 409, conflict 409, insufficient_credits
+ * 402, unavailable 503, demo 400. */
+export type ShotOpRejection =
+  | "not_found"
+  | "role_forbidden"
+  | "foreign_key"
+  | "not_ready"
+  | "not_retryable"
+  | "channel_full"
+  | "conflict"
+  | "insufficient_credits"
+  | "unavailable"
+  | "demo";
+
+export type ShotOpResult =
+  | { outcome: "started"; job: JobView; creditsHeld: number }
+  | { outcome: "rejected"; reason: ShotOpRejection; message: string };
+
+export interface AddShotPhotoInput {
+  /** The uploaded photo, inside this workspace's source prefix. */
+  key: string;
+  sha256: string;
+}
+
+export type CancelJobResult =
+  /** The pack stopped before anything was delivered. */
+  | { outcome: "canceled"; job: JobView; refundedCredits: number; notice: string }
+  /** The pack was delivered (its first run, or shots running again on it):
+   * what still ran was stopped and its hold returned. */
+  | { outcome: "stopped"; job: JobView; refundedCredits: number; notice: string }
+  /** The pack had already finished; nothing changed. */
+  | { outcome: "finished"; job: JobView; notice: string }
+  | { outcome: "rejected"; reason: "not_found" | "role_forbidden" | "unavailable"; message: string };
+
 export interface CreateProductInput {
   title: string;
   mode: PackMode;
@@ -235,6 +284,16 @@ export interface Services {
   /** Reading a job advances the demo simulation by one tick. */
   getJob(workspaceId: string, jobId: string): Promise<JobView | null>;
   createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult>;
+  /** Cancels a running pack: owner, admin and editor only. Stops remaining
+   * shots at the runner's next checkpoint and returns every credit held for
+   * shots that were not delivered. */
+  cancelJob(workspaceId: string, jobId: string): Promise<CancelJobResult>;
+  /** Runs one shot that needs review again on a delivered pack, holding its
+   * credits by the pack rules and returning them if it does not pass. */
+  retryShot(workspaceId: string, jobId: string, shotId: string): Promise<ShotOpResult>;
+  /** Adds the photo a skipped "needs photo" shot waits for, then plans and
+   * runs the shots it unlocks on the delivered pack. */
+  addShotPhoto(workspaceId: string, jobId: string, shotId: string, input: AddShotPhotoInput): Promise<ShotOpResult>;
   /** Delivered files for a finished job, with previews and download links. */
   listJobFiles(workspaceId: string, jobId: string): Promise<JobFilesView | null>;
   /** A freshly signed download url for one delivered file of a job in this

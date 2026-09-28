@@ -3,6 +3,12 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge, Button, Card, CardContent, Progress, Skeleton, buttonVariants, cn } from "@curvi/ui";
+import {
+  AddPhotoButton,
+  CancelPackButton,
+  RetryShotButton,
+  type PackActionResult,
+} from "@/components/app/pack-actions";
 import { PackDownloads } from "@/components/app/pack-downloads";
 import { PackReveal } from "@/components/app/pack-reveal";
 import { StatusChip } from "@/components/app/status-chip";
@@ -184,6 +190,7 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<JobView | null>(null);
   const [stopReason, setStopReason] = useState<Exclude<PollStopReason, "terminal"> | null>(null);
   const [runId, setRunId] = useState(0);
+  const [actionNotice, setActionNotice] = useState<{ tone: "info" | "error"; text: string } | null>(null);
   const lastFetchAt = useRef(0);
 
   useEffect(() => {
@@ -270,6 +277,20 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
 
   const retry = useCallback(() => setRunId((n) => n + 1), []);
 
+  // A pack operation answered: show the job it returned and what happened,
+  // and poll again, since a shot run again takes the job back to working.
+  const onAction = useCallback((result: PackActionResult) => {
+    if (result.job) {
+      setJob(result.job);
+    }
+    if (result.error) {
+      setActionNotice({ tone: "error", text: result.error });
+      return;
+    }
+    setActionNotice(result.notice ? { tone: "info", text: result.notice } : null);
+    setRunId((n) => n + 1);
+  }, []);
+
   if (stopReason && (!job || stopReason !== "gave_up")) {
     return <StopCard jobId={jobId} reason={stopReason} onRetry={retry} />;
   }
@@ -283,6 +304,8 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
   const needsReview = planned.filter((s) => s.status === "needs_review" || s.status === "failed").length;
   const finished = delivered + needsReview;
   const planning = planned.length === 0 && !isTerminalJobStatus(job.status);
+  const canManage = job.canManage !== false;
+  const running = !isTerminalJobStatus(job.status);
 
   return (
     <div className="space-y-6">
@@ -295,10 +318,15 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
               {job.mode === "concept" ? "Concept Mode." : "Listing Mode."}{" "}
               {job.status === "done" || job.status === "failed" || job.status === "canceled"
                 ? `${job.creditsCharged} credits charged.`
-                : `${job.creditsReserved} credits held while it runs. You are charged only for shots that pass.`}
+                : job.followUpRunning
+                  ? "Running shots again. Their credits are held and charged only if they pass."
+                  : `${job.creditsReserved} credits held while it runs. You are charged only for shots that pass.`}
             </p>
           </div>
-          <StatusChip status={job.status} testId="job-status" />
+          <div className="flex flex-wrap items-start gap-3">
+            {running && canManage ? <CancelPackButton job={job} onDone={onAction} /> : null}
+            <StatusChip status={job.status} testId="job-status" />
+          </div>
         </div>
         <StageStepper status={job.status} />
         {job.status === "failed" && job.error ? (
@@ -310,7 +338,21 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
             {job.error}
           </p>
         ) : null}
-        {job.status === "canceled" ? (
+        {actionNotice ? (
+          <p
+            className={cn(
+              "max-w-2xl rounded-lg border px-3 py-2 text-sm",
+              actionNotice.tone === "error"
+                ? "border-red-200 bg-red-50 text-red-700"
+                : "border-ink-200 bg-white text-ink-700",
+            )}
+            role={actionNotice.tone === "error" ? "alert" : "status"}
+            data-testid="pack-action-notice"
+          >
+            {actionNotice.text}
+          </p>
+        ) : null}
+        {job.status === "canceled" && !actionNotice ? (
           <p className="max-w-2xl rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-700">
             This pack was canceled. Credits held for it went back to your balance.
           </p>
@@ -434,6 +476,12 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
                     <div className="mt-3 min-h-6">
                       <ComplianceBadge shot={shot} />
                     </div>
+                    {canManage && shot.action === "retry" ? (
+                      <RetryShotButton jobId={job.id} shot={shot} title={title} onDone={onAction} />
+                    ) : null}
+                    {canManage && shot.action === "add_photo" ? (
+                      <AddPhotoButton jobId={job.id} shot={shot} angleName={shot.angle ?? "missing"} onDone={onAction} />
+                    ) : null}
                   </CardContent>
                 </Card>
               </li>
@@ -442,7 +490,7 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
         </ul>
       ) : null}
 
-      {job.status === "done" ? <PackDownloads jobId={job.id} /> : null}
+      {job.status === "done" || job.followUpRunning ? <PackDownloads jobId={job.id} /> : null}
     </div>
   );
 }

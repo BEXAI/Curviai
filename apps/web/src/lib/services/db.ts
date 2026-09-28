@@ -15,6 +15,7 @@ import {
   type Db,
   brandKits,
   generationJobs,
+  jobSteps,
   products,
   sourceMedia,
   workspaces,
@@ -22,15 +23,17 @@ import {
   eq,
   and,
 } from "@curvi/db";
+import type { Shot } from "@curvi/pipeline/schemas";
+import type { PackFollowUpInput, PackFollowUpReason } from "@curvi/trigger/follow-up";
 import { presets, tierByKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { publicJobError } from "@/lib/job-copy";
-import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
+import { enqueueGeneratePack, enqueuePackFollowUp, settleJob } from "@/lib/jobs/enqueue";
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
-import { buildGeneratePackInput } from "@/lib/jobs/payload";
+import { buildGeneratePackInput, seoSlugFor } from "@/lib/jobs/payload";
 import { pickSourcePhoto } from "@/lib/makeover";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
@@ -39,8 +42,21 @@ import { isUuid } from "@/lib/validation/ids";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
 import { looksStale, reconcileStaleJobs } from "./reconcile";
+import {
+  angleLabel,
+  angleOfSkippedShot,
+  cancelNotice,
+  followUpCredits,
+  planAngleShots,
+  RERUN_STEP_STATUS,
+  retryShotFor,
+  storedShot,
+  isRetryable,
+} from "./shot-ops";
 import type {
+  AddShotPhotoInput,
   BrandKitView,
+  CancelJobResult,
   CreateJobInput,
   CreateJobResult,
   CreateProductInput,
@@ -56,6 +72,7 @@ import type {
   RegisterSourceMediaInput,
   SaveResult,
   Services,
+  ShotOpResult,
   WorkspaceRole,
   WorkspaceSummary,
 } from "./types";
@@ -182,6 +199,28 @@ function mergePackMedia(uploads: PackMedia[], stored: PackMedia[]): PackMedia[] 
   }
   return merged.slice(0, MAX_PACK_MEDIA);
 }
+
+/** Thrown inside a follow up transaction when the job is not a delivered,
+ * finished pack any more (another follow up or a cancel got there first). */
+class FollowUpNotReadyError extends Error {
+  constructor() {
+    super("the pack is not finished");
+    this.name = "FollowUpNotReadyError";
+  }
+}
+
+/** Thrown inside an added photo transaction when the upload is already
+ * saved to another product. */
+class MediaConflictError extends Error {
+  constructor() {
+    super("the photo belongs to another product");
+    this.name = "MediaConflictError";
+  }
+}
+
+const NOT_FOUND_MESSAGE = "This pack does not exist in your workspace.";
+const CLIENT_SEAT_MESSAGE = "Client seats can review packs but cannot run shots or cancel packs.";
+const NOT_READY_MESSAGE = "This pack is still running. Wait for it to finish, then try again.";
 
 /** Parses a JobFileView id: "v_<asset variant uuid>" or "p_<pack file uuid>". */
 function parseFileId(fileId: string): { table: "variant" | "pack"; id: string } | null {
@@ -458,16 +497,26 @@ export class DbService implements Services {
       job = (await findJob()) ?? job;
     }
     const current = job;
-    const [product, steps, assetRows] = await Promise.all([
+    const [product, steps, assetRows, role, report] = await Promise.all([
       this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, current.productId) }),
       this.db.query.jobSteps.findMany({
         where: (t, { eq }) => eq(t.jobId, current.id),
         orderBy: (t, { asc }) => [asc(t.createdAt)],
       }),
-      this.db.query.assets.findMany({ where: (t, { eq }) => eq(t.jobId, current.id) }),
+      // Oldest first: a shot that ran again is shown from its newest asset.
+      this.db.query.assets.findMany({
+        where: (t, { eq }) => eq(t.jobId, current.id),
+        orderBy: (t, { asc }) => [asc(t.createdAt)],
+      }),
+      this.currentRole(workspaceId),
+      this.db.query.packFiles.findFirst({
+        columns: { id: true },
+        where: (t, { and, eq }) => and(eq(t.jobId, current.id), eq(t.kind, "report")),
+      }),
     ]);
+    const mode = current.mode ?? product?.mode ?? "listing";
 
-    const shots = buildShotViews(steps, assetRows);
+    const shots = buildShotViews(steps, assetRows, { status: current.status as JobStatus, mode });
 
     // Delivered variants give each finished shot its real channels, a
     // preview and a download link. DbJobStore records each asset's shot id
@@ -555,7 +604,7 @@ export class DbService implements Services {
       productId: current.productId,
       productTitle: product?.title ?? "Untitled product",
       status: current.status as JobStatus,
-      mode: current.mode ?? product?.mode ?? "listing",
+      mode,
       channels: current.channels ?? [],
       creditsReserved: current.creditsReserved,
       creditsCharged: current.creditsCharged,
@@ -565,7 +614,356 @@ export class DbService implements Services {
       // the detail stays in the row and the logs.
       error: current.status === "failed" ? publicJobError(current.error) : null,
       sourceImageUrl,
+      canManage: role !== null && role !== "client",
+      followUpRunning: Boolean(report) && !["done", "failed", "canceled"].includes(current.status),
     };
+  }
+
+  /**
+   * Cancels a running pack. Owner, admin and editor only; a client seat is
+   * refused like it is for starting a pack (plan 4.3). The settle runs in one
+   * transaction under the workspace row lock (settleJob): a pack whose files
+   * were not delivered is marked canceled, a pack whose files were delivered
+   * (its first run just finished, or shots running again on it) is marked
+   * done with its delivered files charged, and release_credits returns every
+   * credit still held, which is exactly the hold of the shots not delivered.
+   * The runner stops at its next checkpoint: every heartbeat and state write
+   * finds the job terminal.
+   */
+  async cancelJob(workspaceId: string, jobId: string): Promise<CancelJobResult> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return { outcome: "rejected", reason: "role_forbidden", message: CLIENT_SEAT_MESSAGE };
+    }
+    const job = isUuid(jobId)
+      ? await this.db.query.generationJobs.findFirst({
+          where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
+        })
+      : undefined;
+    if (!job) {
+      return { outcome: "rejected", reason: "not_found", message: NOT_FOUND_MESSAGE };
+    }
+    let settled: Awaited<ReturnType<typeof settleJob>>;
+    try {
+      settled = await settleJob(this.db, { jobId, workspaceId }, { undelivered: "canceled", error: null });
+    } catch (err) {
+      console.error(`[jobs] could not cancel job ${jobId} in workspace ${workspaceId}`, err);
+      return { outcome: "rejected", reason: "unavailable", message: "We could not cancel this pack right now. Try again in a minute." };
+    }
+    const view = await this.getJob(workspaceId, jobId);
+    if (!view) {
+      return { outcome: "rejected", reason: "not_found", message: NOT_FOUND_MESSAGE };
+    }
+    if (settled.status === null) {
+      return { outcome: "finished", job: view, notice: cancelNotice("finished", 0) };
+    }
+    const outcome = settled.status === "canceled" ? "canceled" : "stopped";
+    console.info(`[jobs] job ${jobId} ${outcome} by the seller; ${settled.releasedCredits} credits returned`);
+    return {
+      outcome,
+      job: view,
+      refundedCredits: settled.releasedCredits,
+      notice: cancelNotice(outcome, settled.releasedCredits),
+    };
+  }
+
+  /**
+   * Runs one shot that needs review again, exactly as it was planned, on a
+   * pack that was delivered. Its credits are held by the pack rules (the
+   * shot's seed price, reserved against the same job) and charged only when
+   * its file is delivered; a shot that needs review again, or that cannot
+   * run, gets them back.
+   */
+  async retryShot(workspaceId: string, jobId: string, shotId: string): Promise<ShotOpResult> {
+    const start = await this.followUpStart(workspaceId, jobId);
+    if ("rejected" in start) {
+      return start.rejected;
+    }
+    const { job } = start;
+    const assetRows = await this.db.query.assets.findMany({
+      where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId)),
+      orderBy: (t, { asc }) => [asc(t.createdAt)],
+    });
+    const latest = assetRows.filter((a) => a.qc?.shotId === shotId).at(-1);
+    if (!latest || latest.approved) {
+      return { outcome: "rejected", reason: "not_retryable", message: "This shot is not waiting for review." };
+    }
+    const planned = storedShot(latest.qc);
+    if (!planned || !isRetryable(latest.qc) || !isWorkspaceSourceKey(workspaceId, planned.sourceMediaId)) {
+      return {
+        outcome: "rejected",
+        reason: "not_retryable",
+        message: "This shot cannot run again. Start a new pack for this product to try it.",
+      };
+    }
+    const shot = retryShotFor(planned, await this.filesBySpec(workspaceId, job.id));
+    if (!shot) {
+      return {
+        outcome: "rejected",
+        reason: "channel_full",
+        message: "The channels this shot is for already have as many images as they allow.",
+      };
+    }
+    return this.startFollowUp(workspaceId, job, "retry", [shot], shot.type);
+  }
+
+  /**
+   * Adds the photo a skipped "needs photo" shot waits for: the photo is
+   * saved to the pack's product, the deterministic planner plans the shots
+   * that photo unlocks for the pack's channels, and they run on the pack
+   * like a retry, held and charged by the same rules.
+   */
+  async addShotPhoto(
+    workspaceId: string,
+    jobId: string,
+    shotId: string,
+    input: AddShotPhotoInput,
+  ): Promise<ShotOpResult> {
+    const start = await this.followUpStart(workspaceId, jobId);
+    if ("rejected" in start) {
+      return start.rejected;
+    }
+    const { job } = start;
+    if (!isWorkspaceSourceKey(workspaceId, input.key)) {
+      return { outcome: "rejected", reason: "foreign_key", message: "That upload does not belong to this workspace." };
+    }
+    const steps = await this.db.query.jobSteps.findMany({
+      where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId), eq(t.shotId, shotId)),
+      orderBy: (t, { asc }) => [asc(t.createdAt)],
+    });
+    const latest = steps.at(-1);
+    const angle = latest?.status === "skipped" ? angleOfSkippedShot(latest.stage, latest.error) : null;
+    if (!latest || !angle) {
+      return { outcome: "rejected", reason: "not_retryable", message: "This shot is not waiting for a photo." };
+    }
+    const workspace = await this.db.query.workspaces.findFirst({ where: (t, { eq }) => eq(t.id, workspaceId) });
+    const shots = planAngleShots({
+      angle,
+      mediaKey: input.key,
+      shotId,
+      channels: job.channels ?? [],
+      tier: tierKeyOf(workspace?.plan),
+      existingFilesBySpec: await this.filesBySpec(workspaceId, job.id),
+    });
+    if (shots.length === 0) {
+      return {
+        outcome: "rejected",
+        reason: "channel_full",
+        message: `No channel in this pack has room for a ${angleLabel(angle)} photo.`,
+      };
+    }
+    return this.startFollowUp(workspaceId, job, "add_angle", shots, latest.stage ?? shots[0].type, async (tx) => {
+      const inserted = await tx
+        .insert(sourceMedia)
+        .values({ workspaceId, productId: job.productId, r2Key: input.key, kind: "image", sha256: input.sha256 })
+        .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
+        .returning({ id: sourceMedia.id });
+      if (inserted.length === 0) {
+        const existing = await tx.query.sourceMedia.findFirst({
+          where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.r2Key, input.key)),
+        });
+        if (existing && existing.productId !== job.productId) {
+          throw new MediaConflictError();
+        }
+      }
+    });
+  }
+
+  /** The checks every pack operation starts with: a member who may spend
+   * credits, a job in this workspace, and a delivered Listing Mode pack. */
+  private async followUpStart(
+    workspaceId: string,
+    jobId: string,
+  ): Promise<{ job: typeof generationJobs.$inferSelect } | { rejected: ShotOpResult }> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return { rejected: { outcome: "rejected", reason: "role_forbidden", message: CLIENT_SEAT_MESSAGE } };
+    }
+    const job = isUuid(jobId)
+      ? await this.db.query.generationJobs.findFirst({
+          where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
+        })
+      : undefined;
+    if (!job) {
+      return { rejected: { outcome: "rejected", reason: "not_found", message: NOT_FOUND_MESSAGE } };
+    }
+    if (job.status !== "done") {
+      return { rejected: { outcome: "rejected", reason: "not_ready", message: NOT_READY_MESSAGE } };
+    }
+    if ((job.mode ?? "listing") !== "listing") {
+      return {
+        rejected: { outcome: "rejected", reason: "not_retryable", message: "Only Listing Mode packs can run shots again." },
+      };
+    }
+    return { job };
+  }
+
+  /** Files each channel spec already holds in the job's delivered pack. */
+  private async filesBySpec(workspaceId: string, jobId: string): Promise<Record<string, number>> {
+    const rows = (await this.db.execute(sql`
+      select v.channel_spec_id as spec_id, count(*)::int as files
+      from asset_variants v join assets a on a.id = v.asset_id
+      where a.job_id = ${jobId}::uuid and v.workspace_id = ${workspaceId}::uuid
+      group by v.channel_spec_id
+    `)) as unknown;
+    const list = (Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] }).rows ?? [])) as Array<{
+      spec_id: string;
+      files: number | string;
+    }>;
+    return Object.fromEntries(list.map((r) => [r.spec_id, Number(r.files)]));
+  }
+
+  /**
+   * Holds the credits for a follow up and queues it. In one transaction
+   * under the workspace row lock (the order createJob and the ledger
+   * functions use): the job moves from done back to generating, which only
+   * one request can win, so a double click never runs a shot twice; any
+   * extra rows are written (an added photo); reserve_credits holds the shots'
+   * seed prices against the job; and a rerun row puts each card back in
+   * progress. A refusal writes nothing. When the queue refuses the follow
+   * up, the hold is returned and the job goes back to done.
+   */
+  private async startFollowUp(
+    workspaceId: string,
+    job: typeof generationJobs.$inferSelect,
+    reason: PackFollowUpReason,
+    shots: Shot[],
+    stage: string,
+    prepare?: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<void>,
+  ): Promise<ShotOpResult> {
+    const credits = followUpCredits(shots);
+    if (inlineRunnerDraining()) {
+      return { outcome: "rejected", reason: "unavailable", message: RESTARTING_MESSAGE };
+    }
+    let baseCostMicros = 0;
+    let rerunIds: string[] = [];
+    try {
+      await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+        const moved = await tx
+          .update(generationJobs)
+          .set({ status: "generating", updatedAt: new Date() })
+          .where(
+            and(
+              eq(generationJobs.id, job.id),
+              eq(generationJobs.workspaceId, workspaceId),
+              eq(generationJobs.status, "done"),
+            ),
+          )
+          .returning({ cogsMicros: generationJobs.cogsMicros });
+        if (moved.length === 0) {
+          throw new FollowUpNotReadyError();
+        }
+        baseCostMicros = Number(moved[0].cogsMicros ?? 0);
+        await prepare?.(tx);
+        try {
+          await tx.execute(sql`select reserve_credits(${workspaceId}::uuid, ${credits}::numeric, ${job.id}::uuid)`);
+        } catch (err) {
+          throw new ReservationError(err);
+        }
+        const rows = await tx
+          .insert(jobSteps)
+          .values(
+            shots.map((shot) => ({
+              workspaceId,
+              jobId: job.id,
+              shotId: shot.id,
+              stage: shots.length === 1 ? stage : shot.type,
+              provider: "worker",
+              status: RERUN_STEP_STATUS,
+            })),
+          )
+          .returning({ id: jobSteps.id });
+        rerunIds = rows.map((r) => r.id);
+      });
+    } catch (err) {
+      if (err instanceof FollowUpNotReadyError) {
+        return { outcome: "rejected", reason: "not_ready", message: NOT_READY_MESSAGE };
+      }
+      if (err instanceof MediaConflictError) {
+        return { outcome: "rejected", reason: "conflict", message: "That photo is already saved to another product." };
+      }
+      if (err instanceof ReservationError && isInsufficientCreditsError(err.original)) {
+        return {
+          outcome: "rejected",
+          reason: "insufficient_credits",
+          message: `Not enough credits to run this again. It needs ${credits} ${credits === 1 ? "credit" : "credits"}.`,
+        };
+      }
+      console.error(
+        `[jobs] could not start a ${reason} follow up on job ${job.id}`,
+        err instanceof ReservationError ? err.original : err,
+      );
+      return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
+    }
+
+    const product = await this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, job.productId) });
+    let brandColors: string[] = [];
+    try {
+      const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
+      brandColors = Array.isArray(kit?.colors)
+        ? kit.colors.filter((c): c is string => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c)).slice(0, 6)
+        : [];
+    } catch (err) {
+      console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
+    }
+    const payload: PackFollowUpInput = {
+      kind: "follow_up",
+      runKey: crypto.randomUUID(),
+      jobId: job.id,
+      workspaceId,
+      reason,
+      shots,
+      creditBudget: credits,
+      channels: job.channels ?? [],
+      mode: "listing",
+      sku: product?.amazonSku ?? undefined,
+      seoSlug: seoSlugFor(product?.title ?? null),
+      brandColors,
+      existingFilesBySpec: await this.filesBySpec(workspaceId, job.id),
+      baseCostMicros,
+    };
+    try {
+      await enqueuePackFollowUp(payload);
+    } catch (err) {
+      const restarting = err instanceof InlineRunnerClosedError;
+      if (!restarting) {
+        console.error(`[jobs] could not queue a ${reason} follow up on job ${job.id}`, err);
+      }
+      await this.abandonFollowUp(workspaceId, job.id, rerunIds);
+      return { outcome: "rejected", reason: "unavailable", message: restarting ? RESTARTING_MESSAGE : UNAVAILABLE_MESSAGE };
+    }
+    const view = await this.getJob(workspaceId, job.id);
+    if (!view) {
+      return { outcome: "rejected", reason: "not_found", message: NOT_FOUND_MESSAGE };
+    }
+    return { outcome: "started", job: view, creditsHeld: credits };
+  }
+
+  /** Undoes a follow up the queue refused: returns its hold (the first run
+   * settled its own, so all the job holds is this one), puts the job back
+   * to done and drops the rerun rows so the cards read as before. Best
+   * effort; the stale run reconciler is the backstop for the hold. */
+  private async abandonFollowUp(workspaceId: string, jobId: string, rerunIds: string[]): Promise<void> {
+    try {
+      await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`);
+      await this.db
+        .update(generationJobs)
+        .set({ status: "done", updatedAt: new Date() })
+        .where(and(eq(generationJobs.id, jobId), eq(generationJobs.status, "generating")));
+      if (rerunIds.length > 0) {
+        await this.db
+          .delete(jobSteps)
+          .where(
+            and(
+              eq(jobSteps.workspaceId, workspaceId),
+              sql`${jobSteps.id} = any(${`{${rerunIds.join(",")}}`}::uuid[])`,
+            ),
+          );
+      }
+    } catch (err) {
+      console.error(`[jobs] could not undo the follow up on job ${jobId}`, err);
+    }
   }
 
   /** The replay or conflict answer for a reused Idempotency-Key, or null

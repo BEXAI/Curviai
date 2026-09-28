@@ -323,3 +323,37 @@ describe("workspace management", () => {
     expect(empty.ok).toBe(false);
   });
 });
+
+describe("DemoService pack operations", () => {
+  it("cancels a running simulation, returns its hold and stops it advancing", async () => {
+    const svc = service();
+    const workspace = await svc.getCurrentWorkspace();
+    const job = await createJob(svc, "cancel-1");
+    expect((await svc.getCurrentWorkspace()).creditBalance).toBe(workspace.creditBalance - job.creditsReserved);
+    await svc.getJob(workspace.id, job.id);
+
+    const result = await svc.cancelJob(workspace.id, job.id);
+    expect(result).toMatchObject({ outcome: "canceled", refundedCredits: job.creditsReserved });
+    expect((await svc.getCurrentWorkspace()).creditBalance).toBe(workspace.creditBalance);
+    for (let i = 0; i < 20; i++) {
+      const view = await svc.getJob(workspace.id, job.id);
+      expect(view?.status).toBe("canceled");
+      expect(view?.creditsCharged).toBe(0);
+      expect(view?.shots.some((s) => s.status === "done")).toBe(false);
+    }
+    expect(await svc.cancelJob(workspace.id, job.id)).toMatchObject({ outcome: "finished" });
+  });
+
+  it("does not cancel a finished simulation and does not run shots again", async () => {
+    const svc = service();
+    const workspace = await svc.getCurrentWorkspace();
+    const job = await createJob(svc, "cancel-2");
+    await drain(svc, job.id);
+    expect(await svc.cancelJob(workspace.id, job.id)).toMatchObject({ outcome: "finished" });
+    expect(await svc.retryShot(workspace.id, job.id, "s01")).toMatchObject({ outcome: "rejected", reason: "demo" });
+    expect(await svc.cancelJob(workspace.id, "00000000-0000-4000-8000-000000000999")).toMatchObject({
+      outcome: "rejected",
+      reason: "not_found",
+    });
+  });
+});

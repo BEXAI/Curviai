@@ -14,6 +14,7 @@
  */
 
 import { after } from "next/server";
+import type { PackFollowUpInput } from "@curvi/trigger/follow-up";
 import type { GeneratePackInput } from "@curvi/trigger/runner";
 import { and, assets, eq, generationJobs, notInArray, sql, type Db } from "@curvi/db";
 import { optionalEnv } from "@/lib/env";
@@ -25,6 +26,14 @@ import {
 } from "./inline-runner";
 
 export type EnqueueMode = "trigger" | "inline";
+
+/** What the inline runner queues: a first pack run or a pack follow up (a
+ * retried shot or an added angle on a delivered pack). */
+export type InlineRunPayload = GeneratePackInput | PackFollowUpInput;
+
+function isFollowUp(payload: InlineRunPayload): payload is PackFollowUpInput {
+  return (payload as { kind?: unknown }).kind === "follow_up";
+}
 
 export async function enqueueGeneratePack(payload: GeneratePackInput): Promise<EnqueueMode> {
   if (optionalEnv("TRIGGER_SECRET_KEY")) {
@@ -46,6 +55,26 @@ export async function enqueueGeneratePack(payload: GeneratePackInput): Promise<E
   return "inline";
 }
 
+/**
+ * Queues a pack follow up, on Trigger.dev when it is configured and inline
+ * otherwise, exactly like a first run. The caller already holds the credits
+ * and moved the job back to generating; a throw here is the caller's cue to
+ * return the hold.
+ */
+export async function enqueuePackFollowUp(payload: PackFollowUpInput): Promise<EnqueueMode> {
+  if (optionalEnv("TRIGGER_SECRET_KEY")) {
+    const { tasks } = await import("@trigger.dev/sdk/v3");
+    await tasks.trigger("pack-follow-up", payload, {
+      idempotencyKey: `pack-follow-up:${payload.runKey}`,
+    });
+    return "trigger";
+  }
+  const runner = getInlinePackRunner();
+  runner.assertAccepting();
+  after(() => runner.submit(payload));
+  return "inline";
+}
+
 /** Error text the job board shows for a job the inline runner settled. Plain
  * spoken, no dashes (CLAUDE.md rule 9). */
 export const SETTLED_JOB_MESSAGES: Record<SettleReason, string> = {
@@ -59,6 +88,13 @@ export const SETTLED_JOB_MESSAGES: Record<SettleReason, string> = {
 };
 
 export type SettleOutcome = "failed" | "done" | "already_final";
+
+/** What a settle did: the status it set (null when the job was already
+ * terminal) and the credits release_credits returned to the balance. */
+export interface SettleResult {
+  status: "done" | "failed" | "canceled" | null;
+  releasedCredits: number;
+}
 
 const TERMINAL_JOB_STATES = ["done", "failed", "canceled"] as const;
 
@@ -132,14 +168,30 @@ export async function settleInterruptedJob(
   job: { jobId: string; workspaceId: string },
   error: string,
 ): Promise<SettleOutcome> {
+  const { status } = await settleJob(db, job, { undelivered: "failed", error });
+  return status === "done" || status === "failed" ? status : "already_final";
+}
+
+/**
+ * The settle behind settleInterruptedJob and the seller's cancel (POST
+ * /api/jobs/[id]/cancel): a delivered pack is marked done and its delivered
+ * files charged, anything else takes the `undelivered` status, and
+ * release_credits returns whatever the job still holds. See
+ * settleInterruptedJob for the locking and the guarantees.
+ */
+export async function settleJob(
+  db: Db,
+  job: { jobId: string; workspaceId: string },
+  opts: { undelivered: "failed" | "canceled"; error: string | null },
+): Promise<SettleResult> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`select 1 from workspaces where id = ${job.workspaceId}::uuid for update`);
     const delivered = sql`exists (select 1 from pack_files pf where pf.job_id = ${job.jobId}::uuid and pf.kind = 'report')`;
     const rows = await tx
       .update(generationJobs)
       .set({
-        status: sql`case when ${delivered} then 'done' else 'failed' end`,
-        error: sql`case when ${delivered} then ${generationJobs.error} else ${error} end`,
+        status: sql`case when ${delivered} then 'done' else ${opts.undelivered}::text end`,
+        error: sql`case when ${delivered} then ${generationJobs.error} else ${opts.error}::text end`,
         updatedAt: new Date(),
       })
       .where(
@@ -172,9 +224,24 @@ export async function settleInterruptedJob(
       }
     }
 
-    await tx.execute(sql`select release_credits(${job.workspaceId}::uuid, ${job.jobId}::uuid)`);
-    return status === "done" || status === "failed" ? status : "already_final";
+    const released = await tx.execute(
+      sql`select release_credits(${job.workspaceId}::uuid, ${job.jobId}::uuid) as released`,
+    );
+    return {
+      status: status === "done" || status === "failed" || status === "canceled" ? status : null,
+      releasedCredits: firstNumber(released, "released"),
+    };
   });
+}
+
+/** One numeric column of the first row of a raw query. postgres-js returns
+ * the rows array; other drivers wrap it in { rows }. */
+function firstNumber(result: unknown, column: string): number {
+  const rows = (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as Array<
+    Record<string, unknown>
+  >;
+  const value = Number(rows[0]?.[column] ?? 0);
+  return Number.isFinite(value) ? value : 0;
 }
 
 /** Bumps updated_at on jobs that are still queued, so jobs waiting for an
@@ -196,13 +263,19 @@ async function appDb(): Promise<Db> {
   return getDb();
 }
 
-function createInlinePackRunner(): InlinePackRunner<GeneratePackInput> {
-  return new InlinePackRunner<GeneratePackInput>(readInlineRunnerConfig(optionalEnv), {
+function createInlinePackRunner(): InlinePackRunner<InlineRunPayload> {
+  return new InlinePackRunner<InlineRunPayload>(readInlineRunnerConfig(optionalEnv), {
     runPack: async (payload) => {
-      const [{ resolveRuntimeDeps }, { runGeneratePack }] = await Promise.all([
-        import("@curvi/trigger/db-runtime"),
-        import("@curvi/trigger/runner"),
-      ]);
+      const { resolveRuntimeDeps } = await import("@curvi/trigger/db-runtime");
+      if (isFollowUp(payload)) {
+        // A follow up settles its own hold and always returns the job to
+        // done. A crash is settled like a first run: the pack's report row
+        // exists, so the job is marked done and delivered files are charged.
+        const { runPackFollowUp } = await import("@curvi/trigger/follow-up");
+        await runPackFollowUp(payload, resolveRuntimeDeps());
+        return;
+      }
+      const { runGeneratePack } = await import("@curvi/trigger/runner");
       // runGeneratePack owns failure handling: it marks the job failed and
       // releases the remaining hold through the store. A throw out of it is a
       // crash, which the runner settles through settleInterruptedJob.
@@ -219,7 +292,7 @@ function createInlinePackRunner(): InlinePackRunner<GeneratePackInput> {
 /** The process wide inline runner, with SIGTERM and SIGINT hooked to its
  * drain. Next.js exits by itself once the after() work resolves, unless
  * NEXT_MANUAL_SIG_HANDLE turns its own signal handling off. */
-export function getInlinePackRunner(): InlinePackRunner<GeneratePackInput> {
+export function getInlinePackRunner(): InlinePackRunner<InlineRunPayload> {
   return installInlinePackRunner(createInlinePackRunner, {
     handleSignals: true,
     exitAfterShutdown: Boolean(optionalEnv("NEXT_MANUAL_SIG_HANDLE")),

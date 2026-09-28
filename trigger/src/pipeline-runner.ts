@@ -187,6 +187,9 @@ export interface StoredAsset {
   measured: MeasuredCompliance;
   /** Final encoded image for passed shots, so stores can persist the pixels. */
   encoded?: { buffer: Buffer; format: string };
+  /** The planned shot itself, so a shot that needs review can be run again
+   * later exactly as planned (pack follow ups, trigger/src/follow-up.ts). */
+  shot?: Shot;
 }
 
 /** The plan as the progress board needs it: every shot the pack will try,
@@ -235,6 +238,23 @@ export interface JobStore {
    * board never shows a delivered, charged card for it. Display only: the
    * runner releases its credits whatever this does. */
   markShotUndelivered?(update: UndeliveredShot): Promise<void>;
+  /** Delivers the files of a pack follow up (a retried shot or an added
+   * angle) into a pack that was already delivered: uploads them and records
+   * their asset_variants rows, only while the job is live, like savePack.
+   * No new report row: the pack was delivered by its first run. Returns the
+   * shot ids whose files were recorded; only those are charged. */
+  saveFollowUpFiles?(files: StoredFollowUpFiles): Promise<string[]>;
+}
+
+/** The loose files one pack follow up built, ready to deliver. */
+export interface StoredFollowUpFiles {
+  jobId: string;
+  workspaceId: string;
+  /** Unique per follow up; keeps its storage keys apart from every other run. */
+  runKey: string;
+  outDir: string;
+  /** Channel family, file name, spec and shot id of each file to deliver. */
+  files: Array<{ channel: string; file: string; specId: string; ref: string; width: number | null; height: number | null }>;
 }
 
 /** A passing shot the packager did not deliver, and why (plain copy). */
@@ -302,6 +322,7 @@ export class InMemoryJobStore implements JobStore {
   readonly ledger: JobLedgerEntry[] = [];
   readonly assets: StoredAsset[] = [];
   readonly packs: StoredPack[] = [];
+  readonly followUps: StoredFollowUpFiles[] = [];
 
   async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<boolean> {
     this.states.push({ jobId, state, meta });
@@ -318,6 +339,11 @@ export class InMemoryJobStore implements JobStore {
 
   async savePack(pack: StoredPack): Promise<void> {
     this.packs.push(pack);
+  }
+
+  async saveFollowUpFiles(files: StoredFollowUpFiles): Promise<string[]> {
+    this.followUps.push(files);
+    return [...new Set(files.files.map((f) => f.ref))];
   }
 
   async markShotUndelivered(update: UndeliveredShot): Promise<void> {
@@ -1447,7 +1473,7 @@ export async function runShot(
     ...(passedRuns.length > 0 ? { packAssets: passedRuns.map((r) => r.packAsset as ShotPackAsset) } : {}),
     ...(passedRuns.length === 0 && failure !== undefined ? { failure } : {}),
   };
-  await deps.store.saveAsset(toStoredAsset(outcome, ctx));
+  await deps.store.saveAsset(toStoredAsset(outcome, ctx, shot));
   return outcome;
 }
 
@@ -1492,14 +1518,14 @@ export async function recordShotFailure(
   console.error(`[runner] shot ${shot.id} failed outside its QC loop`, err);
   const outcome = shotFailureOutcome(shot, ctx, SHOT_PROVIDER_TROUBLE, errorDetail(err));
   try {
-    await store.saveAsset(toStoredAsset(outcome, ctx));
+    await store.saveAsset(toStoredAsset(outcome, ctx, shot));
   } catch (saveErr) {
     console.error(`[runner] could not record failed shot ${shot.id}`, saveErr);
   }
   return outcome;
 }
 
-function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext): StoredAsset {
+function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext, shot: Shot): StoredAsset {
   const file = outcome.packAssets?.find((a) => a.specId === outcome.specId) ?? outcome.packAssets?.[0];
   return {
     jobId: ctx.jobId,
@@ -1514,6 +1540,7 @@ function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext): StoredAsset {
     verdict: outcome.verdict,
     measured: outcome.measured,
     encoded: file ? { buffer: file.buffer, format: file.format ?? "png" } : undefined,
+    shot,
   };
 }
 
