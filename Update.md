@@ -40,6 +40,13 @@ Fixed on 2026-09-28, before any pack runs with live keys (branch fix/live-pack-s
   - A shot stops before spending once the job is no longer live.
   - A delivered and charged pack stays done if the final state write fails.
 
+Live still shots (same day, branch feat/live-still-shots):
+- Live packs now render every still shot type from the seller's real cutout, not only lifestyle composites. That covers the white main image, alt angles, cutout, gray and brand sweeps, collection thumb, infographic, dimensions, A+ banners and the social crops.
+- The Photoroom cutout runs once per photo per job on the inline runner that production uses today. On Trigger.dev cloud it runs once per shot task, because each task builds its own generator. Sharing it there means persisting the cutout, for example to R2.
+- Brand sweeps use the brand kit color.
+- Packaged files are named by their real format, which closes 2.9.
+- Still needs review at no charge: in the box and comparison (no seller data is collected for them) and video.
+
 ## Wave 0: release blockers (do first, in this order)
 
 Steps 1 and 2 were completed on 2026-09-28 (see docs/verification.md).

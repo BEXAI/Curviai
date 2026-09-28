@@ -96,6 +96,13 @@ describe("planShots", () => {
     const noDims = planShots(profile({ dimensions: null }), baseOpts);
     expect(noDims.shots.some((s) => s.type === "dimensions")).toBe(false);
     expect(noDims.skipped.some((s) => s.type === "dimensions")).toBe(true);
+    // A model guess is never printed on a charged image.
+    const guessed = planShots(profile({ dimensions: { value: "about 10 cm", source: "unknown" } }), baseOpts);
+    expect(guessed.shots.some((s) => s.type === "dimensions")).toBe(false);
+    expect(guessed.skipped.find((s) => s.type === "dimensions")?.reason).toContain("not confirmed");
+    // The full label rides on the shot for the template to lay out.
+    const label = withDims.shots.find((s) => s.type === "dimensions")?.callouts;
+    expect(label).toEqual(["10 x 10 x 12 cm"]);
   });
 
   it("plans in_the_box and comparison only when the seller supplied facts", () => {

@@ -9,3 +9,4 @@ export * from "./composite/index";
 export * from "./planner/deterministic";
 export * from "./metadata/iptc";
 export * from "./packager/index";
+export * from "./templates/still";

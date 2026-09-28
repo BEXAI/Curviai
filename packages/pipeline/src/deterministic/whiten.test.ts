@@ -1,10 +1,64 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import { getSpec, type ChannelSpec } from "@curvi/specs";
-import { decodeToRgba, maskFromAlpha } from "../raw";
+import { decodeMask, decodeToRgba, maskFromAlpha, type RawImage, type RawMask } from "../raw";
 import { boundingBoxOfMask } from "../mask";
+import { fidelityReport } from "../qc/fidelity";
+import { qcKindForSpec } from "../qc/pixelChecks";
 import { rectProduct } from "../testutil";
-import { makeAmazonMain, makeCutoutPng, makeSweep } from "./whiten";
+import {
+  buildProductReference,
+  makeAmazonMain,
+  makeCutoutPng,
+  makeSweep,
+  PRODUCT_RESIZE_KERNEL,
+} from "./whiten";
+
+/**
+ * Textured cutout (gradients plus seeded noise inside an ellipse, alpha 0
+ * outside), so a fidelity check compares real detail, not one flat color.
+ */
+async function texturedCutout(size = 256): Promise<{ png: Buffer; maskPng: Buffer; rgba: RawImage; mask: RawMask }> {
+  const data = Buffer.alloc(size * size * 4, 0);
+  const maskData = Buffer.alloc(size * size, 0);
+  let seed = 12345;
+  const noise = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return (seed % 31) - 15;
+  };
+  const cx = size / 2;
+  const cy = size / 2;
+  const rx = size * 0.32;
+  const ry = size * 0.4;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (x + 0.5 - cx) / rx;
+      const dy = (y + 0.5 - cy) / ry;
+      if (dx * dx + dy * dy > 1) continue;
+      const o = (y * size + x) * 4;
+      data[o] = Math.round(60 + (120 * x) / size + noise());
+      data[o + 1] = Math.round(70 + (100 * y) / size + noise());
+      data[o + 2] = Math.round(150 - (60 * (x + y)) / (2 * size) + noise());
+      data[o + 3] = 255;
+      maskData[y * size + x] = 255;
+    }
+  }
+  const rgba: RawImage = { data, width: size, height: size, channels: 4 };
+  const mask: RawMask = { data: maskData, width: size, height: size };
+  const png = await sharp(data, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer();
+  const maskPng = await sharp(maskData, { raw: { width: size, height: size, channels: 1 } }).png().toBuffer();
+  return { png, maskPng, rgba, mask };
+}
+
+/** Copy of image with red raised by amount inside mask, like a stray tint. */
+function tintInsideMask(image: RawImage, mask: RawMask, amount: number): RawImage {
+  const data = Buffer.from(image.data);
+  for (let i = 0; i < mask.data.length; i++) {
+    if (mask.data[i] === 0) continue;
+    data[i * 4] = Math.min(255, data[i * 4] + amount);
+  }
+  return { ...image, data };
+}
 
 /** Small spec so most tests stay fast; same rules as amazon.main. */
 const smallSpec: ChannelSpec = {
@@ -133,5 +187,75 @@ describe("makeSweep", () => {
     const cy = bbox.top + Math.floor(bbox.height / 2);
     const o = (cy * raw.width + cx) * 4;
     expect(raw.data[o + 1]).toBeGreaterThan(raw.data[o]);
+  });
+});
+
+describe("product placement and rule 3 reference", () => {
+  it("makeAmazonMain reports a placement whose reference matches the raw product bytes", async () => {
+    const cut = await texturedCutout();
+    const result = await makeAmazonMain(cut.png, cut.maskPng, smallSpec);
+    const { placement } = result;
+    expect(placement.kernel).toBe(PRODUCT_RESIZE_KERNEL);
+    expect(placement.crop).toEqual(boundingBoxOfMask(cut.mask));
+    expect(boundingBoxOfMask(result.mask)).toEqual({
+      left: placement.left,
+      top: placement.top,
+      width: placement.width,
+      height: placement.height,
+    });
+
+    const reference = await buildProductReference(await decodeToRgba(cut.png), placement, result.width, result.height);
+    const onRaw = await fidelityReport(reference, result.raw, result.mask, { kind: qcKindForSpec(smallSpec) });
+    expect(onRaw.pass).toBe(true);
+    expect(onRaw.exactByteShare).toBe(1);
+
+    // The helper's own JPEG is not checked here: on detailed products codec
+    // error can exceed the per pixel limit, so the live renderers gate every
+    // lossy file on this same fidelity check and fall back to PNG.
+    const tinted = await fidelityReport(reference, tintInsideMask(result.raw, result.mask, 25), result.mask, {
+      kind: "main",
+    });
+    expect(tinted.pass).toBe(false);
+  });
+
+  it("makeSweep reports a placement whose reference matches the raw product bytes", async () => {
+    const cut = await texturedCutout();
+    const sweep = await makeSweep(cut.png, cut.maskPng, "#D9D9D9", { width: 480, height: 600 });
+    const reference = await buildProductReference(await decodeToRgba(cut.png), sweep.placement, sweep.width, sweep.height);
+    const onRaw = await fidelityReport(reference, sweep.raw, sweep.mask, { kind: "other" });
+    expect(onRaw.pass).toBe(true);
+    expect(onRaw.exactByteShare).toBe(1);
+    const tinted = await fidelityReport(reference, tintInsideMask(sweep.raw, sweep.mask, 25), sweep.mask, {
+      kind: "other",
+    });
+    expect(tinted.pass).toBe(false);
+  });
+
+  it("makeCutoutPng reports the crop it trimmed to", async () => {
+    const cut = await texturedCutout();
+    const cutout = await makeCutoutPng(cut.png, cut.maskPng);
+    expect(cutout.crop).toEqual(boundingBoxOfMask(await decodeMask(cut.maskPng)));
+    expect(cutout.crop.width).toBe(cutout.width);
+    expect(cutout.crop.height).toBe(cutout.height);
+  });
+
+  it("buildProductReference leaves everything outside the placement empty", async () => {
+    const cut = await texturedCutout(64);
+    const crop = boundingBoxOfMask(cut.mask)!;
+    const reference = await buildProductReference(
+      cut.rgba,
+      { crop, left: 10, top: 5, width: 20, height: 30, kernel: PRODUCT_RESIZE_KERNEL },
+      50,
+      40,
+      { alpha: { mask: cut.mask, mode: "replace" } },
+    );
+    expect(reference.width).toBe(50);
+    expect(reference.height).toBe(40);
+    for (let y = 0; y < 40; y++) {
+      for (let x = 0; x < 50; x++) {
+        const inside = x >= 10 && x < 30 && y >= 5 && y < 35;
+        expect(reference.data[(y * 50 + x) * 4 + 3]).toBe(inside ? 255 : 0);
+      }
+    }
   });
 });

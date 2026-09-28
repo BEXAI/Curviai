@@ -88,7 +88,12 @@ Live pack safety (2026-09-28, Update.md 2.1, 5.2, 1.6, 3.1), done because produc
 
 ## Open follow ups
 
-- Live paths for deterministic and template shots (amazon_main, alt angles, cutout, sweeps, infographic and similar). Live packs currently deliver lifestyle composites only; the rest go to needs review at no charge.
+- DONE 2026-09-28: live paths for deterministic and template stills. LiveShotGenerator cuts each source photo out once per job (per shot task on Trigger.dev cloud, where every task builds its own generator) and renders:
+  - Deterministic shots through trigger/src/live-deterministic.ts (whiten helpers): amazon_main, alt_angle_white, cutout_png, gray and brand sweeps, collection_thumb.
+  - Template shots through packages/pipeline/src/templates/still.ts (bundled Inter): infographic, dimensions, A+ banners, social 1x1, 4x5 and 9x16.
+  - A live pack end to end test passes all 16 planned still shots.
+  - Still open: in_the_box and comparison, because the app does not collect box contents or comparison facts. Video and avatar shots also remain open.
+  - A Trigger.dev cloud deploy must ship the font file (set CURVI_TEMPLATE_FONT_FILE or add it to the build); the web inline runner resolves it from node_modules.
 
 - OCR engine and embedding similarity (DINOv2 or CLIP) implementations behind the existing pluggable QC interfaces; semanticChecks is still not invoked from the runner.
 - c2pa-node manifest signing once a signing certificate exists.
@@ -109,3 +114,10 @@ Live pack safety (2026-09-28, Update.md 2.1, 5.2, 1.6, 3.1), done because produc
 - Eval regression gates against a stored baseline (3 point pass rate and 0.02 fidelity drop) and eval_runs persistence; golden set is 10 synthetic products, not the plan's 40.
 - The light asset editor (/api/assets/:id/edit: crop, shadow strength, background swap), the in app before and after reveal slider, share links from finished packs and the referral grant flow.
 - semanticChecks (OCR and embedding gates) still needs real engines and a runner call site.
+
+## Still template font and text rendering (checked 2026-09-28)
+
+- Font: @expo-google-fonts/inter 0.4.2, added to packages/pipeline. npm license field "MIT AND OFL-1.1": package code MIT, Inter font files SIL Open Font License 1.1 (LICENSE_FONT ships in the package). Verified after install that the package ships TTF files, for example 600SemiBold/Inter_600SemiBold.ttf, which the still template renderer uses. The font's name table family is "Inter SemiBold".
+- Text shaping: opentype.js 1.3.4 (MIT, deps tiny-inflate and string.prototype.codepointat), with @types/opentype.js 1.3.10 (MIT) as a dev dependency. Glyph outlines are converted to SVG paths and rasterized by sharp (librsvg), so no system font stack is involved.
+- Why not sharp text input with fontfile: with sharp 0.34.5 (Pango 1.57, fontconfig 2.17.1) on macOS the fontfile option was ignored and output fell back to a Helvetica like system face, and Linux hosts do not guarantee fonts. Glyph paths from the bundled TTF render identically on every host.
+- Resolution: packages/pipeline/src/templates/font.ts resolves the TTF with createRequire from the module, then from the working directory, then by walking up node_modules layouts. CURVI_TEMPLATE_FONT_FILE overrides the path for hosts whose bundler does not ship node_modules files (a Trigger.dev cloud deploy bundles code and may not include the TTF; set the env var or keep the package external there).

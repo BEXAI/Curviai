@@ -226,12 +226,26 @@ export async function buildPack(
 function fileNameFor(spec: ChannelSpec, asset: PackAsset, n: number, format: string): string {
   if (spec.naming) {
     try {
-      return filenameFor(spec, { sku: asset.sku, seoSlug: asset.seoSlug, n });
+      // The naming templates carry a fixed extension; the file's real format
+      // wins, so a PNG main image never ships named .jpg (Update.md 2.9).
+      return withExtension(filenameFor(spec, { sku: asset.sku, seoSlug: asset.seoSlug, n }), format);
     } catch {
       // Fall through to the generic name when a naming variable is missing.
     }
   }
-  return `${spec.id.replaceAll(".", "_")}_${String(n).padStart(2, "0")}.${format}`;
+  return `${spec.id.replaceAll(".", "_")}_${String(n).padStart(2, "0")}.${extensionFor(format)}`;
+}
+
+function extensionFor(format: string): string {
+  const lower = format.toLowerCase();
+  return lower === "jpeg" ? "jpg" : lower;
+}
+
+/** Replaces a trailing file extension with the one matching the format. */
+export function withExtension(name: string, format: string): string {
+  const ext = extensionFor(format);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? `${name.slice(0, dot)}.${ext}` : `${name}.${ext}`;
 }
 
 function nextN(counters: Map<string, number>, specId: string): number {

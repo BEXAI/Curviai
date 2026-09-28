@@ -129,3 +129,13 @@ describe("buildPack", () => {
     expect(channelOf("meta.feed_1x1")).toBe("meta");
   });
 });
+
+describe("withExtension", () => {
+  it("names files after their real format", async () => {
+    const { withExtension } = await import("./index");
+    expect(withExtension("SKU1.MAIN.jpg", "png")).toBe("SKU1.MAIN.png");
+    expect(withExtension("SKU1.PT01.jpg", "jpeg")).toBe("SKU1.PT01.jpg");
+    expect(withExtension("slug-1.jpg", "jpg")).toBe("slug-1.jpg");
+    expect(withExtension("noext", "png")).toBe("noext.png");
+  });
+});

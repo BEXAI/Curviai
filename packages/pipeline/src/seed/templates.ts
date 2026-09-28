@@ -20,3 +20,26 @@ export const templates = {
   harmonize_nano_banana2: () =>
     `Keep the product exactly as it is: do not change its label, logo, text, shape, color or size. Only adjust the surrounding light so the scene matches the product, and add a soft realistic contact shadow beneath it.`,
 };
+
+/**
+ * Colors for deterministic and template stills (gray sweep, brand sweep
+ * fallback, template backgrounds and text). Seed data per CLAUDE.md rule 2,
+ * so no renderer hardcodes a color. Template backgrounds follow the shot's
+ * style preset.
+ */
+export const stillStyle = {
+  sweepGrayHex: "#D9DADC",
+  /** Used for sweep_brand when the workspace has no brand kit color yet. */
+  fallbackBrandHex: "#3A4556",
+  presetBackgroundHex: {
+    minimal_studio: "#ECECEE",
+    luxury_marble: "#F3F1ED",
+    kitchen_lifestyle: "#EADFCF",
+    outdoor: "#DDE4D8",
+    holiday: "#F0E7DB",
+  } satisfies Record<PresetKey, string>,
+  /** Background when the preset is "none" or unknown. */
+  defaultBackgroundHex: "#F4F4F5",
+  textHex: "#1B1F24",
+  accentHex: "#FD7F11",
+} as const;
