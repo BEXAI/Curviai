@@ -10,26 +10,30 @@
  */
 
 import { NextResponse } from "next/server";
-import { getServices } from "@/lib/services";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
 import { cancelResponse } from "@/lib/services/shot-op-response";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
+  }
   const { id } = await context.params;
   if (!isUuid(id)) {
     return NextResponse.json({ error: "Job not found." }, { status: 404 });
   }
-  const services = getServices();
-  const resolved = await resolveWorkspace(services, "Sign in to cancel a pack.");
+  const resolved = await resolveSignedIn("Sign in to cancel a pack.");
   if ("response" in resolved) {
     return resolved.response;
   }
+  const { services } = resolved;
   if (resolved.workspace.role === "client") {
     return NextResponse.json(
       { error: "Client seats can review packs but cannot cancel them.", reason: "role_forbidden" },

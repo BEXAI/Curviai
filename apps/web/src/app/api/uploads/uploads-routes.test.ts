@@ -11,10 +11,11 @@ import {
 } from "@/lib/testing/fake-services";
 
 let services: Services;
+const mode = vi.hoisted(() => ({ db: true }));
 
 vi.mock("@/lib/services", () => ({
   getServices: () => services,
-  isDbMode: () => true,
+  isDbMode: () => mode.db,
 }));
 vi.mock("@/lib/supabase/server", () => ({
   getSessionUser: async () => ({ id: "7e6d5c4b-3a29-4817-a6f5-e4d3c2b1a090" }),
@@ -45,6 +46,7 @@ const completeBody = (overrides: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   services = createFakeServices("owner");
+  mode.db = true;
   setRateLimitStoreForTests(new MemoryRateLimitStore());
   vi.stubEnv("R2_ACCOUNT_ID", "acct");
   vi.stubEnv("R2_ACCESS_KEY_ID", "key");
@@ -106,6 +108,57 @@ describe("POST /api/uploads/sign", () => {
     expect(blocked.status).toBe(429);
     expect(blocked.headers.get("Retry-After")).toBeTruthy();
     expect(services.ensureWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("answers { error: <copy>, reason } when R2 is not set up", async () => {
+    vi.unstubAllEnvs();
+    const response = await sign(jsonRequest("https://curvi.ai/api/uploads/sign", signBody));
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.reason).toBe("uploads_not_configured");
+    expect(String(body.error)).toMatch(/Cloudflare R2/);
+    expect(body.notice).toBeUndefined();
+  });
+
+  it("never signs an upload for the shared demo workspace, even with R2 set up", async () => {
+    mode.db = false;
+    const response = await sign(jsonRequest("https://curvi.ai/api/uploads/sign", signBody));
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { error: string; reason: string };
+    expect(body.reason).toBe("uploads_not_configured");
+    expect(body.error).toMatch(/demo server/);
+  });
+
+  it("answers a validation refusal as { error: <copy>, reason }", async () => {
+    const response = await sign(
+      jsonRequest("https://curvi.ai/api/uploads/sign", { kind: "image", contentType: "image/jpeg", bytes: 26 * 1024 * 1024 }),
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "File is too large. The image limit is 25 MB.", reason: "invalid_upload" });
+  });
+
+  it("refuses a content type over 100 characters", async () => {
+    const response = await sign(
+      jsonRequest("https://curvi.ai/api/uploads/sign", { ...signBody, contentType: `image/${"x".repeat(100)}` }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("refuses an oversized body with 413 and a cross site Origin with 403", async () => {
+    const big = await sign(jsonRequest("https://curvi.ai/api/uploads/sign", { ...signBody, pad: "x".repeat(20_000) }));
+    expect(big.status).toBe(413);
+    const crossSite = await sign(jsonRequest("https://curvi.ai/api/uploads/sign", signBody, { origin: "https://evil.example" }));
+    expect(crossSite.status).toBe(403);
+    const sameSite = await sign(jsonRequest("https://curvi.ai/api/uploads/sign", signBody, { origin: "https://curvi.ai", host: "curvi.ai" }));
+    expect(sameSite.status).not.toBe(403);
+  });
+
+  it("resolves the caller before reading the body", async () => {
+    services = createFakeServices(null);
+    const response = await sign(
+      new Request("https://curvi.ai/api/uploads/sign", { method: "POST", body: "not json", headers: { "content-type": "application/json" } }),
+    );
+    expect(response.status).toBe(401);
   });
 });
 

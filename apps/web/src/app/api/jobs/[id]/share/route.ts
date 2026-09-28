@@ -6,14 +6,16 @@
  * DELETE: take the share page (and its gallery entry) down.
  *
  * Publishing is a consent decision, so only owners and admins may do it
- * (403 otherwise). Writes are rate limited by IP and by user.
+ * (403 otherwise). Writes refuse a cross site Origin, resolve the caller
+ * before reading the (capped) body, and are rate limited by IP and by user.
  */
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { readJsonCapped } from "@/lib/http/json-body";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn, type SignedInResolution } from "@/lib/http/services";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
-import { getServices } from "@/lib/services";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { getShareStore, type ShareActionResult, type ShareKind } from "@/lib/shares";
 import { isUuid } from "@/lib/validation/ids";
 
@@ -35,11 +37,11 @@ function actionResponse(result: ShareActionResult): NextResponse {
   return NextResponse.json({ error: result.message, reason: result.reason }, { status: STATUS_FOR_REASON[result.reason] });
 }
 
-async function workspaceFor(id: string, signedOut: string) {
+async function workspaceFor(id: string, signedOut: string): Promise<SignedInResolution> {
   if (!isUuid(id)) {
     return { response: NextResponse.json({ error: "Pack not found." }, { status: 404 }) };
   }
-  return resolveWorkspace(getServices(), signedOut);
+  return resolveSignedIn(signedOut);
 }
 
 export async function GET(_request: Request, context: Context): Promise<NextResponse> {
@@ -56,21 +58,15 @@ export async function GET(_request: Request, context: Context): Promise<NextResp
 }
 
 export async function POST(request: Request, context: Context): Promise<NextResponse> {
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
+  }
   const ipLimited = await limitByIp(request, "shares.write");
   if (ipLimited) {
     return ipLimited;
   }
   const { id } = await context.params;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
-  }
-  const parsed = PublishRequest.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid request." }, { status: 400 });
-  }
   const resolved = await workspaceFor(id, "Sign in to share a pack.");
   if ("response" in resolved) {
     return resolved.response;
@@ -79,10 +75,22 @@ export async function POST(request: Request, context: Context): Promise<NextResp
   if (userLimited) {
     return userLimited;
   }
+  const body = await readJsonCapped(request);
+  if (!body.ok) {
+    return body.response;
+  }
+  const parsed = PublishRequest.safeParse(body.data);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid request." }, { status: 400 });
+  }
   return actionResponse(await getShareStore().publish(resolved.workspace, id, parsed.data));
 }
 
 export async function DELETE(request: Request, context: Context): Promise<NextResponse> {
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
+  }
   const ipLimited = await limitByIp(request, "shares.write");
   if (ipLimited) {
     return ipLimited;

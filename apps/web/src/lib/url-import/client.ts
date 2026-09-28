@@ -43,11 +43,13 @@ export async function requestPhotoImport(url: string, name: string): Promise<Pho
     const data = (await response.json().catch(() => ({}))) as {
       key?: string;
       sha256?: string;
-      notice?: string;
       error?: string;
+      reason?: string;
     };
-    if (response.status === 503 && data.notice) {
-      return { phase: "notice", message: data.notice };
+    // Imports are off on this server (demo mode or no storage): a notice,
+    // not an error on the photo.
+    if (response.status === 503 && data.reason === "uploads_not_configured" && data.error) {
+      return { phase: "notice", message: data.error };
     }
     if (!response.ok || !data.key || !data.sha256) {
       return { phase: "error", message: data.error ?? "We could not import that photo. Try again." };

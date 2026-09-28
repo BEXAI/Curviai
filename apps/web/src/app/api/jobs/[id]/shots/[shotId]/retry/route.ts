@@ -8,10 +8,10 @@
  */
 
 import { NextResponse } from "next/server";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
-import { getServices } from "@/lib/services";
 import { isShotId, shotOpResponse } from "@/lib/services/shot-op-response";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +20,10 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ id: string; shotId: string }> },
 ): Promise<NextResponse> {
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
+  }
   const ipLimited = await limitByIp(request, "jobs.create");
   if (ipLimited) {
     return ipLimited;
@@ -28,11 +32,11 @@ export async function POST(
   if (!isUuid(id) || !isShotId(shotId)) {
     return NextResponse.json({ error: "Shot not found." }, { status: 404 });
   }
-  const services = getServices();
-  const resolved = await resolveWorkspace(services, "Sign in to run a shot again.");
+  const resolved = await resolveSignedIn("Sign in to run a shot again.");
   if ("response" in resolved) {
     return resolved.response;
   }
+  const { services } = resolved;
   const userLimited = await limitByUser("jobs.create", await userRateLimitSubject(resolved.workspace.id));
   if (userLimited) {
     return userLimited;

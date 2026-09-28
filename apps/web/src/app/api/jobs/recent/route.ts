@@ -8,8 +8,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { getServices } from "@/lib/services";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
+import { resolveSignedIn } from "@/lib/http/services";
 
 export const dynamic = "force-dynamic";
 
@@ -17,11 +16,11 @@ export const dynamic = "force-dynamic";
 const RECENT_LIMIT = 10;
 
 export async function GET(): Promise<NextResponse> {
-  const services = getServices();
-  const resolved = await resolveWorkspace(services, "Sign in to view jobs.");
+  const resolved = await resolveSignedIn("Sign in to view jobs.");
   if ("response" in resolved) {
     return resolved.response;
   }
+  const { services } = resolved;
   const jobs = await services.listRecentJobs(resolved.workspace.id, RECENT_LIMIT);
   return NextResponse.json(
     { jobs: jobs.map((j) => ({ id: j.id, productTitle: j.productTitle, status: j.status })) },

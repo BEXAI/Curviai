@@ -338,12 +338,17 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
           bytes: file.size,
         }),
       });
-      const data = (await response.json()) as { url?: string; key?: string; notice?: string; error?: string };
-      if (response.status === 503) {
+      const data = (await response.json().catch(() => ({}))) as {
+        url?: string;
+        key?: string;
+        error?: string;
+        reason?: string;
+      };
+      if (response.status === 503 && data.reason === "uploads_not_configured") {
         // Uploads are off on this server (demo mode): the photo is dropped and
         // the pack uses the demo photo.
         removePhoto(id);
-        setUploadNotice(data.notice ?? "Uploads are not configured yet. The pack will use the demo photo instead.");
+        setUploadNotice(data.error ?? "Uploads are not configured yet. The pack will use the demo photo instead.");
         return;
       }
       if (!response.ok || !data.url || !data.key) {

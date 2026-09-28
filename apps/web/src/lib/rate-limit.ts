@@ -44,6 +44,9 @@ export const RATE_LIMIT_POLICIES = {
   "products.create": { user: { limit: 120, windowSeconds: HOUR }, ip: { limit: 240, windowSeconds: HOUR } },
   // Each side by side image fetches two pictures and renders a new one.
   "jobs.makeover": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
+  // The all files zip streams every delivered file of a pack out of storage.
+  // A seller downloads a pack a handful of times; 30 an hour leaves room.
+  "jobs.pack": { user: { limit: 30, windowSeconds: HOUR }, ip: { limit: 30, windowSeconds: HOUR } },
   // Product link imports make the server fetch outside pages, so they are
   // counted per workspace (the "user" rule) as well as per IP.
   "imports.product": { user: { limit: 30, windowSeconds: HOUR }, ip: { limit: 60, windowSeconds: HOUR } },

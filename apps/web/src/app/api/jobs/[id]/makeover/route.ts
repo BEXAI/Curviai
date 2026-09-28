@@ -12,12 +12,11 @@
 import { NextResponse } from "next/server";
 import { renderSideBySide } from "@curvi/pipeline/reveal";
 import { ILLUSTRATION_LABEL, isIllustrationSrc } from "@/components/marketing/demo-images";
+import { resolveSignedIn } from "@/lib/http/services";
 import { makeoverFilename, revealShots } from "@/lib/makeover";
 import { readImageUrl } from "@/lib/makeover-image";
 import { attachmentDisposition } from "@/lib/r2";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
-import { getServices } from "@/lib/services";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -40,12 +39,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: NO_REVEAL }, { status: 400 });
   }
 
-  const services = getServices();
-  const resolved = await resolveWorkspace(services, "Sign in to download your makeover.");
+  const resolved = await resolveSignedIn("Sign in to download your makeover.");
   if ("response" in resolved) {
     return resolved.response;
   }
-  const { workspace } = resolved;
+  const { services, workspace } = resolved;
   const userLimited = await limitByUser("jobs.makeover", await userRateLimitSubject(workspace.id));
   if (userLimited) {
     return userLimited;

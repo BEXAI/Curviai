@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Services } from "@/lib/services/types";
 import { MemoryRateLimitStore, RATE_LIMIT_POLICIES, setRateLimitStoreForTests } from "@/lib/rate-limit";
+import { ProvisioningError } from "@/lib/services/errors";
 import { createFakeServices, jsonRequest } from "@/lib/testing/fake-services";
 
 let services: Services;
@@ -52,8 +53,35 @@ describe("POST /api/products", () => {
     for (let i = 0; i < limit; i += 1) {
       await POST(jsonRequest("https://curvi.ai/api/products", { title: "", mode: "listing" }));
     }
+    vi.mocked(services.ensureWorkspace).mockClear();
     const blocked = await POST(jsonRequest("https://curvi.ai/api/products", body));
     expect(blocked.status).toBe(429);
+    expect(services.ensureWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("resolves the workspace like the other routes: 401 signed out, 503 when setup failed", async () => {
+    services = createFakeServices(null);
+    const signedOut = await POST(jsonRequest("https://curvi.ai/api/products", body));
+    expect(signedOut.status).toBe(401);
+    expect(await signedOut.json()).toEqual({ error: "Sign in to add a product." });
+
+    services = createFakeServices("owner");
+    vi.mocked(services.ensureWorkspace).mockRejectedValue(new ProvisioningError());
+    const failed = await POST(jsonRequest("https://curvi.ai/api/products", body));
+    expect(failed.status).toBe(503);
+    expect(failed.headers.get("Retry-After")).toBe("60");
+    expect(services.createProduct).not.toHaveBeenCalled();
+  });
+
+  it("creates the workspace of a new signed in user through ensureWorkspace", async () => {
+    await POST(jsonRequest("https://curvi.ai/api/products", body));
+    expect(services.ensureWorkspace).toHaveBeenCalled();
     expect(services.getCurrentWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("refuses a cross site Origin with 403 before any work", async () => {
+    const response = await POST(jsonRequest("https://curvi.ai/api/products", body, { origin: "https://evil.example" }));
+    expect(response.status).toBe(403);
+    expect(services.ensureWorkspace).not.toHaveBeenCalled();
   });
 });

@@ -163,6 +163,54 @@ describe("POST /api/jobs", () => {
     vi.mocked(services.createJob).mockRejectedValue(new Error("boom"));
     await expect(post(jobBody())).rejects.toThrow("boom");
   });
+
+  it("refuses a channel id over 64 characters", async () => {
+    const response = await post(jobBody({ channels: ["a".repeat(65)] }));
+    expect(response.status).toBe(400);
+    expect(services.createJob).not.toHaveBeenCalled();
+  });
+
+  it("refuses a body over the cap with 413, before parsing it", async () => {
+    const response = await post(jobBody({ userDescription: "x".repeat(70_000) }));
+    expect(response.status).toBe(413);
+    expect(((await response.json()) as { error: string }).error).toBe("This request is too large.");
+    expect(services.createJob).not.toHaveBeenCalled();
+  });
+
+  it("resolves the caller before reading the body", async () => {
+    services = createFakeServices(null);
+    const response = await createJob(
+      new Request("https://curvi.ai/api/jobs", {
+        method: "POST",
+        headers: { "idempotency-key": "k-raw", "content-type": "application/json" },
+        body: "{ not json",
+      }),
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("refuses a cross site Origin with 403 and allows its own", async () => {
+    const crossSite = await post(jobBody(), { origin: "https://evil.example" });
+    expect(crossSite.status).toBe(403);
+    expect(services.ensureWorkspace).not.toHaveBeenCalled();
+    expect((await post(jobBody(), { origin: "https://curvi.ai", host: "curvi.ai" })).status).toBe(201);
+  });
+});
+
+describe("GET /api/jobs/[id]/pack rate limit", () => {
+  it("limits pack downloads per IP with jobs.pack", async () => {
+    const { limit } = RATE_LIMIT_POLICIES["jobs.pack"].ip;
+    expect(limit).toBe(30);
+    expect(RATE_LIMIT_POLICIES["jobs.pack"].user.limit).toBe(30);
+    const request = () =>
+      getPack(new Request(`https://curvi.ai/api/jobs/${TEST_JOB_ID}/pack`, { headers: { "x-forwarded-for": "192.0.2.77" } }), params(TEST_JOB_ID));
+    for (let i = 0; i < limit; i += 1) {
+      expect((await request()).status).toBe(404);
+    }
+    const blocked = await request();
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBeTruthy();
+  });
 });
 
 describe("GET /api/jobs/[id] and its files and pack routes (Update.md 4.7)", () => {

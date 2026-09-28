@@ -6,10 +6,11 @@ import { TEST_WORKSPACE_ID, createFakeServices, jsonRequest } from "@/lib/testin
 import type { SafeFetchOptions, SafeFetchResult } from "@/lib/url-import/safe-fetch";
 
 let services: Services;
+let dbMode = true;
 
 vi.mock("@/lib/services", () => ({
   getServices: () => services,
-  isDbMode: () => true,
+  isDbMode: () => dbMode,
 }));
 vi.mock("@/lib/supabase/server", () => ({
   getSessionUser: async () => ({ id: "7e6d5c4b-3a29-4817-a6f5-e4d3c2b1a090" }),
@@ -50,6 +51,7 @@ function png(): Buffer {
 
 beforeEach(() => {
   services = createFakeServices("owner");
+  dbMode = true;
   setRateLimitStoreForTests(new MemoryRateLimitStore());
   safeFetchMock.mockReset();
   safeFetchMock.mockImplementation(async (url) => {
@@ -162,13 +164,49 @@ describe("POST /api/imports/photo", () => {
     expect(putSourceObject).toHaveBeenCalledWith(TEST_WORKSPACE_ID, expect.any(Buffer), "image/png");
   });
 
-  it("answers 503 with a notice when R2 is not set up", async () => {
+  it("answers 503 with the notice as the error when R2 is not set up", async () => {
     vi.unstubAllEnvs();
     const response = await post({ url: "https://cdn.shopify.com/apron.png" });
     expect(response.status).toBe(503);
-    const body = (await response.json()) as { notice?: string };
-    expect(body.notice).toMatch(/Cloudflare R2/);
+    const body = (await response.json()) as { error?: string; reason?: string; notice?: string };
+    expect(body.reason).toBe("uploads_not_configured");
+    expect(body.error).toMatch(/Cloudflare R2/);
+    expect(body.notice).toBeUndefined();
     expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stores nothing for the shared demo workspace, even with R2 set up", async () => {
+    dbMode = false;
+    const response = await post({ url: "https://cdn.shopify.com/apron.png" });
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { error?: string; reason?: string };
+    expect(body.reason).toBe("uploads_not_configured");
+    expect(body.error).toMatch(/demo server/);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(putSourceObject).not.toHaveBeenCalled();
+  });
+
+  it("refuses a cross site Origin and an oversized body before any work", async () => {
+    const crossSite = await post({ url: "https://cdn.shopify.com/apron.png" }, { origin: "https://evil.example" });
+    expect(crossSite.status).toBe(403);
+    expect(await crossSite.json()).toMatchObject({ reason: "cross_site" });
+    expect(services.ensureWorkspace).not.toHaveBeenCalled();
+
+    const tooLarge = await post({ url: `https://cdn.shopify.com/${"a".repeat(20_000)}.png` });
+    expect(tooLarge.status).toBe(413);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not read the body of a signed out caller", async () => {
+    services = createFakeServices(null);
+    const response = await importPhotoRoute(
+      new Request("https://curvi.ai/api/imports/photo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "not json at all",
+      }),
+    );
+    expect(response.status).toBe(401);
   });
 
   it("refuses client seats and signed out callers before fetching", async () => {

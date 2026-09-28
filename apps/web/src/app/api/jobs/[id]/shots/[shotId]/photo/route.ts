@@ -4,17 +4,20 @@
  * pack: the photo is saved to the pack's product and the shots it unlocks
  * are planned and run, held and charged by the pack rules. The body names
  * an upload already signed and stored through /api/uploads/sign; its key
- * must sit in this workspace's source prefix. Owner, admin and editor only;
- * rate limited like starting a pack.
+ * must sit in this workspace's source prefix, and the service checks the
+ * stored photo itself (a file that fails the check is a 422). Owner, admin
+ * and editor only; rate limited like starting a pack. A cross site Origin
+ * is refused and the caller is resolved before the (capped) body is read.
  */
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { readJsonCapped } from "@/lib/http/json-body";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
 import { isWorkspaceSourceKey } from "@/lib/r2";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
-import { getServices } from "@/lib/services";
 import { isShotId, shotOpResponse } from "@/lib/services/shot-op-response";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +31,10 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ id: string; shotId: string }> },
 ): Promise<NextResponse> {
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
+  }
   const ipLimited = await limitByIp(request, "jobs.create");
   if (ipLimited) {
     return ipLimited;
@@ -36,28 +43,25 @@ export async function POST(
   if (!isUuid(id) || !isShotId(shotId)) {
     return NextResponse.json({ error: "Shot not found." }, { status: 404 });
   }
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
+  const resolved = await resolveSignedIn("Sign in to add a photo.");
+  if ("response" in resolved) {
+    return resolved.response;
   }
-  const parsed = PhotoRequest.safeParse(body);
+  const { services, workspace } = resolved;
+  const userLimited = await limitByUser("jobs.create", await userRateLimitSubject(workspace.id));
+  if (userLimited) {
+    return userLimited;
+  }
+  const body = await readJsonCapped(request);
+  if (!body.ok) {
+    return body.response;
+  }
+  const parsed = PhotoRequest.safeParse(body.data);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid request.", issues: parsed.error.issues.map((i) => i.message) },
       { status: 400 },
     );
-  }
-  const services = getServices();
-  const resolved = await resolveWorkspace(services, "Sign in to add a photo.");
-  if ("response" in resolved) {
-    return resolved.response;
-  }
-  const { workspace } = resolved;
-  const userLimited = await limitByUser("jobs.create", await userRateLimitSubject(workspace.id));
-  if (userLimited) {
-    return userLimited;
   }
   if (!isWorkspaceSourceKey(workspace.id, parsed.data.key)) {
     return NextResponse.json({ error: "That upload does not belong to this workspace." }, { status: 403 });

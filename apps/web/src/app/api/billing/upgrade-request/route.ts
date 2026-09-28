@@ -14,7 +14,10 @@ import { and, eq, events, sql } from "@curvi/db";
 import { topUps } from "@curvi/pipeline/seed";
 import { BILLING_FORBIDDEN_NOTICE, canManageBilling } from "@/lib/billing/access";
 import { isPaidTierKey } from "@/lib/billing/plans";
-import { getServices, isDbMode } from "@/lib/services";
+import { readJsonCapped } from "@/lib/http/json-body";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
+import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
 import { getSessionUser } from "@/lib/supabase/server";
 
@@ -35,26 +38,29 @@ const UpgradeRequest = z.union([
 ]);
 
 export async function POST(request: Request): Promise<NextResponse> {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
   }
-  const parsed = UpgradeRequest.safeParse(body);
+  const resolved = await resolveSignedIn("Sign in to manage billing.", { ensure: true });
+  if ("response" in resolved) {
+    return resolved.response;
+  }
+  const { workspace } = resolved;
+  if (!canManageBilling(workspace.role)) {
+    return NextResponse.json({ error: "billing_forbidden", notice: BILLING_FORBIDDEN_NOTICE }, { status: 403 });
+  }
+
+  const body = await readJsonCapped(request);
+  if (!body.ok) {
+    return body.response;
+  }
+  const parsed = UpgradeRequest.safeParse(body.data);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid request.", issues: parsed.error.issues.map((i) => i.message) },
       { status: 400 },
     );
-  }
-
-  const workspace = await getServices().ensureWorkspace();
-  if (!workspace) {
-    return NextResponse.json({ error: "Sign in to manage billing." }, { status: 401 });
-  }
-  if (!canManageBilling(workspace.role)) {
-    return NextResponse.json({ error: "billing_forbidden", notice: BILLING_FORBIDDEN_NOTICE }, { status: 403 });
   }
 
   const notice = "Request saved. We will email you as soon as you can finish upgrading.";

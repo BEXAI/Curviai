@@ -9,7 +9,9 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "pnpm --filter @curvi/web build && PORT=3100 pnpm --filter @curvi/web start",
+    // next start runs with NODE_ENV=production, where demo mode fails closed
+    // unless ALLOW_DEMO_MODE=1. The e2e suite runs the demo build on purpose.
+    command: "pnpm --filter @curvi/web build && ALLOW_DEMO_MODE=1 PORT=3100 pnpm --filter @curvi/web start",
     url: "http://localhost:3100",
     timeout: 300000,
     reuseExistingServer: !process.env.CI,

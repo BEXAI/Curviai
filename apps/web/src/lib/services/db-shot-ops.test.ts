@@ -25,6 +25,7 @@ import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { and, eq, loadChannelSpecs, type Db } from "@curvi/db";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { creditCosts } from "@curvi/pipeline/seed";
+import type { IngestOutcome } from "@/lib/trust/ingest";
 import { DbService } from "./db";
 import { RERUN_STEP_STATUS } from "./shot-ops";
 
@@ -46,6 +47,20 @@ const MAIN_CREDITS = creditCosts.deterministic;
 
 function service(userId = OWNER): DbService {
   return new DbService({ db: db as unknown as Db, getUserId: async () => userId, getSupabase: async () => null });
+}
+
+/** A service whose upload check answers with a fixed outcome and records
+ * the keys it was asked to check. */
+function checkedService(outcome: IngestOutcome, seen: string[] = []): DbService {
+  return new DbService({
+    db: db as unknown as Db,
+    getUserId: async () => OWNER,
+    getSupabase: async () => null,
+    ingestUpload: async (key) => {
+      seen.push(key);
+      return outcome;
+    },
+  });
 }
 
 async function balance(ws: string): Promise<number> {
@@ -404,6 +419,53 @@ describe("DbService.addShotPhoto", () => {
     await db.insert(sourceMedia).values({ workspaceId: ws, productId: otherProduct.id, r2Key: input.key, kind: "image", sha256: input.sha256 });
     const before = await balance(ws);
     expect(await service().addShotPhoto(ws, jobId, "skipped_01_alt_angle_white:back", input)).toMatchObject({ reason: "conflict" });
+    expect(await balance(ws)).toBe(before);
+    expect((await jobRow(jobId)).status).toBe("done");
+    expect(followUps.fn).not.toHaveBeenCalled();
+  });
+
+  it("checks the added photo on the server and records its hash and size, not the client's", async () => {
+    const { ws, productId } = await workspaceWith(20);
+    const jobId = await deliveredPack(ws, productId);
+    const key = `ws/${ws}/src/checked-back.jpg`;
+    const seen: string[] = [];
+    const passed: IngestOutcome = { ok: true, sha256: "e".repeat(64), width: 900, height: 1200, bytes: 5000, rewritten: true };
+
+    const result = await checkedService(passed, seen).addShotPhoto(ws, jobId, "skipped_01_alt_angle_white:back", {
+      key,
+      sha256: "0".repeat(64),
+    });
+    expect(result).toMatchObject({ outcome: "started" });
+    expect(seen).toEqual([key]);
+    const [media] = await db.select().from(sourceMedia).where(eq(sourceMedia.r2Key, key));
+    expect(media).toMatchObject({ sha256: "e".repeat(64), width: 900, height: 1200, productId });
+  });
+
+  it("refuses a photo that fails the upload check, and answers unavailable when the check could not run", async () => {
+    const { ws, productId } = await workspaceWith(20);
+    const jobId = await deliveredPack(ws, productId);
+    const input = { key: `ws/${ws}/src/not-a-photo.jpg`, sha256: "a".repeat(64) };
+    const before = await balance(ws);
+
+    const refused = await checkedService({
+      ok: false,
+      retryable: false,
+      notice: "That file is not a photo we can use.",
+    }).addShotPhoto(ws, jobId, "skipped_01_alt_angle_white:back", input);
+    expect(refused).toEqual({
+      outcome: "rejected",
+      reason: "invalid_upload",
+      message: "That file is not a photo we can use.",
+    });
+
+    const down = await checkedService({
+      ok: false,
+      retryable: true,
+      notice: "We could not check that upload right now.",
+    }).addShotPhoto(ws, jobId, "skipped_01_alt_angle_white:back", input);
+    expect(down).toMatchObject({ outcome: "rejected", reason: "unavailable" });
+
+    expect(await db.select().from(sourceMedia).where(eq(sourceMedia.r2Key, input.key))).toHaveLength(0);
     expect(await balance(ws)).toBe(before);
     expect((await jobRow(jobId)).status).toBe("done");
     expect(followUps.fn).not.toHaveBeenCalled();

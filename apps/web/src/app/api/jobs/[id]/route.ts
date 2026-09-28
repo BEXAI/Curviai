@@ -7,8 +7,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { getServices } from "@/lib/services";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
+import { resolveSignedIn } from "@/lib/http/services";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -21,12 +20,12 @@ export async function GET(
   if (!isUuid(id)) {
     return NextResponse.json({ error: "Job not found." }, { status: 404 });
   }
-  const services = getServices();
   // A failed workspace setup is a retryable 503, not "Sign in" (Update.md 6.8).
-  const resolved = await resolveWorkspace(services, "Sign in to view jobs.");
+  const resolved = await resolveSignedIn("Sign in to view jobs.");
   if ("response" in resolved) {
     return resolved.response;
   }
+  const { services } = resolved;
   const job = await services.getJob(resolved.workspace.id, id);
   if (!job) {
     return NextResponse.json({ error: "Job not found." }, { status: 404 });
