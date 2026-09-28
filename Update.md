@@ -27,6 +27,8 @@ How this plan was built: the full check suite above, then four parallel code rev
 
 ## Wave 0: release blockers (do first, in this order)
 
+Steps 1 and 2 were completed on 2026-09-28 (see docs/verification.md).
+
 1. **Apply migrations 0006 to 0009 to production Supabase** (project tmwvjmvzjvpeagatjmud).
    - A read-only check on 2026-09-28 found production at 0005:
      - `credit_ledger.delta` is still integer.
