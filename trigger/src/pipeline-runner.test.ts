@@ -2141,3 +2141,157 @@ describe("the packager decodes delivered files one at a time", () => {
     expect(file.checks.map((c) => c.name)).toEqual(["bytes", "format"]);
   });
 });
+
+describe("intake judges every photo it lists (reviewer item 5)", () => {
+  const cleanFlags = { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false };
+  const screenshotVerdict = { sellableProduct: false, distinctProducts: 1, sharpEnough: true, screenshot: true, flags: cleanFlags };
+  const photoVerdict = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, screenshot: false, flags: cleanFlags };
+
+  class PlanRecordingStore extends InMemoryJobStore {
+    readonly plans: Shot[][] = [];
+    async savePlan(plan: { shots: Shot[] }): Promise<void> {
+      this.plans.push(plan.shots);
+    }
+  }
+
+  const blocks = (provider: MockProvider) =>
+    (provider.calls[0].input as LlmTaskInput).messages[0].content as Array<{ type: string; text?: string }>;
+  const listed = (provider: MockProvider): string[] =>
+    (JSON.parse(blocks(provider).find((b) => b.type === "text")?.text ?? "{}") as { images: Array<{ mediaId: string }> })
+      .images.map((image) => image.mediaId);
+
+  it("drops photo 4 of 5 when intake flags it, with the analyzer still on its own limit", async () => {
+    const png = await encodePng(solidCanvas(8, 8, 200, 200, 200));
+    const keys = ["front", "side", "detail", "screen", "scale"].map((name) => `ws/ws1/src/${name}.jpg`);
+    const intake = new MockProvider({
+      name: "mock-intake",
+      tasks: [intakeKey],
+      output: { images: [photoVerdict, photoVerdict, photoVerdict, screenshotVerdict, photoVerdict] },
+    });
+    const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+    const sources: string[] = [];
+    const demo = new DemoShotGenerator();
+    const generator: ShotGenerator = {
+      generate: async (args) => {
+        sources.push(args.shot.sourceMediaId);
+        return demo.generate(args);
+      },
+    };
+    const store = new PlanRecordingStore();
+    const summary = await runGeneratePack(
+      {
+        ...baseInput,
+        // The screenshot is marked as the back, so the planner would plan a
+        // back shot from it if it were kept.
+        images: [
+          { mediaId: keys[0], angle: "front" },
+          { mediaId: keys[1], angle: "side" },
+          { mediaId: keys[2], angle: "detail" },
+          { mediaId: keys[3], angle: "back" },
+          { mediaId: keys[4], angle: "scale" },
+        ],
+      },
+      makeDeps({ ai: makeAi({ intake, analyze }), generator, store, loadMedia: async () => png }),
+    );
+    expect(summary.state).toBe("done");
+
+    // Intake saw all five photos and listed the same five, in order.
+    expect(blocks(intake).filter((b) => b.type === "image")).toHaveLength(5);
+    expect(listed(intake)).toEqual(keys);
+    // The analyzer keeps its limit of three images and never sees photo 4.
+    expect(blocks(analyze).filter((b) => b.type === "image")).toHaveLength(3);
+    expect(blocks(analyze).find((b) => b.type === "text")?.text ?? "").not.toContain(keys[3]);
+    // Nothing is planned or generated from the screenshot.
+    expect(store.plans[0].length).toBeGreaterThan(0);
+    expect(store.plans[0].some((shot) => shot.sourceMediaId === keys[3])).toBe(false);
+    expect(sources.length).toBeGreaterThan(0);
+    expect(sources).not.toContain(keys[3]);
+  });
+
+  it("lists only the photos it was shown when one cannot be loaded", async () => {
+    const png = await encodePng(solidCanvas(8, 8, 200, 200, 200));
+    const keys = ["a", "b", "c"].map((name) => `ws/ws1/src/${name}.jpg`);
+    const intake = new MockProvider({
+      name: "mock-intake",
+      tasks: [intakeKey],
+      output: { images: [photoVerdict, screenshotVerdict] },
+    });
+    const store = new PlanRecordingStore();
+    const summary = await runGeneratePack(
+      { ...baseInput, images: keys.map((mediaId) => ({ mediaId })) },
+      makeDeps({ ai: makeAi({ intake }), store, loadMedia: async (key) => (key === keys[1] ? null : png) }),
+    );
+    expect(summary.state).toBe("done");
+    // Photo b never loaded, so the two verdicts are for a and c.
+    expect(listed(intake)).toEqual([keys[0], keys[2]]);
+    expect(store.plans[0].some((shot) => shot.sourceMediaId === keys[2])).toBe(false);
+  });
+});
+
+describe("strict schema retry keeps the refused call's spend (reviewer item 6)", () => {
+  it("books the billed spend of the 400 on the job", async () => {
+    const run = async (failFirst: boolean) => {
+      const intake = new MockProvider({
+        name: "mock-intake",
+        tasks: [intakeKey],
+        output: intakeFixture,
+        costMicros: 1_000,
+        ...(failFirst
+          ? {
+              failTimes: 1,
+              failWith: () =>
+                new ProviderError("mock-intake responded 400: invalid schema", "mock-intake", intakeKey, false, undefined, {
+                  billedCostMicros: 2_345,
+                }),
+            }
+          : {}),
+      });
+      const summary = await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
+      expect(summary.state).toBe("done");
+      return { summary, calls: intake.calls.length };
+    };
+    const clean = await run(false);
+    const retried = await run(true);
+    expect(retried.calls).toBe(2);
+    expect(retried.summary.costMicros - clean.summary.costMicros).toBe(2_345);
+  });
+});
+
+describe("run keys reach every store call of the run (reviewer item 1)", () => {
+  class KeyedStore extends InMemoryJobStore {
+    readonly boundTo: string[] = [];
+    forRun(runKey: string): InMemoryJobStore {
+      this.boundTo.push(runKey);
+      return this;
+    }
+  }
+
+  it("binds the store to the payload's run key and hands the key to every shot", async () => {
+    const store = new KeyedStore();
+    const contexts: Array<string | undefined> = [];
+    const deps = makeDeps({ store });
+    const summary = await runGeneratePack(
+      { ...baseInput, runKey: "run-a" },
+      {
+        ...deps,
+        runShots: async (shots, ctx) => {
+          contexts.push(ctx.runKey);
+          return Promise.all(shots.map((shot) => runShot(shot, ctx, deps)));
+        },
+      },
+    );
+    expect(summary.state).toBe("done");
+    expect(contexts).toEqual(["run-a"]);
+    // The runner binds once, and each shot (a subtask in production, with a
+    // store of its own) binds again from its context.
+    expect(store.boundTo.length).toBeGreaterThan(1);
+    expect(new Set(store.boundTo)).toEqual(new Set(["run-a"]));
+  });
+
+  it("leaves a payload without a run key on the unbound store", async () => {
+    const store = new KeyedStore();
+    const summary = await runGeneratePack(baseInput, makeDeps({ store }));
+    expect(summary.state).toBe("done");
+    expect(store.boundTo).toEqual([]);
+  });
+});

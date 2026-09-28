@@ -51,6 +51,9 @@ export interface DbJobStoreOptions {
   /** Uploads delivered files to R2. When null, credit settlement and asset
    * rows still persist but no files are stored or recorded. */
   uploader?: PackUploader | null;
+  /** The run this store acts for (generation_jobs.run_key). Set through
+   * forRun; see liveJob. */
+  runKey?: string | null;
 }
 
 const TERMINAL_JOB_STATES: JobState[] = ["done", "failed", "canceled"];
@@ -66,6 +69,59 @@ export class DbJobStore implements JobStore {
     private readonly db: Db,
     private readonly opts: DbJobStoreOptions = {},
   ) {}
+
+  /** This store bound to one run's key: every liveness check, state write
+   * and ledger write then requires the job row to carry that key. */
+  forRun(runKey: string): DbJobStore {
+    return new DbJobStore(this.db, { ...this.opts, runKey });
+  }
+
+  /**
+   * The where clause of every liveness check: the job exists, is not
+   * terminal, and still belongs to this store's run. A follow up moves a job
+   * from done back to generating, so status alone cannot tell a stale runner
+   * of an earlier run from the live one; the run key can. A null key on the
+   * row or on this store is a run queued before migration 0019 and falls
+   * back to the status check alone, so those jobs still finish.
+   */
+  private liveJob(jobId: string) {
+    return and(eq(generationJobs.id, jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES), this.ownsRun());
+  }
+
+  /** True when the job row belongs to this store's run (see liveJob). */
+  private ownsRun() {
+    const runKey = this.opts.runKey ?? null;
+    return runKey === null
+      ? sql`true`
+      : sql`(${generationJobs.runKey} is null or ${generationJobs.runKey} = ${runKey})`;
+  }
+
+  /**
+   * Runs a ledger write only while the job still belongs to this store's
+   * run, under the workspace row lock the ledger functions, the web app's
+   * cancel and settle and startFollowUp all take first. A cancel followed by
+   * a new follow up changes the key, so a stale runner can neither charge a
+   * shot against the new follow up's hold nor release any of it. Returns
+   * false, with nothing written, when the run no longer owns the job.
+   */
+  private async inOwnedRun(jobId: string, workspaceId: string, write: (tx: Db) => Promise<unknown>): Promise<boolean> {
+    if ((this.opts.runKey ?? null) === null) {
+      await write(this.db);
+      return true;
+    }
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+      const owned = await tx
+        .select({ id: generationJobs.id })
+        .from(generationJobs)
+        .where(and(eq(generationJobs.id, jobId), this.ownsRun()));
+      if (owned.length === 0) {
+        return false;
+      }
+      await write(tx as unknown as Db);
+      return true;
+    });
+  }
 
   /**
    * Moves the job to a new state unless it is already terminal. A terminal
@@ -86,7 +142,7 @@ export class DbJobStore implements JobStore {
     const rows = await this.db
       .update(generationJobs)
       .set({ status: state, updatedAt: new Date(), ...(error !== undefined ? { error } : {}), ...cogs })
-      .where(and(eq(generationJobs.id, jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)))
+      .where(this.liveJob(jobId))
       .returning({ id: generationJobs.id });
     if (rows.length === 0 && cogsMicros !== undefined) {
       // The job was already settled (for example by the stale run reconciler),
@@ -98,12 +154,12 @@ export class DbJobStore implements JobStore {
 
   /** Bumps updated_at on a live job so a long generation phase never looks
    * stale to the reconciler. Returns false, and touches nothing, once the job
-   * is terminal. */
+   * is terminal or belongs to another run. */
   async heartbeat(jobId: string): Promise<boolean> {
     const rows = await this.db
       .update(generationJobs)
       .set({ updatedAt: new Date() })
-      .where(and(eq(generationJobs.id, jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)))
+      .where(this.liveJob(jobId))
       .returning({ id: generationJobs.id });
     return rows.length > 0;
   }
@@ -114,30 +170,31 @@ export class DbJobStore implements JobStore {
   }
 
   /** Returns everything the ledger still holds for the job. Idempotent:
-   * release_credits without an amount releases zero when nothing is held. */
+   * release_credits without an amount releases zero when nothing is held.
+   * A run that no longer owns the job releases nothing: whatever is held
+   * then belongs to the run that does, and the cancel or settle that ended
+   * this one already returned its hold. */
   async releaseAllHeld(jobId: string, workspaceId: string): Promise<void> {
-    await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`);
+    await this.inOwnedRun(jobId, workspaceId, (tx) =>
+      tx.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`),
+    );
   }
 
+  /** Throws JobAbandonedError, with nothing written, once the job belongs to
+   * another run (see inOwnedRun). */
   async appendLedger(entry: JobLedgerEntry): Promise<void> {
-    if (entry.reason === "reserve") {
-      if (this.opts.reserveHandledExternally) {
-        return;
-      }
-      await this.db.execute(
-        sql`select reserve_credits(${entry.workspaceId}::uuid, ${entry.credits}::numeric, ${entry.jobId}::uuid)`,
-      );
+    if (entry.reason === "reserve" && this.opts.reserveHandledExternally) {
       return;
     }
-    if (entry.reason === "charge") {
-      await this.db.execute(
-        sql`select charge_credits(${entry.workspaceId}::uuid, ${entry.credits}::numeric, ${entry.jobId}::uuid, ${entry.ref ?? null}::text)`,
-      );
-      return;
+    const call =
+      entry.reason === "reserve"
+        ? sql`select reserve_credits(${entry.workspaceId}::uuid, ${entry.credits}::numeric, ${entry.jobId}::uuid)`
+        : entry.reason === "charge"
+          ? sql`select charge_credits(${entry.workspaceId}::uuid, ${entry.credits}::numeric, ${entry.jobId}::uuid, ${entry.ref ?? null}::text)`
+          : sql`select release_credits(${entry.workspaceId}::uuid, ${entry.jobId}::uuid, ${entry.credits}::numeric)`;
+    if (!(await this.inOwnedRun(entry.jobId, entry.workspaceId, (tx) => tx.execute(call)))) {
+      throw new JobAbandonedError(entry.jobId);
     }
-    await this.db.execute(
-      sql`select release_credits(${entry.workspaceId}::uuid, ${entry.jobId}::uuid, ${entry.credits}::numeric)`,
-    );
   }
 
   /**
@@ -249,7 +306,8 @@ export class DbJobStore implements JobStore {
    * charges it, and fails any other job and releases its hold. So the
    * asset_variants, zip and report rows are written in one transaction that
    * first locks the workspace row, the same lock the settle and
-   * charge_credits take first, and then checks the job is not terminal.
+   * charge_credits take first, and then checks the job is not terminal and
+   * still belongs to this store's run (liveJob).
    * Either this transaction goes first and the settle sees a delivered pack,
    * or the settle goes first and nothing is recorded: a settled job never
    * gains files that nobody pays for. A job already terminal throws
@@ -330,10 +388,7 @@ export class DbJobStore implements JobStore {
 
     await this.db.transaction(async (tx) => {
       await tx.execute(sql`select 1 from workspaces where id = ${pack.workspaceId}::uuid for update`);
-      const live = await tx
-        .select({ id: generationJobs.id })
-        .from(generationJobs)
-        .where(and(eq(generationJobs.id, pack.jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)));
+      const live = await tx.select({ id: generationJobs.id }).from(generationJobs).where(this.liveJob(pack.jobId));
       if (live.length === 0) {
         throw new JobAbandonedError(pack.jobId);
       }
@@ -349,7 +404,7 @@ export class DbJobStore implements JobStore {
    * delivered. Each file goes to its own key under the follow up's run key,
    * so nothing already delivered is ever overwritten. The asset_variants rows
    * are written in one transaction that locks the workspace row and checks
-   * the job is live, the same order savePack and the web app's cancel and
+   * the job is live and still this follow up's (liveJob), the same order savePack and the web app's cancel and
    * settle take: a job canceled or settled first records nothing, and one
    * recorded first is charged by whoever settles it. The channel zips of the
    * first run no longer hold every file of those channels, so their rows go;
@@ -394,10 +449,7 @@ export class DbJobStore implements JobStore {
 
     await this.db.transaction(async (tx) => {
       await tx.execute(sql`select 1 from workspaces where id = ${batch.workspaceId}::uuid for update`);
-      const live = await tx
-        .select({ id: generationJobs.id })
-        .from(generationJobs)
-        .where(and(eq(generationJobs.id, batch.jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)));
+      const live = await tx.select({ id: generationJobs.id }).from(generationJobs).where(this.liveJob(batch.jobId));
       if (live.length === 0) {
         throw new JobAbandonedError(batch.jobId);
       }

@@ -192,6 +192,10 @@ export async function settleJob(
       .set({
         status: sql`case when ${delivered} then 'done' else ${opts.undelivered}::text end`,
         error: sql`case when ${delivered} then ${generationJobs.error} else ${opts.error}::text end`,
+        // A fresh run key that no runner holds: the run this settle stopped
+        // is refused at its next check even after a newer follow up moves
+        // the job back to generating under a key of its own (0019).
+        runKey: sql`gen_random_uuid()::text`,
         updatedAt: new Date(),
       })
       .where(

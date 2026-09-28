@@ -194,7 +194,9 @@ export const generationJobs = pgTable(
       .notNull()
       .references(() => products.id, { onDelete: "cascade" }),
     status: text("status").$type<JobStatus>().notNull().default("queued"),
-    idempotencyKey: text("idempotency_key").unique(),
+    // Unique per workspace (0019): two workspaces sending the same key never
+    // collide, so a conflict never reveals another workspace's job.
+    idempotencyKey: text("idempotency_key"),
     // The requested channels and mode, so idempotency replays can verify the
     // body matches and the progress board can show real channels.
     channels: jsonb("channels").$type<string[]>(),
@@ -212,6 +214,13 @@ export const generationJobs = pgTable(
     // The recipe version each stage ran on, keyed by recipe key, so A/B
     // results can be read per job (0017).
     recipeVariants: jsonb("recipe_variants").$type<Record<string, JobRecipeVariant>>(),
+    // The run that owns the job right now (0019). The web app sets a fresh
+    // key in the same transaction that queues a run (a first run or a
+    // follow up) and the runner passes it back on every liveness check, so a
+    // stale runner of an earlier run is refused even after a follow up moved
+    // the job from done back to generating. A cancel or settle changes it.
+    // Null on rows from before 0019: those runs are checked by status alone.
+    runKey: text("run_key"),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -222,6 +231,7 @@ export const generationJobs = pgTable(
     index("generation_jobs_status_idx").on(t.status),
     // The scheduled stale job sweep reads live jobs by status and age (0017).
     index("generation_jobs_status_updated_at_idx").on(t.status, t.updatedAt),
+    uniqueIndex("generation_jobs_workspace_idempotency_key_uq").on(t.workspaceId, t.idempotencyKey),
   ],
 );
 
@@ -416,6 +426,9 @@ export const subscriptions = pgTable(
     tier: text("tier"),
     status: text("status"),
     periodEnd: timestamp("period_end", { withTimezone: true }),
+    // True once the subscription is set to end at periodEnd instead of
+    // renewing (Stripe cancel_at_period_end), 0019.
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
