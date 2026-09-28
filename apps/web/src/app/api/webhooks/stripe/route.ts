@@ -3,16 +3,25 @@
  * Verifies the Stripe signature with the SDK, then processes the event with
  * idempotent grant handling. Without STRIPE_WEBHOOK_SECRET it answers 503
  * with a setup notice.
+ *
+ * Any processing error answers 500 so Stripe retries (every handler is
+ * idempotent, so a retry never double grants). An unroutable event, one with
+ * no workspace and no linked customer, is logged loudly and retried the same
+ * way; link the customer or fix the metadata, then resend it from the Stripe
+ * Dashboard if the retries ran out (docs/STRIPE_SETUP.md).
  */
 
 import { NextResponse } from "next/server";
-import { optionalEnv } from "@/lib/env";
+import { isStripeConfigured, optionalEnv } from "@/lib/env";
 import { buildPriceTable } from "@/lib/billing/price-table";
+import { createStripeLookup, getStripe } from "@/lib/billing/stripe";
 import {
   getInMemoryBillingStore,
   processStripeEvent,
+  UnroutableBillingEventError,
   verifyStripeEvent,
   type BillingStore,
+  type StripeProcessDeps,
 } from "@/lib/billing/stripe-webhook";
 import { DbBillingStore } from "@/lib/billing/db-store";
 import { getDb } from "@/lib/services/db";
@@ -25,6 +34,10 @@ function billingStore(): BillingStore {
     return new DbBillingStore(getDb(), "stripe");
   }
   return getInMemoryBillingStore();
+}
+
+function processDeps(): StripeProcessDeps {
+  return isStripeConfigured() ? { lookup: createStripeLookup(getStripe()) } : {};
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -51,6 +64,22 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid signature." }, { status: 400 });
   }
 
-  const result = await processStripeEvent(event, buildPriceTable(), billingStore());
-  return NextResponse.json({ received: true, ...result });
+  try {
+    const result = await processStripeEvent(event, buildPriceTable(), billingStore(), processDeps());
+    return NextResponse.json({ received: true, ...result });
+  } catch (error) {
+    const unroutable = error instanceof UnroutableBillingEventError;
+    console.error(
+      JSON.stringify({
+        msg: unroutable ? "stripe webhook: unroutable event, Stripe will retry" : "stripe webhook: processing failed",
+        eventId: event.id,
+        type: event.type,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return NextResponse.json(
+      { error: unroutable ? "unroutable_event" : "processing_failed", eventId: event.id },
+      { status: 500 },
+    );
+  }
 }

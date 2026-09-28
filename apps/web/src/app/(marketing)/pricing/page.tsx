@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { tierByKey } from "@curvi/pipeline/seed";
 import { JsonLd } from "@/components/json-ld";
 import { PricingTiers } from "@/components/marketing/pricing-tiers";
+import { packsPerMonth, stillPackCredits } from "@/lib/billing/pricing-copy";
 import { breadcrumbJsonLd, jsonLdGraph, pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
@@ -25,9 +26,11 @@ export default function PricingPage() {
       <div className="mx-auto max-w-2xl text-center">
         <h1 className="text-4xl font-bold tracking-tight text-ink-950">Pricing</h1>
         <p className="mt-4 text-lg text-ink-600">
-          Every plan buys credits. Credits buy assets. A typical full pack for one product uses about
-          40 to 60 credits, so even Starter covers a few products every month.
+          Every plan buys credits. Credits buy assets. A pack of still images for one product, sized for
+          Amazon and Shopify, uses about {stillPackCredits()} credits, so Starter covers about{" "}
+          {packsPerMonth(tierByKey("starter").creditsPerMonth)} products a month.
         </p>
+        <p className="mt-2 text-sm text-ink-500">Prices are in US dollars. Cancel any time from Billing.</p>
       </div>
       <div className="mt-12">
         <PricingTiers />

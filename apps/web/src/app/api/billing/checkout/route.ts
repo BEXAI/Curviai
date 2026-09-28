@@ -1,36 +1,51 @@
 /**
  * POST /api/billing/checkout
- * Creates a Stripe Checkout session for a tier subscription or a credit top
- * up. Price ids come from environment variables by name (see price-table).
- * Without Stripe env it answers 503 with a setup notice the UI shows inline.
+ * Starts a Stripe Checkout session for a tier subscription or a credit top
+ * up, or, for a workspace that already has a subscription, opens the Customer
+ * Portal on the plan change so no second subscription is ever created.
+ *
+ * Answers:
+ * - 401 signed out, 403 for the client role (plan 4.3, Update.md 4.4).
+ * - 503 billing_not_configured when Stripe has no keys; the billing page
+ *   shows an honest notice and a request button instead of calling this.
+ * - 200 { url, via: "checkout" | "portal" } otherwise.
  */
 
 import { NextResponse } from "next/server";
-import Stripe from "stripe";
 import { z } from "zod";
-import { tiers, topUps } from "@curvi/pipeline/seed";
-import { isStripeConfigured, optionalEnv, siteUrl } from "@/lib/env";
+import { topUps } from "@curvi/pipeline/seed";
+import { isStripeConfigured, siteUrl } from "@/lib/env";
+import { BILLING_FORBIDDEN_NOTICE, canManageBilling } from "@/lib/billing/access";
+import { hasOpenSubscription, loadBillingAccount } from "@/lib/billing/account";
+import { buildCheckoutParams, createPlanChangePortalSession, type CheckoutPurchase } from "@/lib/billing/checkout";
+import { CHECKOUT_SOURCES } from "@/lib/billing/intent";
+import { isPaidTierKey, type PaidTierKey } from "@/lib/billing/plans";
 import { priceIdForTier, priceIdForTopUp } from "@/lib/billing/price-table";
-import { getServices } from "@/lib/services";
+import { getStripe, isStripeTaxEnabled } from "@/lib/billing/stripe";
+import { getServices, isDbMode } from "@/lib/services";
+import { getSessionUser } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
-const paidTierKeys = tiers.filter((t) => t.monthlyUsd > 0).map((t) => t.key);
 const topUpCredits = topUps.map((t) => t.credits);
+
+const Source = z.enum(CHECKOUT_SOURCES).default("billing");
 
 const CheckoutRequest = z.union([
   z.object({
     kind: z.literal("tier"),
-    tier: z.string().refine((value) => paidTierKeys.includes(value as (typeof paidTierKeys)[number]), {
-      message: "Unknown tier.",
-    }),
+    tier: z.string().refine((value) => isPaidTierKey(value), { message: "Unknown tier." }),
     cadence: z.enum(["monthly", "annual"]),
+    source: Source,
   }),
   z.object({
     kind: z.literal("topup"),
     credits: z.number().refine((value) => topUpCredits.includes(value), { message: "Unknown top up." }),
+    source: Source,
   }),
 ]);
+
+const STRIPE_ERROR_NOTICE = "Stripe could not open checkout just now. Try again in a minute.";
 
 export async function POST(request: Request): Promise<NextResponse> {
   let body: unknown;
@@ -47,49 +62,86 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
+  const workspace = await getServices().ensureWorkspace();
+  if (!workspace) {
+    return NextResponse.json({ error: "Sign in to manage billing." }, { status: 401 });
+  }
+  if (!canManageBilling(workspace.role)) {
+    return NextResponse.json({ error: "billing_forbidden", notice: BILLING_FORBIDDEN_NOTICE }, { status: 403 });
+  }
+
   if (!isStripeConfigured()) {
     return NextResponse.json(
       {
         error: "billing_not_configured",
-        notice: "Card checkout is briefly unavailable. Email hello@curvi.ai and we will upgrade your plan right away.",
+        notice: "Card payments are not open yet. Use Request this plan on the Billing page and we will email you when they open.",
       },
       { status: 503 },
     );
   }
 
+  const data = parsed.data;
+  const purchase: CheckoutPurchase =
+    data.kind === "tier"
+      ? { kind: "tier", tier: data.tier as PaidTierKey, cadence: data.cadence }
+      : { kind: "topup", credits: data.credits };
   const priceId =
-    parsed.data.kind === "tier"
-      ? priceIdForTier(parsed.data.tier as (typeof paidTierKeys)[number], parsed.data.cadence)
-      : priceIdForTopUp(parsed.data.credits);
+    purchase.kind === "tier" ? priceIdForTier(purchase.tier, purchase.cadence) : priceIdForTopUp(purchase.credits);
   if (!priceId) {
     return NextResponse.json(
       {
         error: "price_not_configured",
-        notice: "This plan cannot be purchased online right now. Email hello@curvi.ai and we will set it up.",
+        notice: "This option cannot be bought online yet. Email hello@curvi.ai and we will set it up.",
       },
       { status: 503 },
     );
   }
 
-  const services = getServices();
-  const workspace = await services.ensureWorkspace();
-  if (!workspace) {
-    return NextResponse.json({ error: "Sign in to manage billing." }, { status: 401 });
+  const account = await loadBillingAccount(workspace.id);
+  const stripe = getStripe();
+
+  if (purchase.kind === "tier" && hasOpenSubscription(account)) {
+    const subscriptionId = account.subscription?.externalId ?? null;
+    if (!account.stripeCustomerId || !subscriptionId) {
+      return NextResponse.json(
+        {
+          error: "subscription_exists",
+          notice: "This workspace already has a subscription. Email hello@curvi.ai and we will change the plan for you.",
+        },
+        { status: 409 },
+      );
+    }
+    try {
+      const url = await createPlanChangePortalSession(stripe, {
+        customerId: account.stripeCustomerId,
+        subscriptionId,
+        priceId,
+        returnUrl: `${siteUrl()}/app/billing`,
+      });
+      return NextResponse.json({ url, via: "portal" });
+    } catch (error) {
+      console.error(JSON.stringify({ msg: "billing: plan change portal failed", workspaceId: workspace.id, error: String(error) }));
+      return NextResponse.json({ error: "stripe_error", notice: STRIPE_ERROR_NOTICE }, { status: 502 });
+    }
   }
 
-  const stripe = new Stripe(optionalEnv("STRIPE_SECRET_KEY") as string);
-  const isSubscription = parsed.data.kind === "tier";
-  const session = await stripe.checkout.sessions.create({
-    mode: isSubscription ? "subscription" : "payment",
-    line_items: [{ price: priceId, quantity: 1 }],
-    success_url: `${siteUrl()}/app/billing?status=success`,
-    cancel_url: `${siteUrl()}/app/billing?status=canceled`,
-    client_reference_id: workspace.id,
-    metadata: { workspaceId: workspace.id, priceId },
-    ...(isSubscription
-      ? { subscription_data: { metadata: { workspaceId: workspace.id } } }
-      : {}),
+  const email = account.stripeCustomerId || !isDbMode() ? null : ((await getSessionUser())?.email ?? null);
+  const params = buildCheckoutParams({
+    purchase,
+    priceId,
+    workspaceId: workspace.id,
+    siteUrl: siteUrl(),
+    source: data.source,
+    customerId: account.stripeCustomerId,
+    customerEmail: email,
+    taxEnabled: isStripeTaxEnabled(),
   });
 
-  return NextResponse.json({ url: session.url });
+  try {
+    const session = await stripe.checkout.sessions.create(params);
+    return NextResponse.json({ url: session.url, via: "checkout" });
+  } catch (error) {
+    console.error(JSON.stringify({ msg: "billing: checkout session failed", workspaceId: workspace.id, error: String(error) }));
+    return NextResponse.json({ error: "stripe_error", notice: STRIPE_ERROR_NOTICE }, { status: 502 });
+  }
 }

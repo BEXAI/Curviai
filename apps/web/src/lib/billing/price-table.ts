@@ -6,8 +6,9 @@
 
 import { tiers, topUps, type TierKey } from "@curvi/pipeline/seed";
 import { optionalEnv } from "@/lib/env";
+import type { BillingCadence } from "./plans";
 
-export type BillingCadence = "monthly" | "annual";
+export type { BillingCadence } from "./plans";
 
 export type PriceMapping =
   | { kind: "tier"; tier: TierKey; cadence: BillingCadence; creditsPerMonth: number }
