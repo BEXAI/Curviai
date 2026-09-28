@@ -1,11 +1,15 @@
 "use client";
 
 import { useEffect } from "react";
+import { CONSENT_CHANGED_EVENT, readConsent, type ConsentChoice } from "@/lib/consent";
 
 /**
- * PostHog analytics, active only when NEXT_PUBLIC_POSTHOG_KEY is set. The
- * library loads lazily so unconfigured deployments ship zero analytics code
- * to the client.
+ * PostHog analytics, active only when NEXT_PUBLIC_POSTHOG_KEY is set and the
+ * visitor accepted analytics cookies (lib/consent.ts). The library loads
+ * lazily and only after consent, so a visitor who declines, or has not
+ * chosen yet, downloads no analytics code and gets no analytics cookies.
+ * Withdrawing consent later opts the running instance out, which stops
+ * capture and clears its persistence.
  */
 export function Analytics() {
   useEffect(() => {
@@ -13,13 +17,37 @@ export function Analytics() {
     if (!key) {
       return;
     }
-    void import("posthog-js").then(({ default: posthog }) => {
-      posthog.init(key, {
-        api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
-        capture_pageview: true,
-        capture_pageleave: true,
-      });
-    });
+    // Set once the library was requested in this visit, so a decline before
+    // any consent never downloads it just to opt out.
+    let started = false;
+    const apply = (choice: ConsentChoice | null): void => {
+      if (choice === "granted") {
+        started = true;
+        void import("posthog-js").then(({ default: posthog }) => {
+          if (!posthog.__loaded) {
+            posthog.init(key, {
+              api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
+              capture_pageview: true,
+              capture_pageleave: true,
+            });
+          } else if (posthog.has_opted_out_capturing()) {
+            posthog.opt_in_capturing({ captureEventName: false });
+          }
+        });
+        return;
+      }
+      if (choice === "denied" && started) {
+        void import("posthog-js").then(({ default: posthog }) => {
+          if (posthog.__loaded) {
+            posthog.opt_out_capturing();
+          }
+        });
+      }
+    };
+    apply(readConsent());
+    const onChange = (event: Event): void => apply((event as CustomEvent<ConsentChoice>).detail ?? null);
+    window.addEventListener(CONSENT_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(CONSENT_CHANGED_EVENT, onChange);
   }, []);
   return null;
 }

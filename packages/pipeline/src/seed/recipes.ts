@@ -2,6 +2,13 @@
  * Recipe seed rows for the recipes table. This module is the ONLY place model
  * IDs and system prompts live (CLAUDE.md rule 2). Prompts are verbatim from
  * CURVI_BUILD_PLAN.md section 5.3, models from section 5.1.
+ *
+ * The worker reads the recipes table at runtime (trigger/src/recipes.ts) and
+ * falls back to these rows when the table is empty or unreachable. Several
+ * active versions of one key are an A/B test: trafficPct is each version's
+ * weight, and a job is assigned one version per key from its id. model plus
+ * fallbackModels is the failover order the router walks, so swapping or
+ * reordering models is a table update, not a deploy.
  */
 import { z } from "zod";
 
@@ -10,6 +17,10 @@ export const RecipeRow = z.object({
   version: z.number().int().positive(),
   stage: z.enum(["intake", "analyze", "plan", "copy", "qc"]),
   model: z.string().min(1),
+  /** Models tried in order after model fails (outage, timeout, open breaker). */
+  fallbackModels: z.array(z.string().min(1)).optional(),
+  /** A/B weight among the active versions of one key. Defaults to 100. */
+  trafficPct: z.number().int().min(0).max(100).optional(),
   body: z
     .object({
       system: z.string().min(1),
@@ -52,6 +63,7 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 1,
     stage: "intake",
     model: "claude-haiku-4-5-20251001",
+    fallbackModels: ["claude-sonnet-5"],
     body: { system: INTAKE_NORMALIZER_SYSTEM },
     active: true,
   },
@@ -60,6 +72,7 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 1,
     stage: "analyze",
     model: "claude-sonnet-5",
+    fallbackModels: ["claude-opus-5-5"],
     body: { system: PRODUCT_ANALYZER_SYSTEM },
     active: true,
   },
@@ -68,6 +81,7 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 1,
     stage: "plan",
     model: "claude-sonnet-5",
+    fallbackModels: ["claude-opus-5-5"],
     body: { system: SHOT_PLANNER_SYSTEM },
     active: true,
   },
@@ -76,6 +90,7 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 1,
     stage: "copy",
     model: "claude-haiku-4-5-20251001",
+    fallbackModels: ["claude-sonnet-5"],
     body: { system: COPY_GENERATOR_SYSTEM },
     active: true,
   },
@@ -84,6 +99,7 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 1,
     stage: "qc",
     model: "claude-haiku-4-5-20251001",
+    fallbackModels: ["claude-sonnet-5"],
     body: {
       system: QC_JUDGE_SYSTEM,
       // Escalation chain: Haiku first pass, Sonnet on borderline, Opus on disputes.

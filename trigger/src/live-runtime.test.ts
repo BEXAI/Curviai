@@ -23,6 +23,7 @@ import {
   HARMONIZE_TASK,
   SCENE_PLATE_TASK,
   canvasDefaults,
+  llmModelPrices,
   recipeSeedRows,
   sceneDefaults,
   templates,
@@ -42,6 +43,7 @@ import {
   wireLiveProviders,
   type LiveWiring,
 } from "./live-runtime";
+import { llmModelProviderName } from "./recipes";
 import { buildRuntimeDeps, demoRoutingTable } from "./runtime";
 import {
   runGeneratePack,
@@ -71,15 +73,24 @@ describe("wireLiveProviders", () => {
     expect(registry.list()).toHaveLength(0);
   });
 
-  it("routes every active recipe task to Anthropic when the key is set", () => {
+  it("routes every active recipe task to its seeded Anthropic model chain when the key is set", () => {
     const { registry, routing } = freshBase();
     const wiring = wireLiveProviders(registry, routing, (name) =>
       name === "ANTHROPIC_API_KEY" ? "key" : undefined,
     );
     expect(wiring.llmLive).toBe(true);
+    // One provider per priced model, each serving every recipe task.
+    for (const model of Object.keys(llmModelPrices)) {
+      const provider = registry.get(llmModelProviderName(model));
+      expect(provider).toBeDefined();
+      for (const recipe of recipeSeedRows) {
+        expect(provider?.supports(recipe.key)).toBe(true);
+      }
+    }
     for (const recipe of recipeSeedRows.filter((r) => r.active)) {
-      expect(routing[recipe.key]).toEqual([`anthropic-${recipe.key}`]);
-      expect(registry.get(`anthropic-${recipe.key}`)).toBeDefined();
+      expect(routing[recipe.key]).toEqual(
+        [recipe.model, ...(recipe.fallbackModels ?? [])].map(llmModelProviderName),
+      );
     }
   });
 

@@ -27,6 +27,7 @@ import {
   eq,
   notInArray,
   type Db,
+  type JobRecipeVariant,
 } from "@curvi/db";
 import type { PackFileReport } from "@curvi/pipeline";
 import type { Shot } from "@curvi/pipeline/schemas";
@@ -104,6 +105,11 @@ export class DbJobStore implements JobStore {
       .where(and(eq(generationJobs.id, jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)))
       .returning({ id: generationJobs.id });
     return rows.length > 0;
+  }
+
+  /** Records the recipe version each stage of the job runs on (A/B). */
+  async saveRecipeVariants(jobId: string, variants: Record<string, JobRecipeVariant>): Promise<void> {
+    await this.db.update(generationJobs).set({ recipeVariants: variants }).where(eq(generationJobs.id, jobId));
   }
 
   /** Returns everything the ledger still holds for the job. Idempotent:

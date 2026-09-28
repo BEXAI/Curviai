@@ -13,12 +13,14 @@ import { PgCapStore } from "./cap-store";
 import { DbJobStore } from "./db-store";
 import type { PipelineDeps } from "./pipeline-runner";
 import { buildR2Uploader } from "./r2";
+import { dbRecipeLoader, RecipeCatalog } from "./recipes";
 import { buildRuntimeDeps, optionalEnv, type RuntimeDepsOptions } from "./runtime";
 import { SpendAlertNotifier, watchGlobalSpend } from "./spend-alerts";
 
 const globalScope = globalThis as typeof globalThis & {
   __curviWorkerDb?: Db;
   __curviSpendAlerts?: SpendAlertNotifier;
+  __curviRecipes?: RecipeCatalog;
 };
 
 export function getWorkerDb(url: string): Db {
@@ -51,6 +53,9 @@ export function buildDbRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps 
   // call reports the alert line through it too (onCapAlert).
   globalScope.__curviSpendAlerts ??= new SpendAlertNotifier({ db, dedupe: capStore });
   const alerts = globalScope.__curviSpendAlerts;
+  // Recipes come from the recipes table (A/B variants and model failover),
+  // cached per process, with the compiled seed as the fallback.
+  globalScope.__curviRecipes ??= new RecipeCatalog(dbRecipeLoader(db));
   const base = buildRuntimeDeps({ ...opts, capStore, realCredits: true, onSpendAlert: alerts.onSpendAlert });
   if (base.ai.caps) {
     watchGlobalSpend(base.ai.caps, alerts);
@@ -58,6 +63,7 @@ export function buildDbRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps 
   return {
     ...base,
     store,
+    recipes: globalScope.__curviRecipes,
     // Shots whose plan feature is not live yet (video and avatar methods) are
     // skipped, keeping real packs honest instead of charging for placeholder
     // renders; the web estimate leaves the same methods out of the hold.

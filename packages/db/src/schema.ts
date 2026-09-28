@@ -47,6 +47,14 @@ export type SubscriptionProvider = "stripe" | "shopify";
 export type IntegrationKind = "shopify" | "amazon" | "gdrive" | "dropbox" | "canva";
 export type ChurnBand = "healthy" | "watch" | "at_risk";
 
+/** One stage's recipe assignment on a job: the row it ran on (null when the
+ * worker fell back to seed data) and that row's version. */
+export interface JobRecipeVariant {
+  recipeId: string | null;
+  version: number;
+  source: "db" | "seed";
+}
+
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -145,7 +153,11 @@ export const recipes = pgTable(
     version: integer("version").notNull(),
     stage: text("stage").notNull(),
     model: text("model").notNull(),
+    // Models tried in order after model fails; the worker routes the whole
+    // list through @curvi/ai failover, so a swap is a row update (0017).
+    fallbackModels: jsonb("fallback_models").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     body: jsonb("body").$type<Record<string, unknown>>().notNull(),
+    // A/B weight among the active versions of one key.
     trafficPct: integer("traffic_pct").notNull().default(100),
     active: boolean("active").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -179,6 +191,9 @@ export const generationJobs = pgTable(
       .default(0),
     cogsMicros: bigint("cogs_micros", { mode: "number" }).notNull().default(0),
     recipeVersionId: uuid("recipe_version_id").references(() => recipes.id),
+    // The recipe version each stage ran on, keyed by recipe key, so A/B
+    // results can be read per job (0017).
+    recipeVariants: jsonb("recipe_variants").$type<Record<string, JobRecipeVariant>>(),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -187,6 +202,8 @@ export const generationJobs = pgTable(
     index("generation_jobs_workspace_id_idx").on(t.workspaceId),
     index("generation_jobs_product_id_idx").on(t.productId),
     index("generation_jobs_status_idx").on(t.status),
+    // The scheduled stale job sweep reads live jobs by status and age (0017).
+    index("generation_jobs_status_updated_at_idx").on(t.status, t.updatedAt),
   ],
 );
 

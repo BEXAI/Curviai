@@ -81,6 +81,7 @@ import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
 import type { LiveProduct, StillRender } from "./live-product";
 import { isWorkspaceObjectKey } from "./object-keys";
+import { llmModelProviderName, seedRecipe } from "./recipes";
 import {
   failureSpendMicros,
   isSpendCapBlock,
@@ -338,21 +339,30 @@ export function wireLiveProviders(
 
   const anthropicKey = readEnv("ANTHROPIC_API_KEY");
   if (anthropicKey) {
-    for (const recipe of recipeSeedRows) {
-      if (!recipe.active) continue;
-      const priceTable = llmModelPrices[recipe.model];
-      if (!priceTable) continue;
-      const name = `anthropic-${recipe.key}`;
+    // One provider per priced model, serving every recipe task, so a recipe
+    // row can list any of them in failover order and the runner hands that
+    // order to the router per call (trigger/src/recipes.ts). The routing
+    // table keeps the seed order as the default chain.
+    const recipeTasks = [...new Set(recipeSeedRows.map((recipe) => recipe.key))];
+    for (const [model, priceTable] of Object.entries(llmModelPrices)) {
       registry.register(
         new AnthropicLLMProvider({
-          name,
-          tasks: [recipe.key],
+          name: llmModelProviderName(model),
+          tasks: recipeTasks,
           apiKey: anthropicKey,
-          model: recipe.model,
+          model,
           priceTable,
         }),
       );
-      routing[recipe.key] = [name];
+    }
+    for (const recipe of recipeSeedRows) {
+      if (!recipe.active) continue;
+      const chain = seedRecipe(recipe.stage)
+        .models.filter((model) => llmModelPrices[model] !== undefined)
+        .map(llmModelProviderName);
+      if (chain.length > 0) {
+        routing[recipe.key] = chain;
+      }
     }
     wiring.llmLive = true;
   }
