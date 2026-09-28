@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { buttonVariants } from "@curvi/ui";
 
 export const metadata: Metadata = {
   title: "Help center",
@@ -123,7 +124,7 @@ export default function HelpPage() {
         <p className="mt-2 text-sm text-ink-600">Start free with 15 credits. No card needed.</p>
         <Link
           href="/signup"
-          className="mt-5 inline-flex h-11 items-center justify-center rounded-lg bg-accent-500 px-6 text-sm font-medium text-white transition-colors hover:bg-accent-600"
+          className={buttonVariants({ variant: "secondary", size: "lg", className: "mt-5" })}
         >
           Get started
         </Link>

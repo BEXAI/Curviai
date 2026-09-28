@@ -15,7 +15,7 @@ export async function GET(
 ): Promise<NextResponse> {
   const { id } = await context.params;
   const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
+  const workspace = await services.ensureWorkspace();
   if (!workspace) {
     return NextResponse.json({ error: "Sign in to view jobs." }, { status: 401 });
   }

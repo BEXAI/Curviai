@@ -65,3 +65,31 @@ export async function presignDownload(key: string): Promise<string> {
 export function isWorkspaceSourceKey(workspaceId: string, key: string): boolean {
   return key.startsWith(`ws/${workspaceId}/src/`) && !key.includes("..");
 }
+
+function privateBucket(): string {
+  return optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
+}
+
+/** Writes generated output bytes under the workspace's out prefix. */
+export async function putGeneratedObject(key: string, body: Buffer, contentType: string): Promise<void> {
+  await r2Client().send(
+    new PutObjectCommand({ Bucket: privateBucket(), Key: key, Body: body, ContentType: contentType }),
+  );
+}
+
+/** Signed GET for rendering and downloading generated assets. An hour keeps
+ * an open job board or brand page working without a refresh. */
+export async function presignObjectGet(key: string, expiresIn = 3600): Promise<string> {
+  return getSignedUrl(r2Client(), new GetObjectCommand({ Bucket: privateBucket(), Key: key }), { expiresIn });
+}
+
+/** Fetches an object's bytes for server side packaging. Null when missing. */
+export async function getObjectBytes(key: string): Promise<Buffer | null> {
+  try {
+    const res = await r2Client().send(new GetObjectCommand({ Bucket: privateBucket(), Key: key }));
+    const bytes = await res.Body?.transformToByteArray();
+    return bytes ? Buffer.from(bytes) : null;
+  } catch {
+    return null;
+  }
+}

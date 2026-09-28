@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { Button, Card, CardContent } from "@curvi/ui";
+import { Button, Card, CardContent, buttonVariants } from "@curvi/ui";
 
 const DEFAULT_THRESHOLD = 230;
 const PREVIEW_MAX_SIDE = 1200;
@@ -99,7 +99,7 @@ export function WhiteBackgroundFixer() {
               aria-label="Choose an image to whiten"
               onChange={(event) => onFile(event.target.files?.[0])}
             />
-            <span className="mt-4 inline-flex h-10 items-center justify-center rounded-lg bg-ink-900 px-4 text-sm font-medium text-white">
+            <span className={buttonVariants({ className: "mt-4" })}>
               Select image
             </span>
           </label>

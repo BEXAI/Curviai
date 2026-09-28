@@ -1,13 +1,16 @@
 import type { Metadata } from "next";
-import { Badge, Card, CardContent, CardHeader, CardTitle, Input, Label } from "@curvi/ui";
+import Link from "next/link";
+import { Badge, Card, CardContent, CardHeader, CardTitle } from "@curvi/ui";
+import { WorkspaceNameForm } from "@/components/app/workspace-name-form";
 import { getServices } from "@/lib/services";
+import { getSessionUser } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
   const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
+  const workspace = await services.ensureWorkspace();
   if (!workspace) {
     return (
       <div className="mx-auto max-w-md py-16 text-center">
@@ -15,9 +18,10 @@ export default async function SettingsPage() {
       </div>
     );
   }
-  const [members, integrations] = await Promise.all([
+  const [members, integrations, user] = await Promise.all([
     services.listMembers(workspace.id),
     services.listIntegrations(workspace.id),
+    getSessionUser(),
   ]);
 
   return (
@@ -32,9 +36,28 @@ export default async function SettingsPage() {
           <CardTitle>Workspace</CardTitle>
         </CardHeader>
         <CardContent>
-          <Label htmlFor="workspace-name">Name</Label>
-          <Input id="workspace-name" value={workspace.name} readOnly className="mt-1 max-w-sm bg-ink-50" />
-          <p className="mt-2 text-xs text-ink-400">Renaming arrives with team management.</p>
+          <WorkspaceNameForm initialName={workspace.name} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Account</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-ink-900">{user?.email ?? "Demo session, no account"}</p>
+          <div className="flex flex-wrap items-center gap-4 text-sm">
+            <Link href="/reset-password" className="font-medium text-ink-900 underline">
+              Change password
+            </Link>
+            {user ? (
+              <form action="/auth/signout" method="post">
+                <button type="submit" className="font-medium text-ink-900 underline">
+                  Sign out
+                </button>
+              </form>
+            ) : null}
+          </div>
         </CardContent>
       </Card>
 
@@ -51,7 +74,9 @@ export default async function SettingsPage() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-xs text-ink-400">Invites are read only for now.</p>
+          <p className="mt-3 text-xs text-ink-400">
+            Need another seat? Email hello@curvi.ai and we will add your teammate to this workspace.
+          </p>
         </CardContent>
       </Card>
 

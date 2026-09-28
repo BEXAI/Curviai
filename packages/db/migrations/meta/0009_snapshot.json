@@ -1,6 +1,6 @@
 {
-  "id": "4250a735-8cbd-4118-91bc-f458f053fa8b",
-  "prevId": "4d8b00ff-86b3-45c2-9811-fed5ec7134a8",
+  "id": "e91b37e8-682e-427e-98b9-54d2991a0e4c",
+  "prevId": "dac8bf43-e3fd-48ee-93b4-c6f9109c3d28",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -305,6 +305,12 @@
         "logo_asset_id": {
           "name": "logo_asset_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "logo_r2_key": {
+          "name": "logo_r2_key",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -818,6 +824,18 @@
         },
         "idempotency_key": {
           "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "channels": {
+          "name": "channels",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mode": {
+          "name": "mode",
           "type": "text",
           "primaryKey": false,
           "notNull": false

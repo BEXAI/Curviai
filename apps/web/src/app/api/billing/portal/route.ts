@@ -17,14 +17,14 @@ export async function POST(): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: "billing_not_configured",
-        notice: "The customer portal needs Stripe. Set STRIPE_SECRET_KEY to enable it.",
+        notice: "The billing portal is briefly unavailable. Email hello@curvi.ai for any billing change.",
       },
       { status: 503 },
     );
   }
 
   const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
+  const workspace = await services.ensureWorkspace();
   if (!workspace) {
     return NextResponse.json({ error: "Sign in to manage billing." }, { status: 401 });
   }

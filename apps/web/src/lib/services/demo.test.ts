@@ -161,3 +161,23 @@ describe("demo read only surface", () => {
     expect(result.notice).toContain("read only");
   });
 });
+
+describe("workspace management", () => {
+  it("ensureWorkspace returns the demo workspace", async () => {
+    const svc = service();
+    const workspace = await svc.ensureWorkspace();
+    expect(workspace.id).toBeTruthy();
+    expect(workspace.creditBalance).toBeGreaterThan(0);
+  });
+
+  it("renames the workspace and rejects empty names", async () => {
+    const svc = service();
+    const workspace = await svc.getCurrentWorkspace();
+    const renamed = await svc.renameWorkspace(workspace.id, "  Studio North  ");
+    expect(renamed.ok).toBe(true);
+    const after = await svc.getCurrentWorkspace();
+    expect(after.name).toBe("Studio North");
+    const empty = await svc.renameWorkspace(workspace.id, "   ");
+    expect(empty.ok).toBe(false);
+  });
+});

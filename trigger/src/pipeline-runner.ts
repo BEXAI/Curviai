@@ -29,6 +29,7 @@ import {
   fidelityReport,
   pixelChecks,
   planRetry,
+  encodeVisionJpeg,
   planShots,
   qcKindForSpec,
   IntakeResult,
@@ -46,7 +47,10 @@ import {
 } from "@curvi/pipeline";
 import { recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
 import { getSpec, hasSpec, isMarketplaceSpec, listSpecs } from "@curvi/specs";
+import { z } from "zod";
 import { JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
+
+export type { JobState } from "./state";
 
 /** Recipe row for a pipeline stage, looked up from seed data so task names,
  * models and prompts are never hardcoded here (CLAUDE.md rule 2). */
@@ -114,6 +118,8 @@ export interface StoredAsset {
   costMicros: number;
   verdict: QCVerdict;
   measured: MeasuredCompliance;
+  /** Final encoded image for passed shots, so stores can persist the pixels. */
+  encoded?: { buffer: Buffer; format: string };
 }
 
 export interface StoredPack {
@@ -132,6 +138,8 @@ export interface JobStore {
   appendLedger(entry: JobLedgerEntry): Promise<void>;
   saveAsset(asset: StoredAsset): Promise<void>;
   savePack(pack: StoredPack): Promise<void>;
+  /** Persists the analyzed ProductProfile; stores without product rows skip it. */
+  saveProfile?(jobId: string, profile: ProductProfile): Promise<void>;
 }
 
 export class InMemoryJobStore implements JobStore {
@@ -280,6 +288,14 @@ export interface PipelineDeps {
   store: JobStore;
   clock: Clock;
   generator: ShotGenerator;
+  /** Loads source media bytes for LLM vision input; metadata only when absent. */
+  loadMedia?: (mediaId: string) => Promise<Buffer | null>;
+  /** Shot methods to skip after planning, e.g. video until its provider is wired. */
+  excludeShotMethods?: Array<Shot["method"]>;
+  /** Spend ceiling per shot including retries; further attempts stop at it. */
+  assetCostCapMicros?: number;
+  /** Spend ceiling for the whole pack; the run fails when it is crossed. */
+  packCostCapMicros?: number;
   /** Fan out override: the Trigger.dev wrapper points this at the
    * generate-shot subtask. Defaults to Promise.all over runShot. */
   runShots?: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>;
@@ -329,7 +345,50 @@ export interface GeneratePackSummary {
 export interface LlmTaskInput {
   system: string;
   model: string;
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  /** Content is a string, or an array of vision and text blocks. */
+  messages: Array<{ role: "user" | "assistant"; content: unknown }>;
+  /** Forced structured output tool definitions, when a schema is enforced. */
+  tools?: unknown[];
+  toolChoice?: unknown;
+}
+
+function sniffImageMime(bytes: Buffer): string {
+  if (bytes.length > 3 && bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
+  if (bytes.length > 2 && bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes.length > 11 && bytes.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  if (bytes.length > 3 && bytes.toString("ascii", 0, 3) === "GIF") return "image/gif";
+  return "image/jpeg";
+}
+
+/**
+ * Anthropic vision blocks for the uploaded photos, so intake and the product
+ * analyzer judge the actual pixels instead of metadata. Empty when the deps
+ * carry no media loader (demo mode) or nothing loads.
+ */
+async function visionBlocks(
+  deps: PipelineDeps,
+  images: GeneratePackInput["images"],
+  limit = 3,
+): Promise<unknown[]> {
+  if (!deps.loadMedia) {
+    return [];
+  }
+  const blocks: unknown[] = [];
+  for (const image of images.slice(0, limit)) {
+    const bytes = await deps.loadMedia(image.mediaId).catch(() => null);
+    if (!bytes || bytes.length === 0) {
+      continue;
+    }
+    // Normalize to a bounded JPEG; a raw upload can exceed the vision API's
+    // per image size limit. Fall back to the original if decoding fails.
+    const normalized = await encodeVisionJpeg(bytes).catch(() => bytes);
+    const mediaType = normalized === bytes ? sniffImageMime(bytes) : "image/jpeg";
+    blocks.push({
+      type: "image",
+      source: { type: "base64", media_type: mediaType, data: normalized.toString("base64") },
+    });
+  }
+  return blocks;
 }
 
 interface LlmCall<T> {
@@ -339,7 +398,9 @@ interface LlmCall<T> {
 }
 
 /** Accepts either a raw JSON object (mock and demo providers) or an
- * Anthropic adapter shaped output with toolUse or text. */
+ * Anthropic adapter shaped output with toolUse or text. Plain text answers
+ * often wrap JSON in markdown fences or prose, so parsing falls back to the
+ * fenced block, then the outermost object literal. */
 function extractJsonOutput(output: unknown): unknown {
   if (output && typeof output === "object") {
     const o = output as { toolUse?: { input?: unknown } | null; text?: string | null };
@@ -347,11 +408,24 @@ function extractJsonOutput(output: unknown): unknown {
       return o.toolUse.input;
     }
     if (typeof o.text === "string") {
-      try {
-        return JSON.parse(o.text);
-      } catch {
-        return o.text;
+      const candidates = [o.text];
+      const fenced = o.text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenced) {
+        candidates.push(fenced[1]);
       }
+      const start = o.text.indexOf("{");
+      const end = o.text.lastIndexOf("}");
+      if (start >= 0 && end > start) {
+        candidates.push(o.text.slice(start, end + 1));
+      }
+      for (const candidate of candidates) {
+        try {
+          return JSON.parse(candidate);
+        } catch {
+          // Try the next candidate.
+        }
+      }
+      return o.text;
     }
   }
   return output;
@@ -363,13 +437,30 @@ async function llmJson<T>(
   schema: { safeParse: (data: unknown) => { success: boolean; data?: T } },
   payload: unknown,
   ctx: { jobId: string; workspaceId: string; stepId: string },
+  contentBlocks?: unknown[],
+  outputSchema?: z.ZodType,
 ): Promise<LlmCall<T>> {
   const recipe = activeRecipe(stage);
+  const text = JSON.stringify(payload);
+  const content: unknown =
+    contentBlocks && contentBlocks.length > 0 ? [...contentBlocks, { type: "text", text }] : text;
   const input: LlmTaskInput = {
     system: recipe.body.system,
     model: recipe.model,
-    messages: [{ role: "user", content: JSON.stringify(payload) }],
+    messages: [{ role: "user", content }],
   };
+  if (outputSchema) {
+    // Forced tool call per plan 5.2: the model must answer with structured
+    // data matching the schema instead of free text that may not parse.
+    input.tools = [
+      {
+        name: "emit_result",
+        description: "Return the task result as structured data matching the schema exactly.",
+        input_schema: z.toJSONSchema(outputSchema),
+      },
+    ];
+    input.toolChoice = { type: "tool", name: "emit_result" };
+  }
   const result = await callWithFailover<LlmTaskInput, unknown>(
     ai.registry,
     ai.routing,
@@ -562,6 +653,8 @@ export async function runShot(
         attempt,
       },
       { jobId: ctx.jobId, workspaceId: ctx.workspaceId, stepId: `${shot.id}:qc:${attempt}` },
+      undefined,
+      QCVerdict,
     );
     costMicros += judged.costMicros;
     const verdict = judged.value ?? deterministicVerdict(pixel, fidelity);
@@ -588,7 +681,15 @@ export async function runShot(
             ])
           : null,
     };
-    const decision = planRetry(attempt, effective);
+    // Spend cap: accepted work stands, but no further attempts are funded.
+    let decision = planRetry(attempt, effective);
+    if (
+      decision.action !== "accept" &&
+      deps.assetCostCapMicros !== undefined &&
+      costMicros >= deps.assetCostCapMicros
+    ) {
+      decision = { action: "needs_review" };
+    }
     if (decision.action === "accept") {
       const outcome: ShotOutcome = {
         shotId: shot.id,
@@ -660,6 +761,7 @@ function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext): StoredAsset {
     costMicros: outcome.costMicros,
     verdict: outcome.verdict,
     measured: outcome.measured,
+    encoded: outcome.packAsset ? { buffer: outcome.packAsset.buffer, format: outcome.packAsset.format ?? "png" } : undefined,
   };
 }
 
@@ -755,15 +857,19 @@ export async function runGeneratePack(
   await applyLedger(ledger.reserveOnQueue(input.creditBudget));
 
   try {
-    // Intake and analyze.
+    // Intake and analyze, with the uploaded photos as vision input when a
+    // media loader is wired.
     state = transition(state, "start_analysis");
     await store.setJobState(input.jobId, state);
+    const photos = await visionBlocks(deps, input.images);
     const intake = await llmJson<IntakeResult>(
       deps.ai,
       "intake",
       IntakeResult,
       { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
+      photos,
+      IntakeResult,
     );
     costMicros += intake.costMicros;
     if (!intake.value) {
@@ -785,12 +891,15 @@ export async function runGeneratePack(
       ProductProfile,
       { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
+      photos,
+      ProductProfile,
     );
     costMicros += analysis.costMicros;
     if (!analysis.value) {
       throw new Error("Product analysis response failed schema validation");
     }
     const profile = analysis.value;
+    await store.saveProfile?.(input.jobId, profile);
     const profileBlock = moderationBlockReasons(intake.value, profile);
     if (profileBlock.length > 0) {
       throw new Error(`This product was flagged for ${profileBlock.join(", ")} and needs a manual review before a pack can run`);
@@ -819,6 +928,8 @@ export async function runGeneratePack(
       { safeParse: (data: unknown) => ({ success: true, data }) },
       { profile, options: planOptions },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "plan" },
+      undefined,
+      ShotList,
     );
     costMicros += planned.costMicros;
     let shotList = validateLlmShotList(planned.raw, input.creditBudget);
@@ -827,6 +938,16 @@ export async function runGeneratePack(
     } else {
       shotList = planShots(profile, planOptions);
       plannerSource = "deterministic";
+    }
+    if (deps.excludeShotMethods && deps.excludeShotMethods.length > 0) {
+      const excluded = new Set(deps.excludeShotMethods);
+      const kept = shotList.shots.filter((shot) => !excluded.has(shot.method));
+      for (const shot of shotList.shots) {
+        if (excluded.has(shot.method)) {
+          shotList.skipped.push({ type: shot.type, reason: "provider not enabled" });
+        }
+      }
+      shotList = { shots: kept, skipped: shotList.skipped };
     }
     plannedShots = shotList.shots.length;
     skipped = [
@@ -847,8 +968,31 @@ export async function runGeneratePack(
       seoSlug: input.seoSlug,
       mode: input.mode ?? "listing",
     };
+    // Pack level spend cap: a shared tracker gates every generation attempt
+    // across the parallel fan out, so a runaway pack stops mid flight.
+    let fanOutDeps = deps;
+    if (deps.packCostCapMicros !== undefined) {
+      const cap = deps.packCostCapMicros;
+      const baseCost = costMicros;
+      let generatedCostMicros = 0;
+      const inner = deps.generator;
+      fanOutDeps = {
+        ...deps,
+        generator: {
+          generate: async (args) => {
+            if (baseCost + generatedCostMicros >= cap) {
+              throw new Error("Pack cost cap reached before all shots finished");
+            }
+            const generation = await inner.generate(args);
+            generatedCostMicros += generation.costMicros;
+            return generation;
+          },
+        },
+      };
+    }
     const runShots =
-      deps.runShots ?? ((shots: Shot[], c: ShotContext) => Promise.all(shots.map((s) => runShot(s, c, deps))));
+      deps.runShots ??
+      ((shots: Shot[], c: ShotContext) => Promise.all(shots.map((s) => runShot(s, c, fanOutDeps))));
     const outcomes = await runShots(shotList.shots, ctx);
     costMicros += outcomes.reduce((sum, o) => sum + o.costMicros, 0);
 
@@ -888,7 +1032,7 @@ export async function runGeneratePack(
 
     state = transition(state, "packaged");
     await applyLedger(ledger.releaseUnusedOnCompletion());
-    await store.setJobState(input.jobId, state, { passed, needsReview });
+    await store.setJobState(input.jobId, state, { passed, needsReview, costMicros });
 
     return {
       jobId: input.jobId,
@@ -913,7 +1057,7 @@ export async function runGeneratePack(
           : String(err);
     state = transition(state, "fail");
     await applyLedger(ledger.releaseRemainderOnFailure("failed"));
-    await store.setJobState(input.jobId, state, { error: message });
+    await store.setJobState(input.jobId, state, { error: message, costMicros });
     return {
       jobId: input.jobId,
       state: "failed",

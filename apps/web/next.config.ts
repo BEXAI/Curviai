@@ -9,16 +9,19 @@ const nextConfig: NextConfig = {
     if (isServer) {
       // serverExternalPackages only externalizes imports issued from
       // node_modules. The inline pack runner is transpiled workspace source
-      // (@curvi/trigger -> @curvi/pipeline) whose sharp, exiftool, archiver
-      // and postgres imports must stay require() calls at runtime.
-      config.externals.push({
-        sharp: "commonjs sharp",
-        "exiftool-vendored": "commonjs exiftool-vendored",
-        archiver: "commonjs archiver",
-        postgres: "commonjs postgres",
-        "@trigger.dev/sdk/v3": "commonjs @trigger.dev/sdk/v3",
-        "@aws-sdk/client-s3": "commonjs @aws-sdk/client-s3",
-      });
+      // (@curvi/trigger -> @curvi/pipeline) whose native and SDK imports must
+      // stay require() calls at runtime.
+      config.externals = [
+        ...(Array.isArray(config.externals) ? config.externals : [config.externals].filter(Boolean)),
+        {
+          sharp: "commonjs sharp",
+          "exiftool-vendored": "commonjs exiftool-vendored",
+          archiver: "commonjs archiver",
+          postgres: "commonjs postgres",
+          "@trigger.dev/sdk/v3": "commonjs @trigger.dev/sdk/v3",
+          "@aws-sdk/client-s3": "commonjs @aws-sdk/client-s3",
+        },
+      ];
     }
     return config;
   },

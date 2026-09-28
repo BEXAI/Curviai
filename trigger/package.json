@@ -8,7 +8,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./runner": "./src/pipeline-runner.ts",
+    "./pipeline-runner": "./src/pipeline-runner.ts",
     "./runtime": "./src/runtime.ts",
+    "./live-runtime": "./src/live-runtime.ts",
     "./db-runtime": "./src/db-runtime.ts",
     "./db-store": "./src/db-store.ts",
     "./state": "./src/state.ts"

@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "pnpm --filter @curvi/web dev",
     "build": "pnpm --filter @curvi/web build",
+    "start": "pnpm --filter @curvi/web start",
     "test": "pnpm -r --workspace-concurrency=1 run test",
     "lint": "eslint .",
     "typecheck": "pnpm -r run typecheck",

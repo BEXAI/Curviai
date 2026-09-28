@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { buttonVariants } from "@curvi/ui";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { categories, categoryForSlug } from "@/components/marketing/categories";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
@@ -50,13 +51,13 @@ export default async function CategoryPage({
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
               href="/signup"
-              className="inline-flex h-11 items-center justify-center rounded-lg bg-accent-500 px-6 text-sm font-medium text-white transition-colors hover:bg-accent-600"
+              className={buttonVariants({ variant: "secondary", size: "lg" })}
             >
               Start free
             </Link>
             <Link
               href="/pricing"
-              className="inline-flex h-11 items-center justify-center rounded-lg border border-ink-200 bg-white px-6 text-sm font-medium text-ink-900 transition-colors hover:bg-ink-50"
+              className={buttonVariants({ variant: "outline", size: "lg" })}
             >
               See pricing
             </Link>

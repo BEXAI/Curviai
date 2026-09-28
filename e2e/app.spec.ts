@@ -41,7 +41,7 @@ test("submitting a demo job navigates to the job page and progress advances", as
     })
     .not.toBe(initial);
 
-  await expect(status).toHaveText("done", { timeout: 45000 });
+  await expect(status).toHaveText("Done", { timeout: 45000 });
   await expect(page.getByTestId("compliance-badge").first()).toBeVisible();
 
   // The delivery surface: channel tabs with named files and previews.

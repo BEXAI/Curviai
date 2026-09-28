@@ -51,7 +51,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: "billing_not_configured",
-        notice: "Checkout needs Stripe. Set STRIPE_SECRET_KEY and the STRIPE_PRICE environment variables.",
+        notice: "Card checkout is briefly unavailable. Email hello@curvi.ai and we will upgrade your plan right away.",
       },
       { status: 503 },
     );
@@ -65,14 +65,14 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: "price_not_configured",
-        notice: "This price is not configured yet. Set its STRIPE_PRICE environment variable.",
+        notice: "This plan cannot be purchased online right now. Email hello@curvi.ai and we will set it up.",
       },
       { status: 503 },
     );
   }
 
   const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
+  const workspace = await services.ensureWorkspace();
   if (!workspace) {
     return NextResponse.json({ error: "Sign in to manage billing." }, { status: 401 });
   }

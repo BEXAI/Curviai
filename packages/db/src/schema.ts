@@ -82,6 +82,7 @@ export const brandKits = pgTable(
     colors: jsonb("colors").$type<string[]>(),
     fonts: jsonb("fonts").$type<Record<string, string>>(),
     logoAssetId: uuid("logo_asset_id"),
+    logoR2Key: text("logo_r2_key"),
     stylePreset: text("style_preset"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

@@ -23,4 +23,62 @@
   --color-accent-800: #9c3a0f;
   --color-accent-900: #7e3210;
   --color-accent-950: #441706;
+  --color-night: #0b0d14;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: var(--font-grotesk), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jbmono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Card sits on a hairline plus a faint inner top sheen; raised is for hover states. */
+  --shadow-card: 0 1px 2px 0 rgb(19 24 38 / 0.06), inset 0 1px 0 0 rgb(255 255 255 / 0.7);
+  --shadow-raised: 0 8px 24px -8px rgb(19 24 38 / 0.16), 0 2px 6px -2px rgb(19 24 38 / 0.08);
+  /* Dark surfaces are lit from above: faint inner top edge plus a deep ambient. */
+  --shadow-sheen: inset 0 1px 0 0 rgb(255 255 255 / 0.06), 0 8px 30px -12px rgb(0 0 0 / 0.5);
+
+  /* One waiting motif shared by skeletons, busy buttons and active status chips. */
+  --animate-shimmer: shimmer 2.4s linear infinite;
+  --animate-fade-in-up: fade-in-up 0.5s cubic-bezier(0.33, 1, 0.68, 1) both;
+  --animate-pulse-dot: pulse-dot 1.4s ease-in-out infinite;
+
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+
+  @keyframes fade-in-up {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(0.6);
+      opacity: 0.5;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

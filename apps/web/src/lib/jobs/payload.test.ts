@@ -29,13 +29,13 @@ describe("buildGeneratePackInput", () => {
     creditBudget: 20,
     product: { id: "p1", title: "Ceramic mug", mode: "listing" as const, amazonSku: "MUG1" },
     media: [
-      { id: "m1", kind: "image" as const },
-      { id: "m2", kind: "video" as const },
-      { id: "m3", kind: null },
+      { r2Key: "m1", kind: "image" as const },
+      { r2Key: "m2", kind: "video" as const },
+      { r2Key: "m3", kind: null },
     ],
   };
 
-  it("passes ids through and derives sku, slug and video flag", () => {
+  it("passes media keys through and derives sku, slug and video flag", () => {
     const input = buildGeneratePackInput(base);
     expect(input.jobId).toBe("job1");
     expect(input.mode).toBe("listing");
@@ -51,7 +51,7 @@ describe("buildGeneratePackInput", () => {
     const input = buildGeneratePackInput({
       ...base,
       product: { ...base.product, amazonSku: null },
-      media: [{ id: "m1", kind: "image" }],
+      media: [{ r2Key: "m1", kind: "image" }],
     });
     expect(input.sku).toBeUndefined();
     expect(input.hasVideoSource).toBe(false);

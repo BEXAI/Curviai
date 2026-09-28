@@ -17,8 +17,10 @@ import {
   generationJobs,
   products,
   sourceMedia,
+  workspaces,
   sql,
   eq,
+  and,
 } from "@curvi/db";
 import { tierByKey, tiers, type TierKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -26,7 +28,7 @@ import { isR2Configured, optionalEnv } from "@/lib/env";
 import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
 import { buildGeneratePackInput } from "@/lib/jobs/payload";
 import { estimatePackCredits } from "@/lib/pack-estimate";
-import { isWorkspaceSourceKey, presignDownload } from "@/lib/r2";
+import { isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
 import type {
   BrandKitView,
   CreateJobInput,
@@ -73,6 +75,9 @@ export interface DbServiceDeps {
   getSupabase: () => Promise<SupabaseClient | null>;
 }
 
+const TERMINAL_JOB_STATES = new Set(["done", "failed", "canceled"]);
+const STALE_JOB_MS = 30 * 60 * 1000;
+
 function tierKeyOf(plan: string): TierKey {
   const match = tiers.find((t) => t.key === plan);
   return match ? match.key : "free";
@@ -84,6 +89,7 @@ function toShotStatus(value: string | null): ShotStatus {
     case "qc":
     case "done":
     case "failed":
+    case "needs_review":
       return value;
     default:
       return "pending";
@@ -157,6 +163,34 @@ export class DbService implements Services {
       creditBalance: await this.creditBalance(workspace.id),
       role: membership.role,
     };
+  }
+
+  /** getCurrentWorkspace already provisions the first workspace on a
+   * user's first session, so ensuring one is the same read. */
+  async ensureWorkspace(): Promise<WorkspaceSummary | null> {
+    return this.getCurrentWorkspace();
+  }
+
+  async renameWorkspace(workspaceId: string, name: string): Promise<SaveResult> {
+    const userId = await this.deps.getUserId();
+    if (!userId) {
+      return { ok: false, notice: "Sign in to rename the workspace." };
+    }
+    const membership = await this.db.query.members.findFirst({
+      where: (t) => and(eq(t.userId, userId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!membership || !["owner", "admin"].includes(membership.role)) {
+      return { ok: false, notice: "Only owners and admins can rename the workspace." };
+    }
+    const trimmed = name.trim().slice(0, 80);
+    if (!trimmed) {
+      return { ok: false, notice: "Workspace name cannot be empty." };
+    }
+    await this.db
+      .update(workspaces)
+      .set({ name: trimmed, updatedAt: new Date() })
+      .where(eq(workspaces.id, workspaceId));
+    return { ok: true, notice: "Workspace name saved." };
   }
 
   /** Creates the user's first workspace, owner membership and the free tier's
@@ -264,11 +298,30 @@ export class DbService implements Services {
   }
 
   async getJob(workspaceId: string, jobId: string): Promise<JobView | null> {
-    const job = await this.db.query.generationJobs.findFirst({
+    let job = await this.db.query.generationJobs.findFirst({
       where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
     });
     if (!job) {
       return null;
+    }
+    // Reconcile runs orphaned by an instance restart: the runner heartbeats
+    // updated_at on every state change and stored asset, so a job that has
+    // not moved in this window will never finish. Fail it, free the credits.
+    if (!TERMINAL_JOB_STATES.has(job.status) && Date.now() - job.updatedAt.getTime() > STALE_JOB_MS) {
+      await this.db
+        .update(generationJobs)
+        .set({
+          status: "failed",
+          error: "The run was interrupted before finishing. Reserved credits were released.",
+          updatedAt: new Date(),
+        })
+        .where(eq(generationJobs.id, job.id));
+      try {
+        await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${job.id}::uuid)`);
+      } catch {
+        // Nothing held, or already released.
+      }
+      job = { ...job, status: "failed", error: "The run was interrupted before finishing. Reserved credits were released." };
     }
     const [product, steps, assetRows] = await Promise.all([
       this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, job.productId) }),
@@ -299,6 +352,44 @@ export class DbService implements Services {
       };
     });
 
+    // Signed thumbnails for shots whose generated image landed in R2.
+    // DbJobStore records each asset's shot id in its qc verdict and names
+    // variants after the channel file, so map variant to shot via its asset.
+    if (isR2Configured() && assetRows.length > 0) {
+      const shotIdByAssetId = new Map<string, string>();
+      for (const a of assetRows) {
+        const qc = a.qc as { shotId?: unknown } | null;
+        if (typeof qc?.shotId === "string") {
+          shotIdByAssetId.set(a.id, qc.shotId);
+        }
+      }
+      const variantRows = await this.db.query.assetVariants.findMany({
+        where: (t, { inArray }) =>
+          inArray(
+            t.assetId,
+            assetRows.map((a) => a.id),
+          ),
+      });
+      const urlByShotId = new Map<string, string>();
+      await Promise.all(
+        variantRows.map(async (variant) => {
+          const shotId = shotIdByAssetId.get(variant.assetId);
+          // One thumbnail per shot is enough; the first variant wins.
+          if (!shotId || urlByShotId.has(shotId)) {
+            return;
+          }
+          try {
+            urlByShotId.set(shotId, await presignObjectGet(variant.r2Key));
+          } catch {
+            // Missing or unsignable object: the card renders without a thumb.
+          }
+        }),
+      );
+      for (const shot of shots) {
+        shot.imageUrl = urlByShotId.get(shot.shotId) ?? null;
+      }
+    }
+
     return {
       id: job.id,
       productId: job.productId,
@@ -310,6 +401,7 @@ export class DbService implements Services {
       creditsCharged: job.creditsCharged,
       createdAt: job.createdAt.toISOString(),
       shots,
+      error: job.error ?? null,
     };
   }
 
@@ -318,11 +410,12 @@ export class DbService implements Services {
       where: (t, { eq }) => eq(t.idempotencyKey, input.idempotencyKey),
     });
     if (existing) {
-      // A replay must match the whole request body, not just the product
-      // (plan 4.4.1); a reused key with different channels or mode is a 409.
+      // A replay must match the whole request body (plan 4.4.1); a reused key
+      // with different channels or mode is a 409. A "new" product resolved to
+      // a real id on the first attempt, so a retry can only match on the rest.
       const sameBody =
         existing.workspaceId === workspaceId &&
-        existing.productId === input.productId &&
+        (input.productId === "new" || existing.productId === input.productId) &&
         (existing.mode ?? input.mode) === input.mode &&
         JSON.stringify([...(existing.channels ?? input.channels)].sort()) ===
           JSON.stringify([...input.channels].sort());
@@ -348,19 +441,48 @@ export class DbService implements Services {
       };
     }
 
-    const product = await this.db.query.products.findFirst({
-      where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
-    });
+    let product;
+    if (input.productId === "new") {
+      const [created] = await this.db
+        .insert(products)
+        .values({
+          workspaceId,
+          title: input.newProductTitle?.trim() || "New product",
+          mode: input.mode,
+        })
+        .returning();
+      product = created;
+    } else {
+      product = await this.db.query.products.findFirst({
+        where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
+      });
+    }
     if (!product) {
       return { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." };
     }
 
+    // Register uploads sent with the job, then collect the media this pack
+    // can draw from. Only keys inside this workspace's source prefix count.
+    const uploads = (input.uploads ?? []).filter((u) => isWorkspaceSourceKey(workspaceId, u.key));
+    if (uploads.length > 0) {
+      await this.db.insert(sourceMedia).values(
+        uploads.map((u) => ({
+          workspaceId,
+          productId: product.id,
+          r2Key: u.key,
+          kind: u.kind,
+          sha256: u.sha256,
+        })),
+      );
+    }
+    const media = await this.db.query.sourceMedia.findMany({
+      where: (t, { and, eq }) => and(eq(t.productId, product.id), eq(t.workspaceId, workspaceId)),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+      limit: 6,
+    });
     // Plan 2.7: Listing Mode requires at least one real photo. Angles that
     // were not photographed are skipped by the planner, never invented.
-    const media = await this.db.query.sourceMedia.findMany({
-      where: (t, { eq }) => eq(t.productId, input.productId),
-    });
-    if (input.mode === "listing" && media.length === 0) {
+    if (input.mode === "listing" && !media.some((m) => m.kind !== "video")) {
       return {
         outcome: "rejected",
         reason: "needs_photo",
@@ -387,7 +509,7 @@ export class DbService implements Services {
       .insert(generationJobs)
       .values({
         workspaceId,
-        productId: input.productId,
+        productId: product.id,
         status: "queued",
         idempotencyKey: input.idempotencyKey,
         channels: input.channels,
@@ -426,7 +548,8 @@ export class DbService implements Services {
             mode: product.mode,
             amazonSku: product.amazonSku,
           },
-          media: media.map((m) => ({ id: m.id, kind: m.kind })),
+          media: media.map((m) => ({ r2Key: m.r2Key, kind: m.kind })),
+          userDescription: input.userDescription,
         }),
       );
     } catch (err) {
@@ -552,6 +675,14 @@ export class DbService implements Services {
     const row = await this.db.query.brandKits.findFirst({
       where: (t, { eq }) => eq(t.workspaceId, workspaceId),
     });
+    let logoUrl: string | null = null;
+    if (row?.logoR2Key && isR2Configured()) {
+      try {
+        logoUrl = await presignObjectGet(row.logoR2Key);
+      } catch {
+        logoUrl = null;
+      }
+    }
     return {
       name: row?.name ?? "Default",
       colors: row?.colors ?? [],
@@ -560,7 +691,9 @@ export class DbService implements Services {
         body: row?.fonts?.body ?? "",
       },
       stylePreset: row?.stylePreset ?? "minimal_studio",
-      hasLogo: Boolean(row?.logoAssetId),
+      hasLogo: Boolean(row?.logoR2Key || row?.logoAssetId),
+      logoUrl,
+      logoKey: row?.logoR2Key ?? null,
     };
   }
 
@@ -575,6 +708,7 @@ export class DbService implements Services {
         colors: kit.colors,
         fonts: { heading: kit.fonts.heading, body: kit.fonts.body },
         stylePreset: kit.stylePreset,
+        logoR2Key: kit.logoKey ?? null,
       });
       return { ok: true, notice: "Brand kit saved." };
     }
@@ -589,6 +723,7 @@ export class DbService implements Services {
         colors: kit.colors,
         fonts: { heading: kit.fonts.heading, body: kit.fonts.body },
         style_preset: kit.stylePreset,
+        logo_r2_key: kit.logoKey ?? existing.logoR2Key ?? null,
         updated_at: new Date().toISOString(),
       })
       .eq("id", existing.id);

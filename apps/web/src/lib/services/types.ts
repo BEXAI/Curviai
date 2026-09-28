@@ -19,7 +19,7 @@ export type JobStatus =
   | "failed"
   | "canceled";
 
-export type ShotStatus = "pending" | "generating" | "qc" | "done" | "failed";
+export type ShotStatus = "pending" | "generating" | "qc" | "done" | "failed" | "needs_review";
 
 export type PackMode = "listing" | "concept";
 
@@ -60,6 +60,8 @@ export interface JobShotView {
   channels: string[];
   credits: number;
   compliance: ShotCompliance | null;
+  /** Short lived signed URL of the generated image, when one is stored. */
+  imageUrl?: string | null;
 }
 
 export interface JobView {
@@ -73,6 +75,8 @@ export interface JobView {
   creditsCharged: number;
   createdAt: string;
   shots: JobShotView[];
+  /** Failure detail when status is failed. */
+  error?: string | null;
 }
 
 export interface JobSummary {
@@ -89,6 +93,10 @@ export interface BrandKitView {
   fonts: { heading: string; body: string };
   stylePreset: string;
   hasLogo: boolean;
+  /** Signed preview URL of the stored logo, read side only. */
+  logoUrl?: string | null;
+  /** R2 key of the uploaded logo to persist, write side only. */
+  logoKey?: string | null;
 }
 
 export interface MemberView {
@@ -104,10 +112,17 @@ export interface IntegrationView {
 }
 
 export interface CreateJobInput {
+  /** An existing product id, or "new" to create one from this pack. */
   productId: string;
   channels: string[];
   mode: PackMode;
   idempotencyKey: string;
+  /** R2 objects uploaded for this pack; registered as source media in db mode. */
+  uploads?: Array<{ key: string; sha256: string; kind: "image" | "video" }>;
+  /** Title for the product created when productId is "new". */
+  newProductTitle?: string;
+  /** Seller notes passed to the analyzer as untrusted description text. */
+  userDescription?: string;
 }
 
 export type CreateJobResult =
@@ -117,7 +132,7 @@ export type CreateJobResult =
   | { outcome: "conflict"; existingJobId?: string }
   | {
       outcome: "rejected";
-      reason: "unknown_product" | "insufficient_credits" | "role_forbidden" | "needs_photo";
+      reason: "unknown_product" | "insufficient_credits" | "role_forbidden" | "needs_photo" | "no_media";
       message: string;
     };
 
@@ -164,6 +179,13 @@ export interface Services {
   readonly mode: ServiceMode;
   /** The caller's workspace, or null when nobody is signed in (db mode only). */
   getCurrentWorkspace(): Promise<WorkspaceSummary | null>;
+  /**
+   * The caller's workspace, bootstrapping one when a signed in user has none
+   * (safety net behind the auth.users trigger). Null only when signed out.
+   */
+  ensureWorkspace(): Promise<WorkspaceSummary | null>;
+  /** Renames the workspace. Owner and admin only in db mode. */
+  renameWorkspace(workspaceId: string, name: string): Promise<SaveResult>;
   listProducts(workspaceId: string): Promise<ProductSummary[]>;
   getProduct(workspaceId: string, productId: string): Promise<ProductSummary | null>;
   listRecentJobs(workspaceId: string, limit?: number): Promise<JobSummary[]>;

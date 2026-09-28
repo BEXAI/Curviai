@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Badge } from "@curvi/ui";
+import { Badge, buttonVariants } from "@curvi/ui";
 import { galleryCases } from "@/components/marketing/demo-images";
 
 export const metadata: Metadata = {
@@ -21,9 +21,8 @@ export default function GalleryPage() {
       </div>
 
       <div className="mx-auto mt-8 max-w-2xl rounded-xl border border-ink-100 bg-ink-50 p-5 text-center text-sm text-ink-600">
-        Honest note: Curvi is in early access, so the cases below are demo renders we generated to
-        show the format. Real customer makeovers appear here only when the customer opts in, and each
-        one will say so.
+        The cases below are sample renders that show the format. Customer makeovers appear here only
+        when the customer opts in, and each one says so.
       </div>
 
       <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -62,7 +61,7 @@ export default function GalleryPage() {
         </p>
         <Link
           href="/signup"
-          className="mt-6 inline-flex h-11 items-center justify-center rounded-lg bg-accent-500 px-6 text-sm font-medium text-white transition-colors hover:bg-accent-600"
+          className={buttonVariants({ variant: "secondary", size: "lg", className: "mt-6" })}
         >
           Start free
         </Link>

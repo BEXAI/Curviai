@@ -105,6 +105,8 @@ export class DemoStore {
   readonly jobs = new Map<string, DemoJobRecord>();
   readonly jobIdByIdempotencyKey = new Map<string, string>();
   readonly extraProducts: ProductSummary[] = [];
+  /** Rename override for the demo workspace; null keeps the default name. */
+  workspaceName: string | null = null;
   private counter = 0;
 
   nextJobId(): string {
@@ -245,11 +247,24 @@ export class DemoService implements Services {
   async getCurrentWorkspace(): Promise<WorkspaceSummary> {
     return {
       id: DEMO_WORKSPACE_ID,
-      name: DEMO_WORKSPACE_NAME,
+      name: this.store.workspaceName ?? DEMO_WORKSPACE_NAME,
       plan: DEMO_TIER,
       creditBalance: this.balance(),
       role: "owner",
     };
+  }
+
+  async ensureWorkspace(): Promise<WorkspaceSummary> {
+    return this.getCurrentWorkspace();
+  }
+
+  async renameWorkspace(_workspaceId: string, name: string): Promise<SaveResult> {
+    const trimmed = name.trim().slice(0, 80);
+    if (!trimmed) {
+      return { ok: false, notice: "Workspace name cannot be empty." };
+    }
+    this.store.workspaceName = trimmed;
+    return { ok: true, notice: "Workspace name saved for this demo session." };
   }
 
   async listProducts(_workspaceId: string): Promise<ProductSummary[]> {
@@ -347,7 +362,12 @@ export class DemoService implements Services {
     return projectJob(record, this.productTitle(record.productId));
   }
 
-  async createJob(_workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
+  async createJob(_workspaceId: string, rawInput: CreateJobInput): Promise<CreateJobResult> {
+    // The demo has a fixed product catalog; "new" maps to the first product.
+    const input: CreateJobInput =
+      rawInput.productId === "new" && DEMO_PRODUCTS[0]
+        ? { ...rawInput, productId: DEMO_PRODUCTS[0].id }
+        : rawInput;
     const bodyHash = hashBody(input);
     const existingId = this.store.jobIdByIdempotencyKey.get(input.idempotencyKey);
     if (existingId) {

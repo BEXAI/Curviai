@@ -82,7 +82,8 @@ Waves 2 and 3 (same day): provision_workspace (migration 0007) creates the first
 - Half open probe state for the circuit breaker; Upstash backed breaker and cap stores; DB backed cost meter (cogs_micros still not written to the database).
 - Badge pixel overlay for social exports and the Concept render corner label (flags are tracked, pixels not composited yet).
 - Founder email or SMS for the $50 spend alert (onSpendAlert currently logs a console warning).
-- Real provider routing table and price table seeds: generation still runs on the demo LLM and demo shot generator; DbJobStore makes persistence real either way. Runtime recipe reads still come from the in code seed, not the recipes table, so trafficPct splits stay inert.
+- Write workspaces.stripe_customer_id back from checkout.session.completed so the customer portal works without backfill.
+- Live provider wiring (trigger/src/live-runtime.ts, merged from the deploy branch on 2026-09-28) uses the model and price seeds in packages/pipeline/src/seed/models.ts. Adapters still carry VERIFY AT FIRST LIVE CALL notes; recheck model IDs, prices and response shapes against official provider docs on first key setup. Runtime recipe reads still come from the in code seed, not the recipes table, so trafficPct splits stay inert.
 - The composite pipeline's scene plate and harmonize calls still invoke providers directly instead of through callWithFailover; wrap them before real image providers land.
 - Ingest side revalidation of uploads (presigned PUT cannot enforce byte caps server side; caps are enforced at sign time only; magic bytes, EXIF strip and the 80 MP cap still need an ingest step that reads the object back).
 - Credit rollover and top up expiry enforcement (expire ledger rows are still never written; top up expiresAt is recorded but not enforced).

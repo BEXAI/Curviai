@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { cn } from "@curvi/ui";
 import { EmailCapture } from "./email-capture";
 
 const tools = [
@@ -25,12 +26,12 @@ export function ToolPageShell({
           <Link
             key={tool.href}
             href={tool.href}
-            className={
-              "rounded-full border px-3 py-1 text-sm font-medium transition-colors " +
-              (tool.href === currentPath
+            className={cn(
+              "rounded-full border px-3 py-1 text-sm font-medium transition-colors",
+              tool.href === currentPath
                 ? "border-ink-900 bg-ink-900 text-white"
-                : "border-ink-200 text-ink-600 hover:bg-ink-50")
-            }
+                : "border-ink-200 text-ink-600 hover:bg-ink-50",
+            )}
           >
             {tool.label}
           </Link>

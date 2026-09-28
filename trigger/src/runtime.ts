@@ -21,6 +21,7 @@ import {
 import { recipeSeedRows } from "@curvi/pipeline/seed";
 import { getSpec } from "@curvi/specs";
 import type { ChurnSignals } from "./churn";
+import { LiveShotGenerator, makeR2MediaLoader, wireLiveProviders } from "./live-runtime";
 import type { DropWorkspace } from "./drops";
 import {
   activeRecipe,
@@ -216,17 +217,27 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     globalDailyHardStopMicros:
       Number.isFinite(hardStopUsd) && hardStopUsd > 0 ? Math.round(hardStopUsd * 1_000_000) : undefined,
   });
+  const routing = demoRoutingTable();
+  const ai: PipelineDeps["ai"] = {
+    registry,
+    routing,
+    meter: new InMemoryCostMeter(),
+    breakerStore: new InMemoryBreakerStore(),
+    caps,
+  };
+  const wiring = wireLiveProviders(registry, routing);
+  const demoGenerator = new DemoShotGenerator();
+  const loadMedia = makeR2MediaLoader();
+  const generator =
+    wiring.imageProviders.length > 0 && wiring.cutoutLive && loadMedia
+      ? new LiveShotGenerator({ ai, wiring, loadMedia, fallback: demoGenerator })
+      : demoGenerator;
   return {
-    ai: {
-      registry,
-      routing: demoRoutingTable(),
-      meter: new InMemoryCostMeter(),
-      breakerStore: new InMemoryBreakerStore(),
-      caps,
-    },
+    ai,
     store: new InMemoryJobStore(),
     clock: systemClock,
-    generator: new DemoShotGenerator(),
+    generator,
+    loadMedia: loadMedia ?? undefined,
     packOutDir: opts.packOutDir,
     onSpendAlert: (totalMicros) => {
       console.warn(

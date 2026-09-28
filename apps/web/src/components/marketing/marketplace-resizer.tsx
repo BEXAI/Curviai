@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { filenameFor, type ChannelSpec } from "@curvi/specs";
-import { Button, Card, CardContent, cn } from "@curvi/ui";
+import { Button, Card, CardContent, buttonVariants, cn } from "@curvi/ui";
 import { imageSpecs, specDisplayName, specSlug } from "./spec-slug";
 
 interface ResizedResult {
@@ -129,7 +129,7 @@ export function MarketplaceResizer() {
               aria-label="Choose an image to resize"
               onChange={(event) => onFile(event.target.files?.[0])}
             />
-            <span className="mt-4 inline-flex h-10 items-center justify-center rounded-lg bg-ink-900 px-4 text-sm font-medium text-white">
+            <span className={buttonVariants({ className: "mt-4" })}>
               Select image
             </span>
           </label>

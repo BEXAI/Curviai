@@ -1,6 +1,6 @@
 {
-  "id": "dac8bf43-e3fd-48ee-93b4-c6f9109c3d28",
-  "prevId": "966f4149-e0c7-42e7-a30a-fb73b1235fc3",
+  "id": "4250a735-8cbd-4118-91bc-f458f053fa8b",
+  "prevId": "4d8b00ff-86b3-45c2-9811-fed5ec7134a8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -818,18 +818,6 @@
         },
         "idempotency_key": {
           "name": "idempotency_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "channels": {
-          "name": "channels",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "mode": {
-          "name": "mode",
           "type": "text",
           "primaryKey": false,
           "notNull": false

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { Badge, Card, CardContent, CardHeader, CardTitle } from "@curvi/ui";
+import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
 
 interface CheckRow {
   label: string;
@@ -164,7 +164,7 @@ export function MainImageChecker() {
               aria-label="Choose an image to check"
               onChange={(event) => onFile(event.target.files?.[0])}
             />
-            <span className="mt-4 inline-flex h-10 items-center justify-center rounded-lg bg-ink-900 px-4 text-sm font-medium text-white">
+            <span className={buttonVariants({ className: "mt-4" })}>
               {busy ? "Checking" : "Select image"}
             </span>
           </label>

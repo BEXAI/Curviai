@@ -15,7 +15,8 @@ export interface PayloadProduct {
 }
 
 export interface PayloadMedia {
-  id: string;
+  /** Object key in the private bucket; the worker's media loader reads it. */
+  r2Key: string;
   kind: "image" | "video" | "frame" | null;
 }
 
@@ -38,6 +39,7 @@ export function buildGeneratePackInput(args: {
   creditBudget: number;
   product: PayloadProduct;
   media: PayloadMedia[];
+  userDescription?: string;
 }): GeneratePackInput {
   return {
     jobId: args.jobId,
@@ -48,7 +50,8 @@ export function buildGeneratePackInput(args: {
     creditBudget: args.creditBudget,
     images: args.media
       .filter((m) => m.kind !== "video")
-      .map((m) => ({ mediaId: m.id })),
+      .map((m) => ({ mediaId: m.r2Key })),
+    userDescription: args.userDescription,
     sku: args.product.amazonSku ?? undefined,
     seoSlug: seoSlugFor(args.product.title),
     hasVideoSource: args.media.some((m) => m.kind === "video"),

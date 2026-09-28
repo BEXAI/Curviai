@@ -18,6 +18,18 @@ const JobRequest = z.object({
   productId: z.string().min(1),
   channels: z.array(z.string().min(1)).min(1).max(24),
   mode: z.enum(["listing", "concept"]),
+  uploads: z
+    .array(
+      z.object({
+        key: z.string().min(1).max(512),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        kind: z.enum(["image", "video"]),
+      }),
+    )
+    .max(8)
+    .optional(),
+  newProductTitle: z.string().trim().min(1).max(120).optional(),
+  userDescription: z.string().trim().max(2000).optional(),
 });
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -51,9 +63,15 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
+  const workspace = await services.ensureWorkspace();
   if (!workspace) {
     return NextResponse.json({ error: "Sign in to create a pack." }, { status: 401 });
+  }
+
+  // Uploads must live under this workspace's own R2 prefix.
+  const foreignKey = parsed.data.uploads?.find((u) => !u.key.startsWith(`ws/${workspace.id}/`));
+  if (foreignKey) {
+    return NextResponse.json({ error: "Upload key does not belong to this workspace." }, { status: 403 });
   }
 
   const result = await services.createJob(workspace.id, {
@@ -77,7 +95,15 @@ export async function POST(request: Request): Promise<NextResponse> {
     case "rejected":
       return NextResponse.json(
         { error: result.message, reason: result.reason },
-        { status: result.reason === "unknown_product" ? 404 : 402 },
+        { status: REJECTED_STATUS[result.reason] },
       );
   }
 }
+
+const REJECTED_STATUS = {
+  unknown_product: 404,
+  role_forbidden: 403,
+  needs_photo: 400,
+  no_media: 400,
+  insufficient_credits: 402,
+} as const;
