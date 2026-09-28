@@ -5,7 +5,7 @@
  */
 
 import type { GeneratePackInput } from "@curvi/trigger/runner";
-import type { TierKey } from "@curvi/pipeline/seed";
+import { socialBadgeByTier, type TierKey } from "@curvi/pipeline/seed";
 import { isAngleRole, printableSellerLines } from "@curvi/pipeline/seller-inputs";
 
 export interface PayloadProduct {
@@ -72,5 +72,7 @@ export function buildGeneratePackInput(args: {
     hasVideoSource: args.media.some((m) => m.kind === "video"),
     boxContents: printableSellerLines(args.product.boxContents),
     comparisonFacts: printableSellerLines(args.product.comparisonFacts),
+    // The "Made with Curvi" badge on social exports, by plan (seed).
+    socialBadge: socialBadgeByTier[args.tier] ?? false,
   };
 }

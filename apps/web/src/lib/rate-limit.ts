@@ -48,6 +48,11 @@ export const RATE_LIMIT_POLICIES = {
   // counted per workspace (the "user" rule) as well as per IP.
   "imports.product": { user: { limit: 30, windowSeconds: HOUR }, ip: { limit: 60, windowSeconds: HOUR } },
   "imports.photo": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
+  // Anonymous email capture on the free tools: IP only, since there is no
+  // user. A person leaves one email; a few retries and a shared office fit.
+  "leads.create": { user: { limit: 20, windowSeconds: HOUR }, ip: { limit: 20, windowSeconds: HOUR } },
+  // Publishing and unpublishing a share page.
+  "shares.write": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitPolicyName = keyof typeof RATE_LIMIT_POLICIES;

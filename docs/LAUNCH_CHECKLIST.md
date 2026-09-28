@@ -368,3 +368,13 @@ CRON_SECRET=
 # Supabase service role key, server only, used to remove the sign in of a deleted account.
 SUPABASE_SERVICE_ROLE_KEY=
 ```
+
+## Batch 2, b2/growth: share pages, gallery and leads
+
+No new environment variables. Before this goes live:
+
+1. Apply migration `0016_growth.sql` through the Supabase SQL editor with the founder's approval (the PHASE_10.md process). It adds the `leads` table (RLS on, no client privileges), five columns on `share_links`, two partial unique indexes, and drops the anonymous `share_links_public_read` policy so link only share pages cannot be listed with the anon key.
+2. Share page images are served through `/s/{slug}/image/{ref}`, which reads R2 (the same `R2_*` variables as downloads). Without R2 the page renders but its images answer 404.
+3. Leads are stored in the `leads` table only. Nothing is sent to Loops yet; import the table once Loops exists (docs/PENDING.md, Hosting and messaging).
+4. A gallery entry goes live as soon as its owner opts in. There is no moderation queue; to pull one by hand, set `gallery_items.published = false` for its `share_slug`.
+5. Free plan packs draw a small "Made with Curvi" badge on Meta social files (seed `socialBadgeByTier`, packages/pipeline/src/seed/credits.ts). Paid plans ship clean files, and marketplace files never carry it.

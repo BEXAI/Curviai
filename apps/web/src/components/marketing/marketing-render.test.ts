@@ -42,7 +42,10 @@ vi.mock("@/lib/services", () => ({
       stylePreset: "minimal_studio",
       hasLogo: false,
     }),
+    listJobFiles: async () => null,
+    getJob: async () => null,
   }),
+  isDbMode: () => false,
 }));
 
 vi.mock("next/link", () => ({
@@ -210,7 +213,9 @@ describe("pages", () => {
 
   it("gallery labels every case as an illustration", async () => {
     const { default: GalleryPage } = await import("@/app/(marketing)/gallery/page");
-    const html = render(React.createElement(GalleryPage));
+    const html = render(await GalleryPage());
+    // No customer has opted in here, so only the drawn cases show.
+    expect(html).not.toContain('data-testid="customer-makeovers"');
     expect(html.match(/data-testid="illustration-label"/g)?.length).toBe(galleryCases.length);
     expect(html).not.toContain(">Demo<");
     expect(html).not.toContain("Curvi output");
@@ -251,12 +256,20 @@ describe("pages", () => {
     }
   });
 
-  it("share pages say they are coming soon and show an illustration", async () => {
+  it("the example share page labels its drawings as an illustration", async () => {
     const { default: SharePage } = await import("@/app/(marketing)/s/[slug]/page");
-    const html = render(React.createElement(SharePage));
-    expect(html).toContain("Coming soon");
+    const html = render(await SharePage({ params: Promise.resolve({ slug: "example" }) }));
     expect(html).toContain('data-testid="illustration-label"');
+    expect(html).toContain("not a real Curvi result");
+    expect(html).not.toContain("Coming soon");
     expect(html).not.toContain("Makeover reference");
+  });
+
+  it("an unknown share slug is not found and stays out of the index", async () => {
+    const { default: SharePage, generateMetadata } = await import("@/app/(marketing)/s/[slug]/page");
+    await expect(SharePage({ params: Promise.resolve({ slug: "abcdefghjk" }) })).rejects.toThrow();
+    const metadata = await generateMetadata({ params: Promise.resolve({ slug: "abcdefghjk" }) });
+    expect(metadata.robots).toMatchObject({ index: false });
   });
 });
 
@@ -336,9 +349,12 @@ describe("free tool pages", () => {
     const { amazonMainRules } = await import("@/lib/marketing-facts");
     const rules = amazonMainRules();
     const html = render(React.createElement(CheckerPage));
-    expect(html).toContain(`at least ${rules.fillMinPercent} percent`);
+    // Both ends of the fill rule (Update.md 6.10).
+    expect(html).toContain(`${rules.fillMinPercent} to ${rules.fillMaxPercent} percent`);
     expect(html).toContain(`at least ${rules.minLongSide} px`);
-    expect(String(metadata.description)).toContain(`${rules.fillMinPercent} percent fill`);
+    expect(String(metadata.description)).toContain(
+      `${rules.fillMinPercent} to ${rules.fillMaxPercent} percent fill`,
+    );
   });
 });
 

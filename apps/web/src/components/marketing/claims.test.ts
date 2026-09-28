@@ -26,7 +26,7 @@ import {
 } from "./home-copy";
 import { signupLead } from "./signup-copy";
 import { imageSpecs, specDisplayName } from "./spec-slug";
-import { checkerVerdictCopy, toolPackCta } from "./tool-copy";
+import { checkerGateCopy, checkerVerdictCopy, fixerGateCopy, resizerGateCopy, toolPackCta } from "./tool-copy";
 
 // CLAUDE.md rule 9: no emojis, no arrows, no dashes as punctuation. Hyphens
 // inside words such as "e-commerce" are fine.
@@ -78,6 +78,10 @@ function liveCopy(): { where: string; text: string }[] {
     { where: "free tool pack call to action", text: `${toolPackCta.title} ${toolPackCta.body}` },
     { where: "main image checker, image passes", text: checkerVerdictCopy.pass },
     { where: "main image checker, image fails", text: checkerVerdictCopy.fail },
+    ...[checkerGateCopy, fixerGateCopy, resizerGateCopy].map((gate) => ({
+      where: `free tool email gate ${gate.title}`,
+      text: `${gate.title}. ${gate.body}`,
+    })),
     { where: "signup lead", text: signupLead() },
     ...Object.entries(brandKitCopy).map(([key, text]) => ({ where: `brand kit ${key}`, text })),
     ...imageSpecs().flatMap((spec) => {

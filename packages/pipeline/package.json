@@ -12,8 +12,9 @@
     "./reveal": "./src/reveal/side-by-side.ts",
     "./schemas": "./src/schemas.ts",
     "./seed": "./src/seed/index.ts",
-    "./testing": "./src/qc/testing.ts",
-    "./seller-inputs": "./src/seller-inputs.ts"
+    "./seller-inputs": "./src/seller-inputs.ts",
+    "./share-image": "./src/share-image.ts",
+    "./testing": "./src/qc/testing.ts"
   },
   "scripts": {
     "test": "vitest run",

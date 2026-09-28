@@ -114,3 +114,21 @@ describe("buildGeneratePackInput brand colors", () => {
     expect(buildGeneratePackInput({ ...base, brandColors: null }).brandColors).toEqual([]);
   });
 });
+
+describe("buildGeneratePackInput social badge", () => {
+  const base = {
+    jobId: "job1",
+    workspaceId: "ws1",
+    channels: ["meta.feed_1x1"],
+    mode: "listing" as const,
+    creditBudget: 5,
+    product: { id: "p1", title: "Mug", mode: "listing" as const, amazonSku: null },
+    media: [{ r2Key: "m1", kind: "image" as const }],
+  };
+
+  it("asks for the Made with Curvi badge on free packs only", () => {
+    expect(buildGeneratePackInput({ ...base, tier: "free" }).socialBadge).toBe(true);
+    expect(buildGeneratePackInput({ ...base, tier: "starter" }).socialBadge).toBe(false);
+    expect(buildGeneratePackInput({ ...base, tier: "agency" }).socialBadge).toBe(false);
+  });
+});

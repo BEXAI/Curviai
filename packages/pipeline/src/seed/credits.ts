@@ -50,8 +50,8 @@ export type TierFeature =
 export type FeatureStatus = "live" | "coming_soon";
 
 export const featureStatus: Record<TierFeature, FeatureStatus> = {
-  // Share links render demo images today.
-  sharePage: "coming_soon",
+  // Owners publish a finished pack to /s/{slug} (Phase 11, b2/growth).
+  sharePage: "live",
   // One kit per workspace: colors, fonts, logo and style preset feed the packs.
   brandKit: "live",
   // Video shots are skipped on real packs until their providers are wired.
@@ -229,6 +229,19 @@ export const tierEntitlements: Record<TierKey, TierEntitlements> = {
       "whiteLabelShare",
     ],
   },
+};
+
+/**
+ * Whether a tier's social exports carry the small "Made with Curvi" badge
+ * (plan 9.6.3). Free packs carry it; paid plans ship clean files. Only specs
+ * with badgeAllowed ever get it, so marketplace files never do on any plan.
+ */
+export const socialBadgeByTier: Record<TierKey, boolean> = {
+  free: true,
+  starter: false,
+  growth: false,
+  pro: false,
+  agency: false,
 };
 
 /** Shot methods that deliver a plan feature. A method with no feature (the

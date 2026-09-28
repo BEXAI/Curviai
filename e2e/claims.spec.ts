@@ -38,10 +38,11 @@ test("category page lists video under coming soon", async ({ page }) => {
   await expect(page.locator("body")).not.toContainText("share page");
 });
 
-test("share page says share pages are coming soon", async ({ page }) => {
+test("the example share page is labeled an illustration", async ({ page }) => {
   await page.goto("/s/example");
-  await expect(page.getByTestId("coming-soon").first()).toBeVisible();
+  await expect(page.getByTestId("share-title")).toBeVisible();
   await expect(page.getByTestId("illustration-label")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("Curvi output");
 });
 
 test("dashboard never promises a product URL import", async ({ page }) => {

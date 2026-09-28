@@ -2,6 +2,8 @@
 
 import { useCallback, useRef, useState } from "react";
 import { Button, Card, CardContent, buttonVariants } from "@curvi/ui";
+import { EmailGate } from "./email-gate";
+import { fixerGateCopy } from "./tool-copy";
 
 const DEFAULT_THRESHOLD = 230;
 const PREVIEW_MAX_SIDE = 1200;
@@ -10,7 +12,10 @@ const PREVIEW_MAX_SIDE = 1200;
  * Threshold based background whitening, entirely in the browser. Pixels where
  * every channel clears the threshold become pure 255 white. This is a preview
  * quality tool. The real pipeline in the app masks the product and rebuilds
- * the background without touching product pixels.
+ * the background without touching product pixels. The canvas is filled white
+ * before the photo is drawn, so a transparent background comes out white
+ * instead of staying transparent (Update.md 6.9). The preview is free; the
+ * download sits behind the email gate.
  */
 export function WhiteBackgroundFixer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -30,6 +35,8 @@ export function WhiteBackgroundFixer() {
     canvas.height = ch;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, cw, ch);
     ctx.drawImage(img, 0, 0, cw, ch);
     const imageData = ctx.getImageData(0, 0, cw, ch);
     const data = imageData.data;
@@ -122,9 +129,6 @@ export function WhiteBackgroundFixer() {
               />
               <span className="w-10 text-right tabular-nums text-ink-500">{threshold}</span>
             </label>
-            <Button variant="secondary" onClick={download}>
-              Download preview
-            </Button>
           </div>
           <canvas
             ref={canvasRef}
@@ -136,6 +140,11 @@ export function WhiteBackgroundFixer() {
             product edges can clip. The full Curvi pipeline masks your product first and never changes
             product pixels.
           </p>
+          <EmailGate source="white-background-fixer" title={fixerGateCopy.title} body={fixerGateCopy.body}>
+            <Button variant="secondary" onClick={download}>
+              Download preview
+            </Button>
+          </EmailGate>
         </CardContent>
       </Card>
     </div>

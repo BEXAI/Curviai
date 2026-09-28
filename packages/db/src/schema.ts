@@ -429,6 +429,14 @@ export const referrals = pgTable(
   ],
 );
 
+export type ShareKind = "before_after" | "pack";
+
+/** A pack's public share page at /s/{slug} (plan 9.6.1). One row per job:
+ * publishing again reuses the slug, and unpublishing only clears the public
+ * flag, so a link someone already posted comes back when the owner
+ * republishes. Only the server's owner connection writes rows (0011), and
+ * the public page reads through the server too, which is why 0016 removed
+ * the anonymous read policy. */
 export const shareLinks = pgTable(
   "share_links",
   {
@@ -436,15 +444,24 @@ export const shareLinks = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id").references(() => generationJobs.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<ShareKind>().notNull().default("before_after"),
+    title: text("title"),
+    // The hero after image.
     assetId: uuid("asset_id").references(() => assets.id, { onDelete: "set null" }),
     beforeMediaId: uuid("before_media_id").references(() => sourceMedia.id, {
       onDelete: "set null",
     }),
     views: integer("views").notNull().default(0),
     isPublic: boolean("public").notNull().default(false),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("share_links_workspace_id_idx").on(t.workspaceId)],
+  (t) => [
+    index("share_links_workspace_id_idx").on(t.workspaceId),
+    uniqueIndex("share_links_job_id_uq").on(t.jobId).where(sql`job_id is not null`),
+  ],
 );
 
 export const galleryItems = pgTable(
@@ -461,7 +478,34 @@ export const galleryItems = pgTable(
     consentAt: timestamp("consent_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("gallery_items_workspace_id_idx").on(t.workspaceId)],
+  (t) => [
+    index("gallery_items_workspace_id_idx").on(t.workspaceId),
+    // One gallery entry per share page, so opting in twice never lists a
+    // makeover twice.
+    uniqueIndex("gallery_items_share_slug_uq").on(t.shareSlug).where(sql`share_slug is not null`),
+  ],
+);
+
+/** Emails left on the free tools (plan 9.7, the checker as lead magnet).
+ * Anonymous visitors, not tenant data, so there is no workspace_id: a
+ * platform table with RLS on, no policies and no client privileges, like
+ * signup_grants. Only the server's owner connection (POST /api/leads)
+ * writes it. One row per normalized email; a repeat visit bumps hits and
+ * last_seen_at. */
+export const leads = pgTable(
+  "leads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull(),
+    /** The tool or page that captured the email first, e.g. "main-image-checker". */
+    source: text("source").notNull(),
+    /** The most recent tool or page the email was left on. */
+    lastSource: text("last_source"),
+    hits: integer("hits").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("leads_email_uq").on(t.email)],
 );
 
 export const integrations = pgTable(
@@ -570,6 +614,8 @@ export type ShareLink = typeof shareLinks.$inferSelect;
 export type NewShareLink = typeof shareLinks.$inferInsert;
 export type GalleryItem = typeof galleryItems.$inferSelect;
 export type NewGalleryItem = typeof galleryItems.$inferInsert;
+export type Lead = typeof leads.$inferSelect;
+export type NewLead = typeof leads.$inferInsert;
 export type Integration = typeof integrations.$inferSelect;
 export type NewIntegration = typeof integrations.$inferInsert;
 export type EventRow = typeof events.$inferSelect;

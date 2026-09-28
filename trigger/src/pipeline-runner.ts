@@ -34,6 +34,7 @@ import {
   type SpendCaps,
 } from "@curvi/ai";
 import {
+  badgeEligible,
   buildPack,
   capShotsPerChannel,
   CHANNEL_LIMIT_REASON,
@@ -678,6 +679,10 @@ export interface GeneratePackInput {
   hasVideoSource?: boolean;
   /** Workspace brand kit colors (hex), for brand colored stills. */
   brandColors?: string[];
+  /** Draw the "Made with Curvi" badge on social exports (plan 9.6.3). The
+   * packager draws it only on badgeAllowed social specs, clear of the
+   * product, so marketplace files never carry it. */
+  socialBadge?: boolean;
 }
 
 export interface GeneratePackSummary {
@@ -2331,7 +2336,9 @@ export async function runGeneratePack(
     // atomically with the rows that deliver the pack.
     await advance(transition(state, "qc_done"));
     await assertLive();
-    const packAssets = passing.flatMap((o) => o.packAssets ?? []);
+    const packAssets = passing
+      .flatMap((o) => o.packAssets ?? [])
+      .map((asset) => (input.socialBadge && badgeEligible(asset.specId) ? { ...asset, badge: true } : asset));
     const families = [...selectedFamilies(effectiveChannels)];
     const built = await buildPack(packAssets, families, {
       outDir: deps.packOutDir,

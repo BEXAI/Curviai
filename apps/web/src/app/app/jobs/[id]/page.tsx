@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { JobProgressBoard } from "@/components/app/job-progress-board";
+import { SharePanel } from "@/components/app/share-panel";
 import { isUuid } from "@/lib/validation/ids";
 
 export const metadata: Metadata = { title: "Pack progress" };
@@ -13,5 +14,11 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
   if (!isUuid(id)) {
     notFound();
   }
-  return <JobProgressBoard jobId={id} />;
+  return (
+    <>
+      <JobProgressBoard jobId={id} />
+      {/* Appears once the pack has finished images (plan 9.6.1). */}
+      <SharePanel jobId={id} />
+    </>
+  );
 }

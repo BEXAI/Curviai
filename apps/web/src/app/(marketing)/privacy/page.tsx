@@ -18,7 +18,8 @@ export default function PrivacyPage() {
           <p className="mt-2">
             Your account email, the product photos and notes you upload, the outputs we generate for
             you, and usage records such as credits spent and job history. Payment details are handled
-            by our payment processor and never stored by us.
+            by our payment processor and never stored by us. If you leave your email on one of our free
+            tools, we keep that email and which tool you used, to follow up about Curvi.
           </p>
         </section>
         <section>
@@ -34,7 +35,10 @@ export default function PrivacyPage() {
           <p className="mt-2">
             We do not sell your data. We share it only with the infrastructure providers that run the
             service, such as hosting, storage, authentication and AI processing, each bound by their
-            own data agreements.
+            own data agreements. When you publish a share page for a pack, the images on it and the
+            product title are public to anyone with the link, and to everyone if you also list it in
+            the gallery. Share page images are served without their original photo metadata. You can
+            take a share page down at any time.
           </p>
         </section>
         <section>
