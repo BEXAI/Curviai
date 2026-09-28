@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, Card, CardContent, Input, Label, Select, cn } from "@curvi/ui";
+import { Button, Card, CardContent, Input, Label, Select, Textarea, cn } from "@curvi/ui";
 import type { TierKey } from "@curvi/pipeline/seed";
 import { estimatePackCredits, type EstimateMode } from "@/lib/pack-estimate";
 
@@ -34,9 +34,14 @@ export function channelLabel(id: string): string {
 type UploadState =
   | { phase: "idle" }
   | { phase: "uploading"; name: string }
-  | { phase: "uploaded"; name: string; key: string }
+  | { phase: "uploaded"; name: string; key: string; sha256: string; kind: "image" | "video" }
   | { phase: "notice"; message: string }
   | { phase: "error"; message: string };
+
+async function sha256Hex(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 export function NewPackForm({ products, channels, tier, creditBalance }: NewPackFormProps) {
   const router = useRouter();
@@ -44,7 +49,9 @@ export function NewPackForm({ products, channels, tier, creditBalance }: NewPack
   const [dragOver, setDragOver] = useState(false);
   const [upload, setUpload] = useState<UploadState>({ phase: "idle" });
   const [productUrl, setProductUrl] = useState("");
-  const [productId, setProductId] = useState(products[0]?.id ?? "");
+  const [productId, setProductId] = useState(products[0]?.id ?? "new");
+  const [newProductTitle, setNewProductTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [selected, setSelected] = useState<string[]>(
     DEFAULT_CHANNELS.filter((id) => channels.some((c) => c.id === id)),
   );
@@ -95,7 +102,13 @@ export function NewPackForm({ products, channels, tier, creditBalance }: NewPack
         setUpload({ phase: "error", message: "The upload failed. Try again." });
         return;
       }
-      setUpload({ phase: "uploaded", name: file.name, key: data.key });
+      setUpload({
+        phase: "uploaded",
+        name: file.name,
+        key: data.key,
+        sha256: await sha256Hex(file),
+        kind: file.type.startsWith("video/") ? "video" : "image",
+      });
     } catch {
       setUpload({ phase: "error", message: "The upload failed. Check your connection and try again." });
     }
@@ -119,7 +132,17 @@ export function NewPackForm({ products, channels, tier, creditBalance }: NewPack
           "Content-Type": "application/json",
           "Idempotency-Key": crypto.randomUUID(),
         },
-        body: JSON.stringify({ productId, channels: selected, mode }),
+        body: JSON.stringify({
+          productId,
+          channels: selected,
+          mode,
+          uploads:
+            upload.phase === "uploaded"
+              ? [{ key: upload.key, sha256: upload.sha256, kind: upload.kind }]
+              : undefined,
+          newProductTitle: productId === "new" && newProductTitle.trim() ? newProductTitle.trim() : undefined,
+          userDescription: description.trim() ? description.trim() : undefined,
+        }),
       });
       const data = (await response.json()) as { job?: { id: string }; error?: string };
       if (!response.ok || !data.job) {
@@ -212,13 +235,41 @@ export function NewPackForm({ products, channels, tier, creditBalance }: NewPack
                 onChange={(event) => setProductId(event.target.value)}
                 className="mt-1"
               >
+                <option value="new">New product</option>
                 {products.map((product) => (
                   <option key={product.id} value={product.id}>
                     {product.title}
                   </option>
                 ))}
               </Select>
+              {productId === "new" ? (
+                <div className="mt-3">
+                  <Label htmlFor="new-product-title">Product name</Label>
+                  <Input
+                    id="new-product-title"
+                    value={newProductTitle}
+                    maxLength={120}
+                    onChange={(event) => setNewProductTitle(event.target.value)}
+                    placeholder="Ceramic pour over mug"
+                    className="mt-1"
+                  />
+                </div>
+              ) : null}
               <p className="mt-1 text-xs text-ink-400">New uploads attach to the selected product.</p>
+            </div>
+            <div>
+              <Label htmlFor="product-description">Anything we should know</Label>
+              <Textarea
+                id="product-description"
+                value={description}
+                maxLength={2000}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="Materials, sizes, what is in the box, claims you can back up."
+                className="mt-1"
+              />
+              <p className="mt-1 text-xs text-ink-400">
+                Optional. The analyzer reads this as seller notes when planning your shots.
+              </p>
             </div>
           </div>
         </section>

@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./pipeline-runner": "./src/pipeline-runner.ts",
+    "./runtime": "./src/runtime.ts",
+    "./live-runtime": "./src/live-runtime.ts"
+  },
   "scripts": {
     "dev": "trigger.dev dev",
     "deploy": "trigger.dev deploy",

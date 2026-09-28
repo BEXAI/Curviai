@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { optionalEnv, requireEnv } from "@/lib/env";
 
@@ -49,4 +49,20 @@ export async function presignSourceUpload(
   });
   const url = await getSignedUrl(r2Client(), command, { expiresIn: UPLOAD_URL_TTL_SECONDS });
   return { url, key, bucket, expiresInSeconds: UPLOAD_URL_TTL_SECONDS };
+}
+
+function privateBucket(): string {
+  return optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
+}
+
+/** Writes generated output bytes under the workspace's out prefix. */
+export async function putGeneratedObject(key: string, body: Buffer, contentType: string): Promise<void> {
+  await r2Client().send(
+    new PutObjectCommand({ Bucket: privateBucket(), Key: key, Body: body, ContentType: contentType }),
+  );
+}
+
+/** Short lived signed GET for rendering and downloading generated assets. */
+export async function presignObjectGet(key: string, expiresIn = 600): Promise<string> {
+  return getSignedUrl(r2Client(), new GetObjectCommand({ Bucket: privateBucket(), Key: key }), { expiresIn });
 }

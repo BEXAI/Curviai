@@ -16,6 +16,7 @@
     "@curvi/db": "workspace:*",
     "@curvi/pipeline": "workspace:*",
     "@curvi/specs": "workspace:*",
+    "@curvi/trigger": "workspace:*",
     "@curvi/ui": "workspace:*",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.47.0",

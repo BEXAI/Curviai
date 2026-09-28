@@ -11,6 +11,7 @@ const VARIANTS: Record<string, BadgeVariant> = {
   failed: "danger",
   canceled: "outline",
   pending: "outline",
+  needs_review: "warning",
 };
 
 const LABELS: Record<string, string> = {
@@ -24,6 +25,7 @@ const LABELS: Record<string, string> = {
   failed: "Failed",
   canceled: "Canceled",
   pending: "Pending",
+  needs_review: "Needs review",
 };
 
 /** Pipeline states that are actively working and get a live pulsing dot. */

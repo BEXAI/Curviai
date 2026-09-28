@@ -5,6 +5,7 @@
  */
 
 import { isSupabaseConfigured, optionalEnv } from "@/lib/env";
+import { startPackRun } from "@/lib/pack-runner";
 import { createSupabaseServerClient, getSessionUser } from "@/lib/supabase/server";
 import { DemoService, getDemoStore } from "./demo";
 import { DbService, getDb } from "./db";
@@ -23,6 +24,7 @@ export function getServices(): Services {
       db: getDb(),
       getUserId: async () => (await getSessionUser())?.id ?? null,
       getSupabase: () => createSupabaseServerClient(),
+      startRun: startPackRun,
     });
   }
   return new DemoService(getDemoStore());

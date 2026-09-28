@@ -10,10 +10,23 @@
  * bypasses RLS by design (the plan's service role pattern).
  */
 
-import { createDb, type Db, brandKits, generationJobs, workspaces, sql, eq, and } from "@curvi/db";
+import {
+  createDb,
+  type Db,
+  brandKits,
+  generationJobs,
+  products,
+  sourceMedia,
+  workspaces,
+  sql,
+  eq,
+  and,
+} from "@curvi/db";
 import { tiers, type TierKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { optionalEnv } from "@/lib/env";
+import { isR2Configured, optionalEnv } from "@/lib/env";
+import type { StartPackArgs } from "@/lib/pack-runner";
+import { presignObjectGet } from "@/lib/r2";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 import type {
   BrandKitView,
@@ -52,6 +65,8 @@ export interface DbServiceDeps {
   getUserId: () => Promise<string | null>;
   /** Request scoped Supabase client carrying the user's auth context. */
   getSupabase: () => Promise<SupabaseClient | null>;
+  /** Fires the in process pack pipeline; absent in tests. */
+  startRun?: (args: StartPackArgs) => void;
 }
 
 function tierKeyOf(plan: string): TierKey {
@@ -65,6 +80,7 @@ function toShotStatus(value: string | null): ShotStatus {
     case "qc":
     case "done":
     case "failed":
+    case "needs_review":
       return value;
     default:
       return "pending";
@@ -270,6 +286,36 @@ export class DbService implements Services {
       };
     });
 
+    // Signed thumbnails for shots whose generated image landed in R2. The
+    // variant key ends in {shotId}.{format}, written by DrizzleJobStore.
+    if (isR2Configured() && assetRows.length > 0) {
+      const variantRows = await this.db.query.assetVariants.findMany({
+        where: (t, { inArray }) =>
+          inArray(
+            t.assetId,
+            assetRows.map((a) => a.id),
+          ),
+      });
+      const urlByShotId = new Map<string, string>();
+      await Promise.all(
+        variantRows.map(async (variant) => {
+          const base = variant.r2Key.split("/").pop() ?? "";
+          const shotId = base.replace(/\.[a-z0-9]+$/i, "");
+          if (!shotId) {
+            return;
+          }
+          try {
+            urlByShotId.set(shotId, await presignObjectGet(variant.r2Key));
+          } catch {
+            // Missing or unsignable object: the card renders without a thumb.
+          }
+        }),
+      );
+      for (const shot of shots) {
+        shot.imageUrl = urlByShotId.get(shot.shotId) ?? null;
+      }
+    }
+
     return {
       id: job.id,
       productId: job.productId,
@@ -298,11 +344,51 @@ export class DbService implements Services {
       return { outcome: "conflict", existingJobId: existing.id };
     }
 
-    const product = await this.db.query.products.findFirst({
-      where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
-    });
+    let product;
+    if (input.productId === "new") {
+      const [created] = await this.db
+        .insert(products)
+        .values({
+          workspaceId,
+          title: input.newProductTitle?.trim() || "New product",
+          mode: input.mode,
+        })
+        .returning();
+      product = created;
+    } else {
+      product = await this.db.query.products.findFirst({
+        where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
+      });
+    }
     if (!product) {
       return { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." };
+    }
+
+    // Register uploads as source media, then collect the media this pack can
+    // draw from. A pack with no photos cannot honor the fidelity lock.
+    if (input.uploads && input.uploads.length > 0) {
+      await this.db.insert(sourceMedia).values(
+        input.uploads.map((u) => ({
+          workspaceId,
+          productId: product.id,
+          r2Key: u.key,
+          kind: u.kind,
+          sha256: u.sha256,
+        })),
+      );
+    }
+    const mediaRows = await this.db.query.sourceMedia.findMany({
+      where: (t, { and, eq }) => and(eq(t.productId, product.id), eq(t.workspaceId, workspaceId)),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+      limit: 6,
+    });
+    const images = mediaRows.filter((m) => m.kind !== "video").map((m) => ({ mediaId: m.r2Key }));
+    if (images.length === 0) {
+      return {
+        outcome: "rejected",
+        reason: "no_media",
+        message: "Add at least one product photo before starting a pack.",
+      };
     }
 
     const workspace = await this.db.query.workspaces.findFirst({
@@ -324,7 +410,7 @@ export class DbService implements Services {
       .insert(generationJobs)
       .values({
         workspaceId,
-        productId: input.productId,
+        productId: product.id,
         status: "queued",
         idempotencyKey: input.idempotencyKey,
       })
@@ -345,6 +431,19 @@ export class DbService implements Services {
         message: "Not enough credits for this pack. Top up or pick fewer channels.",
       };
     }
+
+    this.deps.startRun?.({
+      jobId: inserted.id,
+      workspaceId,
+      productId: product.id,
+      tier,
+      channels: input.channels,
+      creditBudget: creditsReserved,
+      images,
+      userDescription: input.userDescription,
+      sku: product.amazonSku ?? undefined,
+      hasVideoSource: mediaRows.some((m) => m.kind === "video"),
+    });
 
     const job = await this.getJob(workspaceId, inserted.id);
     if (!job) {

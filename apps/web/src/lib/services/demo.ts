@@ -284,7 +284,12 @@ export class DemoService implements Services {
     return projectJob(record, this.productTitle(record.productId));
   }
 
-  async createJob(_workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
+  async createJob(_workspaceId: string, rawInput: CreateJobInput): Promise<CreateJobResult> {
+    // The demo has a fixed product catalog; "new" maps to the first product.
+    const input: CreateJobInput =
+      rawInput.productId === "new" && DEMO_PRODUCTS[0]
+        ? { ...rawInput, productId: DEMO_PRODUCTS[0].id }
+        : rawInput;
     const bodyHash = hashBody(input);
     const existingId = this.store.jobIdByIdempotencyKey.get(input.idempotencyKey);
     if (existingId) {

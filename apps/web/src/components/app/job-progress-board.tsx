@@ -201,6 +201,14 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
                 <p className="text-sm font-semibold text-ink-900">{shotTitle(shot.shotType)}</p>
                 <StatusChip status={shot.status} />
               </div>
+              {shot.imageUrl ? (
+                // Signed, short lived R2 URL; a plain img avoids next/image domain config.
+                <img
+                  src={shot.imageUrl}
+                  alt={`${shotTitle(shot.shotType)} result`}
+                  className="mt-3 aspect-square w-full rounded-lg border border-ink-950/10 object-cover"
+                />
+              ) : null}
               <p className="mt-1 font-mono text-xs text-ink-400">{shot.providerStage}</p>
               <p className="mt-2 font-mono text-xs text-ink-500">
                 {shot.channels.length > 0 ? shot.channels.join(", ") : "all selected channels"}

@@ -224,6 +224,7 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     store: new InMemoryJobStore(),
     clock: systemClock,
     generator,
+    loadMedia: loadMedia ?? undefined,
     packOutDir: opts.packOutDir,
   };
 }

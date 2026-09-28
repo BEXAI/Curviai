@@ -19,7 +19,7 @@ export type JobStatus =
   | "failed"
   | "canceled";
 
-export type ShotStatus = "pending" | "generating" | "qc" | "done" | "failed";
+export type ShotStatus = "pending" | "generating" | "qc" | "done" | "failed" | "needs_review";
 
 export type PackMode = "listing" | "concept";
 
@@ -55,6 +55,8 @@ export interface JobShotView {
   channels: string[];
   credits: number;
   compliance: ShotCompliance | null;
+  /** Short lived signed URL of the generated image, when one is stored. */
+  imageUrl?: string | null;
 }
 
 export interface JobView {
@@ -99,17 +101,24 @@ export interface IntegrationView {
 }
 
 export interface CreateJobInput {
+  /** An existing product id, or "new" to create one from this pack. */
   productId: string;
   channels: string[];
   mode: PackMode;
   idempotencyKey: string;
+  /** R2 objects uploaded for this pack; registered as source media in db mode. */
+  uploads?: Array<{ key: string; sha256: string; kind: "image" | "video" }>;
+  /** Title for the product created when productId is "new". */
+  newProductTitle?: string;
+  /** Seller notes passed to the analyzer as untrusted description text. */
+  userDescription?: string;
 }
 
 export type CreateJobResult =
   | { outcome: "created"; job: JobView }
   | { outcome: "replayed"; job: JobView }
   | { outcome: "conflict"; existingJobId: string }
-  | { outcome: "rejected"; reason: "unknown_product" | "insufficient_credits"; message: string };
+  | { outcome: "rejected"; reason: "unknown_product" | "insufficient_credits" | "no_media"; message: string };
 
 export interface SaveResult {
   ok: boolean;

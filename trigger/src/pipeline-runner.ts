@@ -45,6 +45,8 @@ import { recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/se
 import { getSpec, hasSpec } from "@curvi/specs";
 import { JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 
+export type { JobState } from "./state";
+
 /** Recipe row for a pipeline stage, looked up from seed data so task names,
  * models and prompts are never hardcoded here (CLAUDE.md rule 2). */
 export function activeRecipe(stage: RecipeRow["stage"]): RecipeRow {
@@ -87,6 +89,8 @@ export interface StoredAsset {
   credits: number;
   costMicros: number;
   verdict: QCVerdict;
+  /** Final encoded image for passed shots, so stores can persist the pixels. */
+  encoded?: { buffer: Buffer; format: string };
 }
 
 export interface StoredPack {
@@ -105,6 +109,8 @@ export interface JobStore {
   appendLedger(entry: JobLedgerEntry): Promise<void>;
   saveAsset(asset: StoredAsset): Promise<void>;
   savePack(pack: StoredPack): Promise<void>;
+  /** Persists the analyzed ProductProfile; stores without product rows skip it. */
+  saveProfile?(jobId: string, profile: ProductProfile): Promise<void>;
 }
 
 export class InMemoryJobStore implements JobStore {
@@ -226,6 +232,8 @@ export interface PipelineDeps {
   store: JobStore;
   clock: Clock;
   generator: ShotGenerator;
+  /** Loads source media bytes for LLM vision input; metadata only when absent. */
+  loadMedia?: (mediaId: string) => Promise<Buffer | null>;
   /** Fan out override: the Trigger.dev wrapper points this at the
    * generate-shot subtask. Defaults to Promise.all over runShot. */
   runShots?: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>;
@@ -269,7 +277,43 @@ export interface GeneratePackSummary {
 export interface LlmTaskInput {
   system: string;
   model: string;
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  /** Content is a string, or an array of vision and text blocks. */
+  messages: Array<{ role: "user" | "assistant"; content: unknown }>;
+}
+
+function sniffImageMime(bytes: Buffer): string {
+  if (bytes.length > 3 && bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
+  if (bytes.length > 2 && bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes.length > 11 && bytes.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  if (bytes.length > 3 && bytes.toString("ascii", 0, 3) === "GIF") return "image/gif";
+  return "image/jpeg";
+}
+
+/**
+ * Anthropic vision blocks for the uploaded photos, so intake and the product
+ * analyzer judge the actual pixels instead of metadata. Empty when the deps
+ * carry no media loader (demo mode) or nothing loads.
+ */
+async function visionBlocks(
+  deps: PipelineDeps,
+  images: GeneratePackInput["images"],
+  limit = 3,
+): Promise<unknown[]> {
+  if (!deps.loadMedia) {
+    return [];
+  }
+  const blocks: unknown[] = [];
+  for (const image of images.slice(0, limit)) {
+    const bytes = await deps.loadMedia(image.mediaId).catch(() => null);
+    if (!bytes || bytes.length === 0) {
+      continue;
+    }
+    blocks.push({
+      type: "image",
+      source: { type: "base64", media_type: sniffImageMime(bytes), data: bytes.toString("base64") },
+    });
+  }
+  return blocks;
 }
 
 interface LlmCall<T> {
@@ -303,12 +347,16 @@ async function llmJson<T>(
   schema: { safeParse: (data: unknown) => { success: boolean; data?: T } },
   payload: unknown,
   ctx: { jobId: string; workspaceId: string; stepId: string },
+  contentBlocks?: unknown[],
 ): Promise<LlmCall<T>> {
   const recipe = activeRecipe(stage);
+  const text = JSON.stringify(payload);
+  const content: unknown =
+    contentBlocks && contentBlocks.length > 0 ? [...contentBlocks, { type: "text", text }] : text;
   const input: LlmTaskInput = {
     system: recipe.body.system,
     model: recipe.model,
-    messages: [{ role: "user", content: JSON.stringify(payload) }],
+    messages: [{ role: "user", content }],
   };
   const result = await callWithFailover<LlmTaskInput, unknown>(
     ai.registry,
@@ -488,6 +536,7 @@ function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext): StoredAsset {
     credits: outcome.credits,
     costMicros: outcome.costMicros,
     verdict: outcome.verdict,
+    encoded: outcome.packAsset ? { buffer: outcome.packAsset.buffer, format: outcome.packAsset.format ?? "png" } : undefined,
   };
 }
 
@@ -540,15 +589,18 @@ export async function runGeneratePack(
   await applyLedger(ledger.reserveOnQueue(input.creditBudget));
 
   try {
-    // Intake and analyze.
+    // Intake and analyze, with the uploaded photos as vision input when a
+    // media loader is wired.
     state = transition(state, "start_analysis");
     await store.setJobState(input.jobId, state);
+    const photos = await visionBlocks(deps, input.images);
     const intake = await llmJson<IntakeResult>(
       deps.ai,
       "intake",
       IntakeResult,
       { images: input.images, userDescription: input.userDescription ?? null },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
+      photos,
     );
     costMicros += intake.costMicros;
     if (!intake.value) {
@@ -564,12 +616,14 @@ export async function runGeneratePack(
       ProductProfile,
       { images: input.images, userDescription: input.userDescription ?? null },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
+      photos,
     );
     costMicros += analysis.costMicros;
     if (!analysis.value) {
       throw new Error("Product analysis response failed schema validation");
     }
     const profile = analysis.value;
+    await store.saveProfile?.(input.jobId, profile);
 
     // Plan shots: LLM planner recipe first, deterministic planShots when the
     // response is schema invalid.
