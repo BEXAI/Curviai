@@ -6,6 +6,14 @@
  * the view types.
  */
 
+import type { ComplianceReportView } from "@/lib/compliance-report";
+
+export type {
+  ComplianceCheckView,
+  ComplianceFileView,
+  ComplianceReportView,
+} from "@/lib/compliance-report";
+
 export type ServiceMode = "demo" | "db";
 
 export type JobStatus =
@@ -236,6 +244,10 @@ export interface Services {
   /** A freshly signed download url for one delivered file of a job in this
    * workspace, or null when the file does not exist or is not stored. */
   getJobFileDownload(workspaceId: string, jobId: string, fileId: string): Promise<JobFileDownload | null>;
+  /** The readable compliance report of a job in this workspace, or null
+   * when the job does not exist there. A job whose report is not ready or
+   * not stored answers a view with available false and a notice. */
+  getComplianceReport(workspaceId: string, jobId: string): Promise<ComplianceReportView | null>;
   createProduct(workspaceId: string, input: CreateProductInput): Promise<ProductSummary | null>;
   /** Records an uploaded source file against a product after the R2 PUT. */
   registerSourceMedia(workspaceId: string, input: RegisterSourceMediaInput): Promise<SaveResult>;

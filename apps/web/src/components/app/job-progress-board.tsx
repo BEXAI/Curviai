@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge, Button, Card, CardContent, Progress, Skeleton, buttonVariants, cn } from "@curvi/ui";
+import { ComplianceReportPanel } from "@/components/app/compliance-report-panel";
 import { PackDownloads } from "@/components/app/pack-downloads";
 import { StatusChip } from "@/components/app/status-chip";
 import { packSummaryLine } from "@/lib/job-copy";
@@ -437,6 +438,7 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
       ) : null}
 
       {job.status === "done" ? <PackDownloads jobId={job.id} /> : null}
+      {job.status === "done" ? <ComplianceReportPanel jobId={job.id} /> : null}
     </div>
   );
 }

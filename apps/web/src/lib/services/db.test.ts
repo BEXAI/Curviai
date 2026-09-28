@@ -27,6 +27,13 @@ vi.mock("@/lib/jobs/enqueue", () => ({
   }),
 }));
 
+// Stored objects the compliance report reads; every other r2 helper is real.
+const storedObjects = vi.hoisted(() => new Map<string, Buffer>());
+vi.mock("@/lib/r2", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/r2")>();
+  return { ...actual, getObjectBytes: vi.fn(async (key: string) => storedObjects.get(key) ?? null) };
+});
+
 import { DbService, ProvisioningError } from "./db";
 
 // DbService against the real migrations in PGlite: the stale run reconciler
@@ -754,6 +761,52 @@ describe("DbService.listJobFiles and downloads", () => {
     expect(shot?.channels).toEqual(["amazon.main"]);
     expect(shot?.imageUrl).toContain("X-Amz-Signature");
     expect(shot?.downloadUrl).toBe(`/api/jobs/${jobId}/files/v_${variantId}`);
+  });
+
+  it("reads the stored compliance report as the readable view, scoped to the workspace", async () => {
+    Object.assign(process.env, R2_ENV);
+    const w = await makeWorkspace(0);
+    const other = await makeWorkspace(0);
+    const { jobId } = await deliveredJob(w);
+    storedObjects.set(
+      `ws/${w.id}/jobs/${jobId}/pack/compliance-report.json`,
+      Buffer.from(
+        JSON.stringify({
+          generatedAt: "2026-09-28T12:00:00.000Z",
+          files: [
+            {
+              file: "MUG1.MAIN.jpg",
+              channel: "amazon",
+              specId: "amazon.main",
+              checks: [{ name: "fillRatio", pass: true, measured: 0.87, limit: "0.85 to 0.9" }],
+              pass: true,
+            },
+          ],
+          dropped: [],
+        }),
+      ),
+    );
+
+    const view = await service(w.user).getComplianceReport(w.id, jobId);
+    expect(view?.available).toBe(true);
+    expect(view?.productTitle).toBe("Kettle");
+    expect(view?.channels[0].files[0].checks[0]).toMatchObject({ label: "Product fill", measured: "87 percent" });
+
+    // Another workspace never sees it, and a malformed id is no job.
+    expect(await service(other.user).getComplianceReport(other.id, jobId)).toBeNull();
+    expect(await service(w.user).getComplianceReport(w.id, "nope")).toBeNull();
+  });
+
+  it("says why the compliance report is not available yet or not stored", async () => {
+    Object.assign(process.env, R2_ENV);
+    const w = await makeWorkspace(0);
+    const running = await deliveredJob(w, "generating");
+    const pending = await service(w.user).getComplianceReport(w.id, running.jobId);
+    expect(pending).toMatchObject({ available: false, notice: expect.stringContaining("once the pack finishes") });
+
+    const done = await deliveredJob(w);
+    const missing = await service(w.user).getComplianceReport(w.id, done.jobId);
+    expect(missing).toMatchObject({ available: false, notice: expect.stringContaining("not available") });
   });
 
   it("still serves files a failed pack already charged for", async () => {

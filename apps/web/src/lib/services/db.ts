@@ -24,6 +24,13 @@ import {
 } from "@curvi/db";
 import { AUTO_STYLE_PRESET, presets, tierByKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  buildComplianceReportView,
+  REPORT_NOT_READY,
+  REPORT_NOT_STORED,
+  unavailableComplianceReport,
+  type ComplianceReportView,
+} from "@/lib/compliance-report";
 import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
@@ -32,7 +39,7 @@ import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { buildGeneratePackInput, type PayloadBrandKit } from "@/lib/jobs/payload";
 import { estimatePackCredits } from "@/lib/pack-estimate";
-import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
+import { getObjectBytes, isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
 import { brandKitInputSchema, brandKitIssueNotice, normalizeFontChoice } from "@/lib/validation/brand-kit";
 import { isUuid } from "@/lib/validation/ids";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
@@ -1074,6 +1081,49 @@ export class DbService implements Services {
       return null;
     }
     return { url: await presignDownload(file.r2Key, file.filename), filename: file.filename };
+  }
+
+  /** Reads the pack's stored compliance-report.json (the pack level report
+   * row, inside this workspace's prefix) and returns the readable view. */
+  async getComplianceReport(workspaceId: string, jobId: string): Promise<ComplianceReportView | null> {
+    if (!isUuid(jobId)) {
+      return null;
+    }
+    const job = await this.db.query.generationJobs.findFirst({
+      where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!job) {
+      return null;
+    }
+    const product = await this.db.query.products.findFirst({
+      where: (t, { and, eq }) => and(eq(t.id, job.productId), eq(t.workspaceId, workspaceId)),
+    });
+    const meta = { jobId: job.id, productTitle: product?.title ?? "Untitled product" };
+    if (!servesFiles(job)) {
+      return unavailableComplianceReport(meta, REPORT_NOT_READY);
+    }
+    const reports = await this.db.query.packFiles.findMany({
+      where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId), eq(t.kind, "report")),
+    });
+    const row =
+      reports.find((r) => r.channel === null && isWorkspaceKey(workspaceId, r.r2Key)) ??
+      reports.find((r) => isWorkspaceKey(workspaceId, r.r2Key));
+    if (!row || !isR2Configured()) {
+      return unavailableComplianceReport(meta, REPORT_NOT_STORED);
+    }
+    const bytes = await getObjectBytes(row.r2Key);
+    let raw: unknown = null;
+    try {
+      raw = bytes ? JSON.parse(bytes.toString("utf8")) : null;
+    } catch {
+      raw = null;
+    }
+    const view = raw === null ? null : buildComplianceReportView(raw, meta);
+    if (!view) {
+      console.error(`[jobs] compliance report for job ${job.id} is missing or unreadable at ${row.r2Key}`);
+      return unavailableComplianceReport(meta, REPORT_NOT_STORED);
+    }
+    return view;
   }
 
   async getBrandKit(workspaceId: string): Promise<BrandKitView> {

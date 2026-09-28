@@ -10,6 +10,12 @@ import { createHash } from "node:crypto";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { tierByKey, type TierKey } from "@curvi/pipeline/seed";
 import { filenameFor, getSpec } from "@curvi/specs";
+import {
+  demoComplianceReport,
+  REPORT_NOT_READY,
+  unavailableComplianceReport,
+  type ComplianceReportView,
+} from "@/lib/compliance-report";
 import { checkChannelEntitlements } from "@/lib/entitlements";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { planDemoShots } from "./demo-plan";
@@ -363,6 +369,25 @@ export class DemoService implements Services {
       notice:
         "Demo mode renders previews only. Zip and report downloads switch on once R2 and a database are configured.",
     };
+  }
+
+  /** Demo packs store no files, so the report lists each file with the
+   * checks its channel applies and says nothing was measured. */
+  async getComplianceReport(workspaceId: string, jobId: string): Promise<ComplianceReportView | null> {
+    const record = this.store.jobs.get(jobId);
+    if (!record) {
+      return null;
+    }
+    const meta = { jobId, productTitle: this.productTitle(record.productId) };
+    const view = await this.listJobFiles(workspaceId, jobId);
+    if (!view || view.status !== "done") {
+      return unavailableComplianceReport(meta, REPORT_NOT_READY);
+    }
+    const images = view.files.filter((file) => file.kind === "image" && file.specId);
+    return demoComplianceReport(
+      meta,
+      images.map((file) => ({ name: file.name, specId: file.specId as string })),
+    );
   }
 
   /** Demo packs keep no stored files, so there is never anything to sign. */
