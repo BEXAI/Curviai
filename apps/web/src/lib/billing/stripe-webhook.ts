@@ -70,6 +70,14 @@ export interface SubscriptionState {
   tier: TierKey | null;
   status: string;
   periodEnd: string | null;
+  /**
+   * Stripe will end the subscription on its own: cancel_at_period_end is set
+   * (the cancel flow) or cancel_at is (the portal may use it). The in memory
+   * store keeps it; the subscriptions table has no column for it yet, so the
+   * database store does not persist it and account deletion reads Stripe
+   * live instead.
+   */
+  cancelAtPeriodEnd?: boolean;
 }
 
 export interface SubscriptionUpdate extends SubscriptionState {
@@ -298,6 +306,7 @@ export class InMemoryBillingStore implements BillingStore {
       tier: incoming.tier ?? current?.tier ?? null,
       status: incoming.status,
       periodEnd: incoming.periodEnd ?? current?.periodEnd ?? null,
+      cancelAtPeriodEnd: incoming.cancelAtPeriodEnd ?? current?.cancelAtPeriodEnd ?? false,
     });
     return { status: "applied", subscriptionStatus: incoming.status };
   }
@@ -790,6 +799,8 @@ function subscriptionState(
     tier: mapping ? mapping.tier : null,
     status: deleted ? "canceled" : subscription.status,
     periodEnd: item?.current_period_end ? new Date(item.current_period_end * 1000).toISOString() : null,
+    cancelAtPeriodEnd:
+      !deleted && (subscription.cancel_at_period_end === true || typeof subscription.cancel_at === "number"),
   };
 }
 

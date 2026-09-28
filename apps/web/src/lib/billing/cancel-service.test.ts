@@ -209,6 +209,21 @@ describe("applyCancelChoice with Stripe", () => {
     const pending = deps(null, { pending: { outcome: "canceled", effectiveAt: "2026-10-15T00:00:00.000Z" } });
     expect(await cancelOptions(pending.deps, workspace, account)).toMatchObject({ status: 409 });
   });
+
+  it("lets a seller who renewed cancel again, whatever the old cancel_flows row says", async () => {
+    // The seller canceled, then renewed in the portal: Stripe says the
+    // subscription is no longer ending, but the recorded pass still does.
+    const renewed = fakeStripe(subscription({ cancel_at_period_end: false }));
+    const stale = deps(renewed.stripe, { pending: { outcome: "canceled", effectiveAt: "2026-10-15T00:00:00.000Z" } });
+    expect(await cancelOptions(stale.deps, workspace, account)).toMatchObject({ ok: true });
+    const result = await applyCancelChoice(stale.deps, { ...base, choice: "cancel" });
+    expect(result).toMatchObject({ ok: true, status: 200, outcome: "canceled", stripeApplied: true });
+    expect(renewed.update).toHaveBeenCalledTimes(1);
+
+    const resumed = fakeStripe(subscription());
+    const stalePause = deps(resumed.stripe, { pending: { outcome: "paused", effectiveAt: "2026-10-28T12:00:00.000Z" } });
+    expect(await cancelOptions(stalePause.deps, workspace, account)).toMatchObject({ ok: true });
+  });
 });
 
 describe("applyCancelChoice without Stripe", () => {

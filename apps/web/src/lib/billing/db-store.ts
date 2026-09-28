@@ -268,6 +268,21 @@ export class DbBillingStore implements BillingStore {
     return this.db.transaction(async (tx): Promise<SubscriptionSyncOutcome | typeof CHANGED_DURING_READ> => {
       await this.advisoryLock(tx, `subscription:${externalId}`);
       await this.lockWorkspace(tx, workspaceId);
+      // The subscription's metadata can name a workspace deleted with its
+      // account (deletion cancels a subscription already set to end, and
+      // Stripe then sends customer.subscription.deleted). Nothing is left
+      // to update; writing would break the foreign key and fail every retry.
+      const [workspace] = await tx
+        .select({ id: workspaces.id })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
+        .limit(1);
+      if (!workspace) {
+        console.warn(
+          JSON.stringify({ msg: "billing: subscription for a deleted workspace ignored", workspaceId, subscription: externalId }),
+        );
+        return { status: "unrouted" };
+      }
       if (expected !== undefined) {
         const now = await this.subscriptionVersion(tx, externalId);
         if ((now?.version ?? null) !== expected) {

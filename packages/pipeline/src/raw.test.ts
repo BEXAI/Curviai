@@ -93,4 +93,27 @@ describe("prepareWorkingSource", () => {
       .toBuffer();
     expect(await prepareWorkingSource(small, 3000)).toBe(small);
   });
+
+  it("keeps the transparency of a WebP with alpha by writing PNG", async () => {
+    const transparent = await sharp({
+      create: { width: 400, height: 200, channels: 4, background: { r: 200, g: 40, b: 40, alpha: 0 } },
+    })
+      .webp({ lossless: true })
+      .toBuffer();
+    const out = await prepareWorkingSource(transparent, 100);
+    const meta = await sharp(out).metadata();
+    expect(meta.format).toBe("png");
+    expect(meta.hasAlpha).toBe(true);
+    expect([meta.width, meta.height]).toEqual([100, 50]);
+    const img = await decodeToRgba(out);
+    expect(img.data[3]).toBe(0);
+  });
+
+  it("still writes an opaque WebP as JPEG", async () => {
+    const opaque = await sharp({ create: { width: 400, height: 200, channels: 3, background: "#808080" } })
+      .webp()
+      .toBuffer();
+    const meta = await sharp(await prepareWorkingSource(opaque, 100)).metadata();
+    expect(meta.format).toBe("jpeg");
+  });
 });

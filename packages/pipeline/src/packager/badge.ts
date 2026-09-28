@@ -11,7 +11,9 @@
  */
 import sharp from "sharp";
 import { getSpec, isMarketplaceSpec, type ChannelSpec } from "@curvi/specs";
-import { decodeToRgba, encodeJpeg, encodePng, type RawImage, type RawMask } from "../raw";
+import { fidelityReport } from "../qc/fidelity";
+import { qcKindForSpec } from "../qc/pixelChecks";
+import { cloneRaw, decodeToRgba, encodeJpeg, encodePng, type RawImage, type RawMask } from "../raw";
 import { badgeStyle } from "../seed/templates";
 import { loadTemplateFont } from "../templates/font";
 
@@ -130,7 +132,10 @@ export async function renderBadge(fontPx: number): Promise<RawImage | null> {
 /**
  * Draws the badge onto an encoded social file and re-encodes it in the same
  * format. Pixels under the mask are never written, even inside the box,
- * as a second guard behind the placement check.
+ * as a second guard behind the placement check. The re-encoded bytes are
+ * checked again (product fidelity against the unbadged file and the spec
+ * byte cap); when either fails the badge is left off, so the caller ships
+ * the unbadged file that already passed QC.
  */
 export async function applyBadge(
   buffer: Buffer,
@@ -168,6 +173,7 @@ export async function applyBadge(
     return { applied: false, reason: "no corner is clear of the product" };
   }
 
+  const original = cloneRaw(image);
   for (let y = 0; y < badge.height; y++) {
     for (let x = 0; x < badge.width; x++) {
       const target = (box.top + y) * image.width + (box.left + x);
@@ -188,5 +194,23 @@ export async function applyBadge(
 
   const lower = format.toLowerCase();
   const encoded = lower === "png" ? await encodePng(image) : await encodeJpeg(image);
+
+  // The file passed QC before the badge; drawing it re-encodes the whole
+  // file, so the bytes that would ship are proven again here. The product
+  // must still match the unbadged file inside the mask (rule 3) and the
+  // file must still fit the channel byte cap. If either fails the caller
+  // ships the unbadged file it already has.
+  const spec = getSpec(specId);
+  if (spec.maxBytes && encoded.length > spec.maxBytes) {
+    return { applied: false, reason: "the badged file would be over the channel size limit" };
+  }
+  const shipped = await decodeToRgba(encoded);
+  const fidelity =
+    shipped.width === original.width && shipped.height === original.height
+      ? await fidelityReport(original, shipped, mask, { kind: qcKindForSpec(spec) })
+      : null;
+  if (!fidelity?.pass) {
+    return { applied: false, reason: "the badged file did not keep the product pixels intact" };
+  }
   return { applied: true, buffer: encoded, box };
 }

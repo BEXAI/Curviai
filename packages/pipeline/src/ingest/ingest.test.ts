@@ -10,6 +10,7 @@ import {
   stripJpegMetadata,
   stripPngMetadata,
   stripWebpMetadata,
+  webpIsLossless,
 } from "./index";
 
 const W = 40;
@@ -143,6 +144,30 @@ describe("ingestImage", () => {
     expect((await sharp(result.bytes).metadata()).exif).toBeUndefined();
     expect(result.bytes.readUInt32LE(4)).toBe(result.bytes.length - 8);
     expect((await pixels(result.bytes)).equals(await pixels(input))).toBe(true);
+  });
+
+  it("keeps a rotated lossless WebP lossless, pixel for pixel", async () => {
+    const input = await frame().webp({ lossless: true }).withMetadata(exifFor(6)).toBuffer();
+    expect((await sharp(input).metadata()).orientation).toBe(6);
+    expect(webpIsLossless(input)).toBe(true);
+    const result = await ingestImage(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.format).toBe("webp");
+    expect(result.changed).toBe(true);
+    expect([result.width, result.height]).toEqual([H, W]);
+    expect(webpIsLossless(result.bytes)).toBe(true);
+    expect((await pixels(result.bytes)).equals(await pixels(input))).toBe(true);
+  });
+
+  it("writes a rotated lossy WebP as lossy", async () => {
+    const input = await frame().webp({ quality: 80 }).withMetadata(exifFor(6)).toBuffer();
+    expect(webpIsLossless(input)).toBe(false);
+    const result = await ingestImage(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.format).toBe("webp");
+    expect(webpIsLossless(result.bytes)).toBe(false);
   });
 
   it("turns GIF and TIFF into PNG", async () => {
@@ -294,6 +319,18 @@ describe("screenshot refusal", () => {
     expect((await ingestImage(photo)).ok).toBe(true);
     const jpegTall = await sharp({ create: { width: 1080, height: 2400, channels: 3, background: "#3366cc" } }).jpeg().toBuffer();
     expect((await ingestImage(jpegTall)).ok).toBe(true);
+  });
+
+  it("keeps a 2:1 product export and still refuses a 19.5:9 phone screen", async () => {
+    const twoToOne = await sharp({ create: { width: 1000, height: 2000, channels: 3, background: "#3366cc" } }).png().toBuffer();
+    expect((await ingestImage(twoToOne)).ok).toBe(true);
+    const justUnder = await sharp({ create: { width: 1000, height: 2090, channels: 3, background: "#3366cc" } }).png().toBuffer();
+    expect((await ingestImage(justUnder)).ok).toBe(true);
+
+    // 1080 x 2340 is 19.5:9 (2.17), the common Android screen.
+    const phone = await sharp({ create: { width: 1080, height: 2340, channels: 3, background: "#ffffff" } }).png().toBuffer();
+    const refused = await ingestImage(phone);
+    expect(refused.ok ? null : refused.reason).toBe("screenshot");
   });
 
   it("refuses a capture tagged Screenshot in its metadata whatever its shape", async () => {

@@ -19,7 +19,8 @@
  *    WebP loses its metadata without a re-encode (segments or chunks are
  *    dropped byte for byte), so the product pixels stay exactly as uploaded.
  *    Only a rotated photo is re-encoded (JPEG at quality 95 with 4:4:4
- *    chroma, as normalizeOrientation does). GIF and TIFF always become a
+ *    chroma, as normalizeOrientation does; a lossless WebP stays lossless
+ *    and a lossy one is written at quality 95). GIF and TIFF always become a
  *    lossless PNG. The ICC profile is kept in every path.
  */
 
@@ -128,8 +129,10 @@ export const IMAGE_INGEST_MESSAGES: Record<ImageIngestRefusal, string> = {
 const SCREENSHOT_MAX_SHORT_EDGE = 1600;
 /** Phone screens are at least 720 px wide; smaller files are graphics. */
 const SCREENSHOT_MIN_SHORT_EDGE = 600;
-/** Phone screens are 19.5:9 or taller; cameras shoot 4:3, 3:2 or 16:9. */
-const SCREENSHOT_MIN_ASPECT = 2;
+/** Phone screens are 19.5:9 (2.17) or taller; cameras shoot 4:3, 3:2 or
+ * 16:9, and tall product exports are often exactly 2:1, so the shape rule
+ * starts just above 2:1 and a 2:1 export passes. */
+const SCREENSHOT_MIN_ASPECT = 2.1;
 
 /**
  * True for a screen capture rather than a photo of a physical product. iOS
@@ -229,7 +232,9 @@ export async function ingestImage(input: Buffer): Promise<ImageIngestResult> {
       output = await pipeline.jpeg({ quality: 95, chromaSubsampling: "4:4:4" }).toBuffer({ resolveWithObject: true });
     } else if (detected === "webp") {
       format = "webp";
-      output = await pipeline.webp({ quality: 95 }).toBuffer({ resolveWithObject: true });
+      // A lossless WebP stays lossless; only a lossy one is written at quality 95.
+      const webp = webpIsLossless(input) ? { lossless: true } : { quality: 95 };
+      output = await pipeline.webp(webp).toBuffer({ resolveWithObject: true });
     } else {
       // PNG stays PNG; GIF and TIFF become PNG, losslessly.
       format = "png";
@@ -357,6 +362,36 @@ export function stripPngMetadata(input: Buffer): Buffer | null {
     }
   }
   return null;
+}
+
+/**
+ * True when a WebP is coded losslessly: it holds a VP8L bitstream chunk and
+ * no lossy VP8 chunk. An animated WebP nests each frame's bitstream inside
+ * an ANMF chunk after a 16 byte frame header, so those are searched too.
+ */
+export function webpIsLossless(input: Buffer): boolean {
+  if (input.length < 12 || !ascii(input, 0, "RIFF") || !ascii(input, 8, "WEBP")) {
+    return false;
+  }
+  let lossless = false;
+  let lossy = false;
+  const scan = (start: number, end: number): void => {
+    let pos = start;
+    while (pos + 8 <= end) {
+      const fourcc = input.toString("latin1", pos, pos + 4);
+      const size = input.readUInt32LE(pos + 4);
+      if (fourcc === "VP8L") {
+        lossless = true;
+      } else if (fourcc === "VP8 ") {
+        lossy = true;
+      } else if (fourcc === "ANMF") {
+        scan(pos + 8 + 16, Math.min(end, pos + 8 + size));
+      }
+      pos += 8 + size + (size % 2);
+    }
+  };
+  scan(12, input.length);
+  return lossless && !lossy;
 }
 
 /** VP8X flag bits (WebP container spec): E is EXIF, X is XMP. */

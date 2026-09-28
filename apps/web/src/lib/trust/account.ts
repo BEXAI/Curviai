@@ -15,8 +15,16 @@
  * Refusals, all checked before anything is deleted:
  * - a pack is still running (after the stale run reconciler has failed any
  *   orphaned run), so no worker writes into a workspace that is going away;
- * - a Stripe subscription is still open, so nobody keeps getting billed for
- *   a workspace that no longer exists; the seller cancels in Billing first;
+ * - a Stripe subscription is still open and not set to end, so nobody keeps
+ *   getting billed for a workspace that no longer exists; the seller cancels
+ *   in Billing first. A subscription the seller already set to end (the
+ *   cancel flow or the portal set cancel_at_period_end, or cancel_at) does
+ *   not block: with Stripe configured its live state is read, and after the
+ *   data is gone it is canceled in Stripe at once (no proration, no final
+ *   invoice), so no webhook keeps it alive for a deleted workspace. Without
+ *   Stripe keys the cancel flow's own record of a cancellation Stripe
+ *   accepted stands in, since the subscriptions table has no
+ *   cancel_at_period_end column yet;
  * - the user owns a workspace that has other members, which would take their
  *   work with it; ownership moves by email for now.
  *
@@ -32,8 +40,12 @@
  * after this has succeeded.
  */
 
+import type Stripe from "stripe";
 import { eq, members, sql, termsAcceptances, workspaces, type Db } from "@curvi/db";
-import { isOpenSubscription } from "@/lib/billing/subscription-status";
+import { cancelStateFromRows } from "@/lib/billing/cancel-store";
+import { getStripe, isStripeMissingResource } from "@/lib/billing/stripe";
+import { isOpenSubscription, TERMINAL_SUBSCRIPTION_STATUSES } from "@/lib/billing/subscription-status";
+import { isStripeConfigured } from "@/lib/env";
 import { reconcileStaleJobs } from "@/lib/services/reconcile";
 import type { TrustStorage } from "./storage";
 
@@ -77,12 +89,94 @@ export interface DeleteAccountDeps {
   userId: string;
   /** Null when R2 is not configured: there are no stored objects to delete. */
   storage: TrustStorage | null;
+  /** Null when Stripe has no keys. Omitted, it comes from the environment. */
+  stripe?: Stripe | null;
+  now?: Date;
 }
 
-export async function deleteAccountData({ db, userId, storage }: DeleteAccountDeps): Promise<DeleteAccountResult> {
+/** Stripe calls during deletion give up after this long and retry once. */
+const STRIPE_OPTIONS = { timeout: 15_000, maxNetworkRetries: 1 } as const satisfies Stripe.RequestOptions;
+
+/** True when Stripe will end the subscription on its own: at the period end
+ * (the cancel flow) or at a set date (the portal may set cancel_at). */
+export function subscriptionIsEnding(subscription: Pick<Stripe.Subscription, "cancel_at_period_end" | "cancel_at">): boolean {
+  return subscription.cancel_at_period_end === true || typeof subscription.cancel_at === "number";
+}
+
+type SubscriptionCheck = { allowed: true; cancelInStripe: string[] } | { allowed: false };
+
+/**
+ * Whether the workspace's subscriptions let the account go, and which Stripe
+ * subscriptions to cancel at once after the data is deleted. Only open rows
+ * matter. With Stripe configured, each Stripe row is read live: gone or
+ * ended does not block, set to end is canceled after deletion, anything
+ * else blocks. Without Stripe the recorded cancel flow pass is the only
+ * sign the seller set the plan to end.
+ */
+async function checkSubscriptions(
+  db: Db,
+  workspaceId: string,
+  stripe: Stripe | null,
+  now: Date,
+): Promise<SubscriptionCheck> {
+  const rows = await db.query.subscriptions.findMany({
+    columns: { status: true, provider: true, externalId: true },
+    where: (t, { eq }) => eq(t.workspaceId, workspaceId),
+  });
+  const open = rows.filter((s) => isOpenSubscription(s.status));
+  const cancelInStripe: string[] = [];
+  let recordedCancel: boolean | null = null;
+  for (const row of open) {
+    const stripeId = row.provider !== "shopify" ? row.externalId : null;
+    if (stripe && stripeId) {
+      let live: Stripe.Subscription | null;
+      try {
+        live = await stripe.subscriptions.retrieve(stripeId, {}, STRIPE_OPTIONS);
+      } catch (error) {
+        if (!isStripeMissingResource(error)) {
+          throw error;
+        }
+        live = null;
+      }
+      if (!live || TERMINAL_SUBSCRIPTION_STATUSES.has(live.status)) {
+        continue;
+      }
+      if (subscriptionIsEnding(live)) {
+        cancelInStripe.push(live.id);
+        continue;
+      }
+      return { allowed: false };
+    }
+    if (!stripe && stripeId) {
+      if (recordedCancel === null) {
+        const flows = await db.query.cancelFlows.findMany({
+          columns: { outcome: true, error: true, stripeApplied: true, effectiveAt: true },
+          where: (t, { eq }) => eq(t.workspaceId, workspaceId),
+          orderBy: (t, { desc }) => [desc(t.createdAt)],
+          limit: 200,
+        });
+        recordedCancel = cancelStateFromRows(flows, now).pending?.outcome === "canceled";
+      }
+      if (recordedCancel) {
+        continue;
+      }
+    }
+    return { allowed: false };
+  }
+  return { allowed: true, cancelInStripe };
+}
+
+export async function deleteAccountData({
+  db,
+  userId,
+  storage,
+  stripe: stripeDep,
+  now = new Date(),
+}: DeleteAccountDeps): Promise<DeleteAccountResult> {
   if (!userId) {
     return refuse("not_signed_in");
   }
+  const stripe = stripeDep === undefined ? (isStripeConfigured() ? getStripe() : null) : stripeDep;
   const memberships = await db.query.members.findMany({ where: (t, { eq }) => eq(t.userId, userId) });
 
   // Workspaces this user owns: deleted whole when the user is the only
@@ -102,19 +196,18 @@ export async function deleteAccountData({ db, userId, storage }: DeleteAccountDe
     owned.push(membership.workspaceId);
   }
 
+  const cancelInStripe: string[] = [];
   for (const workspaceId of owned) {
     // An orphaned run left by a restart must not block deletion forever.
     await reconcileStaleJobs(db, { workspaceId });
     if (await hasRunningPack(db, workspaceId)) {
       return refuse("pack_running");
     }
-    const subscriptions = await db.query.subscriptions.findMany({
-      columns: { status: true },
-      where: (t, { eq }) => eq(t.workspaceId, workspaceId),
-    });
-    if (subscriptions.some((s) => isOpenSubscription(s.status))) {
+    const check = await checkSubscriptions(db, workspaceId, stripe, now);
+    if (!check.allowed) {
       return refuse("subscription_open");
     }
+    cancelInStripe.push(...check.cancelInStripe);
   }
 
   try {
@@ -136,6 +229,28 @@ export async function deleteAccountData({ db, userId, storage }: DeleteAccountDe
       return refuse("pack_running");
     }
     throw err;
+  }
+
+  // The seller already set these to end; end them now so nothing is left
+  // running in Stripe for a workspace that is gone. A failure is logged
+  // only: the subscription still ends on its own at the date it was set to.
+  if (stripe) {
+    for (const subscriptionId of cancelInStripe) {
+      try {
+        await stripe.subscriptions.cancel(
+          subscriptionId,
+          { prorate: false, invoice_now: false, cancellation_details: { comment: "Account deleted" } },
+          STRIPE_OPTIONS,
+        );
+      } catch (err) {
+        if (!isStripeMissingResource(err)) {
+          console.error(
+            `[account] could not cancel Stripe subscription ${subscriptionId} for deleted user ${userId}; it still ends at the date it was set to`,
+            err,
+          );
+        }
+      }
+    }
   }
 
   let objectsDeleted = 0;
