@@ -136,6 +136,14 @@ describe("DbJobStore settles a pack run end to end", () => {
     expect(held).toBe(0);
   });
 
+  it("records the recipe version each stage ran on", async () => {
+    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.id, jobId));
+    const variants = job.recipeVariants ?? {};
+    // Demo wiring has no recipes table reader, so every stage ran the seed.
+    expect(Object.keys(variants).length).toBeGreaterThan(0);
+    expect(Object.values(variants).every((v) => v.source === "seed" && v.recipeId === null)).toBe(true);
+  });
+
   it("persists assets and job_steps for the progress board", async () => {
     const assetRows = await db.select().from(assets).where(eq(assets.jobId, jobId));
     expect(assetRows.length).toBeGreaterThan(0);

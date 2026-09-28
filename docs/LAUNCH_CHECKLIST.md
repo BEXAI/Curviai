@@ -378,3 +378,27 @@ No new environment variables. Before this goes live:
 3. Leads are stored in the `leads` table only. Nothing is sent to Loops yet; import the table once Loops exists (docs/PENDING.md, Hosting and messaging).
 4. A gallery entry goes live as soon as its owner opts in. There is no moderation queue; to pull one by hand, set `gallery_items.published = false` for its `share_slug`.
 5. Free plan packs draw a small "Made with Curvi" badge on Meta social files (seed `socialBadgeByTier`, packages/pipeline/src/seed/credits.ts). Paid plans ship clean files, and marketplace files never carry it.
+
+## Batch 2 platform (b2/platform)
+
+Runtime recipes with A/B splits and model failover, the scheduled stale job sweep, a report only Content Security Policy, and cookie consent for analytics (docs/phases/PHASE_11.md).
+
+1. **Migration 0017** (`packages/db/migrations/0017_platform_runtime.sql`): adds `recipes.fallback_models`, `generation_jobs.recipe_variants` and the `generation_jobs (status, updated_at)` index. Apply it through the Supabase SQL editor with the founder's approval, like the batch 1 migrations, then run `pnpm db:seed` so the recipe rows gain their seeded fallback models. Until 0017 is applied the worker's recipe read fails and every pack runs on the compiled seed recipes (logged, not fatal); the stale job sweep route still works, just without the index.
+2. **Recipes are read at runtime.** The worker reads active `recipes` rows at most once a minute per process. To test a new prompt, insert a new `version` of the same `key` with `active = true` and a `traffic_pct` weight; each job is assigned one version per key from its id and the assignment lands in `generation_jobs.recipe_variants`. To swap or reorder models, update `model` and `fallback_models`. A model without a price in `packages/pipeline/src/seed/models.ts` (`llmModelPrices`) has no live provider and is skipped, so a brand new model still needs its price added there and a deploy. A row whose `key` is not the stage's seeded key is ignored.
+3. **Schedule the stale job sweep.** Set `CRON_SECRET` (below) on the Curviai web service, then have a scheduler call `POST https://curvi.ai/api/cron/stale-jobs` every 10 to 15 minutes with the header `Authorization: Bearer <CRON_SECRET>` (or `x-cron-secret: <CRON_SECRET>`). Any scheduler that can send a header works, for example a Render cron job running `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/cron/stale-jobs`. Picking and paying for the scheduler is the founder's call; nothing is scheduled by this branch. Without `CRON_SECRET` the route answers 503 to everyone. **Verify:** a manual call with the secret returns 200 with `"reconciled"`; one without it returns 401.
+4. **Watch the CSP reports.** Every response now carries `Content-Security-Policy-Report-Only` plus `Reporting-Endpoints`, built at build time from `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_POSTHOG_HOST`. Nothing is blocked. Violations show up in the Render log as `"event":"csp_violation"` lines (at most 100 a minute per instance). After a week of real traffic, fix or allow what shows up, then switch the header to an enforced `Content-Security-Policy`.
+5. **Cookie consent.** With `NEXT_PUBLIC_POSTHOG_KEY` set, visitors get a banner with equal Accept analytics and Decline buttons, and PostHog loads only after Accept. The footer's Cookie settings link reopens it. **Verify:** in a private window, decline, reload and confirm no request goes to `*.posthog.com`; accept and confirm `$pageview` events arrive (step 12). The privacy page has a new Cookies and analytics section; include it in the legal review (step 1).
+6. **Unsubscribe links.** No marketing email template exists yet: the only emails the code sends are the founder's spend alerts and metrics digest, which go to the founder alone. The first marketing or lifecycle email (Loops or Resend) must carry an unsubscribe link and a `List-Unsubscribe` header.
+
+### Environment variables added in batch 2 platform
+
+| Name | Read by | Unset means | Meaning and when to set it |
+|---|---|---|---|
+| `CRON_SECRET` | Scheduled routes (`apps/web/src/lib/cron-auth.ts`, `/api/cron/stale-jobs`) | Every scheduled route answers 503 | A long random value (for example `openssl rand -hex 32`) shared with the scheduler. A secret: Render and the scheduler only, never in the repo. |
+
+Line for `.env.example`:
+
+```
+# Shared secret for /api/cron/* (Authorization: Bearer or x-cron-secret). Unset: those routes answer 503.
+CRON_SECRET=
+```

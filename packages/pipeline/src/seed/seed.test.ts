@@ -7,6 +7,7 @@ import {
   ShotList,
   jsonSchemaFor,
 } from "../schemas";
+import { llmModelPrices } from "./models";
 import { RecipeRow, recipeSeedRows } from "./recipes";
 import { presets, templates } from "./templates";
 import { annualDiscountPct, creditCosts, tierByKey, tiers, topUps } from "./credits";
@@ -37,6 +38,16 @@ describe("recipe seed rows", () => {
       expect(row.version).toBe(1);
       expect(row.active).toBe(true);
       expect(row.body.system.length).toBeGreaterThan(100);
+    }
+  });
+
+  it("lists a priced fallback model for every recipe, never repeating the primary", () => {
+    for (const row of recipeSeedRows) {
+      expect(row.fallbackModels?.length ?? 0).toBeGreaterThan(0);
+      for (const model of [row.model, ...(row.fallbackModels ?? [])]) {
+        expect(llmModelPrices[model]).toBeDefined();
+      }
+      expect(row.fallbackModels).not.toContain(row.model);
     }
   });
 

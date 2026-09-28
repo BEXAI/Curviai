@@ -82,6 +82,15 @@ import { z } from "zod";
 import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { isWorkspaceObjectKey } from "./object-keys";
 import {
+  llmModelProviderName,
+  recipeFor,
+  recipeVariantsOf,
+  seedJobRecipes,
+  type JobRecipes,
+  type RecipeResolver,
+  type ResolvedRecipe,
+} from "./recipes";
+import {
   canvasSizeFor,
   decodeMaskPng,
   encodeMaskPng,
@@ -111,8 +120,10 @@ export const CHANNEL_NOT_SELECTED = "channel not selected";
 const PACK_CAP_REACHED =
   "This pack reached its spending limit before this shot could be made, so it needs review.";
 
-/** Recipe row for a pipeline stage, looked up from seed data so task names,
- * models and prompts are never hardcoded here (CLAUDE.md rule 2). */
+/** Compiled seed recipe row for a pipeline stage, so task names, models and
+ * prompts are never hardcoded here (CLAUDE.md rule 2). Runs read the recipes
+ * table through PipelineDeps.recipes; this is the seed the demo wiring and
+ * the fallback use. */
 export function activeRecipe(stage: RecipeRow["stage"]): RecipeRow {
   const recipe = recipeSeedRows.find((r) => r.stage === stage && r.active);
   if (!recipe) {
@@ -245,6 +256,10 @@ export interface JobStore {
    * board never shows a delivered, charged card for it. Display only: the
    * runner releases its credits whatever this does. */
   markShotUndelivered?(update: UndeliveredShot): Promise<void>;
+  /** Records which recipe version each stage runs on (A/B assignment).
+   * Display and analysis only: the runner never fails a pack because this
+   * failed. */
+  saveRecipeVariants?(jobId: string, variants: ReturnType<typeof recipeVariantsOf>): Promise<void>;
   /** Delivers the files of a pack follow up (a retried shot or an added
    * angle) into a pack that was already delivered: uploads them and records
    * their asset_variants rows, only while the job is live, like savePack.
@@ -326,6 +341,7 @@ export class JobAbandonedError extends Error {
 
 export class InMemoryJobStore implements JobStore {
   readonly states: Array<{ jobId: string; state: JobState; meta?: Record<string, unknown> }> = [];
+  readonly recipeVariants = new Map<string, ReturnType<typeof recipeVariantsOf>>();
   readonly ledger: JobLedgerEntry[] = [];
   readonly assets: StoredAsset[] = [];
   readonly packs: StoredPack[] = [];
@@ -351,6 +367,10 @@ export class InMemoryJobStore implements JobStore {
   async saveFollowUpFiles(files: StoredFollowUpFiles): Promise<string[]> {
     this.followUps.push(files);
     return [...new Set(files.files.map((f) => f.ref))];
+  }
+
+  async saveRecipeVariants(jobId: string, variants: ReturnType<typeof recipeVariantsOf>): Promise<void> {
+    this.recipeVariants.set(jobId, variants);
   }
 
   async markShotUndelivered(update: UndeliveredShot): Promise<void> {
@@ -427,6 +447,9 @@ export interface ShotContext {
   mode?: "listing" | "concept";
   /** Workspace brand kit colors (hex), passed through to the generator. */
   brandColors?: string[];
+  /** The recipe variants this job was assigned, so a shot subtask judges
+   * with the same QC recipe as the pack. The seed when absent. */
+  recipes?: JobRecipes;
 }
 
 /** IPTC digital source marking per plan 5.7.2: composited scenes carry
@@ -590,6 +613,9 @@ export async function deserializeShotOutcome(
 
 export interface PipelineDeps {
   ai: AiDeps;
+  /** Assigns each job its recipe variants from the recipes table. The
+   * compiled seed recipes run when absent (demo mode and tests). */
+  recipes?: RecipeResolver;
   store: JobStore;
   clock: Clock;
   generator: ShotGenerator;
@@ -703,10 +729,11 @@ export interface GeneratePackSummary {
   error?: string;
 }
 
-/** Input shape sent to LLM providers, compatible with the Anthropic adapter. */
+/** Input shape sent to LLM providers, compatible with the Anthropic adapter.
+ * No model field: each provider in the recipe's failover chain runs its own
+ * model, so a request pinned to the primary would break the fallbacks. */
 export interface LlmTaskInput {
   system: string;
-  model: string;
   /** Content is a string, or an array of vision and text blocks. */
   messages: Array<{ role: "user" | "assistant"; content: unknown }>;
   /** Forced structured output tool definitions, when a schema is enforced. */
@@ -803,26 +830,31 @@ function extractJsonOutput(output: unknown): unknown {
   return output;
 }
 
+/** The recipe's models as a provider chain, keeping the registered ones.
+ * Empty when none is registered (demo mode, or no priced model), and the
+ * call then takes the routing table's chain for the recipe key. */
+export function recipeChain(ai: Pick<AiDeps, "registry">, recipe: ResolvedRecipe): string[] {
+  return recipe.models.map(llmModelProviderName).filter((name) => ai.registry.get(name) !== undefined);
+}
+
 async function llmJson<T>(
   ai: AiDeps,
-  stage: RecipeRow["stage"],
+  recipe: ResolvedRecipe,
   schema: { safeParse: (data: unknown) => { success: boolean; data?: T } },
   payload: unknown,
   ctx: { jobId: string; workspaceId: string; stepId: string },
   contentBlocks?: unknown[],
   outputSchema?: z.ZodType,
 ): Promise<LlmCall<T>> {
-  const recipe = activeRecipe(stage);
   const text = JSON.stringify(payload);
   const content: unknown =
     contentBlocks && contentBlocks.length > 0 ? [...contentBlocks, { type: "text", text }] : text;
   const input: LlmTaskInput = {
-    system: recipe.body.system,
-    model: recipe.model,
+    system: recipe.system,
     messages: [{ role: "user", content }],
   };
-  if (typeof recipe.body.maxTokens === "number") {
-    input.maxTokens = recipe.body.maxTokens;
+  if (recipe.maxTokens !== undefined) {
+    input.maxTokens = recipe.maxTokens;
   }
   const call = (strict: boolean) => {
     if (outputSchema) {
@@ -852,7 +884,7 @@ async function llmJson<T>(
         jobId: ctx.jobId,
         stepId: ctx.stepId,
       },
-      { caps: llmCapsHooks(ai), ...routedCallHooks(ai) },
+      { caps: llmCapsHooks(ai), ...routedCallHooks(ai), ...chainOption(ai, recipe) },
     );
   };
 
@@ -939,6 +971,41 @@ export function parseNestedJsonStrings(value: unknown): unknown {
     return changed ? next : value;
   }
   return value;
+}
+
+/** The per call chain option for a recipe, when any of its models is live. */
+function chainOption(ai: AiDeps, recipe: ResolvedRecipe): Pick<CallWithFailoverOptions, "chain"> {
+  const chain = recipeChain(ai, recipe);
+  if (chain.length === 0) {
+    return {};
+  }
+  if (chain.length < recipe.models.length) {
+    console.warn(
+      `[runner] recipe ${recipe.key} v${recipe.version}: ${recipe.models.length - chain.length} of its models have no live provider and are skipped`,
+    );
+  }
+  return { chain };
+}
+
+/**
+ * Assigns the job its recipe variants and records them on the job. Never
+ * fails the pack: an unreadable recipes table falls back to the seed inside
+ * the resolver, and a failure here runs the job on the seed too.
+ */
+export async function assignRecipes(jobId: string, deps: Pick<PipelineDeps, "recipes" | "store">): Promise<JobRecipes> {
+  let recipes: JobRecipes;
+  try {
+    recipes = deps.recipes ? await deps.recipes.forJob(jobId) : seedJobRecipes();
+  } catch (err) {
+    console.error(`[runner] could not assign recipes for job ${jobId}; using the seed recipes`, err);
+    recipes = seedJobRecipes();
+  }
+  try {
+    await deps.store.saveRecipeVariants?.(jobId, recipeVariantsOf(recipes));
+  } catch (err) {
+    console.error(`[runner] could not record the recipe variants of job ${jobId}`, err);
+  }
+  return recipes;
 }
 
 /** Verdict from the deterministic checks alone, used when the LLM judge
@@ -1237,7 +1304,7 @@ async function runOutput(
     try {
       const judged = await llmJson<QCVerdict>(
         deps.ai,
-        "qc",
+        recipeFor(ctx.recipes, "qc"),
         QCVerdict,
         {
           shot: { id: shot.id, type: shot.type, scene: shot.scene, channel: specId },
@@ -2070,6 +2137,7 @@ export async function runGeneratePack(
     return summarize("failed", new JobAbandonedError(input.jobId).message);
   }
   await applyLedger(ledger.reserveOnQueue(input.creditBudget));
+  const recipes = await assignRecipes(input.jobId, deps);
 
   try {
     // Intake and analyze, with the uploaded photos as vision input when a
@@ -2079,7 +2147,7 @@ export async function runGeneratePack(
     const intake = await bookedLlm(
       llmJson<IntakeResult>(
         deps.ai,
-        "intake",
+        recipeFor(recipes, "intake"),
         IntakeResult,
         { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
         { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
@@ -2103,7 +2171,7 @@ export async function runGeneratePack(
     const analysis = await bookedLlm(
       llmJson<ProductProfile>(
         deps.ai,
-        "analyze",
+        recipeFor(recipes, "analyze"),
         ProductProfile,
         { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
         { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
@@ -2158,7 +2226,7 @@ export async function runGeneratePack(
     const planned = await bookedLlm(
       llmJson<unknown>(
         deps.ai,
-        "plan",
+        recipeFor(recipes, "plan"),
         { safeParse: (data: unknown) => ({ success: true, data }) },
         { profile, options: planOptions },
         { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "plan" },
@@ -2250,6 +2318,7 @@ export async function runGeneratePack(
       seoSlug: input.seoSlug,
       mode,
       brandColors: input.brandColors,
+      recipes,
     };
     // Pack level spend cap: a shared tracker gates every generation attempt
     // across the parallel fan out, so a runaway pack stops mid flight. The

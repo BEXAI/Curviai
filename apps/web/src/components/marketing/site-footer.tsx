@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CookieSettingsLink } from "../cookie-consent";
 import { Wordmark } from "./site-header";
 
 const productLinks = [
@@ -64,6 +65,9 @@ export function SiteFooter() {
                 <Link href="/privacy" className="text-ink-400 transition-colors hover:text-white">
                   Privacy policy
                 </Link>
+              </li>
+              <li>
+                <CookieSettingsLink className="text-ink-400 transition-colors hover:text-white" />
               </li>
               <li>
                 <a href="mailto:hello@curvi.ai" className="text-ink-400 transition-colors hover:text-white">

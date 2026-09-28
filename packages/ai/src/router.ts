@@ -184,6 +184,15 @@ export interface CallWithFailoverOptions extends RouteOptions {
    * Defaults to console.error.
    */
   onInternalError?: (err: unknown, context: string) => void;
+  /**
+   * Per call failover chain that replaces routing[req.task] when it is non
+   * empty. Callers that read their order from data at runtime use it, for
+   * example a recipe row listing its models in failover order, so a model
+   * swap needs a database update instead of a deploy. Every name still has to
+   * be registered and support the task; the rest are skipped with a recorded
+   * error, like a routing table entry.
+   */
+  chain?: string[];
   /** Injectable sleep for backoff, defaults to real setTimeout. */
   sleep?: (ms: number) => Promise<void>;
   /** Injectable jitter source in [0, 1), defaults to Math.random. */
@@ -313,7 +322,7 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
   req: ProviderRequest<TIn>,
   opts: CallWithFailoverOptions = {},
 ): Promise<CallResult<TOut>> {
-  const chain = routing[req.task];
+  const chain = opts.chain && opts.chain.length > 0 ? opts.chain : routing[req.task];
   if (!chain || chain.length === 0) {
     throw new Error(`No providers routed for task "${req.task}"`);
   }

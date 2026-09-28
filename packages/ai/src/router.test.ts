@@ -274,6 +274,40 @@ describe("callWithFailover", () => {
     expect(p2.invocations).toBe(0);
   });
 
+  it("walks a per call chain in place of the routing table entry", async () => {
+    const p1 = new MockProvider({ name: "p1", output: "one", failTimes: Infinity });
+    const p2 = new MockProvider({ name: "p2", output: "two" });
+    const p3 = new MockProvider({ name: "p3", output: "three" });
+    const h = harness([p1, p2, p3]);
+
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      chain: ["ghost", "p3", "p2"],
+    });
+    expect(result.provider).toBe("p3");
+    expect(p1.invocations).toBe(0);
+    expect(p2.invocations).toBe(0);
+  });
+
+  it("fails over along a per call chain and falls back to routing when it is empty", async () => {
+    const p1 = new MockProvider({ name: "p1", output: "one" });
+    const p2 = new MockProvider({
+      name: "p2",
+      failTimes: Infinity,
+      failWith: () => new ProviderError("down", "p2", TASK, false),
+    });
+    const p3 = new MockProvider({ name: "p3", output: "three" });
+    const h = harness([p1, p2, p3]);
+
+    const failedOver = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      chain: ["p2", "p3"],
+    });
+    expect(failedOver.provider).toBe("p3");
+    const routed = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), { sleep: h.sleep, chain: [] });
+    expect(routed.provider).toBe("p1");
+  });
+
   it("throws a clear error when the task has no routing entry", async () => {
     const h = harness([new MockProvider({ name: "p1" })]);
     await expect(

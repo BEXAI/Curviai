@@ -37,6 +37,7 @@ export interface RecipeSeedRow {
   version: number;
   stage: string;
   model: string;
+  fallbackModels?: string[];
   body: Record<string, unknown>;
   active: boolean;
   trafficPct?: number;
@@ -58,6 +59,7 @@ export async function loadRecipes(db: Db, rows: RecipeSeedRow[]): Promise<number
         version: row.version,
         stage: row.stage,
         model: row.model,
+        fallbackModels: row.fallbackModels ?? [],
         body: row.body,
         active: row.active,
         trafficPct: row.trafficPct ?? 100,
@@ -68,6 +70,7 @@ export async function loadRecipes(db: Db, rows: RecipeSeedRow[]): Promise<number
       set: {
         stage: sql`excluded.stage`,
         model: sql`excluded.model`,
+        fallbackModels: sql`excluded.fallback_models`,
         body: sql`excluded.body`,
         active: sql`excluded.active`,
         trafficPct: sql`excluded.traffic_pct`,
