@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import { Analytics } from "@/components/analytics";
+import { siteUrl } from "@/lib/env";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -7,6 +9,7 @@ const grotesk = Space_Grotesk({ subsets: ["latin"], variable: "--font-grotesk" }
 const jbMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jbmono" });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl()),
   title: {
     default: "Curvi. Shot once. Ready everywhere.",
     template: "%s | Curvi",
@@ -18,7 +21,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${grotesk.variable} ${jbMono.variable}`}>
-      <body className="min-h-screen bg-white font-sans text-ink-950 antialiased">{children}</body>
+      <body className="min-h-screen bg-white font-sans text-ink-950 antialiased">
+        {children}
+        <Analytics />
+      </body>
     </html>
   );
 }

@@ -56,3 +56,13 @@ export const imageModelSeedRows: ImageModelSeedRow[] = [
 
 /** Photoroom segment API, $0.02 per image (plan section 2.4). */
 export const photoroomSeed = { providerName: "photoroom", perCallMicros: 20_000 };
+
+/** Provider spend ceilings in USD micros (plan section 4.4). */
+export const costCaps = {
+  /** Hard stop per image asset including retries. */
+  imageAssetMicros: 600_000,
+  /** Hard stop per video asset including retries. */
+  videoAssetMicros: 3_000_000,
+  /** Hard stop for one full pack. */
+  packMicros: 8_000_000,
+} as const;

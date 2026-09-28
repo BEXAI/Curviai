@@ -237,6 +237,10 @@ export interface PipelineDeps {
   loadMedia?: (mediaId: string) => Promise<Buffer | null>;
   /** Shot methods to skip after planning, e.g. video until its provider is wired. */
   excludeShotMethods?: Array<Shot["method"]>;
+  /** Spend ceiling per shot including retries; further attempts stop at it. */
+  assetCostCapMicros?: number;
+  /** Spend ceiling for the whole pack; the run fails when it is crossed. */
+  packCostCapMicros?: number;
   /** Fan out override: the Trigger.dev wrapper points this at the
    * generate-shot subtask. Defaults to Promise.all over runShot. */
   runShots?: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>;
@@ -478,7 +482,15 @@ export async function runShot(
       pass: verdict.pass && pixel.pass && (fidelity?.pass ?? true),
     };
 
-    const decision = planRetry(attempt, effective);
+    // Spend cap: accepted work stands, but no further attempts are funded.
+    let decision = planRetry(attempt, effective);
+    if (
+      decision.action !== "accept" &&
+      deps.assetCostCapMicros !== undefined &&
+      costMicros >= deps.assetCostCapMicros
+    ) {
+      decision = { action: "needs_review" };
+    }
     if (decision.action === "accept") {
       const outcome: ShotOutcome = {
         shotId: shot.id,
@@ -682,8 +694,31 @@ export async function runGeneratePack(
       sku: input.sku,
       seoSlug: input.seoSlug,
     };
+    // Pack level spend cap: a shared tracker gates every generation attempt
+    // across the parallel fan out, so a runaway pack stops mid flight.
+    let fanOutDeps = deps;
+    if (deps.packCostCapMicros !== undefined) {
+      const cap = deps.packCostCapMicros;
+      const baseCost = costMicros;
+      let generatedCostMicros = 0;
+      const inner = deps.generator;
+      fanOutDeps = {
+        ...deps,
+        generator: {
+          generate: async (args) => {
+            if (baseCost + generatedCostMicros >= cap) {
+              throw new Error("Pack cost cap reached before all shots finished");
+            }
+            const generation = await inner.generate(args);
+            generatedCostMicros += generation.costMicros;
+            return generation;
+          },
+        },
+      };
+    }
     const runShots =
-      deps.runShots ?? ((shots: Shot[], c: ShotContext) => Promise.all(shots.map((s) => runShot(s, c, deps))));
+      deps.runShots ??
+      ((shots: Shot[], c: ShotContext) => Promise.all(shots.map((s) => runShot(s, c, fanOutDeps))));
     const outcomes = await runShots(shotList.shots, ctx);
     costMicros += outcomes.reduce((sum, o) => sum + o.costMicros, 0);
 
@@ -720,7 +755,7 @@ export async function runGeneratePack(
 
     state = transition(state, "packaged");
     await applyLedger(ledger.releaseUnusedOnCompletion());
-    await store.setJobState(input.jobId, state, { passed, needsReview });
+    await store.setJobState(input.jobId, state, { passed, needsReview, costMicros });
 
     return {
       jobId: input.jobId,
@@ -745,7 +780,7 @@ export async function runGeneratePack(
           : String(err);
     state = transition(state, "fail");
     await applyLedger(ledger.releaseRemainderOnFailure("failed"));
-    await store.setJobState(input.jobId, state, { error: message });
+    await store.setJobState(input.jobId, state, { error: message, costMicros });
     return {
       jobId: input.jobId,
       state: "failed",

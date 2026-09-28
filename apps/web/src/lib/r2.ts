@@ -62,8 +62,9 @@ export async function putGeneratedObject(key: string, body: Buffer, contentType:
   );
 }
 
-/** Short lived signed GET for rendering and downloading generated assets. */
-export async function presignObjectGet(key: string, expiresIn = 600): Promise<string> {
+/** Signed GET for rendering and downloading generated assets. An hour keeps
+ * an open job board or brand page working without a refresh. */
+export async function presignObjectGet(key: string, expiresIn = 3600): Promise<string> {
   return getSignedUrl(r2Client(), new GetObjectCommand({ Bucket: privateBucket(), Key: key }), { expiresIn });
 }
 

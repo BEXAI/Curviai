@@ -150,7 +150,7 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
               <label className="inline-block cursor-pointer">
                 <input
                   type="file"
-                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                  accept="image/png,image/jpeg,image/webp"
                   className="sr-only"
                   onChange={(event) => {
                     const file = event.target.files?.[0];
@@ -167,7 +167,7 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
               {logoState.phase === "error" ? (
                 <p className="mt-2 text-xs text-red-600">{logoState.message}</p>
               ) : (
-                <p className="mt-2 text-xs text-ink-400">PNG, JPG, WebP or SVG. Save the kit to apply.</p>
+                <p className="mt-2 text-xs text-ink-400">PNG, JPG or WebP. Save the kit to apply.</p>
               )}
             </div>
           </div>

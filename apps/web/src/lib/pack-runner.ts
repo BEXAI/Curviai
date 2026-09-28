@@ -10,6 +10,7 @@
 
 import { assetVariants, assets, generationJobs, jobSteps, products, eq, sql, type Db } from "@curvi/db";
 import type { ProductProfile } from "@curvi/pipeline";
+import { costCaps } from "@curvi/pipeline/seed";
 import {
   runGeneratePack,
   type GeneratePackInput,
@@ -43,9 +44,15 @@ export class DrizzleJobStore implements JobStore {
 
   async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<void> {
     const error = typeof meta?.error === "string" ? meta.error.slice(0, 500) : undefined;
+    const cogsMicros = typeof meta?.costMicros === "number" ? Math.round(meta.costMicros) : undefined;
     await this.db
       .update(generationJobs)
-      .set({ status: state, ...(error ? { error } : {}), updatedAt: new Date() })
+      .set({
+        status: state,
+        ...(error ? { error } : {}),
+        ...(cogsMicros !== undefined ? { cogsMicros } : {}),
+        updatedAt: new Date(),
+      })
       .where(eq(generationJobs.id, jobId));
   }
 
@@ -142,7 +149,14 @@ export function startPackRun(args: StartPackArgs): void {
     try {
       // Video and avatar shots wait for their providers; skipping them here
       // keeps live packs honest instead of charging for placeholder renders.
-      await runGeneratePack(args, { ...deps, store, excludeShotMethods: ["video_generate", "avatar"] });
+      // Spend ceilings come from the seed per plan section 4.4.
+      await runGeneratePack(args, {
+        ...deps,
+        store,
+        excludeShotMethods: ["video_generate", "avatar"],
+        assetCostCapMicros: costCaps.imageAssetMicros,
+        packCostCapMicros: costCaps.packMicros,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       try {

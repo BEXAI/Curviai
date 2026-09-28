@@ -17,7 +17,7 @@ export async function POST(): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: "billing_not_configured",
-        notice: "The customer portal needs Stripe. Set STRIPE_SECRET_KEY to enable it.",
+        notice: "The billing portal is briefly unavailable. Email hello@curvi.ai for any billing change.",
       },
       { status: 503 },
     );

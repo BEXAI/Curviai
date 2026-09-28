@@ -3,6 +3,7 @@ export {
   CUTOUT_TASK,
   HARMONIZE_TASK,
   SCENE_PLATE_TASK,
+  costCaps,
   imageModelSeedRows,
   llmModelPrices,
   photoroomSeed,

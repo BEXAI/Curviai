@@ -42,6 +42,28 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      # One Stripe price id per paid tier and cadence, plus the two top ups
+      # from packages/pipeline/src/seed/credits.ts.
+      - key: STRIPE_PRICE_STARTER_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_STARTER_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_GROWTH_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_GROWTH_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_PRO_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_PRO_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_AGENCY_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_AGENCY_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_TOPUP_100
+        sync: false
+      - key: STRIPE_PRICE_TOPUP_500
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: UPSTASH_REDIS_REST_URL
