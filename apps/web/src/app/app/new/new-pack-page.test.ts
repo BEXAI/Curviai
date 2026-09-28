@@ -3,7 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { TierFeature, TierKey } from "@curvi/pipeline/seed";
 import { listSpecs } from "@curvi/specs";
+import { creditBalanceLine, submitFailureSpendsKey } from "@/components/app/new-pack-form";
 import { checkChannelEntitlements } from "@/lib/entitlements";
+import { isSpecLive } from "@/lib/marketing-facts";
 import { newPackChannelOptions } from "./channel-options";
 
 // The new pack form must never offer a channel createJob refuses: a channel
@@ -26,7 +28,7 @@ vi.mock("next/link", () => ({
     React.createElement("a", { href, ...rest }, children),
 }));
 
-const page = vi.hoisted(() => ({ plan: "growth" }));
+const page = vi.hoisted(() => ({ plan: "growth", creditBalance: 40 }));
 
 vi.mock("@/lib/services", () => ({
   getServices: () => ({
@@ -34,7 +36,7 @@ vi.mock("@/lib/services", () => ({
       id: "ws_1",
       name: "Test shop",
       plan: page.plan,
-      creditBalance: 40,
+      creditBalance: page.creditBalance,
       role: "owner",
     }),
     listProducts: async () => [],
@@ -74,6 +76,51 @@ describe("newPackChannelOptions", () => {
     const templated = (feature: TierFeature) => feature === "templatedVideo";
     const listing = newPackChannelOptions("free", templated).find((o) => o.id === "video.amazon_listing");
     expect(listing).toMatchObject({ availability: "upgrade_required", upgradeTo: "starter" });
+  });
+
+  it("marks every image spec a pack makes no files for Coming soon on every plan", () => {
+    for (const tier of ALL_TIERS) {
+      const options = newPackChannelOptions(tier, () => true);
+      const images = options.filter((o) => !o.id.startsWith("video."));
+      for (const option of images) {
+        expect(option.availability, `${option.id} on ${tier}`).toBe(isSpecLive(option.id) ? "available" : "coming_soon");
+      }
+      expect(options.find((o) => o.id === "amazon.aplus.premium_full")).toMatchObject({
+        availability: "coming_soon",
+        upgradeTo: null,
+      });
+    }
+  });
+
+  it("offers a spec once it ships", () => {
+    const premium = newPackChannelOptions("growth", undefined, () => true).find(
+      (o) => o.id === "amazon.aplus.premium_full",
+    );
+    expect(premium?.availability).toBe("available");
+  });
+});
+
+describe("new pack form helpers", () => {
+  it("starts a new intent after a 409 or the server's own 503 refusal, and keeps the key otherwise", () => {
+    expect(submitFailureSpendsKey(409)).toBe(true);
+    expect(submitFailureSpendsKey(503, "unavailable")).toBe(true);
+    // A 503 from anything else (a proxy, workspace setup) may follow a
+    // started pack, so the retry keeps the key and replays it.
+    expect(submitFailureSpendsKey(503)).toBe(false);
+    for (const status of [400, 401, 402, 403, 404, 422, 429, 500, 502, 504]) {
+      expect(submitFailureSpendsKey(status, "unavailable"), String(status)).toBe(false);
+    }
+  });
+
+  it("explains a balance below zero instead of showing a negative number", () => {
+    const line = creditBalanceLine(-12);
+    expect(line).toContain("12 credits below zero");
+    expect(line).toContain("smaller plan");
+    expect(line).toContain("top up or your next renewal");
+    expect(line).not.toContain("-12");
+    expect(line).not.toMatch(/[–—→]| - |->/);
+    expect(creditBalanceLine(-1)).toContain("1 credit below zero");
+    expect(creditBalanceLine(40)).toBe("You have 40 credits. Only assets that pass QC are charged.");
   });
 });
 
@@ -121,6 +168,33 @@ describe("/app/new", () => {
       expect(html).not.toContain('data-testid="channel-upgrade"');
     } finally {
       page.plan = "growth";
+    }
+  });
+
+  it("shows an image spec that does not ship yet as Coming soon with a disabled checkbox", async () => {
+    for (const plan of ["free", "agency"]) {
+      page.plan = plan;
+      try {
+        const row = channelRow(await renderPage(), "amazon.aplus.premium_full");
+        expect(row).toContain('disabled=""');
+        expect(row).toContain("Coming soon");
+        expect(row).not.toContain('checked=""');
+      } finally {
+        page.plan = "growth";
+      }
+    }
+    // Shipping A plus headers stay pickable.
+    expect(channelRow(await renderPage(), "amazon.aplus.basic_header")).not.toContain('disabled=""');
+  });
+
+  it("explains a balance below zero in the pack summary", async () => {
+    page.creditBalance = -7.5;
+    try {
+      const html = await renderPage();
+      expect(html).toContain("7.5 credits below zero");
+      expect(html).not.toContain("-7.5");
+    } finally {
+      page.creditBalance = 40;
     }
   });
 });

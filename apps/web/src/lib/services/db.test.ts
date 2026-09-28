@@ -599,10 +599,10 @@ describe("DbService.listJobFiles and downloads", () => {
     }
   });
 
-  async function deliveredJob(w: { id: string; productId: string }) {
+  async function deliveredJob(w: { id: string; productId: string }, status: JobStatus = "done") {
     const [job] = await db
       .insert(generationJobs)
-      .values({ workspaceId: w.id, productId: w.productId, status: "done" })
+      .values({ workspaceId: w.id, productId: w.productId, status })
       .returning();
     const [asset] = await db
       .insert(assets)
@@ -701,6 +701,59 @@ describe("DbService.listJobFiles and downloads", () => {
     const view = await service(w.user).listJobFiles(w.id, jobId);
     expect(view?.files.every((f) => f.downloadUrl === null)).toBe(true);
     expect(await service(w.user).getJobFileDownload(w.id, jobId, `v_${variantId}`)).toBeNull();
+  });
+
+  // A run the time cap or a restart settled as failed can still finish its
+  // upload afterwards, and those files were never charged. Like the pack
+  // zip route, files are served only once the pack is done.
+  it.each(["failed", "canceled", "queued", "generating", "qc"] as const)(
+    "lists, previews and serves no files while the job is %s",
+    async (status) => {
+      Object.assign(process.env, R2_ENV);
+      const w = await makeWorkspace(0);
+      const { jobId, variantId, reportId } = await deliveredJob(w, status);
+      await db.insert(jobSteps).values({
+        workspaceId: w.id,
+        jobId,
+        shotId: "s01_amazon_main",
+        stage: "amazon_main",
+        provider: "worker",
+        status: "done",
+      });
+      const svc = service(w.user);
+
+      const view = await svc.listJobFiles(w.id, jobId);
+      expect(view).toEqual({ jobId, status, files: [] });
+      expect(await svc.getJobFileDownload(w.id, jobId, `v_${variantId}`)).toBeNull();
+      expect(await svc.getJobFileDownload(w.id, jobId, `p_${reportId}`)).toBeNull();
+
+      const job = await svc.getJob(w.id, jobId);
+      const shot = job?.shots.find((s) => s.shotId === "s01_amazon_main");
+      expect(shot).toBeDefined();
+      expect(shot?.imageUrl ?? null).toBeNull();
+      expect(shot?.downloadUrl ?? null).toBeNull();
+    },
+  );
+
+  it("previews and links a delivered shot once the job is done", async () => {
+    Object.assign(process.env, R2_ENV);
+    const w = await makeWorkspace(0);
+    const { jobId, variantId } = await deliveredJob(w);
+    await db.insert(jobSteps).values({
+      workspaceId: w.id,
+      jobId,
+      shotId: "s01_amazon_main",
+      stage: "amazon_main",
+      provider: "worker",
+      status: "done",
+    });
+
+    const job = await service(w.user).getJob(w.id, jobId);
+
+    const shot = job?.shots.find((s) => s.shotId === "s01_amazon_main");
+    expect(shot?.channels).toEqual(["amazon.main"]);
+    expect(shot?.imageUrl).toContain("X-Amz-Signature");
+    expect(shot?.downloadUrl).toBe(`/api/jobs/${jobId}/files/v_${variantId}`);
   });
 });
 

@@ -14,6 +14,11 @@ import { getServices } from "@/lib/services";
 export const metadata: Metadata = { title: "Dashboard" };
 export const dynamic = "force-dynamic";
 
+/** "12 credits", "1 credit", "2.5 credits". */
+function formatBalance(credits: number): string {
+  return `${credits.toLocaleString("en-US")} ${credits === 1 ? "credit" : "credits"}`;
+}
+
 export default async function DashboardPage() {
   const services = getServices();
   const workspace = await services.ensureWorkspace();
@@ -59,9 +64,25 @@ export default async function DashboardPage() {
             <CardTitle>Credits</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-4xl font-bold tracking-tight text-ink-950">
-              {workspace.creditBalance.toLocaleString("en-US")}
-            </p>
+            {workspace.creditBalance < 0 ? (
+              // Only a plan change debit takes the balance below zero (refunds
+              // and disputes stop at zero), so say that instead of showing a
+              // bare negative number. /app/billing carries the same notice.
+              <div data-testid="negative-balance">
+                <p className="text-2xl font-bold tracking-tight text-amber-900">
+                  {formatBalance(-workspace.creditBalance)} below zero
+                </p>
+                <p className="mt-1 text-sm text-ink-600">
+                  A move to a smaller plan returned money for time on the bigger plan, so the credits that time paid
+                  for were taken back, including some you had already used. New packs start again once a top up or
+                  your next renewal brings the balance back up.
+                </p>
+              </div>
+            ) : (
+              <p className="text-4xl font-bold tracking-tight text-ink-950">
+                {workspace.creditBalance.toLocaleString("en-US")}
+              </p>
+            )}
             <p className="mt-1 text-sm text-ink-500">
               On the {tierDisplayName(workspace.plan)} plan. A default listing pack of still images uses about{" "}
               {typicalPackCredits()} credits.

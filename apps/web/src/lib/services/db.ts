@@ -29,7 +29,7 @@ import { isR2Configured, optionalEnv } from "@/lib/env";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { publicJobError } from "@/lib/job-copy";
 import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
-import { InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
+import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { buildGeneratePackInput } from "@/lib/jobs/payload";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
@@ -193,6 +193,23 @@ function parseFileId(fileId: string): { table: "variant" | "pack"; id: string } 
 
 function fileDownloadPath(jobId: string, fileId: string): string {
   return `/api/jobs/${jobId}/files/${fileId}`;
+}
+
+/** Files are served only for a finished pack, like the pack zip route. A
+ * run the time cap or a restart settled as failed can still finish writing
+ * files afterwards, and those were never charged, so they stay unserved. */
+function servesFiles(status: string): boolean {
+  return status === "done";
+}
+
+/**
+ * True while this instance drains for a restart or deploy, the state in
+ * which enqueueGeneratePack's assertAccepting refuses an inline pack. Read
+ * without creating the runner: an instance that has no runner yet is not
+ * draining, and the Trigger.dev path never creates one.
+ */
+function inlineRunnerDraining(): boolean {
+  return currentInlinePackRunner()?.accepting === false;
 }
 
 export class DbService implements Services {
@@ -451,7 +468,9 @@ export class DbService implements Services {
     // Delivered variants give each finished shot its real channels, a
     // preview and a download link. DbJobStore records each asset's shot id
     // in its qc verdict, so a variant maps to its shot through its asset.
-    if (assetRows.length > 0) {
+    // Only a finished pack shows them, since the download route serves
+    // files for nothing else (servesFiles).
+    if (assetRows.length > 0 && servesFiles(current.status)) {
       const shotIdByAssetId = new Map<string, string>();
       for (const a of assetRows) {
         const shotId = a.qc && typeof a.qc.shotId === "string" ? a.qc.shotId : null;
@@ -656,9 +675,19 @@ export class DbService implements Services {
       };
     }
 
+    // A server draining for a restart or deploy takes no new packs. Asking
+    // before the transaction means the refusal writes nothing: no product,
+    // no photos, no job and no hold, so the seller's retry starts clean. A
+    // drain that begins after this check is still refused by
+    // enqueueGeneratePack, and abandonJob cleans up behind it.
+    if (inlineRunnerDraining()) {
+      console.warn(`[jobs] refused a pack in workspace ${workspaceId}: this server is draining`);
+      return { outcome: "rejected", reason: "unavailable", message: RESTARTING_MESSAGE };
+    }
+
     // Product, uploads, job and reservation commit together, so a rejected
     // pack leaves no empty product or orphan uploads behind (Update.md 6.3).
-    let created: { product: typeof products.$inferSelect; jobId: string };
+    let created: { product: typeof products.$inferSelect; jobId: string; insertedMediaIds: string[] };
     try {
       created = await this.db.transaction(async (tx) => {
         // Lock the workspace row before anything else. The foreign key checks
@@ -684,20 +713,25 @@ export class DbService implements Services {
               })
               .returning()
           )[0];
-        if (uploadRows.length > 0) {
-          await tx
-            .insert(sourceMedia)
-            .values(
-              uploadRows.map((u) => ({
-                workspaceId,
-                productId: product.id,
-                r2Key: u.key,
-                kind: u.kind,
-                sha256: u.sha256,
-              })),
-            )
-            .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] });
-        }
+        // The rows this request really inserted (a photo already saved is
+        // skipped by ON CONFLICT), so an abandoned new product pack can hand
+        // its photos back for the retry.
+        const insertedMedia =
+          uploadRows.length > 0
+            ? await tx
+                .insert(sourceMedia)
+                .values(
+                  uploadRows.map((u) => ({
+                    workspaceId,
+                    productId: product.id,
+                    r2Key: u.key,
+                    kind: u.kind,
+                    sha256: u.sha256,
+                  })),
+                )
+                .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
+                .returning({ id: sourceMedia.id })
+            : [];
         const [inserted] = await tx
           .insert(generationJobs)
           .values({
@@ -716,7 +750,7 @@ export class DbService implements Services {
         } catch (err) {
           throw new ReservationError(err);
         }
-        return { product, jobId: inserted.id };
+        return { product, jobId: inserted.id, insertedMediaIds: insertedMedia.map((m) => m.id) };
       });
     } catch (err) {
       if (err instanceof ReservationError && isInsufficientCreditsError(err.original)) {
@@ -742,7 +776,7 @@ export class DbService implements Services {
       );
       return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
     }
-    const { product, jobId } = created;
+    const { product, jobId, insertedMediaIds } = created;
 
     // Brand colors are optional styling: a failed lookup must never fail a
     // job that already holds its credit reservation.
@@ -785,7 +819,10 @@ export class DbService implements Services {
       } else {
         console.error(`[jobs] could not queue job ${jobId} in workspace ${workspaceId}`, err);
       }
-      await this.abandonJob(workspaceId, jobId, "The pack could not be queued.");
+      // A product this request created keeps no photos, so a retry as a new
+      // product saves them to the product it creates. Photos added to an
+      // existing product stay: a retry puts them on the same product.
+      await this.abandonJob(workspaceId, jobId, "The pack could not be queued.", existingProduct ? [] : insertedMediaIds);
       return { outcome: "rejected", reason: "unavailable", message: restarting ? RESTARTING_MESSAGE : UNAVAILABLE_MESSAGE };
     }
 
@@ -796,35 +833,62 @@ export class DbService implements Services {
     return { outcome: "created", job };
   }
 
-  /** Marks a job that never started as failed. Best effort: the caller is
-   * already reporting a failure, which this must not replace. */
-  private async failJob(jobId: string, error: string): Promise<void> {
-    try {
-      await this.db
-        .update(generationJobs)
-        .set({ status: "failed", error, updatedAt: new Date() })
-        .where(eq(generationJobs.id, jobId));
-    } catch (err) {
-      console.error(`[jobs] could not mark job ${jobId} failed`, err);
-    }
-  }
-
-  /** Returns everything a job that never started still holds, then marks it
-   * failed. Best effort, so a cleanup error never replaces the error the
-   * caller reports. When the release fails the job stays queued, so the
-   * stale run reconciler fails it and returns the hold later; a failed job
-   * would keep its hold for good. */
-  private async abandonJob(workspaceId: string, jobId: string, error: string): Promise<void> {
+  /**
+   * Cleans up behind a job that never started. Best effort throughout, so a
+   * cleanup error never replaces the error the caller reports.
+   *
+   * - Returns everything the job still holds, then marks it failed. When the
+   *   release fails the job stays queued, so the stale run reconciler fails
+   *   it and returns the hold later; a failed job would keep its hold for
+   *   good.
+   * - Frees its Idempotency-Key either way. The caller answers with a
+   *   refusal, so the seller's retry of the same form must create a fresh
+   *   job, never replay this one as a started pack.
+   * - Deletes the photo rows in releaseMediaIds (the ones a new product pack
+   *   inserted), so a retry saves them to the product it creates instead of
+   *   leaving them on this one (the unique index keeps a photo on one
+   *   product).
+   */
+  private async abandonJob(
+    workspaceId: string,
+    jobId: string,
+    error: string,
+    releaseMediaIds: string[] = [],
+  ): Promise<void> {
+    let released = true;
     try {
       await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`);
     } catch (err) {
+      released = false;
       console.error(
         `[jobs] could not release credits held by job ${jobId}; leaving it for the stale run reconciler`,
         err,
       );
+    }
+    try {
+      await this.db
+        .update(generationJobs)
+        .set(released ? { status: "failed", error, idempotencyKey: null, updatedAt: new Date() } : { idempotencyKey: null })
+        .where(and(eq(generationJobs.id, jobId), eq(generationJobs.workspaceId, workspaceId)));
+    } catch (err) {
+      console.error(`[jobs] could not mark job ${jobId} as abandoned`, err);
+    }
+    if (releaseMediaIds.length === 0) {
       return;
     }
-    await this.failJob(jobId, error);
+    try {
+      // Ids come from this request's insert ... returning, never from input.
+      await this.db
+        .delete(sourceMedia)
+        .where(
+          and(
+            eq(sourceMedia.workspaceId, workspaceId),
+            sql`${sourceMedia.id} = any(${`{${releaseMediaIds.join(",")}}`}::uuid[])`,
+          ),
+        );
+    } catch (err) {
+      console.warn(`[jobs] could not free the photos of abandoned job ${jobId}`, err);
+    }
   }
 
   async createProduct(workspaceId: string, input: CreateProductInput): Promise<ProductSummary | null> {
@@ -896,6 +960,10 @@ export class DbService implements Services {
     });
     if (!job) {
       return null;
+    }
+    if (!servesFiles(job.status)) {
+      // Nothing is listed or signed until the pack is done.
+      return { jobId: job.id, status: job.status as JobStatus, files: [] };
     }
     const assetRows = await this.db.query.assets.findMany({
       where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId)),
@@ -976,7 +1044,7 @@ export class DbService implements Services {
     const job = await this.db.query.generationJobs.findFirst({
       where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
     });
-    if (!job) {
+    if (!job || !servesFiles(job.status)) {
       return null;
     }
     let file: { r2Key: string; filename: string } | null = null;

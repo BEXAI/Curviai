@@ -256,6 +256,21 @@ describe("demo products and modes (Update.md 6.7)", () => {
     expect((await svc.getCurrentWorkspace()).creditBalance).toBe(before);
   });
 
+  it("refuses an image spec a pack makes no files for, as db mode does", async () => {
+    const svc = service();
+    const workspace = await svc.getCurrentWorkspace();
+    const products = await svc.listProducts(workspace.id);
+    const before = workspace.creditBalance;
+    const result = await svc.createJob(workspace.id, {
+      productId: products[0].id,
+      channels: ["amazon.main", "amazon.aplus.premium_full"],
+      mode: "listing",
+      idempotencyKey: "premium-key",
+    });
+    expect(result).toMatchObject({ outcome: "rejected", reason: "feature_unavailable" });
+    expect((await svc.getCurrentWorkspace()).creditBalance).toBe(before);
+  });
+
   it("plans no marketplace shots for a Concept pack, as the runner does", () => {
     const channels = ["amazon.main", "shopify.product", "meta.feed_1x1"];
     const listing = planDemoShots(channels, DEMO_TIER, "listing");

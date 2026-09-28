@@ -8,6 +8,13 @@
  *
  * The new pack form reads the same decisions through channelAvailability,
  * so it never offers a channel that createJob would refuse.
+ *
+ * Image channels are judged spec by spec: the registry describes more specs
+ * than a pack makes files for, and lib/marketing-facts CHANNEL_SPECS (which
+ * a drift test holds to what the planner delivers) says which ones ship. A
+ * spec that does not ship yet, such as amazon.aplus.premium_full, is Coming
+ * soon on every plan, so nobody holds credits for a file the pack never
+ * makes. Families gated by a plan feature (video) follow that feature.
  */
 
 import {
@@ -20,6 +27,7 @@ import {
   type TierFeature,
   type TierKey,
 } from "@curvi/pipeline/seed";
+import { isSpecLive, specFilesNameFor } from "@/lib/marketing-facts";
 
 /** Maps a workspaces.plan value to a tier key; unknown plans read as free. */
 export function tierKeyOf(plan: string | null | undefined): TierKey {
@@ -32,7 +40,10 @@ export type EntitlementCheck =
   | {
       ok: false;
       reason: "feature_unavailable" | "upgrade_required";
-      feature: TierFeature;
+      /** The plan feature at fault, or null when a channel spec does not ship yet. */
+      feature: TierFeature | null;
+      /** The channel spec that does not ship yet, when that is the reason. */
+      spec?: string;
       /** The cheapest plan that includes the feature, when one does. */
       upgradeTo: TierKey | null;
       message: string;
@@ -51,15 +62,26 @@ export function tierName(key: TierKey): string {
   return key.charAt(0).toUpperCase() + key.slice(1);
 }
 
+/** Copy for a channel spec that does not ship yet. Plain, no dashes (rule 9). */
+function specComingSoonMessage(spec: string): string {
+  const files = specFilesNameFor(spec);
+  return files
+    ? `${files} are coming soon, so they cannot be added to a pack yet. Remove them to start this pack.`
+    : "One of the channels you picked is coming soon, so it cannot be added to a pack yet. Remove it to start this pack.";
+}
+
 /**
  * Checks the channels a pack asks for against the plan. Channel families that
  * only carry a plan feature (video today) need at least one of their features
  * to be live and included in the tier. isLive defaults to the seed status.
+ * Every other channel must be a spec a pack makes files for today; specLive
+ * defaults to lib/marketing-facts isSpecLive.
  */
 export function checkChannelEntitlements(
   channels: string[],
   tier: TierKey,
   isLive: (feature: TierFeature) => boolean = isFeatureLive,
+  specLive: (specId: string) => boolean = isSpecLive,
 ): EntitlementCheck {
   const families = [...new Set(channels.map(familyOf))];
   for (const family of families) {
@@ -94,6 +116,17 @@ export function checkChannelEntitlements(
       };
     }
   }
+  const unshipped = channels.find((channel) => !channelFamilyFeatures[familyOf(channel)]?.length && !specLive(channel));
+  if (unshipped !== undefined) {
+    return {
+      ok: false,
+      reason: "feature_unavailable",
+      feature: null,
+      spec: unshipped,
+      upgradeTo: null,
+      message: specComingSoonMessage(unshipped),
+    };
+  }
   return { ok: true };
 }
 
@@ -107,14 +140,16 @@ export type ChannelAvailability =
 
 /**
  * One channel judged exactly as createJob judges a pack: a channel is only
- * offered when a pack holding it would pass checkChannelEntitlements.
+ * offered when a pack holding it would pass checkChannelEntitlements. A
+ * spec that does not ship yet reads Coming soon on every plan.
  */
 export function channelAvailability(
   channel: string,
   tier: TierKey,
   isLive: (feature: TierFeature) => boolean = isFeatureLive,
+  specLive: (specId: string) => boolean = isSpecLive,
 ): ChannelAvailability {
-  const check = checkChannelEntitlements([channel], tier, isLive);
+  const check = checkChannelEntitlements([channel], tier, isLive, specLive);
   if (check.ok) {
     return { status: "available" };
   }

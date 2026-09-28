@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { entitlementsFor, type TierFeature, type TierKey } from "@curvi/pipeline/seed";
+import { entitlementsFor, isFeatureLive, type TierFeature, type TierKey } from "@curvi/pipeline/seed";
 import {
   channelAvailability,
   checkBrandKitEntitlement,
   checkChannelEntitlements,
   tierKeyOf,
 } from "./entitlements";
+import { CHANNEL_SPECS, isSpecLive, registryImageSpecIds } from "./marketing-facts";
 
 const ALL_TIERS: TierKey[] = ["free", "starter", "growth", "pro", "agency"];
+/** A registry spec a pack makes no files for yet (marketing-facts CHANNEL_SPECS). */
+const UNSHIPPED_SPEC = "amazon.aplus.premium_full";
 
 describe("tierKeyOf", () => {
   it("maps known plans and reads anything else as free", () => {
@@ -56,14 +59,58 @@ describe("checkChannelEntitlements", () => {
     }
   });
 
+  it("refuses an image spec a pack makes no files for yet, on every plan", () => {
+    expect(isSpecLive(UNSHIPPED_SPEC)).toBe(false);
+    for (const tier of ALL_TIERS) {
+      const check = checkChannelEntitlements(["amazon.main", UNSHIPPED_SPEC], tier, () => true);
+      expect(check).toEqual({
+        ok: false,
+        reason: "feature_unavailable",
+        feature: null,
+        spec: UNSHIPPED_SPEC,
+        upgradeTo: null,
+        message:
+          "Amazon A plus premium modules are coming soon, so they cannot be added to a pack yet. Remove them to start this pack.",
+      });
+    }
+  });
+
+  it("accepts every image spec marked live and refuses every other registry image spec", () => {
+    const live = CHANNEL_SPECS.filter((spec) => spec.status === "live").map((spec) => spec.specId);
+    expect(live.length).toBeGreaterThan(0);
+    expect(checkChannelEntitlements(live, "free")).toEqual({ ok: true });
+    for (const spec of registryImageSpecIds().filter((id) => !isSpecLive(id))) {
+      expect(checkChannelEntitlements([spec], "agency").ok, spec).toBe(false);
+    }
+  });
+
+  it("judges image specs through the specLive check it is given", () => {
+    const feedPulled = (spec: string) => spec !== "meta.feed_1x1";
+    const refused = checkChannelEntitlements(["meta.feed_1x1"], "pro", isFeatureLive, feedPulled);
+    expect(refused).toMatchObject({ ok: false, reason: "feature_unavailable", spec: "meta.feed_1x1" });
+    expect(checkChannelEntitlements([UNSHIPPED_SPEC], "pro", isFeatureLive, () => true)).toEqual({ ok: true });
+  });
+
+  it("names no files for a spec it has no name for", () => {
+    const check = checkChannelEntitlements(["acme.new_spec"], "pro", isFeatureLive, () => false);
+    expect(check.ok).toBe(false);
+    if (!check.ok) {
+      expect(check.message).toBe(
+        "One of the channels you picked is coming soon, so it cannot be added to a pack yet. Remove it to start this pack.",
+      );
+    }
+  });
+
   it("keeps the refusal copy plain: no arrows, no emojis and no dashes as punctuation", () => {
     const messages = [
       checkChannelEntitlements(["video.social_9x16"], "free"),
       checkChannelEntitlements(["video.social_9x16"], "free", () => true),
+      checkChannelEntitlements([UNSHIPPED_SPEC], "free"),
+      checkChannelEntitlements(["acme.new_spec"], "free", () => true, () => false),
       checkBrandKitEntitlement("free", 0, true),
       checkBrandKitEntitlement("starter", 1, true),
     ].flatMap((c) => (c.ok ? [] : [c.message]));
-    expect(messages).toHaveLength(4);
+    expect(messages).toHaveLength(6);
     for (const message of messages) {
       expect(message).not.toMatch(/[–—→⇒]|->|=>| - /);
       expect(message).not.toMatch(/\p{Extended_Pictographic}/u);
@@ -81,8 +128,15 @@ describe("channelAvailability (what the new pack form may offer)", () => {
     }
   });
 
+  it("marks an image spec that does not ship yet Coming soon on every plan, even with every feature live", () => {
+    for (const tier of ALL_TIERS) {
+      expect(channelAvailability(UNSHIPPED_SPEC, tier)).toEqual({ status: "coming_soon" });
+      expect(channelAvailability(UNSHIPPED_SPEC, tier, () => true)).toEqual({ status: "coming_soon" });
+    }
+  });
+
   it("agrees with the server check for every channel and tier", () => {
-    const channels = ["amazon.main", "shopify.product", "video.social_9x16", "video.amazon_listing"];
+    const channels = ["amazon.main", "shopify.product", UNSHIPPED_SPEC, "video.social_9x16", "video.amazon_listing"];
     const lives: Array<(feature: TierFeature) => boolean> = [
       () => false,
       () => true,
