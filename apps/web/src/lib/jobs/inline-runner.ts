@@ -2,15 +2,26 @@
  * Inline pack runner: runs packs inside the web process when no Trigger.dev
  * worker is configured, which is how production runs on Render today.
  *
- * Two guarantees the bare after() call did not give:
+ * Three guarantees the bare after() call did not give:
  *
  * 1. A concurrency limit. At most `concurrency` packs run at once in this
  *    process; the rest wait in order, still queued in the database, so one
  *    customer starting several packs cannot run the instance out of memory
  *    and take everyone else's packs down with it. Waiting jobs heartbeat so
- *    the stale run reconciler never fails a job that is only waiting its turn.
+ *    the stale run reconciler never fails a job that is only waiting its turn,
+ *    but only up to `maxQueueWaitMs`: past that the heartbeat stops and the
+ *    reconciler is the backstop again.
  *
- * 2. Graceful shutdown. On SIGTERM (every deploy, restart or spin down) the
+ * 2. A wall clock cap per run (`maxRunMs`, below the reconciler's 30 minute
+ *    window). A pack that hangs (a provider or storage call that never
+ *    returns) would otherwise hold its slot until the process restarts, and
+ *    with one slot every other customer's pack would wait behind it. When the
+ *    cap passes, the job is settled, its slot is freed and the next job
+ *    starts. The hung run cannot be killed, but it can no longer block the
+ *    queue: its abort signal fires, and the pack runner stops at its next
+ *    liveness check because the job is terminal. A late finish is a no op.
+ *
+ * 3. Graceful shutdown. On SIGTERM (every deploy, restart or spin down) the
  *    runner stops taking new work, settles every job that has not started,
  *    gives the running packs a grace window to finish, then settles whatever
  *    is still running. Settling marks the job failed through the existing
@@ -27,7 +38,7 @@ export interface InlinePackJob {
 }
 
 /** Why the runner settled a job itself instead of the pack run finishing it. */
-export type SettleReason = "crashed" | "not_started" | "interrupted";
+export type SettleReason = "crashed" | "not_started" | "interrupted" | "timed_out";
 
 export interface InlineRunnerConfig {
   /** Packs allowed to run at once in this process. */
@@ -38,6 +49,14 @@ export interface InlineRunnerConfig {
   shutdownGraceMs: number;
   /** How often waiting jobs bump updated_at while they wait their turn. */
   heartbeatMs: number;
+  /** Wall clock cap for one pack run. When it passes, the job is settled as
+   * timed_out, its slot is freed and the queue moves on. Default
+   * DEFAULT_MAX_RUN_MS; always below the stale run reconciler's window. */
+  maxRunMs?: number;
+  /** How long a waiting job keeps heartbeating. A job that waited longer is
+   * left for the stale run reconciler, so a wedged queue can never hold
+   * credits forever. Default DEFAULT_MAX_QUEUE_WAIT_MS. */
+  maxQueueWaitMs?: number;
 }
 
 export interface InlineRunnerLogger {
@@ -48,8 +67,10 @@ export interface InlineRunnerLogger {
 
 export interface InlineRunnerDeps<P extends InlinePackJob> {
   /** Runs one pack to its end. The pack runner owns its own failure handling;
-   * a rejection here is treated as a crash and the job is settled. */
-  runPack: (payload: P) => Promise<void>;
+   * a rejection here is treated as a crash and the job is settled. The
+   * signal aborts when the runner gives up on the run (its time cap passed
+   * or a shutdown settled it), so work that can listen for it stops early. */
+  runPack: (payload: P, signal: AbortSignal) => Promise<void>;
   /** Marks a job this runner will not finish as failed (never touching a job
    * that already finished) and releases its credit hold. */
   settle: (payload: P, reason: SettleReason) => Promise<void>;
@@ -62,6 +83,9 @@ export interface InlineRunnerStats {
   concurrency: number;
   running: number;
   waiting: number;
+  /** Runs that passed their time cap and were settled, but whose code has
+   * not returned yet. They hold no slot. */
+  overdue: number;
   draining: boolean;
 }
 
@@ -72,6 +96,8 @@ export interface ShutdownReport {
   finished: number;
   /** Running packs still going when the grace window ended, then settled. */
   interrupted: number;
+  /** Running packs whose time cap passed during the grace window. */
+  timedOut: number;
 }
 
 /** Thrown by assertAccepting once a shutdown has begun. */
@@ -82,6 +108,17 @@ export class InlineRunnerClosedError extends Error {
   }
 }
 
+/** The abort reason a run's signal carries once its time cap passed. */
+export class InlineRunTimeoutError extends Error {
+  constructor(
+    readonly jobId: string,
+    readonly maxRunMs: number,
+  ) {
+    super(`Pack run for job ${jobId} passed its ${maxRunMs} ms time cap.`);
+    this.name = "InlineRunTimeoutError";
+  }
+}
+
 export const DEFAULT_INLINE_PACK_CONCURRENCY = 1;
 export const MAX_INLINE_PACK_CONCURRENCY = 16;
 export const DEFAULT_SHUTDOWN_GRACE_MS = 20_000;
@@ -89,6 +126,18 @@ export const DEFAULT_SHUTDOWN_GRACE_MS = 20_000;
  * window leaves ten seconds of that for settling and exiting. */
 export const MAX_SHUTDOWN_GRACE_MS = 290_000;
 export const DEFAULT_QUEUE_HEARTBEAT_MS = 60_000;
+/** 25 minutes: far longer than a healthy pack takes, and below the stale run
+ * reconciler's 30 minute window (services/reconcile.ts STALE_JOB_MS), so the
+ * runner settles a hung pack with its own message before the reconciler. */
+export const DEFAULT_MAX_RUN_MS = 25 * 60_000;
+export const MIN_MAX_RUN_MS = 60_000;
+/** 29 minutes, the highest cap CURVI_INLINE_PACK_MAX_RUN_MS may set: it
+ * must stay below the reconciler's 30 minute window. */
+export const MAX_MAX_RUN_MS = 29 * 60_000;
+/** A job waiting longer than this stops heartbeating. With the run cap in
+ * place the queue moves at least every 25 minutes, so an hour of waiting
+ * means the queue itself is stuck. */
+export const DEFAULT_MAX_QUEUE_WAIT_MS = 60 * 60_000;
 
 function intInRange(raw: string | undefined, fallback: number, min: number, max: number): number {
   if (raw === undefined || !/^\d+$/.test(raw.trim())) {
@@ -101,9 +150,10 @@ function intInRange(raw: string | undefined, fallback: number, min: number, max:
 /**
  * Reads the runner settings from the environment:
  * CURVI_INLINE_PACK_CONCURRENCY (default 1, the safe value for a 512 MB
- * instance) and CURVI_SHUTDOWN_GRACE_MS (default 20000, inside Render's
- * default 30 second shutdown delay). Invalid values fall back to the default;
- * out of range values are clamped.
+ * instance), CURVI_SHUTDOWN_GRACE_MS (default 20000, inside Render's default
+ * 30 second shutdown delay) and CURVI_INLINE_PACK_MAX_RUN_MS (default
+ * 1500000, 25 minutes; clamped to 1 to 29 minutes). Invalid values fall back
+ * to the default; out of range values are clamped.
  */
 export function readInlineRunnerConfig(read: (name: string) => string | undefined): InlineRunnerConfig {
   return {
@@ -115,16 +165,29 @@ export function readInlineRunnerConfig(read: (name: string) => string | undefine
     ),
     shutdownGraceMs: intInRange(read("CURVI_SHUTDOWN_GRACE_MS"), DEFAULT_SHUTDOWN_GRACE_MS, 0, MAX_SHUTDOWN_GRACE_MS),
     heartbeatMs: DEFAULT_QUEUE_HEARTBEAT_MS,
+    maxRunMs: intInRange(read("CURVI_INLINE_PACK_MAX_RUN_MS"), DEFAULT_MAX_RUN_MS, MIN_MAX_RUN_MS, MAX_MAX_RUN_MS),
+    maxQueueWaitMs: DEFAULT_MAX_QUEUE_WAIT_MS,
   };
 }
 
 interface Entry<P> {
   payload: P;
+  /** When the job joined the queue (Date.now()). */
+  queuedAt: number;
   /** The pack run, once started. */
   run: Promise<void> | null;
   /** True once the entry is resolved: finished, crashed and settled, or
-   * settled by a shutdown. */
+   * settled by a shutdown or its time cap. */
   finished: boolean;
+  /** The settle in flight, so a second settle waits on the first instead of
+   * settling the job twice. */
+  settling: Promise<void> | null;
+  /** True once the run's time cap passed. */
+  timedOut: boolean;
+  /** True once the job waited past maxQueueWaitMs (logged once). */
+  waitExpired: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+  abort: AbortController;
   resolve: () => void;
   done: Promise<void>;
 }
@@ -134,22 +197,39 @@ function createEntry<P>(payload: P): Entry<P> {
   const done = new Promise<void>((r) => {
     resolve = r;
   });
-  return { payload, run: null, finished: false, resolve, done };
+  return {
+    payload,
+    queuedAt: Date.now(),
+    run: null,
+    finished: false,
+    settling: null,
+    timedOut: false,
+    waitExpired: false,
+    timer: null,
+    abort: new AbortController(),
+    resolve,
+    done,
+  };
 }
 
 export class InlinePackRunner<P extends InlinePackJob> {
   private readonly waiting: Array<Entry<P>> = [];
   private readonly running = new Map<string, Entry<P>>();
+  private readonly overdue = new Set<Entry<P>>();
   private draining = false;
   private shutdownPromise: Promise<ShutdownReport> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private readonly logger: InlineRunnerLogger;
+  private readonly maxRunMs: number;
+  private readonly maxQueueWaitMs: number;
 
   constructor(
     readonly config: InlineRunnerConfig,
     private readonly deps: InlineRunnerDeps<P>,
   ) {
     this.logger = deps.logger ?? console;
+    this.maxRunMs = config.maxRunMs ?? DEFAULT_MAX_RUN_MS;
+    this.maxQueueWaitMs = config.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
   }
 
   get accepting(): boolean {
@@ -161,6 +241,7 @@ export class InlinePackRunner<P extends InlinePackJob> {
       concurrency: this.config.concurrency,
       running: this.running.size,
       waiting: this.waiting.length,
+      overdue: this.overdue.size,
       draining: this.draining,
     };
   }
@@ -218,21 +299,22 @@ export class InlinePackRunner<P extends InlinePackJob> {
     await Promise.all(notStarted.map((entry) => this.settleEntry(entry, "not_started")));
 
     if (inFlight.length > 0 && this.config.shutdownGraceMs > 0) {
-      await settleWithin(
-        Promise.allSettled(inFlight.map((entry) => entry.run ?? Promise.resolve())),
-        this.config.shutdownGraceMs,
-      );
+      // done resolves when the run returns or when its time cap settled it,
+      // whichever comes first.
+      await settleWithin(Promise.all(inFlight.map((entry) => entry.done)), this.config.shutdownGraceMs);
     }
 
-    const stillRunning = inFlight.filter((entry) => !entry.finished);
+    const stillRunning = inFlight.filter((entry) => !entry.finished && !entry.settling);
     await Promise.all(stillRunning.map((entry) => this.settleEntry(entry, "interrupted")));
+    const timedOut = inFlight.filter((entry) => entry.timedOut).length;
     const report: ShutdownReport = {
       notStarted: notStarted.length,
-      finished: inFlight.length - stillRunning.length,
+      finished: inFlight.length - stillRunning.length - timedOut,
       interrupted: stillRunning.length,
+      timedOut,
     };
     this.logger.info(
-      `[jobs] ${signal}: inline runner drained (${report.finished} finished, ${report.interrupted} interrupted, ${report.notStarted} not started)`,
+      `[jobs] ${signal}: inline runner drained (${report.finished} finished, ${report.interrupted} interrupted, ${report.timedOut} timed out, ${report.notStarted} not started)`,
     );
     return report;
   }
@@ -250,14 +332,25 @@ export class InlinePackRunner<P extends InlinePackJob> {
   private start(entry: Entry<P>): void {
     const { jobId } = entry.payload;
     this.running.set(jobId, entry);
+    entry.timer = setTimeout(() => this.expire(entry), this.maxRunMs);
+    entry.timer.unref?.();
     entry.run = (async () => {
       try {
-        await this.deps.runPack(entry.payload);
+        await this.deps.runPack(entry.payload, entry.abort.signal);
       } catch (err) {
+        if (entry.finished || entry.settling) {
+          // Already settled by its time cap or a shutdown; nothing to add.
+          this.logger.warn(`[jobs] inline pack run for job ${jobId} failed after it was settled`, err);
+          return;
+        }
         this.logger.error(`[jobs] inline pack run crashed for job ${jobId}`, err);
         await this.settleEntry(entry, "crashed");
       }
     })().finally(() => {
+      clearEntryTimer(entry);
+      if (this.overdue.delete(entry)) {
+        this.logger.warn(`[jobs] inline pack run for job ${jobId} returned after its time cap; it was already settled`);
+      }
       if (this.running.get(jobId) === entry) {
         this.running.delete(jobId);
       }
@@ -266,17 +359,43 @@ export class InlinePackRunner<P extends InlinePackJob> {
     });
   }
 
-  private async settleEntry(entry: Entry<P>, reason: SettleReason): Promise<void> {
-    if (entry.finished) {
+  /** The time cap passed: settle the job, free its slot and start the next
+   * one. The run keeps going in the background until it notices the job is
+   * terminal; anything it does after that is a no op. */
+  private expire(entry: Entry<P>): void {
+    entry.timer = null;
+    const { jobId } = entry.payload;
+    if (entry.finished || entry.settling || this.running.get(jobId) !== entry) {
       return;
     }
-    try {
-      await this.deps.settle(entry.payload, reason);
-    } catch (err) {
-      this.logger.error(`[jobs] could not settle job ${entry.payload.jobId} (${reason})`, err);
-    } finally {
-      this.finish(entry);
+    entry.timedOut = true;
+    this.overdue.add(entry);
+    this.running.delete(jobId);
+    this.logger.error(
+      `[jobs] inline pack run for job ${jobId} passed its ${Math.round(this.maxRunMs / 60_000)} minute time cap; settling it and freeing its slot`,
+    );
+    entry.abort.abort(new InlineRunTimeoutError(jobId, this.maxRunMs));
+    void this.settleEntry(entry, "timed_out");
+    this.pump();
+  }
+
+  private settleEntry(entry: Entry<P>, reason: SettleReason): Promise<void> {
+    if (entry.finished) {
+      return Promise.resolve();
     }
+    entry.settling ??= (async () => {
+      if (reason === "interrupted" && !entry.abort.signal.aborted) {
+        entry.abort.abort(new InlineRunnerClosedError());
+      }
+      try {
+        await this.deps.settle(entry.payload, reason);
+      } catch (err) {
+        this.logger.error(`[jobs] could not settle job ${entry.payload.jobId} (${reason})`, err);
+      } finally {
+        this.finish(entry);
+      }
+    })();
+    return entry.settling;
   }
 
   private finish(entry: Entry<P>): void {
@@ -304,7 +423,21 @@ export class InlinePackRunner<P extends InlinePackJob> {
   }
 
   private async beat(): Promise<void> {
-    const ids = this.waiting.map((entry) => entry.payload.jobId);
+    const now = Date.now();
+    const ids: string[] = [];
+    for (const entry of this.waiting) {
+      if (now - entry.queuedAt < this.maxQueueWaitMs) {
+        ids.push(entry.payload.jobId);
+      } else if (!entry.waitExpired) {
+        // Past the wait limit the job stops heartbeating, so the stale run
+        // reconciler can fail it and release its credits if the queue never
+        // reaches it. If it does start first, it runs normally.
+        entry.waitExpired = true;
+        this.logger.warn(
+          `[jobs] job ${entry.payload.jobId} has waited over ${Math.round(this.maxQueueWaitMs / 60_000)} minutes for a slot; leaving it to the stale run reconciler`,
+        );
+      }
+    }
     if (ids.length === 0 || !this.deps.heartbeat) {
       return;
     }
@@ -313,6 +446,13 @@ export class InlinePackRunner<P extends InlinePackJob> {
     } catch (err) {
       this.logger.warn(`[jobs] heartbeat for ${ids.length} waiting jobs failed`, err);
     }
+  }
+}
+
+function clearEntryTimer(entry: { timer: ReturnType<typeof setTimeout> | null }): void {
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
   }
 }
 

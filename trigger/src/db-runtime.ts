@@ -23,7 +23,12 @@ const globalScope = globalThis as typeof globalThis & {
 
 export function getWorkerDb(url: string): Db {
   // prepare false so the Supabase transaction mode pooler is safe.
-  globalScope.__curviWorkerDb ??= createDb(url, { max: 2, prepare: false });
+  // max 5: a pack runs its shots in parallel and each one writes heartbeats,
+  // spend cap reservations and asset rows, which 2 connections serialized.
+  // Together with the app pool (10, apps/web/src/lib/services/db.ts) one web
+  // instance opens at most 15, far below the pooler's 200 client limit on the
+  // Nano and Micro computes (Supabase docs, checked 2026-09-28).
+  globalScope.__curviWorkerDb ??= createDb(url, { max: 5, prepare: false });
   return globalScope.__curviWorkerDb;
 }
 

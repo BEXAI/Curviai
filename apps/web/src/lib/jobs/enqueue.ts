@@ -6,14 +6,16 @@
  * and small scale db deployments work end to end without a worker account.
  *
  * Inline packs go through the process wide InlinePackRunner: a concurrency
- * limit (CURVI_INLINE_PACK_CONCURRENCY) with waiting jobs queued in order,
- * and a SIGTERM drain that settles every job it cannot finish, so a deploy
- * never leaves a job stuck with its credits held.
+ * limit (CURVI_INLINE_PACK_CONCURRENCY) with waiting jobs queued in order, a
+ * wall clock cap per run (CURVI_INLINE_PACK_MAX_RUN_MS, 25 minutes by
+ * default) so one hung pack cannot hold the queue, and a SIGTERM drain that
+ * settles every job it cannot finish, so a deploy never leaves a job stuck
+ * with its credits held.
  */
 
 import { after } from "next/server";
 import type { GeneratePackInput } from "@curvi/trigger/runner";
-import { and, eq, generationJobs, notInArray, sql, type Db } from "@curvi/db";
+import { and, assets, eq, generationJobs, notInArray, sql, type Db } from "@curvi/db";
 import { optionalEnv } from "@/lib/env";
 import {
   InlinePackRunner,
@@ -52,51 +54,127 @@ export const SETTLED_JOB_MESSAGES: Record<SettleReason, string> = {
     "The server restarted before this pack could start. Reserved credits were released, so you can run it again.",
   interrupted:
     "The server restarted while this pack was running. Reserved credits were released, so you can run it again.",
+  timed_out:
+    "This pack took longer than the time limit, so it was stopped. Reserved credits were released, so you can run it again.",
 };
 
 export type SettleOutcome = "failed" | "done" | "already_final";
 
 const TERMINAL_JOB_STATES = ["done", "failed", "canceled"] as const;
 
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+/** A charge the pack runner owes for a delivered asset. */
+export interface DeliveredCharge {
+  shotId: string;
+  credits: number;
+}
+
+/**
+ * The approved assets of a job whose files were delivered, with the credits
+ * and shot id the runner charges them under. savePack writes an
+ * asset_variants row for every file it uploads, before the compliance
+ * report row, so an approved asset without a variant was left out of the
+ * pack (for example past a channel's image limit) and is never charged.
+ * One charge per shot id, the ledger's idempotency key.
+ */
+export async function deliveredCharges(db: Db | Tx, job: { jobId: string; workspaceId: string }): Promise<DeliveredCharge[]> {
+  const rows = await db
+    .select({ qc: assets.qc })
+    .from(assets)
+    .where(
+      and(
+        eq(assets.jobId, job.jobId),
+        eq(assets.workspaceId, job.workspaceId),
+        eq(assets.approved, true),
+        sql`exists (select 1 from asset_variants v where v.asset_id = ${assets.id})`,
+      ),
+    )
+    .orderBy(assets.createdAt);
+  const charges = new Map<string, number>();
+  for (const { qc } of rows) {
+    const shotId = qc && typeof qc.shotId === "string" && qc.shotId.length > 0 ? qc.shotId : null;
+    const credits = qc && typeof qc.credits === "number" && Number.isFinite(qc.credits) ? qc.credits : 0;
+    if (shotId && credits > 0 && !charges.has(shotId)) {
+      charges.set(shotId, credits);
+    }
+  }
+  return [...charges].map(([shotId, credits]) => ({ shotId, credits }));
+}
+
 /**
  * The failure path for a job the inline runner will not finish: a crash
- * before the runner's own failure handling could act, or a shutdown.
+ * before the runner's own failure handling could act, a run past its time
+ * cap, or a shutdown.
  *
  * - A job that already reached a terminal state is left as it is.
  * - A job whose pack was already delivered (savePack writes the compliance
- *   report row last) is marked done: its files are downloadable and only the
- *   assets charged so far are paid for.
+ *   report row last) is marked done, and every approved asset whose files
+ *   were delivered is charged with charge_credits under its shot id. The
+ *   runner writes the report row before it charges, so a stop between the
+ *   two would otherwise hand over a paid pack for free. charge_credits is
+ *   idempotent per shot id, so charges the runner already made are skipped.
  * - Anything else is marked failed with `error`.
  *
- * The status change is one conditional statement, so a run that finishes at
- * the same moment is never overwritten. release_credits then returns whatever
- * the ledger still holds for the job; it releases nothing when nothing is
- * held, so calling it for an already settled job is harmless.
+ * release_credits then returns whatever the ledger still holds for the job;
+ * it releases nothing when nothing is held, so calling it for an already
+ * settled job is harmless.
+ *
+ * Everything runs in one transaction, so a crash part way never leaves a
+ * job marked done with its credits still held. The workspace row is locked
+ * first, the same order charge_credits and reserve_credits use, so a runner
+ * charging this job at the same moment waits instead of deadlocking. The
+ * status change is conditional, so a run that finishes at the same moment
+ * is never overwritten.
  */
 export async function settleInterruptedJob(
   db: Db,
   job: { jobId: string; workspaceId: string },
   error: string,
 ): Promise<SettleOutcome> {
-  const delivered = sql`exists (select 1 from pack_files pf where pf.job_id = ${job.jobId}::uuid and pf.kind = 'report')`;
-  const rows = await db
-    .update(generationJobs)
-    .set({
-      status: sql`case when ${delivered} then 'done' else 'failed' end`,
-      error: sql`case when ${delivered} then ${generationJobs.error} else ${error} end`,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(generationJobs.id, job.jobId),
-        eq(generationJobs.workspaceId, job.workspaceId),
-        notInArray(generationJobs.status, [...TERMINAL_JOB_STATES]),
-      ),
-    )
-    .returning({ status: generationJobs.status });
-  await db.execute(sql`select release_credits(${job.workspaceId}::uuid, ${job.jobId}::uuid)`);
-  const status = rows[0]?.status;
-  return status === "done" || status === "failed" ? status : "already_final";
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select 1 from workspaces where id = ${job.workspaceId}::uuid for update`);
+    const delivered = sql`exists (select 1 from pack_files pf where pf.job_id = ${job.jobId}::uuid and pf.kind = 'report')`;
+    const rows = await tx
+      .update(generationJobs)
+      .set({
+        status: sql`case when ${delivered} then 'done' else 'failed' end`,
+        error: sql`case when ${delivered} then ${generationJobs.error} else ${error} end`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(generationJobs.id, job.jobId),
+          eq(generationJobs.workspaceId, job.workspaceId),
+          notInArray(generationJobs.status, [...TERMINAL_JOB_STATES]),
+        ),
+      )
+      .returning({ status: generationJobs.status });
+    const status = rows[0]?.status;
+
+    if (status === "done") {
+      for (const charge of await deliveredCharges(tx, job)) {
+        try {
+          // A savepoint per charge: one charge the ledger refuses (it would
+          // exceed the hold) is logged and skipped instead of rolling back
+          // the whole settle and leaving the job stuck.
+          await tx.transaction(async (sp) => {
+            await sp.execute(
+              sql`select charge_credits(${job.workspaceId}::uuid, ${charge.credits}::numeric, ${job.jobId}::uuid, ${charge.shotId}::text)`,
+            );
+          });
+        } catch (err) {
+          console.error(
+            `[jobs] could not charge ${charge.credits} credits for shot ${charge.shotId} of delivered job ${job.jobId}`,
+            err,
+          );
+        }
+      }
+    }
+
+    await tx.execute(sql`select release_credits(${job.workspaceId}::uuid, ${job.jobId}::uuid)`);
+    return status === "done" || status === "failed" ? status : "already_final";
+  });
 }
 
 /** Bumps updated_at on jobs that are still queued, so jobs waiting for an

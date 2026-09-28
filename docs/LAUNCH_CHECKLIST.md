@@ -13,8 +13,8 @@ Every external setting name, value and limit below was checked against the linke
 | 3 | Supabase custom SMTP through Resend | Founder | Signups outside the team |
 | 4 | Inbound mail for hello@curvi.ai | Founder | Support replies |
 | 5 | Render deploys only after CI passes | Founder | Step 7 |
-| 6 | Apply migrations 0011 to 0013 to production | Founder | Step 7 |
-| 7 | Push main (batch 1 goes live) | Founder | Steps 8 to 13 |
+| 6 | Apply migrations 0011 to 0013 to production, then run `pnpm db:seed` | Founder | Step 7 |
+| 7 | Add the batch 1 environment variables, then push main (batch 1 goes live) | Founder, engineer for `.env.example` | Steps 8 to 13 |
 | 8 | Render health check path and shutdown delay | Founder | Safe deploys |
 | 9 | Render plan upgrade | Founder (costs money) | Paid launch |
 | 10 | Stripe live mode | Founder | First dollar |
@@ -24,6 +24,17 @@ Every external setting name, value and limit below was checked against the linke
 | 14 | Trigger.dev v4 and Cloud | Engineer, then founder | Durable packs, scheduled jobs |
 | 15 | Uptime monitor | Founder | Outage alerts |
 | 16 | Post deploy smoke test | Founder | Announcing paid plans |
+
+## Deploy order for batch 1
+
+Do these in exactly this order. Main auto deploys, so everything the new code needs must be in production before the push.
+
+1. Step 5: Render deploys only after CI passes.
+2. Step 6: apply migrations 0011, 0012 and 0013 to production, in that order.
+3. Step 6: run `pnpm db:seed` against production right after the migrations. Until it runs, migration 0012's signup grant finds no `free_signup_credits` setting, so new confirmed signups get no free credits; the seed writes the setting and then settles those signups.
+4. Step 7: add the new environment variables to Render with Save only (they take effect with the deploy in the next line), and to `.env.example`.
+5. Step 7: push main, then wait for CI and the Render deploy, and check `/api/health`.
+6. Step 8: only now set Render's health check path to `/api/health`, and the shutdown delay.
 
 ## 1. Legal review of terms and privacy (start early)
 
@@ -105,9 +116,9 @@ How Render judges the checks: it reads GitHub Actions results for the commit. A 
 
 **Sources:** https://render.com/docs/deploys (Automatic deploys), https://render.com/docs/blueprint-spec (checked 2026-09-28).
 
-## 6. Apply migrations 0011 to 0013 to production, before pushing main
+## 6. Apply migrations 0011 to 0013 to production, then run `pnpm db:seed`, before pushing main
 
-Batch 1 code needs 0011 (tenant write lockdown), 0012 (signup grant on confirmed email) and 0013 (source media dedupe). Main auto deploys, so the migrations go first.
+Batch 1 code needs 0011 (tenant write lockdown), 0012 (signup grant on confirmed email) and 0013 (source media dedupe), and 0012 needs the seeded `free_signup_credits` setting. Main auto deploys, so the migrations and the seed go first.
 
 **Who:** founder (an engineer can prepare and review the SQL with them).
 
@@ -117,37 +128,47 @@ Batch 1 code needs 0011 (tenant write lockdown), 0012 (signup grant on confirmed
 2. Use the **direct connection** string (Supabase, Connect, Direct connection, port 5432). Supabase recommends it for migrations; the transaction pooler (port 6543) does not support prepared statements. The direct host is IPv6 only without the IPv4 add on; from an IPv4 only network use the session pooler (also port 5432).
 3. From a checkout of the merged batch, load the connection string without leaving the password in shell history (`read -s DATABASE_URL && export DATABASE_URL`, then paste), and run `pnpm db:migrate`. Drizzle applies only migrations newer than the newest recorded row, so it runs exactly 0011, 0012 and 0013 in order. (The by hand alternative used on 2026-09-28: run the three files in one transaction in the SQL editor, then record each in `drizzle.__drizzle_migrations` with the sha256 of the file and the journal `when`.)
 4. Each migration must keep working with the code that is live right now, because the old instance keeps serving until the new deploy is healthy (expand first, contract in a later release).
+5. Right after 3, in the same shell and checkout, run `pnpm db:seed`. It upserts the channel spec registry, the recipe rows and the platform settings (including `free_signup_credits`) from `packages/pipeline` seed data, then settles the signup grant of every confirmed user who has none yet. It is idempotent: run it again after every later migration or seed change. The code live before batch 1 does not read these rows, so seeding before the push is safe. It ends by printing `Seeded ... Settled N pending signup grants.`
+6. Clear the variable when done: `unset DATABASE_URL`.
 
-**Verify:** the query from 1 now returns the `when` of `0013_*`. The production spot checks each package recorded for its migration in docs/verification.md pass (for example, for 0012, a new confirmed signup gets exactly one grant). After step 7, `/api/health` reports `"schema":"current"`. Once step 8 is done, a build whose migrations are missing never receives traffic: its health check returns 503 with `"schema":"behind"` and Render cancels the deploy while the old version keeps serving.
+**Verify:** the query from 1 now returns the `when` of `0013_*`. `select value from platform_settings where key = 'free_signup_credits';` returns the free tier's one time grant from `packages/pipeline/src/seed/credits.ts`. The production spot checks each package recorded for its migration in docs/verification.md pass (for example, for 0012, a new confirmed signup gets exactly one grant). After step 7, `/api/health` reports `"schema":"current"`. Once step 8 is done, a build whose migrations are missing never receives traffic: its health check returns 503 with `"schema":"behind"` and Render cancels the deploy after 15 minutes while the old version keeps serving.
 
 **Source:** https://supabase.com/docs/guides/database/connecting-to-postgres (checked 2026-09-28).
 
-## 7. Push main
+## 7. Add the batch 1 environment variables, then push main
 
-**Who:** founder.
+**Who:** founder for Render; an engineer adds the same names to `.env.example` in the repo (CLAUDE.md rule 8).
 
-**Do:** merge `full-stack-update` into main only after steps 5 and 6. Then watch CI, and the Render deploy that follows it.
+**Do:**
 
-**Verify:** `curl -s https://curvi.ai/api/health` returns HTTP 200 with `"ok":true`, `"mode":"db"`, `"database":"ok"`, `"schema":"current"`, `"warnings":[]` and `"commit"` equal to the first seven characters of the pushed commit. A warning such as `storage_not_configured`, `no_llm_provider` or `no_image_provider` means a Render environment variable is missing; packs cannot be delivered until it is set.
+1. Render, the Curviai service, Environment: add the variables from "Environment variables added in batch 1" at the end of this file that apply now. Choose **Save only**: Render then uses them from the next deploy, which is the push below, and the old code keeps running untouched. (Save and deploy would restart the old code for nothing.) Every one of them is optional: unset, the code uses the default in the table.
+2. `.env.example`: add every name in that table, with an empty value or the default and a one line comment, in the same change as (or before) the merge.
+3. Merge `full-stack-update` into main only after step 5, step 6 and the two items above. Then watch CI, and the Render deploy that follows it.
+
+**Verify:** `curl -s https://curvi.ai/api/health` returns HTTP 200 with `"ok":true`, `"mode":"db"`, `"database":"ok"`, `"schema":"current"`, `"warnings":[]` and `"commit"` equal to the first seven characters of the pushed commit. A warning such as `storage_not_configured`, `no_llm_provider` or `no_image_provider` means a Render environment variable is missing; packs cannot be delivered until it is set. Render, Environment lists the new variables you set.
 
 ## 8. Render health check path and shutdown delay
 
-Do this only after step 7. The code live before batch 1 has no `/api/health`; pointing Render at a path that returns 404 would mark the instance unhealthy and restart it every minute.
+**When:** only after step 7, once `curl -s https://curvi.ai/api/health` on production returns 200 with `"schema":"current"` and the pushed commit. Not before: the code live before batch 1 has no `/api/health`, and a path that returns 404 marks the instance unhealthy, so Render would stop routing to it after 15 seconds and restart it every minute. `render.yaml` already lists `healthCheckPath: /api/health`, but the live service was created by hand in the dashboard and does not follow render.yaml, so the dashboard setting below is the one that counts. Do not sync render.yaml as a Blueprint before step 7 either.
 
 **Who:** founder.
 
 **Do:**
 
-1. Render, the Curviai service, Settings, Health Checks, Edit: path `/api/health`, Save Changes. Render then routes traffic to a new deploy only once every new instance passes, cancels a deploy that never passes within 15 minutes, stops routing to an instance after 15 seconds of failures and restarts it after 60 seconds. Checks time out after five seconds; the endpoint's database steps time out after two. Trade off to know: a database outage longer than a minute makes Render restart the instance (a restart cannot fix it, but it does no extra harm, since packs cannot progress without the database either). Missing env values only show up as `warnings` and never fail the check.
+1. Render, the Curviai service, Settings, Health Checks, Edit: path `/api/health`, Save Changes. Render then routes traffic to a new deploy only once every new instance passes, cancels a deploy that never passes within 15 minutes, stops routing to an instance after 15 seconds of failures and restarts it after 60 seconds. Checks time out after five seconds; the endpoint's database steps time out after two. Missing env values only show up as `warnings` and never fail the check.
 2. Shutdown delay (not in the dashboard; Render documents it for render.yaml and the API): `PATCH https://api.render.com/v1/services/<service id>` with header `Authorization: Bearer <Render API key>` and body `{"serviceDetails":{"maxShutdownDelaySeconds":300}}`. Allowed range 1 to 300, default 30.
-3. Environment, add `CURVI_INLINE_PACK_CONCURRENCY` = `1` (raise it in step 9).
-4. Only after the API shows 300 in step 2: optionally add `CURVI_SHUTDOWN_GRACE_MS` = `240000`, so a deploy lets running packs finish for up to four minutes before settling them. Leave it unset otherwise; the default grace (20 seconds) fits inside Render's default 30.
+3. Environment: `CURVI_INLINE_PACK_CONCURRENCY` = `1` if step 7 did not add it (raise it in step 9).
+4. Only after the API shows 300 in step 2: optionally set `CURVI_SHUTDOWN_GRACE_MS` = `240000`, so a deploy lets running packs finish for up to four minutes before settling them. Leave it unset otherwise; the default grace (20 seconds) fits inside Render's default 30.
 
-What happens on a deploy or restart: Render sends SIGTERM to the old instance 60 seconds after the new one is live. The inline runner stops taking packs, marks every pack that had not started as failed and releases its credits, waits the grace window for running packs, then settles whatever is still running: failed with "The server restarted while this pack was running. Reserved credits were released, so you can run it again.", or done when its files were already delivered. No job is left in a working state.
+When the check answers 503, and why a database outage does not restart the instance: `/api/health` answers 503 in three cases only. First, when the database does not answer and this instance has not yet passed a whole check (database answering, schema not behind, not draining) since it started: that is the boot readiness gate, so a new deploy that cannot reach the database never receives traffic and the old version keeps serving. Second, while the database is behind this build's migrations. Third, while the instance is draining for shutdown. Once a whole check has passed, a later database failure or a check slower than two seconds is reported in the body (`"ok":false`, `"database":"failed"`) but the endpoint still answers 200. A restart would not fix the database and would cost a lot: the shutdown drain fails the packs still running once the grace window ends, and the marketing site and the Stripe webhook go offline while the instance comes back. A slow but working database, or a busy 0.1 CPU free instance, could otherwise trigger that restart with no real outage. Database outage alerts come from the uptime monitor in step 15, which checks the body for `"ok":true`.
 
-**Verify:** the Health Checks section shows `/api/health`. `GET https://api.render.com/v1/services/<service id>` shows `serviceDetails.healthCheckPath` `/api/health` and `serviceDetails.maxShutdownDelaySeconds` 300. Drill: start a pack, then click Manual Deploy. The pack either finishes, or ends failed with the restart message and its held credits back in the balance. The old instance's log shows `[jobs] SIGTERM: inline runner drained (...)`.
+What happens on a deploy or restart: Render sends SIGTERM to the old instance 60 seconds after the new one is live. The inline runner stops taking packs, marks every pack that had not started as failed and releases its credits, waits the grace window for running packs, then settles whatever is still running: failed, with the job error "The server restarted while this pack was running. Reserved credits were released, so you can run it again.", or done when its files were already delivered, in which case every delivered asset is charged and the rest of the hold is released. No job is left in a working state.
 
-**Sources:** https://render.com/docs/health-checks, https://render.com/docs/deploys (Graceful shutdown), https://render.com/docs/blueprint-spec, https://api-docs.render.com/reference/update-service (checked 2026-09-28).
+What happens to a pack that hangs: each inline pack run has a wall clock cap, `CURVI_INLINE_PACK_MAX_RUN_MS` (25 minutes unless set, always below the stale run reconciler's 30 minutes). When it passes, the runner settles the job the same way (failed, with the job error "This pack took longer than the time limit, so it was stopped. Reserved credits were released, so you can run it again.", or done and charged if its files were already delivered), frees the slot and starts the next waiting pack. `/api/health` counts runs past the cap under `packs.overdue`. A job that waits more than an hour for a slot stops heartbeating, so the stale run reconciler can fail it and release its credits if the queue is stuck.
+
+**Verify:** the Health Checks section shows `/api/health`. `GET https://api.render.com/v1/services/<service id>` shows `serviceDetails.healthCheckPath` `/api/health` and `serviceDetails.maxShutdownDelaySeconds` 300. Drill: start a pack, then click Manual Deploy. The pack either finishes, or ends failed with its held credits back in the balance (the job board shows its generic failure line for these errors today). The old instance's log shows `[jobs] SIGTERM: inline runner drained (...)`.
+
+**Sources:** https://render.com/docs/health-checks, https://render.com/docs/deploys (Graceful shutdown), https://render.com/docs/blueprint-spec, https://api-docs.render.com/reference/update-service, https://render.com/docs/configure-environment-variables (checked 2026-09-28).
 
 ## 9. Render plan upgrade
 
@@ -207,7 +228,7 @@ Without it, rate limits run in process (PHASE_10 decision 5): each instance coun
 
 **Keep `TRIGGER_SECRET_KEY` unset on Render until this step is finished.** With the key set, every pack is sent to Trigger.dev instead of the inline runner and fails to queue ("The pack could not be queued.", credits released). The scheduled jobs (metrics digest Mondays 08:00 New York time, churn scoring daily 07:00, the weekly creative drop) run only on Trigger.dev, so none of them run in production today.
 
-Until then, packs run on the inline runner: limited by `CURVI_INLINE_PACK_CONCURRENCY` and drained on SIGTERM (step 8). A hard crash or out of memory kill still loses the running packs; the stale run reconciler fails them and releases their credits after 30 minutes.
+Until then, packs run on the inline runner: limited by `CURVI_INLINE_PACK_CONCURRENCY`, capped per run by `CURVI_INLINE_PACK_MAX_RUN_MS` and drained on SIGTERM (step 8). A hard crash or out of memory kill still loses the running packs; the stale run reconciler fails them and releases their credits after 30 minutes.
 
 **Who:** an engineer upgrades the code, then the founder sets up the account.
 
@@ -225,9 +246,9 @@ Until then, packs run on the inline runner: limited by `CURVI_INLINE_PACK_CONCUR
 
 **Who:** founder.
 
-**Do:** point an external uptime monitor (for example Better Stack or UptimeRobot; pick any) at `https://curvi.ai/api/health`, expecting HTTP 200 and a body containing `"ok":true`, plus a second check on `https://curvi.ai/`. Alert the founder by email and phone.
+**Do:** point an external uptime monitor (for example Better Stack or UptimeRobot; pick any) at `https://curvi.ai/api/health`, expecting HTTP 200 **and** a body containing `"ok":true`, plus a second check on `https://curvi.ai/`. Alert the founder by email and phone. The body match is required, not optional: after an instance has started, a database outage answers 200 with `"ok":false` (step 8 explains why), so a monitor that only checks the status code never sees it.
 
-**Verify:** a test alert from the monitor arrives.
+**Verify:** a test alert from the monitor arrives. The monitor's settings show the keyword or body check for `"ok":true`.
 
 ## 16. Post deploy smoke test
 
@@ -249,3 +270,43 @@ Full version, in addition:
 7. Request a password reset; the email arrives and the link works.
 8. Run the billing checks in docs/STRIPE_SETUP.md.
 9. Render logs show no errors for the session (and Sentry no new issues, once step 13 is done).
+
+## Environment variables added in batch 1
+
+Set these in Render (the Curviai service, Environment, **Save only**, step 7) and list every name in `.env.example` (CLAUDE.md rule 8). None is needed to boot: unset, the code uses the default below. Packs run inline in the web service today, so these belong on the web service. Once packs move to Trigger.dev Cloud (step 14), also set `FOUNDER_ALERT_EMAIL`, `FOUNDER_ALERT_FROM` and `RESEND_API_KEY` in the Trigger.dev production environment; the three `CURVI_*` runner variables apply to the inline runner only.
+
+| Name | Read by | Unset means | Meaning and when to set it |
+|---|---|---|---|
+| `STRIPE_TAX_ENABLED` | Checkout (`apps/web/src/lib/billing/stripe.ts`) | Tax off | Set to `1` only after Stripe Tax registrations exist (docs/STRIPE_SETUP.md). Turns on automatic tax, a required billing address and tax id collection in Checkout. Any other value leaves tax off. |
+| `FOUNDER_ALERT_EMAIL` | Spend alerts (`trigger/src/spend-alerts.ts`) | Alerts only reach the server log | The founder address that gets the daily provider spend alert and the hard stop notice, once per day each. Needs `RESEND_API_KEY` as well. |
+| `FOUNDER_ALERT_FROM` | Spend alerts | `Curvi Alerts <alerts@curvi.ai>` | Sender of those alerts. It must be an address on a domain verified in Resend. Step 2 verifies the `updates.curvi.ai` subdomain, so set something like `Curvi Alerts <alerts@updates.curvi.ai>`; the default sender needs `curvi.ai` itself verified. |
+| `CURVI_INLINE_PACK_CONCURRENCY` | Inline pack runner | `1` | Packs one web instance runs at once; the rest wait in order. 1 on 512 MB, 2 on 2 GB, 3 on 4 GB (step 9). Clamped to 1 to 16. |
+| `CURVI_SHUTDOWN_GRACE_MS` | Inline pack runner | `20000` | How long a deploy or restart lets running packs finish before settling them. Keep it below Render's shutdown delay: leave it unset while the delay is the default 30 seconds, and use `240000` only once `maxShutdownDelaySeconds` is 300 (step 8). Clamped to 0 to 290000. |
+| `CURVI_INLINE_PACK_MAX_RUN_MS` | Inline pack runner | `1500000` (25 minutes) | Wall clock cap for one pack run. When it passes, the job is settled (failed, or done and charged if its files were delivered) and its slot goes to the next pack. Clamped to 60000 to 1740000 (1 to 29 minutes) so it always ends before the 30 minute stale run reconciler. |
+| `UPSTASH_REDIS_REST_URL` | Rate limits (`apps/web/src/lib/rate-limit.ts`) | Each instance counts on its own | REST URL of the Upstash Redis database (step 11). Set both Upstash values or neither. |
+| `UPSTASH_REDIS_REST_TOKEN` | Rate limits | Each instance counts on its own | REST token for that database. A secret: Render only, never in the repo. |
+
+Lines for `.env.example` (values stay empty; the comments carry the defaults):
+
+```
+# Stripe Tax in Checkout: 1 turns it on, only after tax registrations exist in Stripe.
+STRIPE_TAX_ENABLED=
+# Founder spend alert email through Resend (needs RESEND_API_KEY). Unset: server log only.
+FOUNDER_ALERT_EMAIL=
+# Sender for those alerts, on a Resend verified domain. Default: Curvi Alerts <alerts@curvi.ai>
+FOUNDER_ALERT_FROM=
+# Inline pack runner (used while TRIGGER_SECRET_KEY is unset).
+# Packs run at once per instance. Default 1.
+CURVI_INLINE_PACK_CONCURRENCY=
+# Milliseconds a shutdown waits for running packs. Default 20000; keep below Render's shutdown delay.
+CURVI_SHUTDOWN_GRACE_MS=
+# Wall clock cap per pack run in milliseconds. Default 1500000 (25 minutes), max 1740000.
+CURVI_INLINE_PACK_MAX_RUN_MS=
+# Shared rate limit counters. Unset: each instance counts on its own.
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+```
+
+`render.yaml` lists the same names. `CURVI_INLINE_PACK_CONCURRENCY` carries the value `1`; the others are `sync: false`, which Render reads only when a Blueprint first creates a service (it prompts for the values then) and ignores for a service that already exists, like the hand made Curviai service. So render.yaml documents them, and the dashboard is where they are set.
+
+**Sources:** https://render.com/docs/blueprint-spec, https://render.com/docs/configure-environment-variables (checked 2026-09-28).

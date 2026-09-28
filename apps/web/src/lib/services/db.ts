@@ -68,7 +68,13 @@ export function getDb(): Db {
       throw new Error("DbService needs DATABASE_URL");
     }
     // prepare false so the Supabase transaction mode pooler is safe.
-    globalScope.__curviDb = createDb(url, { max: 2, prepare: false });
+    // max 10: this pool serves every request, the /api/health select 1 (two
+    // second timeout) and the inline runner's settle and queue heartbeat, so
+    // 2 let one slow page starve the health check. The worker pool adds 5
+    // (trigger/src/db-runtime.ts). The transaction pooler lends a server
+    // connection only for the length of a transaction and accepts 200 clients
+    // on the Nano and Micro computes (Supabase docs, checked 2026-09-28).
+    globalScope.__curviDb = createDb(url, { max: 10, prepare: false });
   }
   return globalScope.__curviDb;
 }

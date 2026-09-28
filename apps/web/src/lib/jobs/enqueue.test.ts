@@ -1,5 +1,15 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { creditLedger, generationJobs, packFiles, products, workspaces, type JobStatus } from "@curvi/db/schema";
+import {
+  assetVariants,
+  assets,
+  channelSpecs,
+  creditLedger,
+  generationJobs,
+  packFiles,
+  products,
+  workspaces,
+  type JobStatus,
+} from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, type Db } from "@curvi/db";
 import type { GeneratePackInput } from "@curvi/trigger/runner";
@@ -29,6 +39,7 @@ let otherWs: string;
 let productId: string;
 
 const OLD = new Date(Date.now() - 20 * 60 * 1000);
+const SPEC_ID = "amazon.secondary";
 
 async function balance(workspaceId = ws): Promise<number> {
   const result = await client.query<{ credit_balance: string | number }>("select credit_balance($1)", [workspaceId]);
@@ -60,6 +71,53 @@ async function jobRow(id: string) {
   return row;
 }
 
+/** An asset row as DbJobStore.saveAsset writes it. */
+async function assetRow(jobId: string, shotId: string, credits: number, opts: { approved: boolean }): Promise<string> {
+  const [row] = await db
+    .insert(assets)
+    .values({
+      workspaceId: ws,
+      jobId,
+      shotType: "alt_angle_white",
+      approved: opts.approved,
+      qc: { shotId, credits, status: opts.approved ? "passed" : "needs_review" },
+    })
+    .returning();
+  return row.id;
+}
+
+/** An approved asset whose file savePack uploaded (it has a variant). */
+async function deliveredAsset(jobId: string, shotId: string, credits: number): Promise<string> {
+  const assetId = await assetRow(jobId, shotId, credits, { approved: true });
+  await db.insert(assetVariants).values({
+    workspaceId: ws,
+    assetId,
+    channelSpecId: SPEC_ID,
+    r2Key: `ws/${ws}/jobs/${jobId}/amazon/${shotId}.jpg`,
+    filename: `${shotId}.jpg`,
+  });
+  return assetId;
+}
+
+/** The compliance report row savePack writes last. */
+async function reportRow(jobId: string): Promise<void> {
+  await db.insert(packFiles).values({
+    workspaceId: ws,
+    jobId,
+    kind: "report",
+    filename: "compliance-report.json",
+    r2Key: `ws/${ws}/jobs/${jobId}/compliance-report.json`,
+  });
+}
+
+async function charges(jobId: string): Promise<Array<{ stepKey: string | null; credits: number }>> {
+  const result = await client.query<{ step_key: string | null; credits: string | number }>(
+    "select step_key, -delta as credits from credit_ledger where job_id = $1 and reason = 'charge' order by step_key",
+    [jobId],
+  );
+  return result.rows.map((r) => ({ stepKey: r.step_key, credits: Number(r.credits) }));
+}
+
 function appDb(): Db {
   return db as unknown as Db;
 }
@@ -75,6 +133,7 @@ beforeAll(async () => {
   const [p] = await db.insert(products).values({ workspaceId: ws, title: "Mug", mode: "listing" }).returning();
   productId = p.id;
   await db.insert(creditLedger).values({ workspaceId: ws, delta: 1000, reason: "grant", source: "system" });
+  await db.insert(channelSpecs).values({ id: SPEC_ID, version: 1, spec: {} });
 });
 
 afterAll(async () => {
@@ -123,16 +182,18 @@ describe("settleInterruptedJob", () => {
     expect(await balance()).toBe(before);
   });
 
-  it("marks a delivered pack done and releases only what was not charged", async () => {
+  it("charges every delivered approved asset of a pack stopped between savePack and its charges", async () => {
+    // The runner's real order: shots needing review are released, savePack
+    // writes the variants and then the report row, and only then do the
+    // charges run. The stop lands after the report row, before any charge.
     const id = await jobWith("packaging", { reserve: 10 });
-    await client.query("select charge_credits($1, $2, $3, $4)", [ws, 4, id, "shot-1"]);
-    await db.insert(packFiles).values({
-      workspaceId: ws,
-      jobId: id,
-      kind: "report",
-      filename: "compliance-report.json",
-      r2Key: `ws/${ws}/jobs/${id}/compliance-report.json`,
-    });
+    await client.query("select release_credits($1, $2, $3)", [ws, id, 2]);
+    await deliveredAsset(id, "shot-1", 4);
+    await deliveredAsset(id, "shot-2", 3);
+    await assetRow(id, "shot-3", 2, { approved: false });
+    await assetRow(id, "shot-4", 1, { approved: true });
+    await reportRow(id);
+    expect(await charges(id)).toEqual([]);
     const before = await balance();
 
     const outcome = await settleInterruptedJob(appDb(), { jobId: id, workspaceId: ws }, SETTLED_JOB_MESSAGES.interrupted);
@@ -141,8 +202,75 @@ describe("settleInterruptedJob", () => {
     const row = await jobRow(id);
     expect(row.status).toBe("done");
     expect(row.error).toBeNull();
-    expect(row.creditsCharged).toBe(4);
+    // shot-3 needed review and shot-4 was left out of the pack (no variant),
+    // so neither is charged.
+    expect(await charges(id)).toEqual([
+      { stepKey: "shot-1", credits: 4 },
+      { stepKey: "shot-2", credits: 3 },
+    ]);
+    expect(row.creditsCharged).toBe(7);
+    // Of the 8 still held, 7 were charged and the last one is released.
+    expect(await balance()).toBe(before + 1);
+    expect(await held(id)).toBe(0);
+  });
+
+  it("never charges an asset twice when the runner already charged part of the pack", async () => {
+    const id = await jobWith("packaging", { reserve: 10 });
+    await deliveredAsset(id, "shot-1", 4);
+    await deliveredAsset(id, "shot-2", 3);
+    await reportRow(id);
+    // The runner charged shot-1 before the stop; shot-2 is still owed.
+    await client.query("select charge_credits($1, $2, $3, $4)", [ws, 4, id, "shot-1"]);
+    const before = await balance();
+
+    expect(await settleInterruptedJob(appDb(), { jobId: id, workspaceId: ws }, SETTLED_JOB_MESSAGES.timed_out)).toBe(
+      "done",
+    );
+
+    expect(await charges(id)).toEqual([
+      { stepKey: "shot-1", credits: 4 },
+      { stepKey: "shot-2", credits: 3 },
+    ]);
+    expect((await jobRow(id)).creditsCharged).toBe(7);
+    expect(await balance()).toBe(before + 3);
+    expect(await held(id)).toBe(0);
+  });
+
+  it("charges nothing and fails the job when the pack was never delivered", async () => {
+    const id = await jobWith("packaging", { reserve: 6 });
+    // Variants exist but savePack stopped before the report row.
+    await deliveredAsset(id, "shot-1", 4);
+    const before = await balance();
+
+    expect(await settleInterruptedJob(appDb(), { jobId: id, workspaceId: ws }, SETTLED_JOB_MESSAGES.timed_out)).toBe(
+      "failed",
+    );
+
+    expect((await jobRow(id)).error).toBe(SETTLED_JOB_MESSAGES.timed_out);
+    expect(await charges(id)).toEqual([]);
     expect(await balance()).toBe(before + 6);
+  });
+
+  it("still settles a delivered pack when one charge is refused, releasing what is left", async () => {
+    const id = await jobWith("packaging", { reserve: 5 });
+    await deliveredAsset(id, "shot-1", 4);
+    // Recorded at more credits than the hold covers: the ledger refuses it.
+    await deliveredAsset(id, "shot-2", 50);
+    await reportRow(id);
+    const before = await balance();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      expect(await settleInterruptedJob(appDb(), { jobId: id, workspaceId: ws }, SETTLED_JOB_MESSAGES.crashed)).toBe(
+        "done",
+      );
+      expect(errors).toHaveBeenCalledTimes(1);
+    } finally {
+      errors.mockRestore();
+    }
+
+    expect(await charges(id)).toEqual([{ stepKey: "shot-1", credits: 4 }]);
+    expect(await balance()).toBe(before + 1);
     expect(await held(id)).toBe(0);
   });
 
