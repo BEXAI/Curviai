@@ -3,6 +3,7 @@ import Link from "next/link";
 import { buttonVariants } from "@curvi/ui";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
+import { pageMetadata } from "@/lib/seo";
 
 export async function generateMetadata({
   params,
@@ -10,25 +11,17 @@ export async function generateMetadata({
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const title = "A product photo makeover, before and after";
-  const description =
-    "One photo in, a studio pack out, with the product pixels untouched. Drag the slider to compare, then run your own product through Curvi.";
-  return {
-    title,
-    description,
-    openGraph: {
-      title,
-      description,
-      type: "website",
-      url: `https://curvi.ai/s/${slug}`,
-      siteName: "Curvi",
-    },
-    twitter: {
-      card: "summary_large_image",
-      title,
-      description,
-    },
-  };
+  // Share links are not stored yet, so every slug renders the same demo
+  // makeover. Keep them out of the index to avoid duplicate pages; social
+  // cards still work.
+  return pageMetadata({
+    title: "An AI product photo makeover, before and after",
+    description:
+      "One photo in, a studio pack out, with the product pixels untouched. Drag the slider to compare, then run your own product through Curvi.",
+    // The slug param arrives percent encoded, so it is used as is.
+    path: `/s/${slug}`,
+    noIndex: true,
+  });
 }
 
 export default async function SharePage({ params }: { params: Promise<{ slug: string }> }) {

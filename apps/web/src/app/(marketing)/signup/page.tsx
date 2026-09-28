@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import { AuthForm } from "@/components/marketing/auth-form";
+import { pageMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
-  title: "Sign up",
-  description: "Create your Curvi account and turn one product photo into a full marketplace pack.",
-};
+export const metadata: Metadata = pageMetadata({
+  title: "Sign up free for AI e-commerce product images",
+  description:
+    "Create your free Curvi account and turn one product photo into compliant AI product images for Shopify and Amazon. No card needed.",
+  path: "/signup",
+});
 
 export default function SignupPage() {
   return (

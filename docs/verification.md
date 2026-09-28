@@ -121,3 +121,25 @@ Live pack safety (2026-09-28, Update.md 2.1, 5.2, 1.6, 3.1), done because produc
 - Text shaping: opentype.js 1.3.4 (MIT, deps tiny-inflate and string.prototype.codepointat), with @types/opentype.js 1.3.10 (MIT) as a dev dependency. Glyph outlines are converted to SVG paths and rasterized by sharp (librsvg), so no system font stack is involved.
 - Why not sharp text input with fontfile: with sharp 0.34.5 (Pango 1.57, fontconfig 2.17.1) on macOS the fontfile option was ignored and output fell back to a Helvetica like system face, and Linux hosts do not guarantee fonts. Glyph paths from the bundled TTF render identically on every host.
 - Resolution: packages/pipeline/src/templates/font.ts resolves the TTF with createRequire from the module, then from the working directory, then by walking up node_modules layouts. CURVI_TEMPLATE_FONT_FILE overrides the path for hosts whose bundler does not ship node_modules files (a Trigger.dev cloud deploy bundles code and may not include the TTF; set the env var or keep the package external there).
+
+## SEO, GEO and AEO metadata (checked 2026-09-28)
+
+Marketing metadata lives in apps/web/src/lib/seo.ts (titles, descriptions, canonical URLs, social cards, JSON-LD) and apps/web/src/lib/llms.ts (/llms.txt). An independent review checked these facts at official sources:
+
+| Item | Finding | Source |
+|---|---|---|
+| OpenAI crawler tokens | GPTBot (training), OAI-SearchBot (ChatGPT search), ChatGPT-User (user actions; robots.txt may not apply) | developers.openai.com/api/docs/bots |
+| Anthropic crawler tokens | ClaudeBot (training), Claude-SearchBot (search quality), Claude-User (user fetches); all respect robots.txt | support.claude.com article 8896518 |
+| Perplexity crawler tokens | PerplexityBot (search, respects robots.txt), Perplexity-User (user fetches, generally ignores robots.txt) | docs.perplexity.ai/guides/bots |
+| Google-Extended | Control token only, no crawler of its own; governs Gemini training and grounding | developers.google.com/search/docs/crawling-indexing/google-common-crawlers |
+| Apple | Applebot crawls for Spotlight, Siri and Safari; Applebot-Extended never crawls, it only controls model training use | support.apple.com/en-us/119829 |
+| Amazon | Amazonbot (product improvement, may train models), Amzn-SearchBot (search in Amazon products), Amzn-User (user actions) | developer.amazon.com/amazonbot |
+| Meta | meta-webindexer (Meta AI search), meta-externalagent (training), meta-externalfetcher (user fetches, may bypass robots.txt) | developers.facebook.com/docs/sharing/webmasters/web-crawlers |
+| DuckDuckGo and Common Crawl | DuckAssistBot (AI answers, not used for training); CCBot honors robots.txt | duckduckgo.com help pages; commoncrawl.org/ccbot |
+| FAQ rich results | Google stopped showing FAQ rich results on 2026-05-07. FAQPage markup stays valid schema.org and is kept for answer engines | developers.google.com/search/docs/appearance/structured-data/faqpage |
+| Software app rich result | Requires name, offers.price and aggregateRating or review. Curvi has no ratings and must not invent them, so it will not get the rich result; the markup still describes the product | developers.google.com/search/docs/appearance/structured-data/software-app |
+| schema.org | Every type and property used in seo.ts exists and is current | schema.org/version/latest |
+| llms.txt format | H1, optional blockquote, body without headings, then H2 sections that are lists of [name](url) links | llmstxt.org |
+| Next.js 15.5.26 behavior | A page that sets openGraph drops the root opengraph-image, so pageMetadata sets the image explicitly; dynamic params arrive percent encoded; child robots metadata replaces the parent's | installed next source under apps/web/node_modules/next/dist |
+
+Honesty rules applied: SoftwareApplication offers list paid plans only when STRIPE_SECRET_KEY is set, and FAQPage markup includes only answers that describe shipped features (see the structured flags in the home page and help page).

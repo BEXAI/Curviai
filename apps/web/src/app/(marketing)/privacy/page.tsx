@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
+import { pageMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMetadata({
   title: "Privacy policy",
   description: "How Curvi handles your data and uploads.",
-};
+  path: "/privacy",
+});
 
 export default function PrivacyPage() {
   return (

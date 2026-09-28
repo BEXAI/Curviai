@@ -1,12 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { buttonVariants } from "@curvi/ui";
+import { JsonLd } from "@/components/json-ld";
+import { breadcrumbJsonLd, faqPageJsonLd, jsonLdGraph, pageMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
-  title: "Help center",
+export const metadata: Metadata = pageMetadata({
+  title: "Help center for AI product images on Shopify and Amazon",
   description:
-    "Plain answers about how Curvi works: uploads, credits, compliance checks, brand kits, publishing and billing.",
-};
+    "Plain answers about Curvi's AI e-commerce images for Shopify and Amazon: what photo to upload, how credits work, compliance reports, brand kits and channels.",
+  path: "/help",
+});
 
 interface HelpArticle {
   slug: string;
@@ -81,9 +84,31 @@ const articles: HelpArticle[] = [
   },
 ];
 
+// Articles marked up as FAQPage JSON-LD for answer engines. The others still
+// describe features that do not ship yet (video, the Fresh Creative Drop, paid
+// checkout); add them here once those features are live.
+const STRUCTURED_ARTICLES = new Set([
+  "what-photo-should-i-upload",
+  "what-the-compliance-report-means",
+  "will-ai-change-my-product",
+]);
+
 export default function HelpPage() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16">
+      <JsonLd
+        data={jsonLdGraph([
+          faqPageJsonLd(
+            articles
+              .filter((article) => STRUCTURED_ARTICLES.has(article.slug))
+              .map((article) => ({ question: article.title, answer: article.body.join(" ") })),
+          ),
+          breadcrumbJsonLd([
+            { name: "Home", path: "/" },
+            { name: "Help center", path: "/help" },
+          ]),
+        ])}
+      />
       <h1 className="text-4xl font-bold tracking-tight text-ink-950">Help center</h1>
       <p className="mt-4 text-lg text-ink-600">
         Plain answers, no ticket required. If something is missing, email{" "}

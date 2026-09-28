@@ -3,7 +3,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ChannelSpec } from "@curvi/specs";
 import { buttonVariants } from "@curvi/ui";
+import { JsonLd } from "@/components/json-ld";
 import { imageSpecs, specDisplayName, specForSlug, specSlug } from "@/components/marketing/spec-slug";
+import { breadcrumbJsonLd, channelPageSeo, jsonLdGraph, pageMetadata } from "@/lib/seo";
 
 export const dynamicParams = false;
 
@@ -21,11 +23,10 @@ export async function generateMetadata({
   if (!spec) {
     return { title: "Image requirements" };
   }
-  const name = specDisplayName(spec.id);
-  return {
-    title: `${name} requirements`,
-    description: `The current ${name} rules in plain language: dimensions, background, product fill, text policy, formats and file size, plus how to pass them the first time.`,
-  };
+  return pageMetadata({
+    ...channelPageSeo(specDisplayName(spec.id)),
+    path: `/channels/${specSlug(spec.id)}/image-requirements`,
+  });
 }
 
 function formatBytes(bytes: number): string {
@@ -187,6 +188,14 @@ export default async function ChannelRequirementsPage({
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-16">
+      <JsonLd
+        data={jsonLdGraph([
+          breadcrumbJsonLd([
+            { name: "Home", path: "/" },
+            { name: `${name} requirements`, path: `/channels/${specSlug(spec.id)}/image-requirements` },
+          ]),
+        ])}
+      />
       <p className="text-sm font-medium text-accent-600">Channel requirements</p>
       <h1 className="mt-2 text-4xl font-bold tracking-tight text-ink-950">{name} requirements</h1>
       <p className="mt-4 max-w-2xl text-lg text-ink-600">

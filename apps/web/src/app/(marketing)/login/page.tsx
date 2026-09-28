@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import { AuthForm } from "@/components/marketing/auth-form";
+import { pageMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMetadata({
   title: "Log in",
   description: "Log in to your Curvi workspace.",
-};
+  path: "/login",
+});
 
 export default function LoginPage() {
   return (

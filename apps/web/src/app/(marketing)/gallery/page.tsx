@@ -2,12 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Badge, buttonVariants } from "@curvi/ui";
 import { galleryCases } from "@/components/marketing/demo-images";
+import { pageMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
-  title: "Gallery of makeovers",
+export const metadata: Metadata = pageMetadata({
+  title: "AI product photo makeovers, before and after",
   description:
-    "Before and after product photo makeovers built with Curvi. Demo cases now, opted in customer makeovers as they come in.",
-};
+    "Before and after AI product photo makeovers for Shopify and Amazon listings, built with Curvi. Demo cases now, opted in customer makeovers as they come in.",
+  path: "/gallery",
+});
 
 export default function GalleryPage() {
   return (

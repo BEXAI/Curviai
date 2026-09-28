@@ -2,17 +2,29 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
 import { creditCosts, tierByKey, tiers } from "@curvi/pipeline/seed";
+import { JsonLd } from "@/components/json-ld";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { ComplianceBadgeDemo } from "@/components/marketing/compliance-badge-demo";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
 import { EmailCapture } from "@/components/marketing/email-capture";
 import { UploadBox } from "@/components/marketing/upload-box";
+import {
+  SITE_DESCRIPTION,
+  SITE_TITLE,
+  faqPageJsonLd,
+  jsonLdGraph,
+  organizationJsonLd,
+  pageMetadata,
+  softwareApplicationJsonLd,
+  websiteJsonLd,
+} from "@/lib/seo";
 
-export const metadata: Metadata = {
-  title: "Curvi. Shot once. Ready everywhere.",
-  description:
-    "Studio product photos and videos for every marketplace, from one photo, without changing your product.",
-};
+export const metadata: Metadata = pageMetadata({
+  title: SITE_TITLE,
+  absoluteTitle: true,
+  description: SITE_DESCRIPTION,
+  path: "/",
+});
 
 const steps = [
   {
@@ -95,7 +107,10 @@ const features = [
   },
 ];
 
-const faqs = [
+// Answers marked structured: false mention features that do not ship yet
+// (video, share pages, paid checkout), so they stay out of the FAQPage JSON-LD
+// that answer engines quote. Remove the flag once the feature is live.
+const faqs: { q: string; a: string; structured?: false }[] = [
   {
     q: "Does the AI change my product?",
     a: "No. Curvi masks your product first and only rebuilds what is around it, backgrounds, lighting and scenes. Product pixels inside the mask are never regenerated, which is why labels never warp.",
@@ -107,10 +122,12 @@ const faqs = [
   {
     q: "Which channels are covered?",
     a: "Amazon main and secondary images, A plus modules, Shopify product and banner sizes, Google Merchant, Walmart, Etsy, eBay, TikTok Shop, Meta feed and story, Pinterest, plus listing and social video formats.",
+    structured: false,
   },
   {
     q: "How do credits work?",
     a: `Simple deterministic assets cost half a credit. A generative still costs ${creditCosts.generativeStill} credit, video costs more. A typical full pack uses about 40 to 60 credits, and plans start at ${tierByKey("starter").creditsPerMonth} credits for $${tierByKey("starter").monthlyUsd} per month.`,
+    structured: false,
   },
   {
     q: "What if a file fails a marketplace check?",
@@ -119,12 +136,23 @@ const faqs = [
   {
     q: "Can I try it without a card?",
     a: "Yes. The free plan includes 15 credits once, enough for a compliant main image, two lifestyle shots and a share page. The free tools on this site need no account at all.",
+    structured: false,
   },
 ];
 
 export default function HomePage() {
   return (
     <div className="bg-night text-ink-100">
+      <JsonLd
+        data={jsonLdGraph([
+          organizationJsonLd(),
+          websiteJsonLd(),
+          softwareApplicationJsonLd(),
+          faqPageJsonLd(
+            faqs.filter((faq) => faq.structured !== false).map((faq) => ({ question: faq.q, answer: faq.a })),
+          ),
+        ])}
+      />
       <section className="relative overflow-hidden">
         <div
           aria-hidden="true"

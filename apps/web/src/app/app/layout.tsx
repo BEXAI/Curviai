@@ -8,6 +8,7 @@ import { getSessionUser } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
   title: { template: "%s | Curvi", default: "App | Curvi" },
+  robots: { index: false, follow: false },
 };
 
 export default async function AppLayout({ children }: { children: ReactNode }) {

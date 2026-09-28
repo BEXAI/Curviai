@@ -1,7 +1,8 @@
 import { ImageResponse } from "next/og";
+import { OG_IMAGE } from "@/lib/seo";
 
-export const alt = "Curvi. Shot once. Ready everywhere.";
-export const size = { width: 1200, height: 630 };
+export const alt = OG_IMAGE.alt;
+export const size = { width: OG_IMAGE.width, height: OG_IMAGE.height };
 export const contentType = "image/png";
 
 /** Social share card matching the dark cinematic marketing theme. */
@@ -41,7 +42,7 @@ export default function OpenGraphImage() {
           </span>
         </div>
         <span style={{ fontSize: 32, color: "#aeb9cb", marginTop: 40 }}>
-          Marketplace ready product photos from one upload, product pixels untouched.
+          AI e-commerce images for Shopify and Amazon from one photo, product pixels untouched.
         </span>
       </div>
     ),

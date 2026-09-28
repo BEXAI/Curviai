@@ -2,10 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { buttonVariants } from "@curvi/ui";
+import { JsonLd } from "@/components/json-ld";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { categories, categoryForSlug } from "@/components/marketing/categories";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
 import { EmailCapture } from "@/components/marketing/email-capture";
+import { breadcrumbJsonLd, categoryPageSeo, jsonLdGraph, pageMetadata } from "@/lib/seo";
 
 export const dynamicParams = false;
 
@@ -23,10 +25,7 @@ export async function generateMetadata({
   if (!page) {
     return { title: "Curvi for your category" };
   }
-  return {
-    title: `Curvi for ${page.name.toLowerCase()}`,
-    description: page.intro.slice(0, 155),
-  };
+  return pageMetadata({ ...categoryPageSeo(page.name), path: `/for/${page.slug}` });
 }
 
 export default async function CategoryPage({
@@ -42,6 +41,14 @@ export default async function CategoryPage({
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-16">
+      <JsonLd
+        data={jsonLdGraph([
+          breadcrumbJsonLd([
+            { name: "Home", path: "/" },
+            { name: `AI product photos for ${page.name.toLowerCase()}`, path: `/for/${page.slug}` },
+          ]),
+        ])}
+      />
       <div className="grid items-center gap-12 lg:grid-cols-2">
         <div>
           <p className="text-sm font-medium text-accent-600">Curvi for {page.name.toLowerCase()}</p>

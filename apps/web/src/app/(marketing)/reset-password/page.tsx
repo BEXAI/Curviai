@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import { ResetPasswordForm } from "@/components/marketing/password-forms";
+import { pageMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMetadata({
   title: "Reset password",
   description: "Set a new password for your Curvi account.",
-};
+  path: "/reset-password",
+  noIndex: true,
+});
 
 export default function ResetPasswordPage() {
   return (

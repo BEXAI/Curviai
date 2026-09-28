@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
+import { pageMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMetadata({
   title: "Terms of service",
   description: "The terms that govern your use of Curvi.",
-};
+  path: "/terms",
+});
 
 export default function TermsPage() {
   return (
