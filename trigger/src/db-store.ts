@@ -35,6 +35,7 @@ import type {
   StoredAsset,
   StoredPack,
   StoredPlan,
+  UndeliveredShot,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
 import { assetFileKey, packFileKey, type PackUploader } from "./r2";
@@ -200,6 +201,32 @@ export class DbJobStore implements JobStore {
       costMicros: Math.round(asset.costMicros),
     });
     await this.heartbeat(asset.jobId);
+  }
+
+  /**
+   * A shot that passed QC but that the packager left out (a channel image
+   * limit): its asset row stops claiming delivery (approved false, qc status
+   * needs_review with the plain reason, no credits) and a needs_review step
+   * row is appended, which the board shows over the earlier done row. The
+   * runner already released its credits; nothing here touches the ledger.
+   */
+  async markShotUndelivered(update: UndeliveredShot): Promise<void> {
+    const reason = update.reason.slice(0, 300);
+    const patch = JSON.stringify({ status: "needs_review", pass: false, repairHint: reason, delivered: false });
+    await this.db
+      .update(assets)
+      .set({ approved: false, qc: sql`coalesce(${assets.qc}, '{}'::jsonb) || ${patch}::jsonb` })
+      .where(and(eq(assets.jobId, update.jobId), sql`${assets.qc}->>'shotId' = ${update.shotId}`));
+    await this.db.insert(jobSteps).values({
+      workspaceId: update.workspaceId,
+      jobId: update.jobId,
+      shotId: update.shotId,
+      stage: update.shotType,
+      provider: "worker",
+      status: "needs_review",
+      error: reason,
+    });
+    await this.heartbeat(update.jobId);
   }
 
   async savePack(pack: StoredPack): Promise<void> {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AllProvidersFailedError,
   BreakerOpenError,
+  CapStoreUnavailableError,
   InMemoryBreakerStore,
   InMemoryCapStore,
   InMemoryCostMeter,
@@ -26,21 +27,27 @@ import {
   activeRecipe,
   creditsForShot,
   deserializeShotOutcome,
+  deterministicPlan,
   fitShotsToChannels,
   runGeneratePack,
   runShot,
   serializeShotOutcome,
+  SHOT_CHANNEL_FULL,
+  SHOT_CONTENT_BLOCKED,
   SHOT_PROVIDER_TROUBLE,
   systemClock,
   validateLlmShotList,
+  visionBlocks,
   wrapUserDescription,
   InMemoryJobStore,
   isSpendCapBlock,
+  ShotFailedAfterSpendError,
   ShotUnavailableError,
   type AiDeps,
   type GeneratePackInput,
   type LlmPlanCheck,
   type LlmPlanRules,
+  type LlmTaskInput,
   type PipelineDeps,
   type ShotGenerateArgs,
   type ShotGeneration,
@@ -126,16 +133,18 @@ const basePlanOptions: PlanOptions = {
 };
 
 /** The plan the runner actually fans out for baseInput: the deterministic
- * plan fitted to the selected channel families. */
-function fittedPlan(input: GeneratePackInput = baseInput) {
-  return fitShotsToChannels(
-    planShots(demoProfile, { ...basePlanOptions, channels: input.channels, creditBudget: input.creditBudget }),
+ * plan fitted to the selected channel specs and trimmed to the budget. */
+function fittedPlan(input: GeneratePackInput = baseInput, excludeMethods: Array<Shot["method"]> = []) {
+  return deterministicPlan(
+    demoProfile,
+    { ...basePlanOptions, tier: input.tier, channels: input.channels, creditBudget: input.creditBudget },
     {
       channels: input.channels,
       mode: input.mode ?? "listing",
       budget: input.creditBudget,
       profile: demoProfile,
       primaryMediaId: input.images[0]?.mediaId,
+      excludeMethods,
     },
   );
 }
@@ -768,6 +777,13 @@ describe("runShot", () => {
     const deps = makeDeps();
     const outcome = await runShot(mainShot as Shot, ctx, deps);
     expect(outcome.packAssets).toHaveLength(1);
+    // Until packaging a delivered file is its encoded bytes and mask PNG,
+    // never a decoded canvas (inline runner memory).
+    const [held] = outcome.packAssets!;
+    expect(held.raw).toBeUndefined();
+    expect(held.mask).toBeUndefined();
+    expect(held.maskPng).toBeDefined();
+    expect(typeof held.loadPixels).toBe("function");
     const wire = await serializeShotOutcome(outcome);
     expect(wire.files?.[0].maskPngBase64).toBeDefined();
     const restored = await deserializeShotOutcome(JSON.parse(JSON.stringify(wire)), ctx);
@@ -784,6 +800,8 @@ describe("runShot", () => {
     const trigger = await buildPack(restored.packAssets!, ["amazon"]);
     const [inlineFile] = inline.report.files;
     const [triggerFile] = trigger.report.files;
+    expect(inlineFile.notes.join(" ")).not.toContain("raw pixels");
+    expect(inlineFile.measured?.fillRatio).not.toBeNull();
     expect(triggerFile.notes.join(" ")).not.toContain("raw pixels not supplied");
     expect(triggerFile.measured?.backgroundWhiteShare).not.toBeNull();
     expect(triggerFile.measured?.fillRatio).not.toBeNull();
@@ -1066,15 +1084,25 @@ describe("unavailable shots (2.1)", () => {
     const store = new InMemoryCapStore();
     // With caps on, the QC judge call reserves too, so its mock needs an estimate.
     const qc = Object.assign(new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict }), {
-      estimateCostMicros: () => 0,
+      estimateCostMicros: () => 7,
     });
-    const ai = { ...makeAi({ qc }), caps: new SpendCaps(store) };
+    const caps = new SpendCaps(store);
+    const globalReads: number[] = [];
+    const reserveGlobal = caps.checkAndReserveGlobalDay.bind(caps);
+    caps.checkAndReserveGlobalDay = async (micros: number) => {
+      globalReads.push(micros);
+      return reserveGlobal(micros);
+    };
+    const ai = { ...makeAi({ qc }), caps };
     const mainShot = planShots(demoProfile, basePlanOptions).shots.find((s) => s.type === "amazon_main");
     const outcome = await runShot(mainShot as Shot, { jobId: "job1", workspaceId: "ws1" }, makeDeps({ ai, generator }));
     // Over the per asset cap if it were reserved again here; the generator
     // already reserved (and would have been blocked) before spending.
     expect(outcome.status).toBe("passed");
     expect(await store.get(`caps:asset:image:${(mainShot as Shot).id}`)).toBe(0);
+    // Only the judge's own reservation reads the global day; the runner no
+    // longer re reads it for the alert (the router's onCapAlert reports it).
+    expect(globalReads).toEqual([7]);
   });
 });
 
@@ -1082,11 +1110,18 @@ describe("reviewer follow ups", () => {
   const ctx = { jobId: "job1", workspaceId: "ws1" };
   const lifestyle = () => planShots(demoProfile, basePlanOptions).shots.find((s) => s.type === "lifestyle") as Shot;
 
-  it("treats a chain as cap blocked when any provider was refused by a cap", () => {
-    const capped = new ProviderError("Spend cap blocked call: over cap", "openai", "scene_plate", false);
+  it("treats a chain as cap blocked when any provider was refused by a cap, by error code", () => {
+    const capped = new ProviderError("Spend cap blocked call: over cap", "openai", "scene_plate", false, undefined, {
+      code: "cap_blocked",
+    });
+    const unavailable = new CapStoreUnavailableError("openai", "scene_plate", new Error("db down"));
     const breaker = new BreakerOpenError("bfl", "scene_plate");
     expect(isSpendCapBlock(new AllProvidersFailedError("scene_plate", [breaker, capped]))).toBe(true);
+    expect(isSpendCapBlock(new AllProvidersFailedError("scene_plate", [breaker, unavailable]))).toBe(true);
     expect(isSpendCapBlock(new AllProvidersFailedError("scene_plate", [breaker]))).toBe(false);
+    // Message text alone no longer decides it; the router's codes do.
+    const textOnly = new ProviderError("Spend cap blocked call: over cap", "openai", "scene_plate", false);
+    expect(isSpendCapBlock(new AllProvidersFailedError("scene_plate", [textOnly]))).toBe(false);
     expect(isSpendCapBlock(new Error("Spend cap blocked call"))).toBe(false);
   });
 
@@ -1125,5 +1160,417 @@ describe("reviewer follow ups", () => {
     expect(summary.chargedCredits).toBeGreaterThan(0);
     expect(store.states.map((s) => s.state)).not.toContain("failed");
     expect(store.states.at(-1)).toMatchObject({ state: "done" });
+  });
+});
+
+const whiteShot = (id: string, channels: string[], overrides: Partial<Shot> = {}): Shot => ({
+  id,
+  type: "alt_angle_white",
+  sourceMediaId: "m1",
+  method: "deterministic",
+  channels,
+  stylePreset: "none",
+  credits: creditCosts.deterministic,
+  priority: 2,
+  ...overrides,
+});
+
+async function packReport(summary: { pack: StoredPack | null }): Promise<PackFileReport[]> {
+  const raw = await readFile(summary.pack!.reportPath, "utf8");
+  return (JSON.parse(raw) as { files: PackFileReport[] }).files;
+}
+
+describe("only delivered files are charged (2.10, 2.12)", () => {
+  it("charges 8 of 9 passing amazon.secondary shots and releases the one the packager left out", async () => {
+    const nine = Array.from({ length: 9 }, (_, i) => whiteShot(`sec${i + 1}`, ["amazon.secondary"]));
+    const store = new InMemoryJobStore();
+    const deps = makeDeps({ store });
+    // The fan out returns nine passing outcomes on one spec, as a plan that
+    // slipped past validation would; the packager keeps the first eight.
+    deps.runShots = (_shots, ctx) => Promise.all(nine.map((shot) => runShot(shot, ctx, deps)));
+    const summary = await runGeneratePack({ ...baseInput, channels: ["amazon"] }, deps);
+
+    expect(summary.state).toBe("done");
+    const charges = store.ledger.filter((e) => e.reason === "charge");
+    const shotReleases = store.ledger.filter((e) => e.reason === "release" && e.ref !== undefined);
+    expect(charges).toHaveLength(8);
+    expect(charges.map((c) => c.ref)).not.toContain("sec9");
+    expect(shotReleases).toEqual([
+      expect.objectContaining({ ref: "sec9", credits: creditCosts.deterministic, note: expect.stringContaining("channel image limit") }),
+    ]);
+    expect(summary.passed).toBe(8);
+    expect(summary.needsReview).toBe(1);
+    expect(summary.chargedCredits).toBe(8 * creditCosts.deterministic);
+    expect(summary.chargedCredits + summary.releasedCredits).toBe(summary.reservedCredits);
+
+    const files = await packReport(summary);
+    expect(files.filter((f) => f.specId === "amazon.secondary")).toHaveLength(8);
+    // The board no longer shows the dropped shot as a delivered, charged card.
+    const dropped = store.assets.find((a) => a.shotId === "sec9") as StoredAsset;
+    expect(dropped.status).toBe("needs_review");
+    expect(dropped.verdict.repairHint).toBe(SHOT_CHANNEL_FULL);
+    expect(dropped.encoded).toBeUndefined();
+  });
+
+  it("releases a passing shot that delivered no file at all", async () => {
+    const store = new InMemoryJobStore();
+    const deps = makeDeps({ store });
+    const shots = [whiteShot("a1", ["amazon.secondary"]), whiteShot("a2", ["amazon.secondary"])];
+    deps.runShots = async (_shots, ctx) => {
+      const outcomes = await Promise.all(shots.map((shot) => runShot(shot, ctx, deps)));
+      // A subtask whose files were lost on the way back.
+      return outcomes.map((o) => (o.shotId === "a2" ? { ...o, packAssets: undefined } : o));
+    };
+    const summary = await runGeneratePack({ ...baseInput, channels: ["amazon"] }, deps);
+    expect(summary.state).toBe("done");
+    expect(store.ledger.filter((e) => e.reason === "charge").map((e) => e.ref)).toEqual(["a1"]);
+    expect(store.ledger.find((e) => e.ref === "a2")).toMatchObject({ reason: "release" });
+  });
+});
+
+describe("LLM plan validation against what can ship (1.7, 2.10, 2.12)", () => {
+  const main = whiteShot("s1", ["amazon.main"], { type: "amazon_main", priority: 1 });
+  const rules: LlmPlanRules = {
+    budget: 100,
+    mediaIds: ["m1"],
+    channels: ["amazon"],
+    mode: "listing",
+    requireAmazonMain: true,
+  };
+  const check = (shots: unknown[], overrides: Partial<LlmPlanRules> = {}) =>
+    validateLlmShotList({ shots, skipped: [] }, { ...rules, ...overrides });
+  const rejected = (result: LlmPlanCheck): string => (result.ok ? "" : result.reason);
+
+  it("rejects a ninth amazon.secondary and a second amazon.main", () => {
+    const eight = Array.from({ length: 8 }, (_, i) => whiteShot(`a${i}`, ["amazon.secondary"]));
+    expect(check([main, ...eight]).ok).toBe(true);
+    const nine = [...eight, whiteShot("a9", ["amazon.secondary"])];
+    expect(rejected(check([main, ...nine]))).toBe("9 shots target amazon.secondary, which takes at most 8");
+    expect(rejected(check([main, { ...main, id: "s2" }]))).toContain("more than one shot targets amazon.main");
+  });
+
+  it("drops undeliverable methods before the budget check instead of rejecting the plan", () => {
+    const video = whiteShot("v1", ["video.social_9x16"], {
+      type: "video_hero_6s",
+      method: "video_generate",
+      credits: 6,
+      priority: 9,
+    });
+    const stills = [main, whiteShot("a1", ["amazon.secondary"])];
+    // Without the exclusion the video is outside the selection and over budget.
+    expect(check([...stills, video], { budget: 2 }).ok).toBe(false);
+    const result = check([...stills, video], { budget: 2, excludeMethods: ["video_generate", "avatar"] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.shotList.shots.map((s) => s.id)).toEqual(["s1", "a1"]);
+    expect(result.shotList.skipped).toContainEqual({ type: "video_hero_6s", reason: "provider not enabled" });
+  });
+
+  it("keeps only the selected specs of a family and skips shots left with none", () => {
+    const social = whiteShot("c1", ["meta.feed_1x1", "meta.feed_4x5"], { type: "social_1x1", method: "template" });
+    const story = whiteShot("c2", ["meta.story_9x16"], { type: "social_9x16", method: "template" });
+    const result = check([social, story], { channels: ["meta.feed_1x1"], requireAmazonMain: false });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.shotList.shots).toEqual([expect.objectContaining({ id: "c1", channels: ["meta.feed_1x1"] })]);
+    expect(result.shotList.skipped).toContainEqual({ type: "social_9x16", reason: "channel not selected" });
+    // A plan with nothing left for the selection falls back to the planner.
+    expect(rejected(check([story], { channels: ["meta.feed_1x1"], requireAmazonMain: false }))).toContain(
+      "no shot for the selected channels",
+    );
+  });
+
+  it("requires the Amazon main image only when amazon.main was picked", () => {
+    const secondary = whiteShot("a1", ["amazon.secondary"]);
+    expect(check([secondary], { channels: ["amazon.secondary"] }).ok).toBe(true);
+    expect(rejected(check([secondary], { channels: ["amazon.main", "amazon.secondary"] }))).toContain("no amazon_main");
+  });
+
+  it("checks the budget against the selected specs only", () => {
+    const heroes = Array.from({ length: 5 }, (_, i) =>
+      whiteShot(`h${i}`, ["shopify.hero_banner"], { type: "shopify_hero", method: "composite_generate", credits: 1 }),
+    );
+    const result = check([main, ...heroes], { channels: ["amazon.main", "shopify.product"], budget: 1 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.shotList.shots.map((s) => s.id)).toEqual(["s1"]);
+  });
+
+  it("uses a plan with video in it when video is excluded, and tells the planner what is excluded", async () => {
+    const llmPlan = {
+      shots: [
+        main,
+        whiteShot("v1", ["video.social_9x16"], { type: "video_hero_6s", method: "video_generate", credits: 6, priority: 9 }),
+      ],
+      skipped: [],
+    };
+    const plan = new MockProvider({ name: "mock-plan", tasks: [planKey], output: llmPlan });
+    const deps = makeDeps({ ai: makeAi({ plan }), excludeShotMethods: ["video_generate", "avatar"] });
+    const summary = await runGeneratePack({ ...baseInput, tier: "growth", channels: ["amazon"], creditBudget: 2 }, deps);
+    expect(summary.state).toBe("done");
+    expect(summary.plannerSource).toBe("llm");
+    expect(summary.plannedShots).toBe(1);
+    expect(summary.skipped).toContainEqual({ type: "video_hero_6s", reason: "provider not enabled" });
+    const sent = JSON.parse((plan.calls[0].input as LlmTaskInput).messages[0].content as string) as {
+      options: { undeliverableMethods?: string[] };
+    };
+    expect(sent.options.undeliverableMethods).toEqual(["video_generate", "avatar"]);
+    expect(deps.store.assets.some((a) => a.shotType.startsWith("video_"))).toBe(false);
+  });
+});
+
+describe("the deterministic plan leaves undeliverable methods out before the budget (1.7)", () => {
+  it("keeps the same stills for a video tier as for a stills tier at the same budget", () => {
+    const channels = ["amazon", "shopify"];
+    const excludeMethods: Array<Shot["method"]> = ["video_generate", "avatar"];
+    const planFor = (tier: GeneratePackInput["tier"]) =>
+      deterministicPlan(
+        demoProfile,
+        { ...basePlanOptions, tier, channels, creditBudget: 6, undeliverableMethods: excludeMethods },
+        { channels, mode: "listing", budget: 6, profile: demoProfile, primaryMediaId: "m1", excludeMethods },
+      );
+    const agency = planFor("agency");
+    const starter = planFor("starter");
+    expect(agency.shots.some((s) => excludeMethods.includes(s.method))).toBe(false);
+    expect(agency.shots.map((s) => s.id)).toEqual(starter.shots.map((s) => s.id));
+    expect(agency.shots.reduce((sum, s) => sum + s.credits, 0)).toBeLessThanOrEqual(6);
+    // The budget really was binding, so the stills above are what it paid for.
+    expect(agency.skipped.some((s) => s.reason === "credit budget")).toBe(true);
+  });
+});
+
+describe("selection is by channel spec (2.11)", () => {
+  // The new pack form's default selection.
+  const DEFAULT_FORM = ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"];
+
+  it("generates and charges nothing for specs the default form leaves unchecked", async () => {
+    const input: GeneratePackInput = { ...baseInput, channels: DEFAULT_FORM, creditBudget: 30 };
+    const deps = makeDeps();
+    const summary = await runGeneratePack(input, deps);
+    expect(summary.state).toBe("done");
+
+    // meta.feed_4x5, meta.story_9x16, shopify.hero_banner and amazon.aplus.*
+    const unselected = ["social_4x5", "social_9x16", "shopify_hero", "aplus_banner"];
+    expect(deps.store.assets.some((a) => unselected.includes(a.shotType))).toBe(false);
+    for (const type of unselected) {
+      expect(summary.skipped).toContainEqual({ type, reason: "channel not selected" });
+    }
+    const files = await packReport(summary);
+    expect(files.every((f) => DEFAULT_FORM.includes(f.specId)), files.map((f) => f.specId).join()).toBe(true);
+    expect(files.some((f) => f.specId === "meta.feed_1x1")).toBe(true);
+    const plan = fittedPlan(input);
+    expect(plan.shots.every((s) => s.channels.every((c) => DEFAULT_FORM.includes(c)))).toBe(true);
+    expect(summary.chargedCredits).toBe(plan.shots.reduce((sum, s) => sum + s.credits, 0));
+  });
+
+  it("a bare family still selects every spec in it", async () => {
+    const summary = await runGeneratePack({ ...baseInput, channels: ["meta"], creditBudget: 10 }, makeDeps());
+    const specs = new Set((await packReport(summary)).map((f) => f.specId));
+    expect([...specs].sort()).toEqual(["meta.feed_1x1", "meta.feed_4x5", "meta.story_9x16"]);
+  });
+});
+
+describe("marketplace listing channels (2.11 regression)", () => {
+  const LISTING_SPECS = ["etsy.listing", "ebay.listing", "walmart.main", "tiktokshop.main", "pinterest.pin"];
+
+  it("keeps shots aimed at every selected listing spec", () => {
+    const shots = LISTING_SPECS.map((spec, i) => whiteShot(`l${i}`, [spec]));
+    const fitted = fitShotsToChannels(
+      { shots, skipped: [] },
+      { channels: LISTING_SPECS, mode: "listing", budget: 10, profile: demoProfile, primaryMediaId: "m1" },
+    );
+    expect(fitted.shots.map((s) => s.channels[0])).toEqual(LISTING_SPECS);
+    expect(fitted.skipped).toEqual([]);
+  });
+
+  it("delivers, packs and charges an Etsy only pack", async () => {
+    const etsyPlan = {
+      shots: [
+        whiteShot("e1", ["etsy.listing"]),
+        whiteShot("e2", ["etsy.listing"], {
+          type: "lifestyle",
+          method: "composite_generate",
+          stylePreset: "minimal_studio",
+          scene: "kitchen counter",
+          credits: creditCosts.generativeStill,
+          priority: 4,
+        }),
+      ],
+      skipped: [],
+    };
+    const deps = makeDeps({
+      ai: makeAi({ plan: new MockProvider({ name: "mock-plan", tasks: [planKey], output: etsyPlan }) }),
+    });
+    const summary = await runGeneratePack(
+      { ...baseInput, channels: ["etsy.listing"], creditBudget: 5 },
+      deps,
+    );
+    expect(summary.state).toBe("done");
+    expect(summary.plannerSource).toBe("llm");
+    expect(summary.pack?.channels).toEqual(["etsy"]);
+    const files = await packReport(summary);
+    expect(files.map((f) => [f.specId, f.ref])).toEqual([
+      ["etsy.listing", "e1"],
+      ["etsy.listing", "e2"],
+    ]);
+    expect(files.every((f) => f.pass)).toBe(true);
+    expect(summary.chargedCredits).toBe(creditCosts.deterministic + creditCosts.generativeStill);
+    expect(deps.store.ledger.filter((e) => e.reason === "charge").map((e) => e.ref).sort()).toEqual(["e1", "e2"]);
+  });
+});
+
+describe("provider spend of failed attempts stays on the books (5.1)", () => {
+  const lifestyleOf = (plan: { shots: Shot[] }) => plan.shots.filter((s) => s.type === "lifestyle");
+
+  it("books a failed chain's billed spend on the shot and the job", async () => {
+    const demo = new DemoShotGenerator();
+    const billed = new ProviderError("stalled after a paid create", "bfl", "scene_plate", false, undefined, {
+      billedCostMicros: 40_000,
+      transient: true,
+    });
+    const generator: ShotGenerator = {
+      generate: async (args) => {
+        if (args.shot.type === "lifestyle") throw new AllProvidersFailedError("scene_plate", [billed]);
+        return demo.generate(args);
+      },
+    };
+    const deps = makeDeps({ generator });
+    const summary = await runGeneratePack(baseInput, deps);
+    const lifestyle = lifestyleOf(fittedPlan());
+    expect(lifestyle.length).toBeGreaterThan(0);
+    expect(summary.state).toBe("done");
+    expect(summary.costMicros).toBe(40_000 * lifestyle.length);
+    const review = deps.store.assets.filter((a) => a.shotType === "lifestyle");
+    expect(review.every((a) => a.status === "needs_review" && a.costMicros === 40_000)).toBe(true);
+    expect(review.every((a) => a.verdict.repairHint === SHOT_PROVIDER_TROUBLE)).toBe(true);
+    expect(deps.store.states.at(-1)?.meta).toMatchObject({ costMicros: 40_000 * lifestyle.length });
+  });
+
+  it("books the spend a ShotFailedAfterSpendError carries and keeps its failure detail", async () => {
+    const demo = new DemoShotGenerator();
+    const generator: ShotGenerator = {
+      generate: async (args) => {
+        if (args.shot.type === "lifestyle") throw new ShotFailedAfterSpendError(new Error("harmonize outage"), 25_000);
+        return demo.generate(args);
+      },
+    };
+    const lifestyle = lifestyleOf(fittedPlan())[0];
+    const outcome = await runShot(lifestyle, { jobId: "job1", workspaceId: "ws1" }, makeDeps({ generator }));
+    expect(outcome.status).toBe("needs_review");
+    expect(outcome.costMicros).toBe(25_000);
+    expect(outcome.verdict.repairHint).toBe(SHOT_PROVIDER_TROUBLE);
+    expect(outcome.failure).toBe("harmonize outage");
+  });
+
+  it("tells the seller plainly when the image service declined the scene", async () => {
+    const blocked = new ProviderError("declined", "gemini-image", "scene_plate", false, undefined, {
+      code: "content_blocked",
+      billedCostMicros: 1_000,
+    });
+    const generator: ShotGenerator = {
+      generate: async () => {
+        throw new AllProvidersFailedError("scene_plate", [blocked]);
+      },
+    };
+    const lifestyle = lifestyleOf(fittedPlan())[0];
+    const outcome = await runShot(lifestyle, { jobId: "job1", workspaceId: "ws1" }, makeDeps({ generator }));
+    expect(outcome.status).toBe("needs_review");
+    expect(outcome.verdict.repairHint).toBe(SHOT_CONTENT_BLOCKED);
+    expect(outcome.costMicros).toBe(1_000);
+  });
+
+  it("books billed LLM attempts before a failover and on a failed chain", async () => {
+    const ai = makeAi();
+    ai.registry.register(
+      new MockProvider({ name: "billed-intake", tasks: [intakeKey], reportBilledMicros: 3_000, failTimes: Infinity }),
+    );
+    ai.routing[intakeKey] = ["billed-intake", "mock-intake"];
+    const delivered = await runGeneratePack(baseInput, makeDeps({ ai }));
+    expect(delivered.state).toBe("done");
+    expect(delivered.costMicros).toBe(3_000);
+
+    const failing = makeAi({
+      analyze: new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], reportBilledMicros: 2_500, failTimes: Infinity }),
+    });
+    const deps = makeDeps({ ai: failing });
+    const failed = await runGeneratePack(baseInput, deps);
+    expect(failed.state).toBe("failed");
+    expect(failed.costMicros).toBe(2_500);
+    expect(deps.store.states.at(-1)).toMatchObject({ state: "failed", meta: expect.objectContaining({ costMicros: 2_500 }) });
+  });
+
+  it("passes the alert and internal error hooks to routed LLM calls (5.7)", async () => {
+    const capStore = new InMemoryCapStore();
+    await capStore.add("caps:global:2026-09-28", 50_000_000);
+    const qc = Object.assign(new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict }), {
+      estimateCostMicros: () => 0,
+    });
+    const alerts: number[] = [];
+    const internal: string[] = [];
+    const ai: AiDeps = {
+      ...makeAi({ qc }),
+      caps: new SpendCaps(capStore, () => new Date("2026-09-28T12:00:00Z")),
+      meter: {
+        record: () => {
+          throw new Error("meter down");
+        },
+      },
+      onCapAlert: (total) => alerts.push(total),
+      onInternalError: (_err, context) => internal.push(context),
+    };
+    const mainShot = planShots(demoProfile, basePlanOptions).shots.find((s) => s.type === "amazon_main") as Shot;
+    const outcome = await runShot(mainShot, { jobId: "job1", workspaceId: "ws1" }, makeDeps({ ai }));
+    expect(outcome.status).toBe("passed");
+    expect(alerts).toEqual([50_000_000]);
+    expect(internal).toContain("meter.record success");
+  });
+});
+
+describe("vision input stays inside the workspace (4.1)", () => {
+  it("loads only photo keys under the job's workspace prefix", async () => {
+    const png = await encodePng(solidCanvas(8, 8, 200, 200, 200));
+    const loaded: string[] = [];
+    const blocks = await visionBlocks(
+      {
+        loadMedia: async (key) => {
+          loaded.push(key);
+          return png;
+        },
+      },
+      [
+        { mediaId: "ws/ws1/src/a.png" },
+        { mediaId: "ws/other/src/b.png" },
+        { mediaId: "ws/ws1/../other/c.png" },
+        { mediaId: "m1" },
+      ],
+      "ws1",
+    );
+    expect(loaded).toEqual(["ws/ws1/src/a.png"]);
+    expect(blocks).toHaveLength(1);
+  });
+});
+
+describe("the packager decodes delivered files one at a time", () => {
+  it("falls back to file level checks when a file cannot be decoded", async () => {
+    const png = await encodePng(solidCanvas(2000, 2000, 255, 255, 255));
+    const built = await buildPack(
+      [
+        {
+          specId: "amazon.secondary",
+          buffer: png,
+          format: "png",
+          sku: "SKU1",
+          ref: "x1",
+          loadPixels: async () => {
+            throw new Error("corrupt");
+          },
+        },
+      ],
+      ["amazon"],
+    );
+    const [file] = built.report.files;
+    expect(file.notes.join(" ")).toContain("raw pixels could not be decoded");
+    expect(file.measured?.fillRatio).toBeNull();
+    expect(file.checks.map((c) => c.name)).toEqual(["bytes", "format"]);
   });
 });

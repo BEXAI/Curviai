@@ -43,7 +43,9 @@
  * opts.onInternalError.
  *
  * When the whole chain fails it throws AllProvidersFailedError carrying
- * every ProviderError.
+ * every ProviderError and the chain's billed total. A call that succeeds
+ * after billed failures reports that total as CallResult.billedFailureMicros,
+ * so callers can book what the caps hold (billedMicrosOf reads a failure).
  */
 
 import { CircuitBreaker } from "./breaker";
@@ -381,6 +383,10 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
   const startedAt = now();
   const errors: ProviderError[] = [];
   let attempts = 0;
+  // Billed spend of every failed attempt across the whole chain, reported to
+  // the caller on success (billedFailureMicros) and on failure
+  // (AllProvidersFailedError.billedCostMicros).
+  let chainBilledMicros = 0;
 
   for (const providerName of chain) {
     const provider = registry.get(providerName) as CostAwareProvider | undefined;
@@ -516,6 +522,7 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
           const retryable = providerError.retryable && providerError.code !== "content_blocked";
           const latencyMs = now() - attemptStart;
           billedMicros += providerError.billedCostMicros;
+          chainBilledMicros += providerError.billedCostMicros;
           await safely("meter.record failure", () =>
             meter.record({
               provider: providerName,
@@ -576,6 +583,7 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
           provider: providerName,
           attempts,
           latencyMs: now() - startedAt,
+          billedFailureMicros: chainBilledMicros,
         };
       }
     } finally {
@@ -586,5 +594,5 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
     }
   }
 
-  throw new AllProvidersFailedError(req.task, errors);
+  throw new AllProvidersFailedError(req.task, errors, chainBilledMicros);
 }

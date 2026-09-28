@@ -1,15 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ASYNC_JOB_TIMEOUT_MARGIN_MS,
+  BflFluxProvider,
+  callWithFailover,
+  imageDimensions,
   InMemoryBreakerStore,
   InMemoryCapStore,
   InMemoryCostMeter,
+  ProviderError,
   ProviderRegistry,
   SpendCaps,
+  type CostAwareProvider,
+  type GeminiImageInput,
+  type PhotoroomCutoutInput,
   type Provider,
   type ProviderRequest,
   type ProviderResponse,
 } from "@curvi/ai";
-import { coverage, encodePng, solidCanvas, type ImageOutput } from "@curvi/pipeline";
+import { coverage, encodePng, rawToSharp, solidCanvas, type ImageOutput } from "@curvi/pipeline";
 import {
   CUTOUT_TASK,
   HARMONIZE_TASK,
@@ -23,6 +31,8 @@ import { GeminiImageProvider } from "@curvi/ai";
 import type { Shot } from "@curvi/pipeline";
 import {
   alphaMask,
+  guardScenePlate,
+  HARMONIZE_SHAPE_REFUSED,
   LiveShotGenerator,
   MAX_CUTOUT_COVERAGE,
   nearestGeminiAspectRatio,
@@ -33,7 +43,15 @@ import {
   type LiveWiring,
 } from "./live-runtime";
 import { buildRuntimeDeps, demoRoutingTable } from "./runtime";
-import { runGeneratePack, runShot, ShotUnavailableError, type PipelineDeps } from "./pipeline-runner";
+import {
+  runGeneratePack,
+  runShot,
+  SHOT_CONTENT_BLOCKED,
+  SHOT_PROVIDER_TROUBLE,
+  ShotFailedAfterSpendError,
+  ShotUnavailableError,
+  type PipelineDeps,
+} from "./pipeline-runner";
 
 function freshBase() {
   const registry = new ProviderRegistry();
@@ -710,5 +728,302 @@ describe("scene prompts come from the seeded templates (7.4)", () => {
     );
     expect(generation.image.width).toBe(canvasDefaults.width);
     expect(generation.image.height).toBe(canvasDefaults.width);
+  });
+});
+
+/**
+ * Gemini shaped inner adapter for ScenePlateBridge tests: plates come back
+ * square; harmonization comes back in the draft's shape, or squashed to half
+ * its height when wrongShape is set.
+ */
+class FakeGeminiInner implements CostAwareProvider {
+  readonly kind = "image" as const;
+  readonly tasks: string[] = [];
+  constructor(
+    readonly name: string,
+    private readonly wrongShape: boolean,
+    private readonly fail?: () => Error,
+  ) {}
+  supports(): boolean {
+    return true;
+  }
+  estimateCostMicros(): number {
+    return 67_000;
+  }
+  async invoke<TIn, TOut>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
+    this.tasks.push(req.task);
+    if (this.fail) throw this.fail();
+    const input = req.input as unknown as GeminiImageInput;
+    let width = 64;
+    let height = 64;
+    const draft = input.images?.[0];
+    if (draft) {
+      const size = imageDimensions(Buffer.from(draft.dataBase64, "base64"));
+      width = size?.width ?? 64;
+      height = Math.round((size?.height ?? 64) / (this.wrongShape ? 2 : 1));
+    }
+    const png = await encodePng(solidCanvas(width, height, 245, 244, 240));
+    return {
+      output: { images: [{ mimeType: "image/png", dataBase64: png.toString("base64") }], raw: {} } as TOut,
+      costMicros: 67_000,
+    };
+  }
+}
+
+/** Live deps whose scene chain is guarded bridges around the given inners. */
+function bridgedDeps(inners: FakeGeminiInner[], cutoutPng: Buffer, caps?: SpendCaps) {
+  const registry = new ProviderRegistry();
+  const cutout = new FakeCutoutProvider(cutoutPng);
+  registry.register(cutout);
+  for (const inner of inners) {
+    registry.register(guardScenePlate(new ScenePlateBridge(inner, "gemini", inner.name)));
+  }
+  const chain = inners.map((i) => i.name);
+  const meter = new InMemoryCostMeter();
+  const ai: PipelineDeps["ai"] = {
+    registry,
+    routing: { [SCENE_PLATE_TASK]: chain, [HARMONIZE_TASK]: chain, [CUTOUT_TASK]: ["photoroom"] },
+    meter,
+    breakerStore: new InMemoryBreakerStore(),
+    caps,
+  };
+  const wiring: LiveWiring = { llmLive: true, imageProviders: chain, cutoutLive: true };
+  return { ai, wiring, meter, cutout };
+}
+
+describe("harmonize shape guard in the provider chain (2.14)", () => {
+  const argsFor = (shot: Shot) => ({ shot, attempt: 1, useFallbackProvider: false, jobId: "job-h", workspaceId: "ws-1" });
+
+  it("fails over to the next image provider when one returns the lighting pass in the wrong shape", async () => {
+    const wrong = new FakeGeminiInner("gemini-image", true);
+    const right = new FakeGeminiInner("flux-image", false);
+    const { ai, wiring, meter } = bridgedDeps([wrong, right], await productCutoutPng(96));
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+
+    const generation = await generator.generate(argsFor(compositeShotArgs));
+
+    expect(wrong.tasks).toEqual([SCENE_PLATE_TASK, HARMONIZE_TASK]);
+    expect(right.tasks).toEqual([HARMONIZE_TASK]);
+    expect(generation.productReference).toBeDefined();
+    const rejected = meter.entries.find((e) => e.provider === "gemini-image" && e.task === HARMONIZE_TASK);
+    expect(rejected?.ok).toBe(false);
+    expect(rejected?.error).toContain("does not match");
+    // Cutout, plate and the accepted harmonization at least.
+    expect(generation.costMicros).toBeGreaterThanOrEqual(20_000 + 2 * 67_000);
+  });
+
+  it("sends only that shot to review, with its spend, when every provider returns the wrong shape", async () => {
+    const wrong = new FakeGeminiInner("gemini-image", true);
+    const { ai, wiring } = bridgedDeps([wrong], await productCutoutPng(96));
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+
+    const err = await generator.generate(argsFor(compositeShotArgs)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ShotUnavailableError);
+    expect((err as ShotUnavailableError).message).toBe(HARMONIZE_SHAPE_REFUSED);
+    // The cutout, the plate and the rejected but paid harmonization.
+    expect((err as ShotUnavailableError).costMicros).toBe(20_000 + 67_000 + 67_000);
+
+    const outcome = await runShot(
+      { ...compositeShotArgs, id: "shot-h2" },
+      { jobId: "job-h2", workspaceId: "ws-1" },
+      { ...buildRuntimeDeps(), generator: new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") }) },
+    );
+    expect(outcome.status).toBe("needs_review");
+    expect(outcome.verdict.repairHint).toBe(HARMONIZE_SHAPE_REFUSED);
+    expect(outcome.costMicros).toBe(20_000 + 67_000 + 67_000);
+  });
+
+  it("keeps the bridge's timeout floor and cost estimate behind the guard", () => {
+    const bridge = new ScenePlateBridge(new FakeGeminiInner("gemini-image", false), "gemini", "gemini-image");
+    const guarded = guardScenePlate(bridge);
+    expect(guarded.minTimeoutMs).toBe(bridge.minTimeoutMs);
+    expect(guarded.estimateCostMicros?.({ task: HARMONIZE_TASK, input: {} })).toBe(67_000);
+    expect(guarded.supports(SCENE_PLATE_TASK)).toBe(true);
+  });
+
+  it("registers every live image bridge behind the guard", () => {
+    const { registry, routing } = freshBase();
+    wireLiveProviders(registry, routing, (name) => (name === "GEMINI_API_KEY" ? "key" : undefined));
+    const registered = registry.get("gemini-image") as CostAwareProvider;
+    expect(registered).toBeDefined();
+    expect(registered).not.toBeInstanceOf(ScenePlateBridge);
+    expect(registered.minTimeoutMs).toBe(ASYNC_JOB_TIMEOUT_MARGIN_MS);
+  });
+});
+
+describe("ScenePlateBridge timeouts and downloads (5.1)", () => {
+  it("adds a download margin to the inner adapter's timeout floor", () => {
+    const bfl = new BflFluxProvider({
+      name: "flux-api",
+      tasks: [SCENE_PLATE_TASK],
+      apiKey: "key",
+      model: "flux-test",
+      priceTable: { perImageMicros: 1 },
+      pollTimeoutMs: 120_000,
+    });
+    const bflBridge = new ScenePlateBridge(bfl, "bfl", "flux-image");
+    expect(bflBridge.minTimeoutMs).toBe(bfl.minTimeoutMs + ASYNC_JOB_TIMEOUT_MARGIN_MS);
+    expect(bflBridge.minTimeoutMs).toBeGreaterThan(120_000);
+    const sync = new ScenePlateBridge(new FakeGeminiInner("gemini-image", false), "gemini", "gemini-image");
+    expect(sync.minTimeoutMs).toBe(ASYNC_JOB_TIMEOUT_MARGIN_MS);
+  });
+
+  /** BFL shaped inner adapter answering with a result URL. */
+  const bflInner = (): CostAwareProvider => ({
+    name: "flux-api",
+    kind: "image",
+    supports: () => true,
+    estimateCostMicros: () => 50_000,
+    invoke: async <_TIn, TOut>(): Promise<ProviderResponse<TOut>> =>
+      ({ output: { imageUrl: "https://bfl.example/sample.png", raw: {} }, costMicros: 50_000 }) as ProviderResponse<TOut>,
+  });
+
+  it("downloads the result with the router's abort signal", async () => {
+    const png = await encodePng(solidCanvas(8, 8, 1, 2, 3));
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const fetchFn = async (_url: string, init?: RequestInit): Promise<Response> => {
+      signals.push(init?.signal);
+      return new Response(new Uint8Array(png), { status: 200 });
+    };
+    const registry = new ProviderRegistry();
+    registry.register(new ScenePlateBridge(bflInner(), "bfl", "flux-image", fetchFn));
+    const result = await callWithFailover<ScenePlateInputLike, ImageOutput>(
+      registry,
+      { [SCENE_PLATE_TASK]: ["flux-image"] },
+      new InMemoryCostMeter(),
+      new InMemoryBreakerStore(),
+      { task: SCENE_PLATE_TASK, input: { prompt: "plate", width: 1000, height: 1000 } },
+    );
+    expect(result.output.png.equals(png)).toBe(true);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it("maps a missing result to a provider error that is not retried", async () => {
+    const fetchFn = async (): Promise<Response> => new Response("gone", { status: 404 });
+    const bridge = new ScenePlateBridge(bflInner(), "bfl", "flux-image", fetchFn);
+    const err = await bridge
+      .invoke({ task: SCENE_PLATE_TASK, input: { prompt: "plate", width: 1000, height: 1000 } })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).retryable).toBe(false);
+    expect((err as ProviderError).message).toContain("404");
+  });
+});
+
+type ScenePlateInputLike = { prompt: string; width: number; height: number };
+
+describe("live failures keep their spend and plain copy (5.1, 5.4)", () => {
+  const argsFor = (shot: Shot) => ({ shot, attempt: 1, useFallbackProvider: false, jobId: "job-f", workspaceId: "ws-1" });
+
+  it("tells the seller the image service declined the scene and books the cutout", async () => {
+    const blocked = new FakeGeminiInner("gemini-image", false, () =>
+      new ProviderError("declined", "gemini-image", SCENE_PLATE_TASK, false, undefined, { code: "content_blocked" }),
+    );
+    const { ai, wiring } = bridgedDeps([blocked], await productCutoutPng(96));
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+    const err = await generator.generate(argsFor(compositeShotArgs)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ShotUnavailableError);
+    expect((err as ShotUnavailableError).message).toBe(SHOT_CONTENT_BLOCKED);
+    expect((err as ShotUnavailableError).costMicros).toBe(20_000);
+  });
+
+  it("keeps the cutout spend on a shot whose image providers are down", async () => {
+    const down = new FakeGeminiInner("gemini-image", false, () =>
+      new ProviderError("upstream 400", "gemini-image", SCENE_PLATE_TASK, false),
+    );
+    const { ai, wiring } = bridgedDeps([down], await productCutoutPng(96));
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+    const err = await generator.generate(argsFor(compositeShotArgs)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ShotFailedAfterSpendError);
+    expect((err as ShotFailedAfterSpendError).costMicros).toBe(20_000);
+
+    const outcome = await runShot(
+      { ...compositeShotArgs, id: "shot-down" },
+      { jobId: "job-down", workspaceId: "ws-1" },
+      { ...buildRuntimeDeps(), generator: new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") }) },
+    );
+    expect(outcome.status).toBe("needs_review");
+    expect(outcome.verdict.repairHint).toBe(SHOT_PROVIDER_TROUBLE);
+    expect(outcome.costMicros).toBe(20_000);
+  });
+
+  it("passes the spend alert hook to the cutout and scene calls (5.7)", async () => {
+    const capStore = new InMemoryCapStore();
+    await capStore.add("caps:global:2026-09-28", 50_000_000);
+    const caps = new SpendCaps(capStore, () => new Date("2026-09-28T12:00:00Z"));
+    const { ai, wiring } = bridgedDeps([new FakeGeminiInner("gemini-image", false)], await productCutoutPng(96), caps);
+    const alerts: number[] = [];
+    ai.onCapAlert = (total) => alerts.push(total);
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+    await generator.generate(argsFor(compositeShotArgs));
+    // Cutout, scene plate and harmonization each reserved past the line.
+    expect(alerts).toHaveLength(3);
+    expect(alerts.every((total) => total >= 50_000_000)).toBe(true);
+  });
+});
+
+describe("source photo orientation (7.8)", () => {
+  class RecordingCutout extends FakeCutoutProvider {
+    readonly received: Buffer[] = [];
+    override async invoke<TIn, TOut>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
+      this.received.push(Buffer.from((req.input as unknown as PhotoroomCutoutInput).imageBytes));
+      return super.invoke(req);
+    }
+  }
+
+  it("sends the cutout service upright pixels, not an EXIF rotation tag", async () => {
+    // A phone photo stored 40x20 with an orientation tag that displays it 20x40.
+    const sideways = await rawToSharp(solidCanvas(40, 20, 90, 120, 150))
+      .jpeg()
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+    expect(imageDimensions(sideways)).toEqual({ width: 40, height: 20 });
+
+    const cutout = new RecordingCutout(await productCutoutPng(96));
+    const registry = new ProviderRegistry();
+    registry.register(cutout);
+    const ai: PipelineDeps["ai"] = {
+      registry,
+      routing: { [CUTOUT_TASK]: ["photoroom"] },
+      meter: new InMemoryCostMeter(),
+      breakerStore: new InMemoryBreakerStore(),
+    };
+    const generator = new LiveShotGenerator({
+      ai,
+      wiring: { llmLive: true, imageProviders: [], cutoutLive: true },
+      loadMedia: async () => sideways,
+    });
+    await generator.generate({
+      shot: { ...compositeShotArgs, id: "main-o", type: "amazon_main", method: "deterministic", channels: ["amazon.main"], stylePreset: "none" },
+      attempt: 1,
+      useFallbackProvider: false,
+      jobId: "job-o",
+      workspaceId: "ws-1",
+    });
+
+    expect(cutout.received).toHaveLength(1);
+    const [sent] = cutout.received;
+    expect(imageDimensions(sent)).toEqual({ width: 20, height: 40 });
+    expect(sent.includes(Buffer.from("Exif"))).toBe(false);
+  });
+
+  it("sends bytes it cannot read as they are", async () => {
+    const cutout = new RecordingCutout(await productCutoutPng(96));
+    const registry = new ProviderRegistry();
+    registry.register(cutout);
+    const generator = new LiveShotGenerator({
+      ai: { registry, routing: { [CUTOUT_TASK]: ["photoroom"] }, meter: new InMemoryCostMeter(), breakerStore: new InMemoryBreakerStore() },
+      wiring: { llmLive: true, imageProviders: [], cutoutLive: true },
+      loadMedia: async () => Buffer.from("heic-bytes"),
+    });
+    await generator.generate({
+      shot: { ...compositeShotArgs, id: "main-h", type: "amazon_main", method: "deterministic", channels: ["amazon.main"], stylePreset: "none" },
+      attempt: 1,
+      useFallbackProvider: false,
+      jobId: "job-heic",
+      workspaceId: "ws-1",
+    });
+    expect(cutout.received[0].toString()).toBe("heic-bytes");
   });
 });

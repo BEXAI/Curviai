@@ -41,11 +41,12 @@ export function buildDbRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps 
   // Spend cap totals live in Postgres so every task run, subtask retry and
   // web instance shares them; real credits rule out the demo generator.
   const capStore = new PgCapStore(db);
-  const base = buildRuntimeDeps({ ...opts, capStore, realCredits: true });
   // The $50 alert and the hard stop reach the founder once per day each,
-  // deduplicated through the shared counters table.
+  // deduplicated through the shared counters table. Every routed provider
+  // call reports the alert line through it too (onCapAlert).
   globalScope.__curviSpendAlerts ??= new SpendAlertNotifier({ db, dedupe: capStore });
   const alerts = globalScope.__curviSpendAlerts;
+  const base = buildRuntimeDeps({ ...opts, capStore, realCredits: true, onSpendAlert: alerts.onSpendAlert });
   if (base.ai.caps) {
     watchGlobalSpend(base.ai.caps, alerts);
   }
