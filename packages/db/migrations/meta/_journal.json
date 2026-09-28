@@ -78,6 +78,13 @@
       "when": 1790600735599,
       "tag": "0010_spend_cap_counters",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790700100000,
+      "tag": "0012_signup_grant_on_confirm",
+      "breakpoints": true
     }
   ]
 }

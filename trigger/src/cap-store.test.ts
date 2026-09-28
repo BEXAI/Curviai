@@ -51,4 +51,13 @@ describe("PgCapStore", () => {
     expect((await runB.checkAndReserveGlobalDay(30_000)).allowed).toBe(false);
     expect((await runB.checkAndReserveGlobalDay(20_000)).allowed).toBe(true);
   });
+
+  it("lets exactly one caller claim a one time key, across concurrent workers", async () => {
+    const results = await Promise.all(Array.from({ length: 8 }, () => store.claim("alerts:spend_alert:2026-09-28")));
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await store.claim("alerts:spend_alert:2026-09-28")).toBe(false);
+    expect(await store.claim("alerts:hard_stop:2026-09-28")).toBe(true);
+    // A claim never moves a spend total.
+    expect(await store.get("caps:global:2026-09-28")).toBe(100_000);
+  });
 });

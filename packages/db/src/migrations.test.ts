@@ -33,6 +33,8 @@ const EXPECTED_TABLES = [
   "churn_scores",
   "pack_files",
   "spend_cap_counters",
+  "platform_settings",
+  "signup_grants",
 ];
 
 const USER_A = "00000000-0000-4000-8000-00000000000a";

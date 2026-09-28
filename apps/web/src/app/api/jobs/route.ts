@@ -106,4 +106,7 @@ const REJECTED_STATUS = {
   needs_photo: 400,
   no_media: 400,
   insufficient_credits: 402,
+  upgrade_required: 402,
+  feature_unavailable: 422,
+  unavailable: 503,
 } as const;

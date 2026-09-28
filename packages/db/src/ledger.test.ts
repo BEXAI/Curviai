@@ -67,6 +67,23 @@ describe("credit ledger functions", () => {
     expect(await balance(ws)).toBe(90);
   });
 
+  it("tags only the insufficient balance failure with SQLSTATE CU402 (Update.md 1.8)", async () => {
+    // The app maps this code, and only this code, to 402 Not enough credits.
+    await expect(
+      client.query("select reserve_credits($1, $2, $3)", [ws, 200, job]),
+    ).rejects.toMatchObject({ code: "CU402" });
+    const other = await client
+      .query("select reserve_credits($1, $2, $3)", ["00000000-0000-4000-8000-0000000000ee", 10, job])
+      .then(() => null, (err: { code?: string }) => err);
+    expect(other).not.toBeNull();
+    expect(other?.code).not.toBe("CU402");
+    const nonPositive = await client
+      .query("select reserve_credits($1, $2, $3)", [ws, 0, job])
+      .then(() => null, (err: { code?: string }) => err);
+    expect(nonPositive?.code).not.toBe("CU402");
+    expect(await balance(ws)).toBe(90);
+  });
+
   it("rejects non positive reserve amounts", async () => {
     await expect(
       client.query("select reserve_credits($1, $2, $3)", [ws, 0, job]),

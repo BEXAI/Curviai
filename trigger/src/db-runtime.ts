@@ -8,14 +8,18 @@
  */
 
 import { createDb, type Db } from "@curvi/db";
-import { costCaps } from "@curvi/pipeline/seed";
+import { costCaps, undeliverableShotMethods } from "@curvi/pipeline/seed";
 import { PgCapStore } from "./cap-store";
 import { DbJobStore } from "./db-store";
 import type { PipelineDeps } from "./pipeline-runner";
 import { buildR2Uploader } from "./r2";
 import { buildRuntimeDeps, optionalEnv, type RuntimeDepsOptions } from "./runtime";
+import { SpendAlertNotifier, watchGlobalSpend } from "./spend-alerts";
 
-const globalScope = globalThis as typeof globalThis & { __curviWorkerDb?: Db };
+const globalScope = globalThis as typeof globalThis & {
+  __curviWorkerDb?: Db;
+  __curviSpendAlerts?: SpendAlertNotifier;
+};
 
 export function getWorkerDb(url: string): Db {
   // prepare false so the Supabase transaction mode pooler is safe.
@@ -34,17 +38,28 @@ export function buildDbRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps 
     reserveHandledExternally: true,
     uploader: buildR2Uploader(),
   });
+  // Spend cap totals live in Postgres so every task run, subtask retry and
+  // web instance shares them; real credits rule out the demo generator.
+  const capStore = new PgCapStore(db);
+  const base = buildRuntimeDeps({ ...opts, capStore, realCredits: true });
+  // The $50 alert and the hard stop reach the founder once per day each,
+  // deduplicated through the shared counters table.
+  globalScope.__curviSpendAlerts ??= new SpendAlertNotifier({ db, dedupe: capStore });
+  const alerts = globalScope.__curviSpendAlerts;
+  if (base.ai.caps) {
+    watchGlobalSpend(base.ai.caps, alerts);
+  }
   return {
-    // Spend cap totals live in Postgres so every task run, subtask retry and
-    // web instance shares them; real credits rule out the demo generator.
-    ...buildRuntimeDeps({ ...opts, capStore: new PgCapStore(db), realCredits: true }),
+    ...base,
     store,
-    // Video and avatar shots wait for their providers; skipping them keeps
-    // real packs honest instead of charging for placeholder renders. Spend
-    // ceilings come from the seed per plan section 4.4.
-    excludeShotMethods: ["video_generate", "avatar"],
+    // Shots whose plan feature is not live yet (video and avatar methods) are
+    // skipped, keeping real packs honest instead of charging for placeholder
+    // renders; the web estimate leaves the same methods out of the hold.
+    // Spend ceilings come from the seed per plan section 4.4.
+    excludeShotMethods: [...undeliverableShotMethods],
     assetCostCapMicros: costCaps.imageAssetMicros,
     packCostCapMicros: costCaps.packMicros,
+    onSpendAlert: alerts.onSpendAlert,
   };
 }
 
