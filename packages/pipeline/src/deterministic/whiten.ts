@@ -4,9 +4,10 @@
  * No generative model touches these pixels (CURVI_BUILD_PLAN.md section 5.7).
  */
 import sharp from "sharp";
-import type { ChannelSpec } from "@curvi/specs";
+import { dimensionBounds, type ChannelSpec } from "@curvi/specs";
 import { hexToRgb } from "../color";
 import { boundingBoxOfMask, nonZeroMask, type BBox } from "../mask";
+import { minLongSideFor } from "../qc/pixelChecks";
 import { decodeMask, decodeToRgba, type RawImage, type RawMask } from "../raw";
 
 /** Resize kernel every deterministic helper scales the product with. */
@@ -32,8 +33,31 @@ export interface ProductPlacement {
   kernel: typeof PRODUCT_RESIZE_KERNEL;
 }
 
+/**
+ * The encoded file is still larger than the spec's byte limit at the lowest
+ * JPEG quality and the smallest size the spec accepts. The shot cannot ship
+ * and goes to review; retrying the same render cannot help.
+ */
+export class OutputTooLargeError extends Error {
+  constructor(
+    message: string,
+    readonly bytes: number,
+    readonly maxBytes: number,
+  ) {
+    super(message);
+    this.name = "OutputTooLargeError";
+  }
+}
+
+/** Lowest JPEG quality encodeUnderLimit steps down to. */
+export const MIN_JPEG_QUALITY = 40;
+/** Each size step shrinks the long side to this share of the previous one. */
+const SIZE_STEP = 0.85;
+/** Size steps tried before the spec's floor size, which is always tried last. */
+const MAX_SIZE_STEPS = 6;
+
 export interface WhitenResult {
-  /** Final encoded JPEG, quality stepped down until under spec.maxBytes. */
+  /** Final encoded JPEG, quality (then size) stepped down until under spec.maxBytes. */
   jpeg: Buffer;
   /** Pre encode raw RGBA with the background forced to pure white. */
   raw: RawImage;
@@ -55,6 +79,13 @@ const DEFAULT_FILL_TARGET = 0.875;
  * force every pixel outside the mask to pure 255 white, trim to the product
  * bounding box, pad so the product longest side hits the spec fill target,
  * resize with lanczos3 and export an sRGB JPEG at quality 90 under maxBytes.
+ *
+ * When the JPEG is still over spec.maxBytes at the lowest quality, the
+ * canvas steps down in size (same aspect, same fill) toward the smallest
+ * size the spec accepts (spec.minLongSide, 1600 for main class specs, or the
+ * exact size of an exactSize spec). If even that is too large it throws
+ * OutputTooLargeError instead of returning a file QC would reject after
+ * paid retries.
  */
 export async function makeAmazonMain(
   sourceBuffer: Buffer,
@@ -72,10 +103,73 @@ export async function makeAmazonMain(
 
   const canvasW = spec.width ?? 2000;
   const canvasH = spec.height ?? canvasW;
-  const canvasLong = Math.max(canvasW, canvasH);
   const fillTarget = spec.fill
     ? clamp(DEFAULT_FILL_TARGET, spec.fill.min, spec.fill.max)
     : DEFAULT_FILL_TARGET;
+
+  let smallest = { bytes: 0, width: canvasW, height: canvasH };
+  for (const size of stepDownSizes(canvasW, canvasH, spec)) {
+    const placed = await placeOnWhite(source, mask, bbox, size.width, size.height, fillTarget);
+    const encoded = await encodeUnderLimit(placed.raw, spec.maxBytes);
+    if (!encoded.overLimit) {
+      return { ...placed, jpeg: encoded.jpeg, jpegQuality: encoded.quality };
+    }
+    smallest = { bytes: encoded.jpeg.length, width: size.width, height: size.height };
+  }
+  const maxBytes = spec.maxBytes ?? 0;
+  throw new OutputTooLargeError(
+    `Main image is ${smallest.bytes} bytes at ${smallest.width}x${smallest.height} and quality ${MIN_JPEG_QUALITY}, over the ${maxBytes} byte limit of ${spec.id}`,
+    smallest.bytes,
+    maxBytes,
+  );
+}
+
+/**
+ * Canvas sizes to try, largest first: the spec size, then shrinking steps of
+ * the same aspect down to the smallest size the spec accepts, which is
+ * always tried last. An exactSize spec (or one already at its floor) gets a
+ * single size.
+ */
+export function stepDownSizes(
+  canvasW: number,
+  canvasH: number,
+  spec: ChannelSpec,
+): Array<{ width: number; height: number }> {
+  const bounds = dimensionBounds(spec);
+  const long = Math.max(canvasW, canvasH);
+  const floorScale = Math.min(
+    1,
+    Math.max(minLongSideFor(spec) / long, bounds.minWidth / canvasW, bounds.minHeight / canvasH),
+  );
+  const sizeAt = (scale: number): { width: number; height: number } => ({
+    width: Math.max(1, Math.ceil(canvasW * scale)),
+    height: Math.max(1, Math.ceil(canvasH * scale)),
+  });
+  const sizes = [sizeAt(1)];
+  let scale = 1;
+  for (let i = 0; i < MAX_SIZE_STEPS; i++) {
+    scale *= SIZE_STEP;
+    if (scale <= floorScale) {
+      break;
+    }
+    sizes.push(sizeAt(scale));
+  }
+  if (floorScale < 1) {
+    sizes.push(sizeAt(floorScale));
+  }
+  return sizes;
+}
+
+/** The white main image at one canvas size, before encoding. */
+async function placeOnWhite(
+  source: RawImage,
+  mask: RawMask,
+  bbox: BBox,
+  canvasW: number,
+  canvasH: number,
+  fillTarget: number,
+): Promise<Omit<WhitenResult, "jpeg" | "jpegQuality">> {
+  const canvasLong = Math.max(canvasW, canvasH);
 
   // Scale so the product longest side hits the fill target, but never overflow
   // either canvas axis.
@@ -135,18 +229,12 @@ export async function makeAmazonMain(
     }
   }
 
-  const raw: RawImage = { data: outData, width: canvasW, height: canvasH, channels: 4 };
-  const outMask: RawMask = { data: outMaskData, width: canvasW, height: canvasH };
-  const { jpeg, quality } = await encodeUnderLimit(raw, spec.maxBytes ?? 10_000_000);
-
   return {
-    jpeg,
-    raw,
-    mask: outMask,
+    raw: { data: outData, width: canvasW, height: canvasH, channels: 4 },
+    mask: { data: outMaskData, width: canvasW, height: canvasH },
     width: canvasW,
     height: canvasH,
     fillRatio: Math.max(targetW, targetH) / canvasLong,
-    jpegQuality: quality,
     placement: {
       crop: region,
       left: offsetX,
@@ -424,10 +512,22 @@ function drawContactShadow(
   }
 }
 
-async function encodeUnderLimit(
+export interface EncodeUnderLimitResult {
+  jpeg: Buffer;
+  quality: number;
+  /** True when even MIN_JPEG_QUALITY is over maxBytes; the caller must not ship it. */
+  overLimit: boolean;
+}
+
+/**
+ * JPEG at quality 90, stepping down by 10 to MIN_JPEG_QUALITY until the file
+ * fits maxBytes. With no limit the first encode is final. The result says
+ * whether it fits, so a caller can never ship an oversized file by accident.
+ */
+export async function encodeUnderLimit(
   raw: RawImage,
-  maxBytes: number,
-): Promise<{ jpeg: Buffer; quality: number }> {
+  maxBytes: number | undefined,
+): Promise<EncodeUnderLimitResult> {
   let quality = 90;
   for (;;) {
     const jpeg = await sharp(raw.data, {
@@ -436,8 +536,11 @@ async function encodeUnderLimit(
       .flatten({ background: "#ffffff" })
       .jpeg({ quality, chromaSubsampling: "4:4:4" })
       .toBuffer();
-    if (jpeg.length <= maxBytes || quality <= 40) {
-      return { jpeg, quality };
+    if (maxBytes === undefined || jpeg.length <= maxBytes) {
+      return { jpeg, quality, overLimit: false };
+    }
+    if (quality <= MIN_JPEG_QUALITY) {
+      return { jpeg, quality, overLimit: true };
     }
     quality -= 10;
   }

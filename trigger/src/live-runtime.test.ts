@@ -109,9 +109,13 @@ class FakeSceneProvider implements Provider {
   estimateCostMicros(): number {
     return 67_000;
   }
-  async invoke<TIn, TOut>(_req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
+  async invoke<TIn, TOut>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
     this.calls += 1;
-    const plate = await encodePng(solidCanvas(64, 64, 245, 244, 240));
+    // Harmonize answers in the draft's shape, as edit models do; compositeShot
+    // rejects an output of another aspect ratio (Update.md 2.14).
+    const input = req.input as { width?: number; height?: number };
+    const height = req.task === "harmonize" && input.width && input.height ? Math.round((64 * input.height) / input.width) : 64;
+    const plate = await encodePng(solidCanvas(64, height, 245, 244, 240));
     return { output: { png: plate } as ImageOutput as TOut, costMicros: 67_000 };
   }
 }

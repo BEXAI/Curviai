@@ -3,6 +3,7 @@
  * the shot_planner rules from CURVI_BUILD_PLAN.md section 5.3: used in demo
  * mode and tests when no LLM is available. Output validates against ShotList.
  */
+import { channelFileLimit, getSpec, hasSpec } from "@curvi/specs";
 import { creditCosts, type TierKey } from "../seed/credits";
 import { ProductProfile, Shot, ShotList } from "../schemas";
 
@@ -317,8 +318,14 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     skipped.push({ type: "video_ugc_hook", reason: "Pro or Agency only" });
   }
 
+  // Channel file limits (amazon.secondary takes 8, amazon.main takes 1):
+  // extras lose that channel, and a shot left with no channel is skipped, so
+  // it is neither reserved nor charged. Done before the budget trim so the
+  // freed credits can keep other shots.
+  const capped = capShotsPerChannel(shots, skipped);
+
   // Rule 6: stay within the credit budget, dropping lowest priority shots first.
-  const kept = trimToBudget(shots, opts.creditBudget, skipped);
+  const kept = trimToBudget(capped, opts.creditBudget, skipped);
 
   // Schema cap: at most 40 shots.
   while (kept.length > 40) {
@@ -327,6 +334,80 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   }
 
   return ShotList.parse({ shots: kept, skipped });
+}
+
+/** Reason recorded in skipped for a shot every one of whose channels was full. */
+export const CHANNEL_LIMIT_REASON = "channel image limit";
+
+export interface ChannelLimitViolation {
+  specId: string;
+  /** Shots that target this spec. */
+  count: number;
+  /** Most files one product may have for it (channelFileLimit). */
+  limit: number;
+}
+
+function fileLimitFor(specId: string): number | null {
+  return hasSpec(specId) ? channelFileLimit(getSpec(specId)) : null;
+}
+
+/**
+ * Channel specs a shot list targets more often than the spec allows, for
+ * example a second amazon.main or a ninth amazon.secondary. Plan validators
+ * (the LLM shot list check) reject a list with any violation.
+ */
+export function channelLimitViolations(shots: readonly Shot[]): ChannelLimitViolation[] {
+  const counts = new Map<string, number>();
+  for (const shot of shots) {
+    for (const specId of new Set(shot.channels)) {
+      counts.set(specId, (counts.get(specId) ?? 0) + 1);
+    }
+  }
+  const violations: ChannelLimitViolation[] = [];
+  for (const [specId, count] of counts) {
+    const limit = fileLimitFor(specId);
+    if (limit !== null && count > limit) {
+      violations.push({ specId, count, limit });
+    }
+  }
+  return violations;
+}
+
+/**
+ * Keep at most each spec's file limit of shots on that spec, best priority
+ * first (lower number wins, plan order breaks ties). An extra shot loses only
+ * the full channel and keeps the others it targets; a shot left with no
+ * channel at all moves to skipped with CHANNEL_LIMIT_REASON. Returns the
+ * kept shots in their original order.
+ */
+export function capShotsPerChannel(shots: readonly Shot[], skipped: ShotList["skipped"]): Shot[] {
+  const ranked = shots.map((shot, index) => ({ shot, index }));
+  ranked.sort((a, b) => a.shot.priority - b.shot.priority || a.index - b.index);
+  const used = new Map<string, number>();
+  const channelsByIndex = new Map<number, string[]>();
+  for (const { shot, index } of ranked) {
+    const kept: string[] = [];
+    for (const specId of new Set(shot.channels)) {
+      const limit = fileLimitFor(specId);
+      const n = used.get(specId) ?? 0;
+      if (limit !== null && n >= limit) {
+        continue;
+      }
+      used.set(specId, n + 1);
+      kept.push(specId);
+    }
+    channelsByIndex.set(index, kept);
+  }
+  const out: Shot[] = [];
+  shots.forEach((shot, index) => {
+    const kept = channelsByIndex.get(index) ?? [];
+    if (kept.length === 0) {
+      skipped.push({ type: shot.type, reason: CHANNEL_LIMIT_REASON });
+      return;
+    }
+    out.push(kept.length === shot.channels.length ? shot : { ...shot, channels: kept });
+  });
+  return out;
 }
 
 function trimToBudget(shots: Shot[], budget: number, skipped: ShotList["skipped"]): Shot[] {
@@ -385,32 +466,53 @@ function presetForCategory(category: ProductProfile["category"]): string {
   }
 }
 
+const MIN_LIFESTYLE_SCENES = 2;
+const MAX_LIFESTYLE_SCENES = 4;
+const FALLBACK_LIFESTYLE_SCENES = ["clean studio scene", "everyday use scene"];
+
+/**
+ * 2 to 4 lifestyle scenes: the seller's use contexts, plus the rule 4
+ * category scenes, which always keep their slots (Update.md 2.16: apparel
+ * used to return early, so it could end with one scene, and 4 or more
+ * contexts cut the ghost style scene; the same cut dropped the jewelry,
+ * food, furniture and electronics additions). Every category then shares the
+ * dedupe and the two scene minimum.
+ */
 function lifestyleScenesFor(profile: ProductProfile): string[] {
-  const scenes = profile.useContexts.slice(0, 4);
+  let contexts = profile.useContexts;
+  const required: string[] = [];
   // Rule 4 category additions.
   switch (profile.category) {
     case "apparel":
-      // On model only when the seller supplied on model photos.
+      // On model only when the seller supplied on model photos; otherwise
+      // flat lay scenes plus ghost style from the supplied photos.
       if (!profile.photographedAngles.includes("in_use" as Angle)) {
-        return scenes.map((s) => `flat lay, ${s}`).concat(["ghost style from supplied photos"]).slice(0, 4);
+        contexts = contexts.map((s) => `flat lay, ${s}`);
+        required.push("ghost style from supplied photos");
       }
       break;
     case "jewelry":
-      scenes.push("detail macro", "scale on hand");
+      required.push("detail macro", "scale on hand");
       break;
     case "food_beverage":
-      scenes.push("serving scene");
+      required.push("serving scene");
       break;
     case "furniture":
-      scenes.push("room scale scene");
+      required.push("room scale scene");
       break;
     case "electronics":
-      scenes.push("ports detail");
+      required.push("ports detail");
       break;
   }
-  const unique = [...new Set(scenes)];
-  if (unique.length < 2) {
-    unique.push("clean studio scene", "everyday use scene");
+  const contextSlots = MAX_LIFESTYLE_SCENES - required.length;
+  const chosen = [...new Set(contexts)].filter((s) => !required.includes(s)).slice(0, contextSlots);
+  const scenes = [...chosen, ...required];
+  if (scenes.length < MIN_LIFESTYLE_SCENES) {
+    for (const fallback of FALLBACK_LIFESTYLE_SCENES) {
+      if (!scenes.includes(fallback)) {
+        scenes.push(fallback);
+      }
+    }
   }
-  return unique.slice(0, 4);
+  return scenes.slice(0, MAX_LIFESTYLE_SCENES);
 }

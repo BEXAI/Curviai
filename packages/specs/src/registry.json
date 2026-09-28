@@ -36,6 +36,7 @@
       "verified": false,
       "width": 970,
       "height": 600,
+      "exactSize": true,
       "formats": ["jpg", "png"],
       "maxBytes": 2000000,
       "textAllowed": true
@@ -45,6 +46,7 @@
       "verified": false,
       "width": 1464,
       "height": 600,
+      "exactSize": true,
       "formats": ["jpg", "png"],
       "maxBytes": 2000000,
       "textAllowed": true
@@ -69,6 +71,7 @@
       "verified": false,
       "width": 2400,
       "height": 1000,
+      "exactSize": true,
       "formats": ["jpg"],
       "maxBytes": 20000000,
       "textAllowed": true
@@ -138,6 +141,7 @@
       "verified": false,
       "width": 1080,
       "height": 1080,
+      "exactSize": true,
       "formats": ["jpg", "png"],
       "textAllowed": true,
       "badgeAllowed": true
@@ -147,6 +151,7 @@
       "verified": false,
       "width": 1080,
       "height": 1350,
+      "exactSize": true,
       "formats": ["jpg", "png"],
       "textAllowed": true,
       "badgeAllowed": true
@@ -156,6 +161,7 @@
       "verified": false,
       "width": 1080,
       "height": 1920,
+      "exactSize": true,
       "safeZone": { "top": 250, "bottom": 340 },
       "formats": ["jpg", "png", "mp4"],
       "textAllowed": true,
@@ -166,6 +172,7 @@
       "verified": false,
       "width": 1000,
       "height": 1500,
+      "exactSize": true,
       "formats": ["jpg", "png"],
       "textAllowed": true
     },

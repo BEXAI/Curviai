@@ -24,6 +24,13 @@ export const ChannelSpec = z.object({
   maxHeight: z.number().int().positive().optional(),
   minLongSide: z.number().int().positive().optional(),
   maxLongSide: z.number().int().positive().optional(),
+  /**
+   * When true, width and height are the only accepted size (social feeds,
+   * pins and banners crop or reject anything else). When false or absent,
+   * width and height are the size we render at and the min and max fields
+   * give the accepted range.
+   */
+  exactSize: z.boolean().optional(),
   maxMegapixels: z.number().positive().optional(),
   formats: z.array(z.enum(["jpg", "png", "tif", "gif", "webp", "mp4", "mov"])).optional(),
   colorSpace: z.literal("sRGB").optional(),
@@ -44,7 +51,11 @@ export const ChannelSpec = z.object({
 
 export const Registry = z.object({
   version: z.number().int().positive(),
-  specs: z.array(ChannelSpec).min(1),
+  specs: z.array(
+    ChannelSpec.refine((spec) => !spec.exactSize || (spec.width !== undefined && spec.height !== undefined), {
+      message: "exactSize needs both width and height",
+    }),
+  ).min(1),
 });
 
 export type BackgroundRule = z.infer<typeof BackgroundRule>;
@@ -121,7 +132,12 @@ function requireVar(specId: string, name: string, value: string | undefined): st
   return sanitized;
 }
 
-/** The dimension boundaries a rendered file must satisfy for this spec. */
+/**
+ * The dimension boundaries a rendered file must satisfy for this spec. An
+ * exactSize spec accepts only width x height. Otherwise width and height
+ * cap the size when no explicit maximum is given, and the minimums default
+ * to 1.
+ */
 export function dimensionBounds(spec: ChannelSpec): {
   minWidth: number;
   minHeight: number;
@@ -130,6 +146,17 @@ export function dimensionBounds(spec: ChannelSpec): {
   minLongSide: number;
   maxLongSide: number;
 } {
+  if (spec.exactSize && spec.width !== undefined && spec.height !== undefined) {
+    const long = Math.max(spec.width, spec.height);
+    return {
+      minWidth: spec.width,
+      minHeight: spec.height,
+      maxWidth: spec.width,
+      maxHeight: spec.height,
+      minLongSide: long,
+      maxLongSide: long,
+    };
+  }
   return {
     minWidth: spec.minWidth ?? 1,
     minHeight: spec.minHeight ?? 1,
@@ -138,4 +165,25 @@ export function dimensionBounds(spec: ChannelSpec): {
     minLongSide: spec.minLongSide ?? 1,
     maxLongSide: spec.maxLongSide ?? Number.MAX_SAFE_INTEGER,
   };
+}
+
+/** True when the naming template numbers its files ({n} or {nn}). */
+export function namingHasSequence(spec: ChannelSpec): boolean {
+  return !!spec.naming && /\{nn?\}/.test(spec.naming);
+}
+
+/**
+ * The most files one product may have for this spec, or null for no limit.
+ * An explicit maxCount wins (amazon.secondary takes 8). A naming template
+ * without a sequence slot ("{sku}.MAIN.jpg") can only name one file per
+ * product, so it allows exactly one.
+ */
+export function channelFileLimit(spec: ChannelSpec): number | null {
+  if (spec.maxCount !== undefined) {
+    return spec.maxCount;
+  }
+  if (spec.naming && !namingHasSequence(spec)) {
+    return 1;
+  }
+  return null;
 }

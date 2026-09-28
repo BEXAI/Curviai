@@ -6,6 +6,13 @@
  * marketplace spec). Files that carry a digitalSource kind get their IPTC
  * DigitalSourceType written before zipping, so delivered bytes are tagged
  * (plan 5.7.2). A PDF version of the report is a follow up; JSON ships now.
+ *
+ * Defensive limits (Update.md 2.10 and 2.12): a spec never gets more files
+ * than channelFileLimit allows (8 amazon.secondary, 1 amazon.main), and no
+ * two files in one zip share a name. The first asset wins; later ones are
+ * left out of the zip, the loose files and report.files, and listed in
+ * report.dropped instead, so a runner that charges only the refs present in
+ * report.files never charges for them.
  */
 import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -14,7 +21,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import archiver from "archiver";
 import sharp from "sharp";
-import { filenameFor, getSpec, isMarketplaceSpec, type ChannelSpec } from "@curvi/specs";
+import { channelFileLimit, filenameFor, getSpec, isMarketplaceSpec, type ChannelSpec } from "@curvi/specs";
 import { writeDigitalSourceType, type DigitalSourceKind } from "../metadata/iptc";
 import { pixelChecks, type CheckItem, type PixelCheckReport } from "../qc/pixelChecks";
 import type { RawImage, RawMask } from "../raw";
@@ -62,11 +69,27 @@ export interface PackFileReport {
   pass: boolean;
 }
 
+/** An asset the packager left out of the pack, and why. */
+export interface PackDroppedAsset {
+  /** The file name it would have had. */
+  file: string;
+  channel: string;
+  specId: string;
+  ref: string | null;
+  reason: string;
+}
+
 export interface PackResult {
   outDir: string;
   zips: Array<{ channel: string; path: string; files: string[] }>;
   reportPath: string;
-  report: { generatedAt: string; channels: string[]; files: PackFileReport[] };
+  report: {
+    generatedAt: string;
+    channels: string[];
+    files: PackFileReport[];
+    /** Assets left out for a channel file limit or a duplicate name. Never delivered, never charged. */
+    dropped: PackDroppedAsset[];
+  };
 }
 
 /** Channel family of a spec id: "amazon.main" belongs to "amazon". */
@@ -90,8 +113,11 @@ export async function buildPack(
   const outDir = opts.outDir ?? (await mkdtemp(path.join(tmpdir(), "curvi-pack-")));
 
   const fileReports: PackFileReport[] = [];
+  const dropped: PackDroppedAsset[] = [];
   const byChannel = new Map<string, Array<{ name: string; buffer: Buffer }>>();
   const counters = new Map<string, number>();
+  const filesPerSpec = new Map<string, number>();
+  const namesPerChannel = new Map<string, Set<string>>();
 
   for (const asset of assets) {
     const spec = getSpec(asset.specId);
@@ -108,9 +134,35 @@ export async function buildPack(
       notes.push("badge suppressed: not allowed for this channel spec");
     }
 
-    const n = asset.n ?? nextN(counters, asset.specId);
     const format = asset.format ?? (await detectFormat(asset.buffer));
+    const limit = channelFileLimit(spec);
+    const already = filesPerSpec.get(asset.specId) ?? 0;
+    if (limit !== null && already >= limit) {
+      dropped.push({
+        file: fileNameFor(spec, asset, asset.n ?? already + 1, format),
+        channel,
+        specId: asset.specId,
+        ref: asset.ref ?? null,
+        reason: `channel image limit: ${asset.specId} takes at most ${limit} ${limit === 1 ? "image" : "images"}`,
+      });
+      continue;
+    }
+    const n = asset.n ?? nextN(counters, asset.specId);
     const name = fileNameFor(spec, asset, n, format);
+    const taken = namesPerChannel.get(channel) ?? new Set<string>();
+    if (taken.has(name)) {
+      dropped.push({
+        file: name,
+        channel,
+        specId: asset.specId,
+        ref: asset.ref ?? null,
+        reason: `duplicate file name: ${name} is already in the ${channel} pack`,
+      });
+      continue;
+    }
+    taken.add(name);
+    namesPerChannel.set(channel, taken);
+    filesPerSpec.set(asset.specId, already + 1);
 
     // Embed the IPTC digital source marking before any bytes leave the
     // packager, so zips, loose files and checks all see the tagged file.
@@ -201,6 +253,7 @@ export async function buildPack(
     generatedAt: new Date().toISOString(),
     channels: [...byChannel.keys()],
     files: fileReports,
+    dropped,
   };
   const reportPath = path.join(outDir, "compliance-report.json");
   await writeFile(reportPath, JSON.stringify(report, null, 2));
@@ -212,6 +265,7 @@ export async function buildPack(
       generatedAt: report.generatedAt,
       channel,
       files: fileReports.filter((f) => f.channel === channel),
+      dropped: dropped.filter((d) => d.channel === channel),
     };
     await writeZip(zipPath, [
       ...entries,

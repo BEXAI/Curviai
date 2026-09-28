@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { getSpec, type ChannelSpec } from "@curvi/specs";
+import { getSpec, listSpecs, type ChannelSpec } from "@curvi/specs";
 import { rawCanvas, rectMask, paintRect } from "../testutil";
-import { QC_THRESHOLDS, pixelChecks, qcKindForSpec, semanticChecks } from "./pixelChecks";
+import type { RawImage } from "../raw";
+import {
+  MASK_MISSING,
+  QC_THRESHOLDS,
+  minLongSideFor,
+  pixelChecks,
+  qcKindForSpec,
+  semanticChecks,
+} from "./pixelChecks";
 import { MockEmbeddingCosineCheck, MockOcrTextCheck } from "./testing";
 
 const smallMainSpec: ChannelSpec = {
@@ -103,6 +111,99 @@ describe("pixelChecks", () => {
     expect(strict.backgroundWhiteShare).toBeLessThan(1);
     const withMargin = await pixelChecks(img, mask, smallMainSpec, { edgeMarginPx: 4 });
     expect(withMargin.backgroundWhiteShare).toBe(1);
+  });
+});
+
+describe("pixelChecks without a mask (Update.md 2.7)", () => {
+  it("fails a main image whose generation returned no mask", async () => {
+    // A perfectly white, correctly sized main image: before the fix the
+    // background and fill rules were skipped and this passed.
+    const img = rawCanvas(256, 256, 255, 255, 255);
+    paintRect(img, box, 120, 40, 40);
+    const report = await pixelChecks(img, null, smallMainSpec, {
+      encoded: { bytes: 50_000, format: "jpg" },
+    });
+    const bg = report.checks.find((c) => c.name === "backgroundWhiteShare");
+    const fill = report.checks.find((c) => c.name === "fillRatio");
+    expect(bg).toMatchObject({ pass: false, measured: MASK_MISSING });
+    expect(fill).toMatchObject({ pass: false, measured: MASK_MISSING });
+    expect(report.backgroundWhiteShare).toBeNull();
+    expect(report.fillRatio).toBeNull();
+    expect(report.pass).toBe(false);
+  });
+
+  it("fails the real amazon.main spec at full size without a mask", async () => {
+    const spec = getSpec("amazon.main");
+    const img: RawImage = { data: Buffer.alloc(0), width: 2000, height: 2000, channels: 4 };
+    const report = await pixelChecks(img, null, spec);
+    expect(report.checks.find((c) => c.name === "dimensions")?.pass).toBe(true);
+    expect(report.pass).toBe(false);
+  });
+
+  it("fails a spec fill rule it cannot measure without a mask", async () => {
+    const spec = getSpec("google.merchant.main");
+    const img: RawImage = { data: Buffer.alloc(0), width: 1000, height: 1000, channels: 4 };
+    const report = await pixelChecks(img, null, spec);
+    expect(report.checks.find((c) => c.name === "fillRatio")).toMatchObject({ pass: false, measured: MASK_MISSING });
+    expect(report.pass).toBe(false);
+  });
+
+  it("still passes a spec with no mask dependent rules when the mask is missing", async () => {
+    const spec = getSpec("meta.feed_1x1");
+    const img: RawImage = { data: Buffer.alloc(0), width: 1080, height: 1080, channels: 4 };
+    const report = await pixelChecks(img, null, spec);
+    expect(report.checks.map((c) => c.name)).toEqual(["dimensions", "longestSide"]);
+    expect(report.pass).toBe(true);
+  });
+});
+
+describe("pixelChecks exact sizes (Update.md 2.8)", () => {
+  const blank = (width: number, height: number): RawImage => ({ data: Buffer.alloc(0), width, height, channels: 4 });
+
+  it("fails a 1080x1080 file against meta.feed_4x5", async () => {
+    const report = await pixelChecks(blank(1080, 1080), null, getSpec("meta.feed_4x5"));
+    const dims = report.checks.find((c) => c.name === "dimensions");
+    expect(dims?.pass).toBe(false);
+    expect(dims?.limit).toBe("exactly 1080x1350");
+    expect(report.pass).toBe(false);
+  });
+
+  it("passes the exact 1080x1350 size for meta.feed_4x5", async () => {
+    const report = await pixelChecks(blank(1080, 1350), null, getSpec("meta.feed_4x5"));
+    expect(report.pass).toBe(true);
+  });
+
+  it("fails a smaller file of the right shape for an exact spec", async () => {
+    const report = await pixelChecks(blank(800, 1000), null, getSpec("meta.feed_4x5"));
+    expect(report.checks.find((c) => c.name === "dimensions")?.pass).toBe(false);
+    expect(report.checks.find((c) => c.name === "longestSide")?.pass).toBe(false);
+  });
+
+  it("still accepts a 1600x1600 amazon.main image", async () => {
+    const report = await pixelChecks(blank(1600, 1600), null, getSpec("amazon.main"));
+    expect(report.checks.find((c) => c.name === "dimensions")?.pass).toBe(true);
+    expect(report.checks.find((c) => c.name === "longestSide")?.pass).toBe(true);
+  });
+
+  it("passes every registry image spec at its own render size", async () => {
+    for (const spec of listSpecs()) {
+      if (spec.width === undefined || spec.height === undefined) {
+        continue;
+      }
+      const report = await pixelChecks(blank(spec.width, spec.height), null, spec);
+      const failed = report.checks
+        .filter((c) => (c.name === "dimensions" || c.name === "longestSide") && !c.pass)
+        .map((c) => `${spec.id} ${c.name} ${c.measured} vs ${c.limit}`);
+      expect(failed).toEqual([]);
+    }
+  });
+
+  it("derives the minimum long side from the spec, the main fallback or the exact size", () => {
+    expect(minLongSideFor(getSpec("amazon.main"))).toBe(1600);
+    expect(minLongSideFor(getSpec("meta.feed_4x5"))).toBe(1350);
+    expect(minLongSideFor(getSpec("walmart.main"))).toBe(QC_THRESHOLDS.main.minLongSide);
+    expect(minLongSideFor(getSpec("ebay.listing"))).toBe(500);
+    expect(minLongSideFor(smallMainSpec)).toBe(256);
   });
 });
 
