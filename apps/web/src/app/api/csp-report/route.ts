@@ -7,6 +7,7 @@
  * unless the body is too large or not a report.
  */
 
+import { readBodyLimited } from "@/lib/http/read-body";
 import { NextResponse, type NextRequest } from "next/server";
 import {
   CSP_REPORT_MAX_BYTES,
@@ -28,14 +29,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (!isCspReportContentType(request.headers.get("content-type"))) {
     return new NextResponse(null, { status: 415 });
   }
-  const declared = Number(request.headers.get("content-length") ?? "0");
-  if (declared > CSP_REPORT_MAX_BYTES) {
+  const body = await readBodyLimited(request, CSP_REPORT_MAX_BYTES);
+  if (!body.ok && body.reason === "too_large") {
     return new NextResponse(null, { status: 413 });
   }
-  const raw = await request.text().catch(() => "");
-  if (raw.length > CSP_REPORT_MAX_BYTES) {
-    return new NextResponse(null, { status: 413 });
-  }
+  const raw = body.ok ? body.text : "";
   const violations = parseCspReports(raw);
   const { allowed, droppedBefore } = budget().take(violations.length);
   if (droppedBefore > 0) {

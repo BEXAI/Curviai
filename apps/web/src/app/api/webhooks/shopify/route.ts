@@ -6,6 +6,7 @@
  * customers/data_request, customers/redact and shop/redact.
  */
 
+import { readBodyLimited, WEBHOOK_MAX_BYTES } from "@/lib/http/read-body";
 import { NextResponse } from "next/server";
 import { optionalEnv } from "@/lib/env";
 import { getInMemoryBillingStore, type BillingStore } from "@/lib/billing/stripe-webhook";
@@ -42,10 +43,21 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  const rawBody = await request.text();
+  const body = await readBodyLimited(request, WEBHOOK_MAX_BYTES);
+  if (!body.ok) {
+    return NextResponse.json({ error: "Request body is too large." }, { status: 413 });
+  }
+  const rawBody = body.text;
   const hmacHeader = request.headers.get(SHOPIFY_HMAC_HEADER) ?? "";
   if (!verifyShopifyHmac(rawBody, hmacHeader, secret)) {
     return NextResponse.json({ error: "Invalid HMAC signature." }, { status: 401 });
+  }
+
+  // Shopify sends a delivery id with every webhook; without it the delivery
+  // cannot be deduplicated, so it is refused rather than keyed on the clock.
+  const webhookId = request.headers.get(SHOPIFY_WEBHOOK_ID_HEADER);
+  if (!webhookId) {
+    return NextResponse.json({ error: "Missing webhook id header." }, { status: 400 });
   }
 
   let payload: Record<string, unknown> = {};
@@ -61,7 +73,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const result = await routeShopifyTopic({
     topic: request.headers.get(SHOPIFY_TOPIC_HEADER) ?? "",
     shopDomain: request.headers.get(SHOPIFY_SHOP_HEADER) ?? "unknown",
-    webhookId: request.headers.get(SHOPIFY_WEBHOOK_ID_HEADER) ?? `no-id-${Date.now()}`,
+    webhookId,
     payload,
     store: billingStore(),
   });

@@ -11,6 +11,7 @@
  * Dashboard if the retries ran out (docs/STRIPE_SETUP.md).
  */
 
+import { readBodyLimited, WEBHOOK_MAX_BYTES } from "@/lib/http/read-body";
 import { NextResponse } from "next/server";
 import { isStripeConfigured, optionalEnv } from "@/lib/env";
 import { buildPriceTable } from "@/lib/billing/price-table";
@@ -55,7 +56,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!signature) {
     return NextResponse.json({ error: "Missing Stripe-Signature header." }, { status: 400 });
   }
-  const rawBody = await request.text();
+  // Stripe events are a few kilobytes; the cap only stops an oversized body
+  // from being buffered before the signature check.
+  const body = await readBodyLimited(request, WEBHOOK_MAX_BYTES);
+  if (!body.ok) {
+    return NextResponse.json({ error: "Request body is too large." }, { status: 413 });
+  }
+  const rawBody = body.text;
 
   let event;
   try {

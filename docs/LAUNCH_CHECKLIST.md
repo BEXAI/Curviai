@@ -335,7 +335,7 @@ What it does: once a day, `POST /api/cron/purge-source-media` deletes source upl
 2. After the deploy, run a dry run by hand and read the report: `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" "https://curvi.ai/api/cron/purge-source-media?dryRun=1"`. `rowsMatched` and `orphansDeleted` show what a real run would delete.
 3. Create a Render Cron Job service with the schedule `30 3 * * *` (Render cron schedules run in UTC, so this is 03:30 UTC daily), any small instance, the same `CRON_SECRET` value, and the command `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/cron/purge-source-media`. Render charges a minimum of $1 per month for each cron job service. Any other scheduler that can send that request daily works too (the route also accepts the secret in an `x-cron-secret` header).
 
-**Verify:** the cron job's first run exits 0, and the Render web logs show `[purge] source media purge finished` with the report. Without `CRON_SECRET` the route answers 503 and does nothing; with a wrong secret it answers 403.
+**Verify:** the cron job's first run exits 0, and the Render web logs show `[purge] source media purge finished` with the report. Without `CRON_SECRET` the route answers 503 and does nothing; with a wrong secret it answers 401, the same as the stale job sweep.
 
 **Sources:** https://render.com/docs/cronjobs (checked 2026-09-28).
 

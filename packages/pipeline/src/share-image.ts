@@ -13,7 +13,9 @@ export const SHARE_IMAGE_MAX_SIDE = 1600;
 export async function shareImageJpeg(bytes: Buffer, maxSide = SHARE_IMAGE_MAX_SIDE): Promise<Buffer> {
   // sharp drops every metadata block unless withMetadata() or keepExif() is
   // called, and neither is, so the output carries no EXIF, XMP or IPTC.
-  return sharp(bytes, { failOn: "none" })
+  // Uploads are capped at 80 megapixels at ingest; the same cap here keeps
+  // a stored file that slipped past it from being decoded on a public route.
+  return sharp(bytes, { failOn: "none", limitInputPixels: 80_000_000 })
     .rotate()
     .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
     .flatten({ background: "#ffffff" })

@@ -9,23 +9,23 @@
  */
 
 import { NextResponse } from "next/server";
+import { checkCronAuth } from "@/lib/cron-auth";
 import { recordCronSuccess } from "@/lib/cron-health";
 import { isR2Configured } from "@/lib/env";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
-import { checkCronSecret } from "@/lib/trust/cron-secret";
 import { purgeStaleSourceMedia } from "@/lib/trust/purge";
 import { r2TrustStorage } from "@/lib/trust/storage";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const auth = checkCronSecret(request.headers);
-  if (auth === "not_configured") {
+  const auth = checkCronAuth(request.headers);
+  if (auth === "unconfigured") {
     return NextResponse.json({ error: "This job is not configured on this server." }, { status: 503 });
   }
-  if (auth === "forbidden") {
-    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+  if (auth === "denied") {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
   if (!isDbMode() || !isR2Configured()) {
     return NextResponse.json({ ok: true, skipped: "Database or storage is not configured." });

@@ -53,6 +53,10 @@ export const RATE_LIMIT_POLICIES = {
   "leads.create": { user: { limit: 20, windowSeconds: HOUR }, ip: { limit: 20, windowSeconds: HOUR } },
   // Publishing and unpublishing a share page.
   "shares.write": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
+  // Public share page images: each one is a storage read plus a re-encode on
+  // a cache miss, so one IP cannot loop on them. A page shows a handful and
+  // the gallery a few dozen, far below this.
+  "shares.image": { user: { limit: 600, windowSeconds: HOUR }, ip: { limit: 600, windowSeconds: HOUR } },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitPolicyName = keyof typeof RATE_LIMIT_POLICIES;

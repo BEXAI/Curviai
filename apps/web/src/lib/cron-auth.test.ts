@@ -1,23 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkCronSecret } from "./cron-secret";
+import { checkCronAuth } from "@/lib/cron-auth";
 
 const SECRET = "s3cret-value-for-tests";
 
-describe("checkCronSecret", () => {
+describe("checkCronAuth", () => {
   it("is closed while CRON_SECRET is unset", () => {
-    expect(checkCronSecret(new Headers({ authorization: `Bearer ${SECRET}` }), undefined)).toBe("not_configured");
+    expect(checkCronAuth(new Headers({ authorization: `Bearer ${SECRET}` }), undefined)).toBe("unconfigured");
   });
 
   it("accepts the secret as a bearer token or an x-cron-secret header", () => {
-    expect(checkCronSecret(new Headers({ authorization: `Bearer ${SECRET}` }), SECRET)).toBe("ok");
-    expect(checkCronSecret(new Headers({ "x-cron-secret": SECRET }), SECRET)).toBe("ok");
+    expect(checkCronAuth(new Headers({ authorization: `Bearer ${SECRET}` }), SECRET)).toBe("ok");
+    expect(checkCronAuth(new Headers({ "x-cron-secret": SECRET }), SECRET)).toBe("ok");
   });
 
   it("refuses a missing, wrong or partial secret", () => {
-    expect(checkCronSecret(new Headers(), SECRET)).toBe("forbidden");
-    expect(checkCronSecret(new Headers({ "x-cron-secret": "nope" }), SECRET)).toBe("forbidden");
-    expect(checkCronSecret(new Headers({ "x-cron-secret": SECRET.slice(0, 5) }), SECRET)).toBe("forbidden");
-    expect(checkCronSecret(new Headers({ authorization: `Basic ${SECRET}` }), SECRET)).toBe("forbidden");
+    expect(checkCronAuth(new Headers(), SECRET)).toBe("denied");
+    expect(checkCronAuth(new Headers({ "x-cron-secret": "nope" }), SECRET)).toBe("denied");
+    expect(checkCronAuth(new Headers({ "x-cron-secret": SECRET.slice(0, 5) }), SECRET)).toBe("denied");
+    expect(checkCronAuth(new Headers({ authorization: `Basic ${SECRET}` }), SECRET)).toBe("denied");
   });
 });
 
@@ -36,9 +36,9 @@ describe("POST /api/cron/purge-source-media", () => {
     expect((await post({ "x-cron-secret": "anything" })).status).toBe(503);
   });
 
-  it("answers 403 for a wrong secret", async () => {
+  it("answers 401 for a wrong secret", async () => {
     vi.stubEnv("CRON_SECRET", SECRET);
-    expect((await post({ "x-cron-secret": "wrong" })).status).toBe(403);
+    expect((await post({ "x-cron-secret": "wrong" })).status).toBe(401);
   });
 
   it("skips cleanly without a database or storage", async () => {

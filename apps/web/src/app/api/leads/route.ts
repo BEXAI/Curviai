@@ -6,6 +6,7 @@
  * answer a person gets, so a bot learns nothing, but nothing is stored.
  */
 
+import { readBodyLimited } from "@/lib/http/read-body";
 import { NextResponse } from "next/server";
 import { getLeadStore } from "@/lib/leads";
 import { limitByIp } from "@/lib/rate-limit";
@@ -22,13 +23,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     return ipLimited;
   }
 
+  const read = await readBodyLimited(request, MAX_BODY_BYTES);
+  if (!read.ok && read.reason === "too_large") {
+    return NextResponse.json({ error: "Request body is too large." }, { status: 413 });
+  }
   let body: unknown;
   try {
-    const text = await request.text();
-    if (text.length > MAX_BODY_BYTES) {
-      return NextResponse.json({ error: "Request body is too large." }, { status: 413 });
-    }
-    body = JSON.parse(text);
+    body = JSON.parse(read.ok ? read.text : "");
   } catch {
     return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
   }
