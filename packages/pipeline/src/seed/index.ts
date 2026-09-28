@@ -9,7 +9,7 @@ export {
   photoroomSeed,
 } from "./models";
 export type { ImageModelSeedRow, ImageProviderFamily, LlmPriceTable } from "./models";
-export { presets, stillStyle, templates } from "./templates";
+export { canvasDefaults, presets, sceneDefaults, stillStyle, templates } from "./templates";
 export type { PresetKey } from "./templates";
 export {
   creditCosts,

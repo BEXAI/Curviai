@@ -38,13 +38,13 @@ import {
   compositeShot,
   decodeToRgba,
   deriveQcErodePx,
-  encodeJpeg,
   encodePng,
-  maskToSharp,
+  rawToSharp,
   renderTemplateStill,
   TEMPLATE_STILL_TYPES,
   TemplateUnavailableError,
   type TemplateStillType,
+  type CompositeResult,
   type ImageOutput,
   type HarmonizeInput,
   type RawImage,
@@ -57,25 +57,40 @@ import {
   SCENE_PLATE_TASK,
   imageModelSeedRows,
   llmModelPrices,
+  canvasDefaults,
   photoroomSeed,
   presets,
   recipeSeedRows,
+  sceneDefaults,
   stillStyle,
   templates,
   type ImageModelSeedRow,
   type PresetKey,
 } from "@curvi/pipeline/seed";
-import { getSpec } from "@curvi/specs";
+import { getSpec, type ChannelSpec } from "@curvi/specs";
+import { ShotUnavailableError } from "./errors";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
-import type { LiveProduct } from "./live-product";
+import type { LiveProduct, StillRender } from "./live-product";
 import {
   isSpendCapBlock,
-  ShotUnavailableError,
   type PipelineDeps,
   type ShotGenerateArgs,
   type ShotGeneration,
   type ShotGenerator,
 } from "./pipeline-runner";
+import {
+  canvasSizeFor,
+  compositeQcErosion,
+  encodeForSpec,
+  encodeMaskPng,
+  fitsSpecSize,
+  maskArea,
+  resizeCanvasTo,
+  RESIZE_KERNEL_REACH_PX,
+  sameAspect,
+  stillQcErosion,
+  type QcErosion,
+} from "./shot-outputs";
 
 export type ReadEnv = (name: string) => string | undefined;
 
@@ -134,9 +149,11 @@ export class ScenePlateBridge implements Provider {
     req: ProviderRequest,
   ): Promise<{ buffer: Buffer; costMicros: number }> {
     if (this.family === "gemini") {
+      // Gemini picks its own shape unless asked; request the canvas aspect
+      // so the plate is not center cropped out of register (Update.md 2.14).
       const res = await this.inner.invoke<GeminiImageInput, GeminiImageOutput>({
         ...req,
-        input: { prompt: input.prompt },
+        input: { prompt: input.prompt, aspectRatio: nearestGeminiAspectRatio(input.width, input.height) },
       });
       const image = res.output.images[0];
       return { buffer: Buffer.from(image.dataBase64, "base64"), costMicros: res.costMicros };
@@ -179,11 +196,13 @@ export class ScenePlateBridge implements Provider {
     req: ProviderRequest,
   ): Promise<{ buffer: Buffer; costMicros: number }> {
     if (this.family === "gemini") {
+      const size = pngSize(input.png);
       const res = await this.inner.invoke<GeminiImageInput, GeminiImageOutput>({
         ...req,
         input: {
           prompt: input.prompt,
           images: [{ mimeType: "image/png", dataBase64: input.png.toString("base64") }],
+          ...(size ? { aspectRatio: nearestGeminiAspectRatio(size.width, size.height) } : {}),
         },
       });
       const image = res.output.images[0];
@@ -212,6 +231,40 @@ export class ScenePlateBridge implements Provider {
 function clampToStep(value: number, step: number, min: number, max: number): number {
   const clamped = Math.min(Math.max(value, min), max);
   return Math.max(min, Math.floor(clamped / step) * step);
+}
+
+/**
+ * Aspect ratios Gemini image models accept in generationConfig.imageConfig
+ * (checked against the Generative Language API discovery document, revision
+ * 20260927, on 2026-09-28). Only the ratios every current image model takes;
+ * the extreme 1:4 to 8:1 ratios are model specific and never needed here.
+ */
+const GEMINI_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"] as const;
+
+/** The supported Gemini aspect ratio closest to width x height. */
+export function nearestGeminiAspectRatio(width: number, height: number): string {
+  const target = Math.log(width / height);
+  let best: string = GEMINI_ASPECT_RATIOS[0];
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const ratio of GEMINI_ASPECT_RATIOS) {
+    const [w, h] = ratio.split(":").map(Number);
+    const distance = Math.abs(Math.log(w / h) - target);
+    if (distance < bestDistance) {
+      best = ratio;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/** Width and height from a PNG header, or null when the bytes are not a PNG. */
+function pngSize(png: Buffer): { width: number; height: number } | null {
+  if (png.length < 24 || png[0] !== 0x89 || png.toString("ascii", 1, 4) !== "PNG") {
+    return null;
+  }
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  return width > 0 && height > 0 ? { width, height } : null;
 }
 
 /** Maps a canvas aspect ratio onto the sizes GPT Image accepts. */
@@ -361,17 +414,6 @@ function stillFailure(err: unknown, label: string, costMicros: number, args: Sho
   return new ShotUnavailableError(`The ${label} image could not be rendered, so it needs review.`, costMicros);
 }
 
-/** Lanczos3 reaches 3 source pixels on each side of an edge. */
-const RESIZE_KERNEL_REACH_PX = 3;
-
-function maskArea(mask: RawMask): number {
-  let area = 0;
-  for (let i = 0; i < mask.data.length; i++) {
-    if (mask.data[i] > 127) area += 1;
-  }
-  return area;
-}
-
 /**
  * Fidelity erosion for a still whose product was scaled up. The resize blends
  * product and background within the kernel's reach, measured in canvas pixels
@@ -381,17 +423,27 @@ function maskArea(mask: RawMask): number {
  */
 export function upscaleErodePx(cutoutMask: RawMask, placedMask: RawMask | null): number | undefined {
   if (!placedMask) return undefined;
-  const source = maskArea(cutoutMask);
-  const placed = maskArea(placedMask);
-  if (source === 0 || placed === 0) return undefined;
-  const scale = Math.sqrt(placed / source);
-  if (scale <= 1) return undefined;
+  const scale = placementScale(cutoutMask, placedMask);
+  if (scale === undefined || scale <= 1) return undefined;
   return Math.max(deriveQcErodePx(), Math.ceil(RESIZE_KERNEL_REACH_PX * scale) + 1);
 }
 
-/** Single channel PNG of a mask, for helpers that take encoded buffers. */
-function encodeMaskPng(mask: RawMask): Promise<Buffer> {
-  return maskToSharp(mask).png().toBuffer();
+/** Linear scale from the cutout to its placement, estimated from mask areas. */
+function placementScale(cutoutMask: RawMask, placedMask: RawMask): number | undefined {
+  const source = maskArea(cutoutMask);
+  const placed = maskArea(placedMask);
+  if (source === 0 || placed === 0) return undefined;
+  return Math.sqrt(placed / source);
+}
+
+/**
+ * Fidelity check region for a still whose renderer does not report its
+ * placement (the template stills): the scale is estimated from the mask
+ * areas, then sized like any other still, with the thin product floor.
+ */
+async function stillErosionFromMasks(cutoutMask: RawMask, placedMask: RawMask | null): Promise<QcErosion | undefined> {
+  if (!placedMask) return undefined;
+  return stillQcErosion(placedMask, placementScale(cutoutMask, placedMask) ?? 1);
 }
 
 /** Mask from the alpha channel of an RGBA cutout. */
@@ -403,6 +455,45 @@ export function alphaMask(image: RawImage): RawMask {
   return { data, width: image.width, height: image.height };
 }
 
+/**
+ * Above this share of the photo, a cutout is taken as a failed segmentation:
+ * the background came back as product, and pasting it would ship the photo
+ * rectangle as the product (Update.md 2.13).
+ */
+export const MAX_CUTOUT_COVERAGE = 0.95;
+
+const SEGMENTATION_FAILED =
+  "We could not separate the product from its background in this photo, so this shot needs review.";
+const NO_PRODUCT_FOUND = "The cutout found no product in this photo, so this shot needs review.";
+
+/**
+ * Why a cutout mask cannot be used, or null when it can: empty, covering
+ * almost the whole photo, or touching all four photo borders (the background
+ * was kept, so the product was not separated).
+ */
+export function segmentationRefusal(mask: RawMask): string | null {
+  const { data, width, height } = mask;
+  const area = maskArea(mask);
+  if (area === 0) {
+    return NO_PRODUCT_FOUND;
+  }
+  if (area / (width * height) > MAX_CUTOUT_COVERAGE) {
+    return SEGMENTATION_FAILED;
+  }
+  const rowTouches = (y: number): boolean => {
+    for (let x = 0; x < width; x++) if (data[y * width + x] >= 128) return true;
+    return false;
+  };
+  const columnTouches = (x: number): boolean => {
+    for (let y = 0; y < height; y++) if (data[y * width + x] >= 128) return true;
+    return false;
+  };
+  if (rowTouches(0) && rowTouches(height - 1) && columnTouches(0) && columnTouches(width - 1)) {
+    return SEGMENTATION_FAILED;
+  }
+  return null;
+}
+
 const COMPOSITE_METHODS: ReadonlySet<string> = new Set(["composite_generate", "edit_generate"]);
 
 export interface LiveShotGeneratorOptions {
@@ -412,9 +503,14 @@ export interface LiveShotGeneratorOptions {
   loadMedia: MediaLoader | null;
 }
 
-/** A cut out product plus what it cost; cached per job and source photo. */
+/**
+ * A cut out product plus what it cost; cached per job and source photo. A
+ * cutout that cannot be used is cached too (as its refusal), so every shot
+ * of that photo goes to needs review without paying for another cutout.
+ */
 interface ProductLoad {
-  product: LiveProduct;
+  product: LiveProduct | null;
+  refusal?: string;
   costMicros: number;
 }
 
@@ -432,11 +528,15 @@ type CapsHooks = CapsHook[] | undefined;
  *   place the real pixels on a seeded background with rendered text.
  * No path regenerates product pixels (CLAUDE.md rule 3).
  *
+ * A composite aimed at several channels is generated once for its primary
+ * channel; deriveForSpec then builds the other channels' files from that
+ * result with no new provider spend (Update.md 2.11).
+ *
  * Anything it cannot produce for real (video and avatar methods, template
  * types without the data they need, a missing or foreign source photo, a
- * provider that is not configured, a spend cap block) throws
- * ShotUnavailableError: the shot goes to needs review with its credits
- * released. It never substitutes demo output.
+ * failed segmentation, a provider that is not configured, a spend cap block)
+ * throws ShotUnavailableError: the shot goes to needs review with its
+ * credits released. It never substitutes demo output.
  *
  * Every provider call reserves its estimated cost against the per asset,
  * pack and global day caps before it runs (plan 4.4).
@@ -458,6 +558,103 @@ export class LiveShotGenerator implements ShotGenerator {
     }
   }
 
+  /**
+   * This shot's file for another channel, built from an accepted composite
+   * without calling any image provider. A size the source already meets is
+   * only re-encoded for the new spec. With the same aspect ratio the finished
+   * scene is scaled to the new size and the original product pixels are
+   * pasted back at that size through the same composite step, so the product
+   * is exact again at the new size. A different aspect ratio is re-framed
+   * around the product and checked with a wider erosion.
+   */
+  async deriveForSpec(args: ShotGenerateArgs, from: ShotGeneration, specId: string): Promise<ShotGeneration> {
+    const spec = getSpec(specId);
+    const source = from.canvas ?? from.image;
+    if (!from.mask || !from.productReference) {
+      throw new ShotUnavailableError("This image could not be prepared for another channel, so it needs review.");
+    }
+    const erosion: QcErosion = {
+      erodePx: from.fidelityErodePx ?? deriveQcErodePx(),
+      floorPx: from.fidelityErodeFloorPx ?? from.fidelityErodePx ?? deriveQcErodePx(),
+    };
+    const shot = { ...args.shot, channels: [specId] };
+
+    if (fitsSpecSize(spec, source.width, source.height)) {
+      const out = await encodeForSpec(source, from.mask, from.productReference, spec, {
+        preferPng: true,
+        erodePx: erosion.erodePx,
+      });
+      return {
+        image: out.image,
+        mask: from.mask,
+        productReference: from.productReference,
+        encoded: out.encoded,
+        costMicros: 0,
+        spendReserved: true,
+        fidelityRequired: true,
+        fidelityErodePx: erosion.erodePx,
+        fidelityErodeFloorPx: erosion.floorPx,
+        canvas: source,
+      };
+    }
+
+    const target = canvasSizeFor(spec);
+    if (sameAspect(source, target)) {
+      const { product } = await this.productFor({ ...args, shot }, this.capsFor(args));
+      const plate = await rawToSharp(source)
+        .resize(target.width, target.height, { fit: "fill", kernel: "lanczos3" })
+        .png()
+        .toBuffer();
+      // Pass through provider: the scaled finished scene is the plate and
+      // harmonization returns its input, so nothing is generated or paid.
+      const passThrough: Provider = {
+        name: "derived-scene",
+        kind: "image",
+        supports: (task) => task === SCENE_PLATE_TASK || task === HARMONIZE_TASK,
+        invoke: async <TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> => {
+          const png = req.task === HARMONIZE_TASK ? (req.input as unknown as HarmonizeInput).png : plate;
+          const output: ImageOutput = { png };
+          return { output: output as TOut, costMicros: 0 };
+        },
+      };
+      const { scenePrompt, fill } = this.compositeTemplate(shot, spec, args.repairHint);
+      const result = await compositeShot({
+        productRgba: product.productRgba,
+        mask: product.mask,
+        provider: passThrough,
+        shot,
+        template: {
+          width: target.width,
+          height: target.height,
+          scenePrompt,
+          harmonizePrompt: templates.harmonize_nano_banana2(),
+          placement: { fill },
+        },
+        workspaceId: args.workspaceId,
+        jobId: args.jobId,
+      });
+      return this.finishComposite(result, spec, 0, true);
+    }
+
+    const resized = await resizeCanvasTo(source, from.mask, from.productReference, erosion, target);
+    const out = await encodeForSpec(resized.image, resized.mask, resized.productReference, spec, {
+      preferPng: true,
+      erodePx: resized.erosion.erodePx,
+    });
+    return {
+      image: out.image,
+      mask: resized.mask,
+      productReference: resized.productReference,
+      encoded: out.encoded,
+      costMicros: 0,
+      spendReserved: true,
+      fidelityRequired: true,
+      fidelityErodePx: resized.erosion.erodePx,
+      fidelityErodeFloorPx: resized.erosion.floorPx,
+      canvas: resized.image,
+    };
+  }
+
   private capsFor(args: ShotGenerateArgs): CapsHooks {
     const caps = this.opts.ai.caps;
     return caps
@@ -473,9 +670,13 @@ export class LiveShotGenerator implements ShotGenerator {
    * The cut out product for this shot's source photo. The Photoroom call runs
    * once per job and photo; the first shot to use it carries its cost, every
    * later shot and retry reuses it for free. A failed load is not cached, so
-   * the next attempt tries again.
+   * the next attempt tries again; an unusable cutout is cached as a refusal,
+   * so the photo is never cut out twice only to be refused again.
    */
-  private async productFor(args: ShotGenerateArgs, caps: CapsHooks): Promise<ProductLoad> {
+  private async productFor(
+    args: ShotGenerateArgs,
+    caps: CapsHooks,
+  ): Promise<{ product: LiveProduct; costMicros: number }> {
     const { ai, loadMedia } = this.opts;
     const label = args.shot.type.replaceAll("_", " ");
     // Source photos live under the workspace's own prefix; anything else
@@ -507,8 +708,10 @@ export class LiveShotGenerator implements ShotGenerator {
         );
         const productRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
         const mask = alphaMask(productRgba);
-        if (!mask.data.some((v) => v > 0)) {
-          throw new ShotUnavailableError(`No product was found in the source photo for the ${label} shot.`);
+        const refusal = segmentationRefusal(mask);
+        if (refusal) {
+          console.warn(`[live] job ${args.jobId} photo ${args.shot.sourceMediaId} cutout refused: ${refusal}`);
+          return { product: null, refusal, costMicros: cutout.costMicros };
         }
         const product: LiveProduct = {
           productRgba,
@@ -522,11 +725,68 @@ export class LiveShotGenerator implements ShotGenerator {
       pending.catch(() => this.products.delete(key));
     }
     const loaded = await pending;
-    if (this.productCostClaimed.has(key)) {
-      return { product: loaded.product, costMicros: 0 };
-    }
+    const costMicros = this.productCostClaimed.has(key) ? 0 : loaded.costMicros;
     this.productCostClaimed.add(key);
-    return loaded;
+    if (!loaded.product) {
+      throw new ShotUnavailableError(loaded.refusal ?? SEGMENTATION_FAILED, costMicros);
+    }
+    return { product: loaded.product, costMicros };
+  }
+
+  /** Scene prompt and product fill for a composite, all from seed data. */
+  private compositeTemplate(
+    shot: ShotGenerateArgs["shot"],
+    spec: ChannelSpec,
+    repairHint: string | undefined,
+  ): { scenePrompt: string; fill: number } {
+    const presetKey: PresetKey = shot.stylePreset in presets ? (shot.stylePreset as PresetKey) : sceneDefaults.preset;
+    const scene = shot.scene ?? templates.scene_fallback({ shotLabel: shot.type.replaceAll("_", " ") });
+    const scenePrompt = templates.lifestyle_plate_flux2({ scene, preset: presetKey, repairHint });
+    const fill = spec.fill ? (spec.fill.min + spec.fill.max) / 2 : canvasDefaults.compositeFill;
+    return { scenePrompt, fill };
+  }
+
+  /**
+   * Encodes a composite for its spec and sizes its rule 3 check region from
+   * the paste erosion actually applied (thin products get a smaller one).
+   * PNG first when the spec takes it and it fits, since it is lossless;
+   * otherwise the JPEG ladder keeps only a quality whose decoded product
+   * pixels still pass the fidelity check, and a spec where none passes sends
+   * the shot to needs review. The returned image is decoded from the shipped
+   * bytes (Update.md 2.3).
+   */
+  private async finishComposite(
+    result: CompositeResult,
+    spec: ChannelSpec,
+    costMicros: number,
+    spendReserved: boolean,
+  ): Promise<ShotGeneration> {
+    const erosion = await compositeQcErosion(result.canvasMask, result.effectivePasteErodePx);
+    let out: Awaited<ReturnType<typeof encodeForSpec>>;
+    try {
+      out = await encodeForSpec(result.finalRaw, result.canvasMask, result.productReference, spec, {
+        preferPng: true,
+        erodePx: erosion.erodePx,
+      });
+    } catch (err) {
+      if (err instanceof ShotUnavailableError) {
+        // The scene was paid for; keep that spend on the books.
+        throw new ShotUnavailableError(err.message, costMicros);
+      }
+      throw err;
+    }
+    return {
+      image: out.image,
+      mask: result.canvasMask,
+      productReference: result.productReference,
+      encoded: out.encoded,
+      costMicros,
+      spendReserved,
+      fidelityRequired: true,
+      fidelityErodePx: erosion.erodePx,
+      fidelityErodeFloorPx: erosion.floorPx,
+      canvas: result.finalRaw,
+    };
   }
 
   private async generateLive(args: ShotGenerateArgs): Promise<ShotGeneration> {
@@ -561,7 +821,7 @@ export class LiveShotGenerator implements ShotGenerator {
 
     if (method === "deterministic" || method === "template") {
       try {
-        const still =
+        const still: StillRender =
           method === "deterministic"
             ? await renderDeterministicShot({ shot, product, brandColors: args.brandColors })
             : await renderTemplateStill({
@@ -576,12 +836,16 @@ export class LiveShotGenerator implements ShotGenerator {
                 textHex: stillStyle.textHex,
                 accentHex: stillStyle.accentHex,
               });
+        const erosion = still.fidelityErosion ?? (await stillErosionFromMasks(product.mask, still.mask));
         return {
-          ...still,
+          image: still.image,
+          mask: still.mask,
+          productReference: still.productReference,
+          encoded: still.encoded,
           costMicros: productCost,
           spendReserved,
           fidelityRequired: true,
-          fidelityErodePx: upscaleErodePx(product.mask, still.mask),
+          ...(erosion ? { fidelityErodePx: erosion.erodePx, fidelityErodeFloorPx: erosion.floorPx } : {}),
         };
       } catch (err) {
         // A still that cannot be rendered ends this shot only, never the
@@ -592,19 +856,9 @@ export class LiveShotGenerator implements ShotGenerator {
 
     const { productRgba, mask } = product;
     const { ai } = this.opts;
-    const specId = args.shot.channels[0];
-    const spec = getSpec(specId);
-    const width = spec.width ?? spec.minWidth ?? 1200;
-    const height = spec.height ?? spec.minHeight ?? width;
-    const fill = spec.fill ? (spec.fill.min + spec.fill.max) / 2 : 0.55;
-
-    const presetKey: PresetKey =
-      args.shot.stylePreset in presets ? (args.shot.stylePreset as PresetKey) : "minimal_studio";
-    const scene = args.shot.scene ?? `${args.shot.type.replaceAll("_", " ")} setting`;
-    let scenePrompt = templates.lifestyle_plate_flux2({ scene, preset: presetKey });
-    if (args.repairHint) {
-      scenePrompt = `${scenePrompt} Repair instruction from the previous attempt: ${args.repairHint}`;
-    }
+    const spec = getSpec(args.shot.channels[0]);
+    const { width, height } = canvasSizeFor(spec);
+    const { scenePrompt, fill } = this.compositeTemplate(args.shot, spec, args.repairHint);
 
     // Plan 5.6: after three failed attempts the extra attempt switches to
     // the fallback provider, expressed here by rotating the failover chain.
@@ -641,19 +895,6 @@ export class LiveShotGenerator implements ShotGenerator {
       jobId: args.jobId,
     });
 
-    const formats = (spec.formats ?? ["png"]) as readonly string[];
-    const usePng = formats.includes("png") || !formats.includes("jpg");
-    const encoded = usePng
-      ? { buffer: result.png, format: "png" }
-      : { buffer: await encodeJpeg(result.finalRaw), format: "jpg" };
-
-    return {
-      image: result.finalRaw,
-      mask: result.canvasMask,
-      productReference: result.productReference,
-      encoded,
-      costMicros: productCost + result.costMicros,
-      spendReserved,
-    };
+    return this.finishComposite(result, spec, productCost + result.costMicros, spendReserved);
   }
 }

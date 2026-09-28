@@ -50,6 +50,13 @@ export interface GeminiImageInput {
   prompt: string;
   /** Optional reference images, inline base64. */
   images?: Array<{ mimeType: string; dataBase64: string }>;
+  /**
+   * Output aspect ratio such as "1:1" or "16:9", sent as
+   * generationConfig.imageConfig.aspectRatio (Generative Language API
+   * discovery document revision 20260927, checked 2026-09-28). Without it the
+   * model picks a shape from the reference images or its default.
+   */
+  aspectRatio?: string;
 }
 
 export interface GeminiImageOutput {
@@ -135,7 +142,10 @@ export class GeminiImageProvider implements CostAwareProvider {
     }
     const body = {
       contents: [{ parts }],
-      generationConfig: { responseModalities: ["IMAGE"] },
+      generationConfig: {
+        responseModalities: ["IMAGE"],
+        ...(input.aspectRatio ? { imageConfig: { aspectRatio: input.aspectRatio } } : {}),
+      },
     };
 
     const data = await requestJson<GenerateContentResponse>(

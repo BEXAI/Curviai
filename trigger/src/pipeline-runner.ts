@@ -5,12 +5,15 @@
  * generator. The Trigger.dev task files are thin wrappers around these
  * functions, so the whole flow is unit testable with @curvi/ai mocks.
  *
- * Flow: intake and analyze through the LLM recipes, plan shots (LLM planner
- * with the deterministic planner as fallback on schema invalid responses),
- * fan out per shot generation, QC each shot with deterministic pixel checks
- * plus a fidelity report for composites and the planRetry loop, package via
- * buildPack, and account for credits with JobLedgerPlan: reserve on queued,
- * charge per passing asset in qc, release for failed shots and on failure.
+ * Flow: intake and analyze through the LLM recipes, plan shots (LLM planner,
+ * validated and repriced from the seed, with the deterministic planner as
+ * fallback), fit every shot to the selected channel families, fan out per
+ * shot generation, QC each channel output of each shot with deterministic
+ * pixel checks on the shipped bytes plus a fidelity report and the planRetry
+ * loop, package via buildPack, and account for credits with JobLedgerPlan:
+ * reserve on queued, charge per passing shot after delivery, release for
+ * shots that need review and on failure. One failing shot never fails the
+ * pack; a pack fails only when no shot passes.
  */
 
 import {
@@ -26,6 +29,7 @@ import {
 import {
   buildPack,
   channelOf,
+  decodeToRgba,
   fidelityReport,
   pixelChecks,
   planRetry,
@@ -45,12 +49,27 @@ import {
   type RawMask,
   type Shot,
 } from "@curvi/pipeline";
-import { recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
-import { getSpec, hasSpec, isMarketplaceSpec, listSpecs } from "@curvi/specs";
+import { creditCosts, recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
+import { getSpec, hasSpec, isMarketplaceSpec, listSpecs, type ChannelSpec } from "@curvi/specs";
 import { z } from "zod";
+import { ShotUnavailableError } from "./errors";
+import {
+  canvasSizeFor,
+  decodeMaskPng,
+  encodeMaskPng,
+  measureBackgroundRgb,
+  QC_EDGE_MARGIN_PX,
+} from "./shot-outputs";
 import { isTerminal, JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 
 export type { JobState } from "./state";
+export { ShotUnavailableError } from "./errors";
+
+/** Plain copy for a shot that ended on an unexpected provider or runtime error. */
+export const SHOT_PROVIDER_TROUBLE = "Our image provider had trouble with this shot, so it needs review.";
+/** Plain copy for a shot the pack spend cap stopped before it ran. */
+const PACK_CAP_REACHED =
+  "This pack reached its spending limit before this shot could be made, so it needs review.";
 
 /** Recipe row for a pipeline stage, looked up from seed data so task names,
  * models and prompts are never hardcoded here (CLAUDE.md rule 2). */
@@ -152,21 +171,6 @@ export interface JobStore {
   releaseAllHeld?(jobId: string, workspaceId: string): Promise<void>;
 }
 
-/** Thrown by a shot generator that cannot honestly produce a shot, for
- * example a method live providers do not cover yet, a missing source photo
- * or a spend cap block. The shot goes to needs review and its credits are
- * released; nothing placeholder is ever delivered or charged. */
-export class ShotUnavailableError extends Error {
-  constructor(
-    message: string,
-    /** Provider spend already made for this attempt, so it stays on the books. */
-    readonly costMicros = 0,
-  ) {
-    super(message);
-    this.name = "ShotUnavailableError";
-  }
-}
-
 /** True when a provider chain failed because a spend cap refused at least
  * one provider. The remaining providers failing too (breaker open, outage)
  * does not change that the cap is what stopped the shot, so it goes to needs
@@ -224,10 +228,17 @@ export interface ShotGeneration {
   /** True when rule 3 must be proven for this output even though its method
    * is not a composite (live stills in Listing Mode). */
   fidelityRequired?: boolean;
-  /** Mask erosion for the fidelity check when the product was scaled up: a
-   * resize blends product and background across the kernel's reach, which
-   * grows with the scale. Interior pixels are still checked strictly. */
+  /** Mask erosion for the fidelity check. Generators derive it from how the
+   * product was placed (the paste erosion a composite applied, the scale a
+   * still was resized by) with an area floor, so thin products keep a real
+   * check region. Interior pixels are always checked strictly. */
   fidelityErodePx?: number;
+  /** The lowest the fidelity erosion may go when this output is re-framed
+   * for another channel: below it pixels may be blended with the background. */
+  fidelityErodeFloorPx?: number;
+  /** The canvas before encoding, when it differs from image (a lossy file);
+   * other channel outputs are derived from it, never from decoded JPEG. */
+  canvas?: RawImage;
   /** True when the generator reserved its provider spend against the caps
    * before each call; runShot then skips its after the fact reservation so
    * the spend is not counted twice. */
@@ -248,6 +259,12 @@ export interface ShotGenerateArgs {
 
 export interface ShotGenerator {
   generate(args: ShotGenerateArgs): Promise<ShotGeneration>;
+  /**
+   * Builds this shot's output for another channel spec from an accepted
+   * generation, without new provider spend (Update.md 2.11). Optional: a
+   * generator without it is asked to generate that spec directly.
+   */
+  deriveForSpec?(args: ShotGenerateArgs, from: ShotGeneration, specId: string): Promise<ShotGeneration>;
 }
 
 export interface ShotContext {
@@ -282,6 +299,24 @@ export function digitalSourceFor(
   return "trained";
 }
 
+/** QC result for one channel output of a shot (Update.md 2.11). */
+export interface ShotOutputSummary {
+  specId: string;
+  status: "passed" | "needs_review";
+  attempts: number;
+  usedFallbackProvider: boolean;
+  verdict: QCVerdict;
+  pixelPass: boolean;
+  fidelityPass: boolean | null;
+  measured: MeasuredCompliance;
+}
+
+/**
+ * One shot, possibly delivered to several channels. The top level QC fields
+ * describe the representative output (the first that passed, else the
+ * first tried); outputs lists every channel output. A shot passes, and is
+ * charged once, when at least one of its channel outputs passes.
+ */
 export interface ShotOutcomeBase {
   shotId: string;
   shotType: Shot["type"];
@@ -296,51 +331,87 @@ export interface ShotOutcomeBase {
   fidelityPass: boolean | null;
   digitalSource: DigitalSourceKind;
   measured: MeasuredCompliance;
+  outputs: ShotOutputSummary[];
+  /** Internal detail when the shot ended on an unexpected error; for logs
+   * and the job error, never used as shot copy. */
+  failure?: string;
 }
 
 export interface ShotOutcome extends ShotOutcomeBase {
-  /** Present when the shot passed; feeds buildPack. */
-  packAsset?: PackAsset;
+  /** One file per passing channel output; feeds buildPack. */
+  packAssets?: PackAsset[];
+}
+
+/** One delivered file in JSON safe form. */
+export interface SerializedPackFile {
+  specId: string;
+  encodedBase64: string;
+  format?: string;
+  /** The product mask as a single channel PNG, so the pack task can rerun
+   * the pixel checks on the decoded file (Update.md 2.15). */
+  maskPngBase64?: string;
+  edgeMarginPx?: number;
 }
 
 /** JSON safe form of a shot outcome for the Trigger.dev subtask boundary. */
 export interface SerializableShotOutcome extends ShotOutcomeBase {
-  encodedBase64?: string;
-  format?: string;
+  files?: SerializedPackFile[];
 }
 
-export function serializeShotOutcome(outcome: ShotOutcome): SerializableShotOutcome {
-  const { packAsset, ...base } = outcome;
-  if (!packAsset) {
+export async function serializeShotOutcome(outcome: ShotOutcome): Promise<SerializableShotOutcome> {
+  const { packAssets, ...base } = outcome;
+  if (!packAssets || packAssets.length === 0) {
     return base;
   }
-  return {
-    ...base,
-    encodedBase64: packAsset.buffer.toString("base64"),
-    format: packAsset.format,
-  };
+  const files = await Promise.all(
+    packAssets.map(async (asset): Promise<SerializedPackFile> => ({
+      specId: asset.specId,
+      encodedBase64: asset.buffer.toString("base64"),
+      ...(asset.format !== undefined ? { format: asset.format } : {}),
+      ...(asset.mask ? { maskPngBase64: (await encodeMaskPng(asset.mask)).toString("base64") } : {}),
+      ...(asset.edgeMarginPx !== undefined ? { edgeMarginPx: asset.edgeMarginPx } : {}),
+    })),
+  );
+  return { ...base, files };
 }
 
-export function deserializeShotOutcome(
+/**
+ * Rebuilds pack assets on the pack task side. The raw pixels are decoded
+ * from the shipped bytes, which is exactly what QC measured in the subtask,
+ * so the compliance report keeps its measured pixel checks in Trigger mode
+ * instead of falling back to file level checks.
+ */
+export async function deserializeShotOutcome(
   serialized: SerializableShotOutcome,
   ctx: ShotContext,
-): ShotOutcome {
-  const { encodedBase64, format, ...base } = serialized;
-  if (base.status !== "passed" || !encodedBase64) {
-    return base;
+): Promise<ShotOutcome> {
+  const { files, ...base } = serialized;
+  const outcome: ShotOutcome = { ...base, outputs: base.outputs ?? [] };
+  if (base.status !== "passed" || !files || files.length === 0) {
+    return outcome;
   }
-  return {
-    ...base,
-    packAsset: {
-      specId: base.specId,
-      buffer: Buffer.from(encodedBase64, "base64"),
-      format,
-      sku: ctx.sku,
-      seoSlug: ctx.seoSlug,
-      ref: base.shotId,
-      digitalSource: base.digitalSource,
-    },
-  };
+  outcome.packAssets = await Promise.all(
+    files.map(async (file): Promise<PackAsset> => {
+      const buffer = Buffer.from(file.encodedBase64, "base64");
+      const raw = await decodeToRgba(buffer).catch(() => undefined);
+      const mask = file.maskPngBase64
+        ? await decodeMaskPng(Buffer.from(file.maskPngBase64, "base64")).catch(() => undefined)
+        : undefined;
+      return {
+        specId: file.specId,
+        buffer,
+        format: file.format,
+        ...(raw ? { raw } : {}),
+        ...(mask ? { mask } : {}),
+        ...(file.edgeMarginPx !== undefined ? { edgeMarginPx: file.edgeMarginPx } : {}),
+        sku: ctx.sku,
+        seoSlug: ctx.seoSlug,
+        ref: base.shotId,
+        digitalSource: base.digitalSource,
+      };
+    }),
+  );
+  return outcome;
 }
 
 export interface PipelineDeps {
@@ -357,7 +428,8 @@ export interface PipelineDeps {
   /** Spend ceiling for the whole pack; the run fails when it is crossed. */
   packCostCapMicros?: number;
   /** Fan out override: the Trigger.dev wrapper points this at the
-   * generate-shot subtask. Defaults to Promise.all over runShot. */
+   * generate-shot subtask. Defaults to Promise.allSettled over runShot, with
+   * a shot that throws turned into a needs review outcome. */
   runShots?: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>;
   /** Where buildPack writes zips. A temp dir when omitted. */
   packOutDir?: string;
@@ -398,6 +470,8 @@ export interface GeneratePackSummary {
   plannedShots: number;
   skipped: Array<{ type: string; reason: string }>;
   plannerSource: "llm" | "deterministic" | null;
+  /** Why the LLM plan was not used, when the deterministic planner ran instead. */
+  planRejection?: string;
   costMicros: number;
   pack: StoredPack | null;
   error?: string;
@@ -616,57 +690,189 @@ async function reserveGenerationSpend(
   return { allowed: true, alert, alertTotalMicros };
 }
 
+/** Running provider spend of one shot across all its channel outputs. */
+interface ShotSpend {
+  micros: number;
+}
+
+/** One channel output as runShot produced it. */
+interface OutputRun {
+  summary: ShotOutputSummary;
+  /** The file to deliver, when the output passed. */
+  packAsset?: PackAsset;
+  /** The accepted generation, kept so other channels can be derived from it. */
+  generation?: ShotGeneration;
+  /** True when no further output of this shot should be attempted (the job
+   * stopped, a cap was reached, or a provider failed outright). */
+  stopShot: boolean;
+  /** Internal error detail for logs and the job error. */
+  failure?: string;
+}
+
+function needsReviewSummary(
+  specId: string,
+  attempts: number,
+  usedFallbackProvider: boolean,
+  reason: string,
+): ShotOutputSummary {
+  return {
+    specId,
+    status: "needs_review",
+    attempts,
+    usedFallbackProvider,
+    verdict: { pass: false, fidelity: 0, issues: ["other"], repairHint: reason.slice(0, 300) },
+    pixelPass: false,
+    fidelityPass: null,
+    measured: { fillPct: null, background: null },
+  };
+}
+
+/** Background rules whose measured color the compliance badge reports. */
+const MEASURED_BACKGROUND_RULES: ReadonlySet<string> = new Set(["solid", "white_or_transparent", "white_preferred"]);
+
+interface CheckedGeneration {
+  /** Pixels decoded from the bytes that ship: what every check measured. */
+  shipped: RawImage;
+  pixel: PixelCheckReport;
+  fidelity: FidelityReport | null;
+  fidelityInputsMissing: boolean;
+  measured: MeasuredCompliance;
+}
+
 /**
- * Generate and QC one shot: generate, run pixelChecks against the shot's
- * channel spec, run fidelityReport for composite methods, ask the qc judge
- * recipe for a verdict (deterministic metrics win over its impression), and
- * loop per planRetry: up to 3 attempts with repairHint, one fallback
- * provider attempt, then needs review.
+ * Deterministic QC of one generation against its channel spec, run on the
+ * pixels decoded from the encoded file that ships (Update.md 2.3), never on
+ * the canvas before encoding. A file that does not decode to the checked
+ * canvas fails outright. Rule 3 gate, fail closed: a composite or edit
+ * method, or any generation that declares it, must supply a product
+ * reference and mask or it never passes.
  */
-export async function runShot(
+async function checkGeneration(
+  shot: Shot,
+  spec: ChannelSpec,
+  generation: ShotGeneration,
+): Promise<CheckedGeneration> {
+  let shipped = generation.image;
+  let shippedProblem: string | null = null;
+  try {
+    const decoded = await decodeToRgba(generation.encoded.buffer);
+    if (decoded.width !== generation.image.width || decoded.height !== generation.image.height) {
+      shippedProblem = `decodes to ${decoded.width}x${decoded.height}`;
+    } else {
+      shipped = decoded;
+    }
+  } catch {
+    shippedProblem = "does not decode";
+  }
+
+  let pixel = await pixelChecks(shipped, generation.mask, spec, {
+    encoded: { bytes: generation.encoded.buffer.length, format: generation.encoded.format },
+    edgeMarginPx: QC_EDGE_MARGIN_PX,
+  });
+  if (shippedProblem) {
+    pixel = {
+      ...pixel,
+      pass: false,
+      checks: [
+        ...pixel.checks,
+        { name: "shippedFile", pass: false, measured: shippedProblem, limit: "decodes to the checked canvas" },
+      ],
+    };
+  }
+
+  let fidelity: FidelityReport | null = null;
+  let fidelityInputsMissing = false;
+  if (COMPOSITE_METHODS.has(shot.method) || generation.fidelityRequired || generation.productReference) {
+    if (generation.productReference && generation.mask) {
+      fidelity = await fidelityReport(generation.productReference, shipped, generation.mask, {
+        kind: qcKindForSpec(spec),
+        ...(generation.fidelityErodePx !== undefined ? { erodePx: generation.fidelityErodePx } : {}),
+      });
+    } else {
+      fidelityInputsMissing = true;
+    }
+  }
+
+  // Measured values for the compliance badge: the fill the checks saw and
+  // the background color the shipped file really has, never the spec value.
+  const measured: MeasuredCompliance = {
+    fillPct: pixel.fillRatio !== null ? Math.round(pixel.fillRatio * 100) : null,
+    background:
+      spec.background && MEASURED_BACKGROUND_RULES.has(spec.background.type)
+        ? await measureBackgroundRgb(shipped, generation.mask, QC_EDGE_MARGIN_PX)
+        : null,
+  };
+  return { shipped, pixel, fidelity, fidelityInputsMissing, measured };
+}
+
+/**
+ * Reserves a generation's cost against the caps when the generator did not
+ * already reserve before each provider call, and reports the global alert.
+ * Returns a refusal reason when a cap blocks.
+ */
+async function settleGenerationSpend(
   shot: Shot,
   ctx: ShotContext,
   deps: PipelineDeps,
-): Promise<ShotOutcome> {
-  const specId = shot.channels[0];
+  generation: ShotGeneration,
+): Promise<string | null> {
+  if (deps.ai.caps && generation.spendReserved) {
+    const global = await deps.ai.caps.checkAndReserveGlobalDay(0);
+    if (global.alert) {
+      deps.onSpendAlert?.(global.totalMicros);
+    }
+  } else if (deps.ai.caps && generation.costMicros > 0) {
+    const spend = await reserveGenerationSpend(deps.ai.caps, shot, ctx, generation.costMicros);
+    if (spend.alert && spend.alertTotalMicros !== undefined) {
+      deps.onSpendAlert?.(spend.alertTotalMicros);
+    }
+    if (!spend.allowed) {
+      return `Cost cap reached: ${spend.reason ?? "spend cap"}`;
+    }
+  }
+  return null;
+}
+
+function errorDetail(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Generates and QCs one channel output of a shot: generate, check the
+ * shipped bytes, ask the qc judge recipe for a verdict (deterministic
+ * metrics win over its impression; a judge outage falls back to them), and
+ * loop per planRetry: up to 3 attempts with repairHint, one fallback provider
+ * attempt, then needs review. Any error ends this output as needs review
+ * instead of failing the pack (Update.md 3.3).
+ */
+async function runOutput(
+  shot: Shot,
+  specId: string,
+  ctx: ShotContext,
+  deps: PipelineDeps,
+  spent: ShotSpend,
+): Promise<OutputRun> {
   const spec = getSpec(specId);
+  const target: Shot = { ...shot, channels: [specId] };
   let attempt = 1;
   let repairHint: string | undefined;
   let useFallbackProvider = false;
-  let costMicros = 0;
-
-  // A shot that ends without a usable image: needs review, credits released
-  // by the pack runner, nothing delivered.
-  const unusable = async (reason: string): Promise<ShotOutcome> => {
-    const outcome: ShotOutcome = {
-      shotId: shot.id,
-      shotType: shot.type,
-      specId,
-      credits: shot.credits,
-      status: "needs_review",
-      attempts: attempt,
-      usedFallbackProvider: useFallbackProvider,
-      costMicros,
-      verdict: { pass: false, fidelity: 0, issues: ["other"], repairHint: reason.slice(0, 300) },
-      pixelPass: false,
-      fidelityPass: null,
-      digitalSource: digitalSourceFor(shot.method, ctx.mode),
-      measured: { fillPct: null, background: null },
-    };
-    await deps.store.saveAsset(toStoredAsset(outcome, ctx));
-    return outcome;
-  };
+  const stop = (reason: string, stopShot: boolean, failure?: string): OutputRun => ({
+    summary: needsReviewSummary(specId, attempt, useFallbackProvider, reason),
+    stopShot,
+    ...(failure !== undefined ? { failure } : {}),
+  });
 
   for (;;) {
     // The heartbeat doubles as a liveness check: once the job was settled
     // elsewhere (the stale reconciler failed it), stop before spending more.
     if ((await deps.store.heartbeat?.(ctx.jobId)) === false) {
-      return unusable("The job was stopped before this shot finished.");
+      return stop("The job was stopped before this shot finished.", true);
     }
     let generation: ShotGeneration;
     try {
       generation = await deps.generator.generate({
-        shot,
+        shot: target,
         attempt,
         repairHint,
         useFallbackProvider,
@@ -676,64 +882,41 @@ export async function runShot(
       });
     } catch (err) {
       if (err instanceof ShotUnavailableError) {
-        costMicros += err.costMicros;
-        return unusable(err.message);
+        spent.micros += err.costMicros;
+        return stop(err.message, false);
       }
-      throw err;
+      // A provider outage on this shot (for example every image or cutout
+      // provider failing) ends this shot only; its siblings carry on.
+      console.error(`[runner] shot ${shot.id} for ${specId} failed on attempt ${attempt}`, err);
+      return stop(SHOT_PROVIDER_TROUBLE, true, errorDetail(err));
     }
-    costMicros += generation.costMicros;
+    spent.micros += generation.costMicros;
 
     // Spend caps on the generation cost (plan 4.4). A cost capped shot goes
     // to needs review and releases its credits, per the 5.6 retry policy.
-    // Generators that reserve before each provider call report it, and only
-    // the alert check runs here (a zero reservation reads the global total).
-    if (deps.ai.caps && generation.spendReserved) {
-      const global = await deps.ai.caps.checkAndReserveGlobalDay(0);
-      if (global.alert) {
-        deps.onSpendAlert?.(global.totalMicros);
-      }
-    } else if (deps.ai.caps && generation.costMicros > 0) {
-      const spend = await reserveGenerationSpend(deps.ai.caps, shot, ctx, generation.costMicros);
-      if (spend.alert && spend.alertTotalMicros !== undefined) {
-        deps.onSpendAlert?.(spend.alertTotalMicros);
-      }
-      if (!spend.allowed) {
-        return unusable(`Cost cap reached: ${spend.reason ?? "spend cap"}`);
-      }
+    const capped = await settleGenerationSpend(shot, ctx, deps, generation);
+    if (capped) {
+      return stop(capped, true);
     }
 
-    const pixel = await pixelChecks(generation.image, generation.mask, spec, {
-      encoded: { bytes: generation.encoded.buffer.length, format: generation.encoded.format },
-      edgeMarginPx: 2,
-    });
-
-    // Rule 3 gate, fail closed: a composite or edit method that cannot prove
-    // its paste back (no product reference or no mask) never passes.
-    let fidelity: FidelityReport | null = null;
-    let fidelityInputsMissing = false;
-    // Live stills (deterministic and template) carry the rule 3 proof too:
-    // any generation that supplies a reference is checked, and one that
-    // declares it must supply one fails closed without it.
-    if (COMPOSITE_METHODS.has(shot.method) || generation.fidelityRequired || generation.productReference) {
-      if (generation.productReference && generation.mask) {
-        fidelity = await fidelityReport(generation.productReference, generation.image, generation.mask, {
-          kind: qcKindForSpec(spec),
-          ...(generation.fidelityErodePx !== undefined ? { erodePx: generation.fidelityErodePx } : {}),
-        });
-      } else {
-        fidelityInputsMissing = true;
-      }
+    let checked: CheckedGeneration;
+    try {
+      checked = await checkGeneration(target, spec, generation);
+    } catch (err) {
+      console.error(`[runner] shot ${shot.id} for ${specId} could not be checked`, err);
+      return stop("We could not check this shot, so it needs review.", true, errorDetail(err));
     }
+    const { pixel, fidelity, fidelityInputsMissing, measured } = checked;
     const fidelityOk = fidelityInputsMissing ? false : (fidelity?.pass ?? true);
 
-    let judged: LlmCall<QCVerdict>;
+    let verdict: QCVerdict;
     try {
-      judged = await llmJson<QCVerdict>(
+      const judged = await llmJson<QCVerdict>(
         deps.ai,
         "qc",
         QCVerdict,
         {
-          shot: { id: shot.id, type: shot.type, scene: shot.scene },
+          shot: { id: shot.id, type: shot.type, scene: shot.scene, channel: specId },
           deterministic: {
             pixel: { pass: pixel.pass, checks: pixel.checks },
             fidelity: fidelity
@@ -742,19 +925,22 @@ export async function runShot(
           },
           attempt,
         },
-        { jobId: ctx.jobId, workspaceId: ctx.workspaceId, stepId: `${shot.id}:qc:${attempt}` },
+        { jobId: ctx.jobId, workspaceId: ctx.workspaceId, stepId: `${shot.id}:${specId}:qc:${attempt}` },
         undefined,
         QCVerdict,
       );
+      spent.micros += judged.costMicros;
+      verdict = judged.value ?? deterministicVerdict(pixel, fidelity);
     } catch (err) {
       // A cap reached at the judge ends this shot, not the whole pack.
       if (isSpendCapBlock(err)) {
-        return unusable("Spend cap reached before this shot could be checked.");
+        return stop("Spend cap reached before this shot could be checked.", true);
       }
-      throw err;
+      // The deterministic checks are the contract; a judge outage must not
+      // stop delivery, so their verdict stands alone.
+      console.error(`[runner] QC judge unavailable for ${shot.id}; using the deterministic checks`, err);
+      verdict = deterministicVerdict(pixel, fidelity);
     }
-    costMicros += judged.costMicros;
-    const verdict = judged.value ?? deterministicVerdict(pixel, fidelity);
     // Deterministic metrics are the contract: the judge can fail a shot the
     // checks passed, but can never pass a shot the checks failed.
     const effective: QCVerdict = {
@@ -765,77 +951,36 @@ export async function runShot(
       effective.repairHint =
         "Composite generation must return the product reference and mask so the paste back can be proven";
     }
+    const summary = (status: ShotOutputSummary["status"]): ShotOutputSummary => ({
+      specId,
+      status,
+      attempts: attempt,
+      usedFallbackProvider: useFallbackProvider,
+      verdict: effective,
+      pixelPass: pixel.pass,
+      fidelityPass: fidelityInputsMissing ? false : fidelity ? fidelity.pass : null,
+      measured,
+    });
 
-    const digitalSource = digitalSourceFor(shot.method, ctx.mode);
-    const measured: MeasuredCompliance = {
-      fillPct: pixel.fillRatio !== null ? Math.round(pixel.fillRatio * 100) : null,
-      background:
-        pixel.pass && spec.background?.rgb
-          ? ([spec.background.rgb[0], spec.background.rgb[1], spec.background.rgb[2]] as [
-              number,
-              number,
-              number,
-            ])
-          : null,
-    };
     // Spend cap: accepted work stands, but no further attempts are funded.
     let decision = planRetry(attempt, effective);
     if (
       decision.action !== "accept" &&
       deps.assetCostCapMicros !== undefined &&
-      costMicros >= deps.assetCostCapMicros
+      spent.micros >= deps.assetCostCapMicros
     ) {
       decision = { action: "needs_review" };
     }
     if (decision.action === "accept") {
-      const outcome: ShotOutcome = {
-        shotId: shot.id,
-        shotType: shot.type,
-        specId,
-        credits: shot.credits,
-        status: "passed",
-        attempts: attempt,
-        usedFallbackProvider: useFallbackProvider,
-        costMicros,
-        verdict: effective,
-        pixelPass: pixel.pass,
-        fidelityPass: fidelityInputsMissing ? false : fidelity ? fidelity.pass : null,
-        digitalSource,
-        measured,
-        packAsset: {
-          specId,
-          buffer: generation.encoded.buffer,
-          format: generation.encoded.format,
-          raw: generation.image,
-          mask: generation.mask ?? undefined,
-          sku: ctx.sku,
-          seoSlug: ctx.seoSlug,
-          edgeMarginPx: 2,
-          ref: shot.id,
-          digitalSource,
-        },
+      return {
+        summary: summary("passed"),
+        packAsset: packAssetFor(shot, specId, ctx, generation, checked.shipped),
+        generation: { ...generation, image: checked.shipped },
+        stopShot: false,
       };
-      await deps.store.saveAsset(toStoredAsset(outcome, ctx));
-      return outcome;
     }
     if (decision.action === "needs_review") {
-      const outcome: ShotOutcome = {
-        shotId: shot.id,
-        shotType: shot.type,
-        specId,
-        credits: shot.credits,
-        status: "needs_review",
-        attempts: attempt,
-        usedFallbackProvider: useFallbackProvider,
-        costMicros,
-        verdict: effective,
-        pixelPass: pixel.pass,
-        fidelityPass: fidelityInputsMissing ? false : fidelity ? fidelity.pass : null,
-        digitalSource,
-        measured,
-      };
-      await deps.store.saveAsset(toStoredAsset(outcome, ctx));
-      return outcome;
+      return { summary: summary("needs_review"), stopShot: false };
     }
     if (decision.action === "fallback_provider") {
       useFallbackProvider = true;
@@ -845,7 +990,237 @@ export async function runShot(
   }
 }
 
+function packAssetFor(
+  shot: Shot,
+  specId: string,
+  ctx: ShotContext,
+  generation: ShotGeneration,
+  shipped: RawImage,
+): PackAsset {
+  return {
+    specId,
+    buffer: generation.encoded.buffer,
+    format: generation.encoded.format,
+    raw: shipped,
+    mask: generation.mask ?? undefined,
+    sku: ctx.sku,
+    seoSlug: ctx.seoSlug,
+    edgeMarginPx: QC_EDGE_MARGIN_PX,
+    ref: shot.id,
+    digitalSource: digitalSourceFor(shot.method, ctx.mode),
+  };
+}
+
+/**
+ * Another channel's output of an accepted composite, derived without a new
+ * scene (the generator's deriveForSpec) and checked by the deterministic
+ * checks alone: it is the accepted image re-framed, so there is nothing new
+ * for the judge to see and no retry would change it.
+ */
+async function deriveOutput(
+  shot: Shot,
+  specId: string,
+  from: ShotGeneration,
+  ctx: ShotContext,
+  deps: PipelineDeps,
+  spent: ShotSpend,
+): Promise<OutputRun> {
+  const spec = getSpec(specId);
+  const target: Shot = { ...shot, channels: [specId] };
+  const stop = (reason: string, stopShot: boolean, failure?: string): OutputRun => ({
+    summary: needsReviewSummary(specId, 1, false, reason),
+    stopShot,
+    ...(failure !== undefined ? { failure } : {}),
+  });
+  if ((await deps.store.heartbeat?.(ctx.jobId)) === false) {
+    return stop("The job was stopped before this shot finished.", true);
+  }
+  const args: ShotGenerateArgs = {
+    shot: target,
+    attempt: 1,
+    useFallbackProvider: false,
+    jobId: ctx.jobId,
+    workspaceId: ctx.workspaceId,
+    brandColors: ctx.brandColors,
+  };
+  let generation: ShotGeneration;
+  try {
+    generation = deps.generator.deriveForSpec
+      ? await deps.generator.deriveForSpec(args, from, specId)
+      : await deps.generator.generate(args);
+  } catch (err) {
+    if (err instanceof ShotUnavailableError) {
+      spent.micros += err.costMicros;
+      return stop(err.message, false);
+    }
+    console.error(`[runner] shot ${shot.id} could not be prepared for ${specId}`, err);
+    return stop("This image could not be prepared for this channel, so it needs review.", false, errorDetail(err));
+  }
+  spent.micros += generation.costMicros;
+  const capped = await settleGenerationSpend(shot, ctx, deps, generation);
+  if (capped) {
+    return stop(capped, true);
+  }
+  let checked: CheckedGeneration;
+  try {
+    checked = await checkGeneration(target, spec, generation);
+  } catch (err) {
+    console.error(`[runner] shot ${shot.id} for ${specId} could not be checked`, err);
+    return stop("We could not check this shot, so it needs review.", false, errorDetail(err));
+  }
+  const { pixel, fidelity, fidelityInputsMissing, measured } = checked;
+  const verdict = deterministicVerdict(pixel, fidelity);
+  const pass = verdict.pass && !fidelityInputsMissing;
+  const summary: ShotOutputSummary = {
+    specId,
+    status: pass ? "passed" : "needs_review",
+    attempts: 1,
+    usedFallbackProvider: false,
+    verdict: { ...verdict, pass },
+    pixelPass: pixel.pass,
+    fidelityPass: fidelityInputsMissing ? false : fidelity ? fidelity.pass : null,
+    measured,
+  };
+  return pass
+    ? { summary, packAsset: packAssetFor(shot, specId, ctx, generation, checked.shipped), stopShot: false }
+    : { summary, stopShot: false };
+}
+
+/** The shot's channel specs, known and deduplicated, in plan order. */
+export function shotTargetSpecs(shot: Shot): string[] {
+  return [...new Set(shot.channels.filter((c) => hasSpec(c)))];
+}
+
+/** The spec a multi channel composite is generated at: the largest canvas,
+ * so every other channel is derived by scaling down or re-encoding. */
+export function primarySpecOf(specIds: readonly string[]): string {
+  let best = specIds[0];
+  let bestArea = -1;
+  for (const id of specIds) {
+    const { width, height } = canvasSizeFor(getSpec(id));
+    if (width * height > bestArea) {
+      best = id;
+      bestArea = width * height;
+    }
+  }
+  return best;
+}
+
+/**
+ * Generate and QC one shot for every channel it targets (Update.md 2.11).
+ * Still methods render each channel from the product cutout (cheap once the
+ * cutout is cached); composites are generated once at the primary channel
+ * and every other channel is derived from that accepted image, so the scene
+ * is paid for once. Each channel output gets its own QC and its own file.
+ * The shot passes, and is charged once, when any output passes. Any error
+ * ends the affected output as needs review; it never fails the pack.
+ */
+export async function runShot(
+  shot: Shot,
+  ctx: ShotContext,
+  deps: PipelineDeps,
+): Promise<ShotOutcome> {
+  const targets = shotTargetSpecs(shot);
+  const spent: ShotSpend = { micros: 0 };
+  const runs: OutputRun[] = [];
+
+  if (targets.length > 0 && COMPOSITE_METHODS.has(shot.method)) {
+    const primary = primarySpecOf(targets);
+    const first = await runOutput(shot, primary, ctx, deps, spent);
+    runs.push(first);
+    if (first.generation && !first.stopShot) {
+      for (const specId of targets.filter((s) => s !== primary)) {
+        const derived = await deriveOutput(shot, specId, first.generation, ctx, deps, spent);
+        runs.push(derived);
+        if (derived.stopShot) break;
+      }
+    }
+  } else {
+    for (const specId of targets) {
+      const run = await runOutput(shot, specId, ctx, deps, spent);
+      runs.push(run);
+      if (run.stopShot) break;
+    }
+  }
+
+  const passedRuns = runs.filter((r) => r.summary.status === "passed");
+  const representative =
+    passedRuns[0]?.summary ??
+    runs[0]?.summary ??
+    needsReviewSummary(shot.channels[0] ?? "", 1, false, "This shot has no channel to size it for, so it needs review.");
+  const failure = runs.find((r) => r.failure !== undefined)?.failure;
+  const outcome: ShotOutcome = {
+    shotId: shot.id,
+    shotType: shot.type,
+    specId: representative.specId,
+    credits: shot.credits,
+    status: passedRuns.length > 0 ? "passed" : "needs_review",
+    attempts: representative.attempts,
+    usedFallbackProvider: runs.some((r) => r.summary.usedFallbackProvider),
+    costMicros: spent.micros,
+    verdict: representative.verdict,
+    pixelPass: representative.pixelPass,
+    fidelityPass: representative.fidelityPass,
+    digitalSource: digitalSourceFor(shot.method, ctx.mode),
+    measured: representative.measured,
+    outputs: runs.map((r) => r.summary),
+    ...(passedRuns.length > 0 ? { packAssets: passedRuns.map((r) => r.packAsset as PackAsset) } : {}),
+    ...(passedRuns.length === 0 && failure !== undefined ? { failure } : {}),
+  };
+  await deps.store.saveAsset(toStoredAsset(outcome, ctx));
+  return outcome;
+}
+
+/**
+ * A needs review outcome for a shot that never produced one of its own, for
+ * example a fan out subtask that crashed after its retries. Its credits are
+ * released like any other shot that needs review.
+ */
+export function shotFailureOutcome(
+  shot: Shot,
+  ctx: ShotContext,
+  reason: string = SHOT_PROVIDER_TROUBLE,
+  failure?: string,
+): ShotOutcome {
+  const summary = needsReviewSummary(shot.channels[0] ?? "", 1, false, reason);
+  return {
+    shotId: shot.id,
+    shotType: shot.type,
+    specId: summary.specId,
+    credits: shot.credits,
+    status: "needs_review",
+    attempts: 1,
+    usedFallbackProvider: false,
+    costMicros: 0,
+    verdict: summary.verdict,
+    pixelPass: false,
+    fidelityPass: null,
+    digitalSource: digitalSourceFor(shot.method, ctx.mode),
+    measured: summary.measured,
+    outputs: [summary],
+    ...(failure !== undefined ? { failure } : {}),
+  };
+}
+
+/** Records a failed shot on the board (best effort) and returns its outcome. */
+export async function recordShotFailure(
+  store: JobStore,
+  shot: Shot,
+  ctx: ShotContext,
+  err: unknown,
+): Promise<ShotOutcome> {
+  console.error(`[runner] shot ${shot.id} failed outside its QC loop`, err);
+  const outcome = shotFailureOutcome(shot, ctx, SHOT_PROVIDER_TROUBLE, errorDetail(err));
+  try {
+    await store.saveAsset(toStoredAsset(outcome, ctx));
+  } catch (saveErr) {
+    console.error(`[runner] could not record failed shot ${shot.id}`, saveErr);
+  }
+  return outcome;
+}
+
 function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext): StoredAsset {
+  const file = outcome.packAssets?.find((a) => a.specId === outcome.specId) ?? outcome.packAssets?.[0];
   return {
     jobId: ctx.jobId,
     workspaceId: ctx.workspaceId,
@@ -858,17 +1233,20 @@ function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext): StoredAsset {
     costMicros: outcome.costMicros,
     verdict: outcome.verdict,
     measured: outcome.measured,
-    encoded: outcome.packAsset ? { buffer: outcome.packAsset.buffer, format: outcome.packAsset.format ?? "png" } : undefined,
+    encoded: file ? { buffer: file.buffer, format: file.format ?? "png" } : undefined,
   };
 }
 
 /** Wraps seller text in the untrusted data tags the seeded system prompts
- * reference (plan 4.5.3): user text is data, never instructions. */
+ * reference (plan 4.5.3): user text is data, never instructions. The text is
+ * escaped first, so it can never close the tag and speak as trusted prompt
+ * text (Update.md 4.5). */
 export function wrapUserDescription(description: string | undefined | null): string | null {
   if (!description || description.length === 0) {
     return null;
   }
-  return `<user_description>${description}</user_description>`;
+  const escaped = description.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return `<user_description>${escaped}</user_description>`;
 }
 
 /** Moderation gate (plan 4.5.2): intake flags and analyzer compliance flags
@@ -905,34 +1283,206 @@ export function isMarketplaceChannel(channel: string): boolean {
   return listSpecs().some((s) => channelOf(s.id) === channel && isMarketplaceSpec(s.id));
 }
 
-/** An LLM shot list is usable only when it validates, every shot targets a
- * known channel spec, every shot draws from one of this job's uploaded
- * photos (when the allowed media ids are given), and the plan fits the
- * credit budget. */
-export function validateLlmShotList(
-  raw: unknown,
-  creditBudget: number,
-  allowedMediaIds?: readonly string[],
-): ShotList | null {
-  const parsed = ShotList.safeParse(raw);
-  if (!parsed.success) {
-    return null;
-  }
-  const shots = parsed.data.shots;
-  if (allowedMediaIds && allowedMediaIds.length > 0) {
-    const allowed = new Set(allowedMediaIds);
-    if (shots.some((s) => !allowed.has(s.sourceMediaId))) {
-      return null;
+/** Channel families of the selected channels ("amazon.main" and "amazon"
+ * both select the amazon family). */
+export function selectedFamilies(channels: readonly string[]): Set<string> {
+  return new Set(channels.map((c) => channelOf(c)));
+}
+
+/**
+ * Credits for a shot, from the creditCosts seed by method (CLAUDE.md rule 2),
+ * never from what a planner claims. Generative video is priced per second of
+ * the duration its type names (video_hero_6s is 6 seconds); video without a
+ * duration is the templated video price.
+ */
+export function creditsForShot(shot: Pick<Shot, "type" | "method">): number {
+  switch (shot.method) {
+    case "deterministic":
+    case "template":
+      return creditCosts.deterministic;
+    case "composite_generate":
+    case "edit_generate":
+      return creditCosts.generativeStill;
+    case "avatar":
+      return creditCosts.ugcAvatarAd;
+    case "video_generate": {
+      const seconds = /_(\d+)s$/.exec(shot.type)?.[1];
+      return seconds ? creditCosts.generativeVideoPerSecondLite * Number(seconds) : creditCosts.templatedVideo;
     }
   }
-  if (shots.some((s) => s.channels.length === 0 || !hasSpec(s.channels[0]))) {
-    return null;
+}
+
+/** What an LLM shot plan is checked against. */
+export interface LlmPlanRules {
+  /** The job's credit reservation. */
+  budget: number;
+  /** Media ids of the photos this job uploaded. */
+  mediaIds: readonly string[];
+  /** The channels the pack may target (concept mode already removed the
+   * marketplace ones). */
+  channels: readonly string[];
+  mode: "listing" | "concept";
+  /** True when a usable front photo exists, so Amazon needs its main image. */
+  requireAmazonMain: boolean;
+}
+
+export type LlmPlanCheck = { ok: true; shotList: ShotList } | { ok: false; reason: string };
+
+/**
+ * An LLM shot list is used only when it validates against the schema, every
+ * shot id is unique, every shot claims a positive cost (the real price is
+ * then taken from the seed), every shot draws from one of this job's photos, every
+ * channel is a known spec inside the selected channel families (and never a
+ * marketplace spec in concept mode), at most one shot targets amazon.main and
+ * it is the deterministic amazon_main, Amazon gets its main image when a
+ * usable front photo exists, and the plan fits the budget once every shot is
+ * repriced from the seed (Update.md 1.7). Otherwise the deterministic planner
+ * runs, and the reason is reported.
+ */
+export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanCheck {
+  const parsed = ShotList.safeParse(raw);
+  if (!parsed.success) {
+    return { ok: false, reason: "the plan did not match the shot list schema" };
   }
-  const total = shots.reduce((sum, s) => sum + s.credits, 0);
-  if (total > creditBudget) {
-    return null;
+  const shots = parsed.data.shots;
+  const media = new Set(rules.mediaIds);
+  const families = selectedFamilies(rules.channels);
+  const ids = new Set<string>();
+  for (const shot of shots) {
+    if (ids.has(shot.id)) {
+      return { ok: false, reason: `shot id ${shot.id} is used twice` };
+    }
+    ids.add(shot.id);
+    if (!media.has(shot.sourceMediaId)) {
+      return { ok: false, reason: `shot ${shot.id} draws from a photo this job did not upload` };
+    }
+    // Prices come from the seed below, but a plan that claims a shot costs
+    // nothing is malformed (it would settle as a zero charge after delivery).
+    if (!(Number.isFinite(shot.credits) && shot.credits > 0)) {
+      return { ok: false, reason: `shot ${shot.id} claims no credit cost` };
+    }
+    if (shot.channels.length === 0) {
+      return { ok: false, reason: `shot ${shot.id} targets no channel` };
+    }
+    for (const channel of shot.channels) {
+      if (!hasSpec(channel)) {
+        return { ok: false, reason: `shot ${shot.id} targets unknown channel ${channel}` };
+      }
+      if (!families.has(channelOf(channel))) {
+        return { ok: false, reason: `shot ${shot.id} targets ${channel}, outside the selected channels` };
+      }
+      if (rules.mode === "concept" && isMarketplaceSpec(channel)) {
+        return { ok: false, reason: `shot ${shot.id} targets marketplace channel ${channel} in a concept pack` };
+      }
+    }
   }
-  return parsed.data;
+  const mains = shots.filter((s) => s.channels.includes("amazon.main"));
+  if (mains.length > 1) {
+    return { ok: false, reason: "more than one shot targets amazon.main" };
+  }
+  if (mains.some((s) => s.type !== "amazon_main" || s.method !== "deterministic")) {
+    return { ok: false, reason: "amazon.main must be the deterministic amazon_main shot" };
+  }
+  if (rules.mode === "listing" && rules.requireAmazonMain && families.has("amazon") && mains.length === 0) {
+    return { ok: false, reason: "Amazon is selected but the plan has no amazon_main shot" };
+  }
+  const repriced = shots.map((s) => ({ ...s, credits: creditsForShot(s) }));
+  const total = repriced.reduce((sum, s) => sum + s.credits, 0);
+  if (total > rules.budget) {
+    return { ok: false, reason: `the plan needs ${total} credits and the budget is ${rules.budget}` };
+  }
+  return { ok: true, shotList: { shots: repriced, skipped: parsed.data.skipped } };
+}
+
+export interface FitOptions {
+  channels: readonly string[];
+  mode: "listing" | "concept";
+  budget: number;
+  profile: ProductProfile;
+  primaryMediaId?: string;
+}
+
+const GOOGLE_MAIN_SPEC = "google.merchant.main";
+
+/**
+ * Fits a plan to what the seller selected (Update.md 2.11). Every shot keeps
+ * only the channel specs whose family was selected (never a marketplace spec
+ * in concept mode); a shot left with none is skipped, so unselected channels
+ * (for example social crops when no social channel was picked) cost nothing.
+ * When Google is selected its main image slot is filled: the white main
+ * image also ships to Google when there is one, otherwise a white front shot
+ * is added within the budget. Shot ids are made unique.
+ */
+export function fitShotsToChannels(plan: ShotList, opts: FitOptions): ShotList {
+  const families = selectedFamilies(opts.channels);
+  const skipped = [...plan.skipped];
+  const shots: Shot[] = [];
+  for (const shot of plan.shots) {
+    const kept = [
+      ...new Set(
+        shot.channels.filter(
+          (c) => hasSpec(c) && families.has(channelOf(c)) && !(opts.mode === "concept" && isMarketplaceSpec(c)),
+        ),
+      ),
+    ];
+    if (kept.length === 0) {
+      skipped.push({ type: shot.type, reason: "channel not selected" });
+      continue;
+    }
+    shots.push({ ...shot, channels: kept });
+  }
+
+  if (opts.mode === "listing" && families.has(channelOf(GOOGLE_MAIN_SPEC)) && !shots.some((s) => s.channels.includes(GOOGLE_MAIN_SPEC))) {
+    const whiteMain = shots.find((s) => s.type === "amazon_main" && s.method === "deterministic");
+    const frontUsable =
+      opts.profile.imageQuality.usableForMain && opts.profile.photographedAngles.includes("front");
+    if (whiteMain) {
+      whiteMain.channels = [...whiteMain.channels, GOOGLE_MAIN_SPEC];
+    } else if (!frontUsable || !opts.primaryMediaId) {
+      skipped.push({ type: "google_main", reason: "needs photo" });
+    } else {
+      const shot: Shot = {
+        id: "s00_google_main",
+        type: "alt_angle_white",
+        sourceMediaId: opts.primaryMediaId,
+        method: "deterministic",
+        channels: [GOOGLE_MAIN_SPEC],
+        stylePreset: "none",
+        credits: creditsForShot({ type: "alt_angle_white", method: "deterministic" }),
+        priority: 1,
+      };
+      const total = shots.reduce((sum, s) => sum + s.credits, 0);
+      if (total + shot.credits <= opts.budget) {
+        shots.unshift(shot);
+      } else {
+        skipped.push({ type: "google_main", reason: "credit budget" });
+      }
+    }
+  }
+
+  // Shot ids key the ledger charges; a duplicate would hold credits forever.
+  const seen = new Set<string>();
+  for (const shot of shots) {
+    let id = shot.id;
+    for (let n = 2; seen.has(id); n++) {
+      id = `${shot.id}_${n}`;
+    }
+    seen.add(id);
+    shot.id = id;
+  }
+  return { shots, skipped };
+}
+
+/** Job error when no shot in the pack passed. Plain copy the board shows. */
+function noShotPassedMessage(outcomes: readonly ShotOutcome[]): string {
+  if (outcomes.length === 0) {
+    return "No shots could be planned for the channels you picked, so nothing was charged.";
+  }
+  const failures = outcomes.map((o) => o.failure).filter((f): f is string => f !== undefined);
+  if (failures.length === outcomes.length) {
+    return `None of the shots in this pack could be made, so nothing was charged. The first error was: ${failures[0]}`;
+  }
+  return "None of the shots in this pack passed its checks, so nothing was charged. Each shot is marked for review.";
 }
 
 export async function runGeneratePack(
@@ -944,6 +1494,7 @@ export async function runGeneratePack(
   let state: JobState = "queued";
   let costMicros = 0;
   let plannerSource: GeneratePackSummary["plannerSource"] = null;
+  let planRejection: string | undefined;
   let plannedShots = 0;
   let skipped: Array<{ type: string; reason: string }> = [];
   let passed = 0;
@@ -984,6 +1535,7 @@ export async function runGeneratePack(
     plannedShots,
     skipped,
     plannerSource,
+    ...(planRejection !== undefined ? { planRejection } : {}),
     costMicros,
     pack,
     ...(error !== undefined ? { error } : {}),
@@ -1044,13 +1596,15 @@ export async function runGeneratePack(
     }
     await store.saveProfile?.(input.jobId, profile);
 
-    // Plan shots: LLM planner recipe first, deterministic planShots when the
-    // response is schema invalid. Concept mode drops marketplace channels
-    // before planning; the exclusion is structural, not a pricing convention.
+    // Plan shots: LLM planner recipe first, validated and repriced from the
+    // seed; the deterministic planShots when it is rejected. Concept mode
+    // drops marketplace channels before planning; the exclusion is
+    // structural, not a pricing convention.
     await advance(transition(state, "analysis_done"));
-    const conceptExcluded =
-      input.mode === "concept" ? input.channels.filter((c) => isMarketplaceChannel(c)) : [];
+    const mode = input.mode ?? "listing";
+    const conceptExcluded = mode === "concept" ? input.channels.filter((c) => isMarketplaceChannel(c)) : [];
     const effectiveChannels = input.channels.filter((c) => !conceptExcluded.includes(c));
+    const primaryMediaId = input.images[0]?.mediaId;
     const planOptions: PlanOptions = {
       channels: effectiveChannels,
       tier: input.tier,
@@ -1058,7 +1612,7 @@ export async function runGeneratePack(
       hasBoxContents: input.hasBoxContents,
       hasComparisonFacts: input.hasComparisonFacts,
       hasVideoSource: input.hasVideoSource,
-      primaryMediaId: input.images[0]?.mediaId,
+      primaryMediaId,
     };
     const planned = await llmJson<unknown>(
       deps.ai,
@@ -1070,17 +1624,36 @@ export async function runGeneratePack(
       ShotList,
     );
     costMicros += planned.costMicros;
-    let shotList = validateLlmShotList(
-      planned.raw,
-      input.creditBudget,
-      input.images.map((image) => image.mediaId),
-    );
-    if (shotList) {
+    const check = validateLlmShotList(planned.raw, {
+      budget: input.creditBudget,
+      mediaIds: input.images.map((image) => image.mediaId),
+      channels: effectiveChannels,
+      mode,
+      requireAmazonMain: profile.imageQuality.usableForMain && profile.photographedAngles.includes("front"),
+    });
+    let shotList: ShotList;
+    if (check.ok) {
+      shotList = check.shotList;
       plannerSource = "llm";
     } else {
+      planRejection = check.reason;
+      // Only an actual plan that was turned down is worth a log line; a
+      // response with no shots at all (demo mode) just falls back.
+      const attempted =
+        !!planned.raw && typeof planned.raw === "object" && Array.isArray((planned.raw as { shots?: unknown }).shots);
+      if (attempted) {
+        console.warn(`[runner] job ${input.jobId} LLM shot plan rejected: ${check.reason}`);
+      }
       shotList = planShots(profile, planOptions);
       plannerSource = "deterministic";
     }
+    shotList = fitShotsToChannels(shotList, {
+      channels: effectiveChannels,
+      mode,
+      budget: input.creditBudget,
+      profile,
+      primaryMediaId,
+    });
     if (deps.excludeShotMethods && deps.excludeShotMethods.length > 0) {
       const excluded = new Set(deps.excludeShotMethods);
       const kept = shotList.shots.filter((shot) => !excluded.has(shot.method));
@@ -1101,61 +1674,92 @@ export async function runGeneratePack(
     ];
 
     // Fan out per shot generation, each shot carrying its own QC retry loop.
-    await advance(transition(state, "plan_ready"));
+    await advance(transition(state, "plan_ready"), {
+      plannerSource,
+      ...(planRejection !== undefined ? { planRejection } : {}),
+    });
     const ctx: ShotContext = {
       jobId: input.jobId,
       workspaceId: input.workspaceId,
       sku: input.sku,
       seoSlug: input.seoSlug,
-      mode: input.mode ?? "listing",
+      mode,
       brandColors: input.brandColors,
     };
     // Pack level spend cap: a shared tracker gates every generation attempt
-    // across the parallel fan out, so a runaway pack stops mid flight.
+    // across the parallel fan out, so a runaway pack stops mid flight. The
+    // shots it stops go to needs review; what already passed still ships.
     let fanOutDeps = deps;
     if (deps.packCostCapMicros !== undefined) {
       const cap = deps.packCostCapMicros;
       const baseCost = costMicros;
       let generatedCostMicros = 0;
       const inner = deps.generator;
+      const gate = (): void => {
+        if (baseCost + generatedCostMicros >= cap) {
+          throw new ShotUnavailableError(PACK_CAP_REACHED);
+        }
+      };
       fanOutDeps = {
         ...deps,
         generator: {
           generate: async (args) => {
-            if (baseCost + generatedCostMicros >= cap) {
-              throw new Error("Pack cost cap reached before all shots finished");
-            }
+            gate();
             const generation = await inner.generate(args);
             generatedCostMicros += generation.costMicros;
             return generation;
           },
+          ...(inner.deriveForSpec
+            ? {
+                deriveForSpec: async (args: ShotGenerateArgs, from: ShotGeneration, specId: string) => {
+                  gate();
+                  const generation = await inner.deriveForSpec!(args, from, specId);
+                  generatedCostMicros += generation.costMicros;
+                  return generation;
+                },
+              }
+            : {}),
         },
       };
     }
+    // One shot failing never takes its siblings down: a shot that throws
+    // outside its own QC loop becomes needs review (Update.md 3.3).
     const runShots =
       deps.runShots ??
-      ((shots: Shot[], c: ShotContext) => Promise.all(shots.map((s) => runShot(s, c, fanOutDeps))));
+      (async (shots: Shot[], c: ShotContext): Promise<ShotOutcome[]> => {
+        const settledShots = await Promise.allSettled(shots.map((s) => runShot(s, c, fanOutDeps)));
+        return Promise.all(
+          settledShots.map((result, i) =>
+            result.status === "fulfilled" ? result.value : recordShotFailure(store, shots[i], c, result.reason),
+          ),
+        );
+      });
     const outcomes = await runShots(shotList.shots, ctx);
     costMicros += outcomes.reduce((sum, o) => sum + o.costMicros, 0);
 
-    // QC accounting, part one: release every failed shot now. Passing shots
-    // stay held until their files are delivered (below), so a pack that
-    // never ships is never charged.
+    // QC accounting, part one: release every shot that needs review now.
+    // Passing shots stay held until their files are delivered (below), so a
+    // pack that never ships is never charged.
     await advance(transition(state, "shots_generated"));
     const passing = outcomes.filter((o) => o.status === "passed");
     for (const outcome of outcomes) {
       if (outcome.status !== "passed") {
         needsReview += 1;
-        await applyLedger(ledger.releaseForFailedShot(outcome.shotId, outcome.credits));
+        if (outcome.credits > 0) {
+          await applyLedger(ledger.releaseForFailedShot(outcome.shotId, outcome.credits));
+        }
       }
     }
+    // A pack fails only when nothing in it can be delivered.
+    if (passing.length === 0) {
+      throw new Error(noShotPassedMessage(outcomes));
+    }
 
-    // Packaging.
+    // Packaging: one zip per selected channel family, one file per passing
+    // channel output.
     await advance(transition(state, "qc_done"));
-    const packAssets = outcomes
-      .filter((o) => o.status === "passed" && o.packAsset)
-      .map((o) => o.packAsset as PackAsset);
-    const families = [...new Set(packAssets.map((a) => channelOf(a.specId)))];
+    const packAssets = passing.flatMap((o) => o.packAssets ?? []);
+    const families = [...selectedFamilies(effectiveChannels)];
     const built = await buildPack(packAssets, families, {
       outDir: deps.packOutDir,
       writeFiles: true,
@@ -1171,12 +1775,14 @@ export async function runGeneratePack(
     await store.savePack(pack);
 
     // QC accounting, part two: the files are delivered, so charge each
-    // passing asset. The heartbeat keeps the reconciler off the job while
-    // the charges land.
+    // passing shot once. The heartbeat keeps the reconciler off the job
+    // while the charges land.
     await store.heartbeat?.(input.jobId);
     for (const outcome of passing) {
       passed += 1;
-      await applyLedger(ledger.chargeForPassingAsset(outcome.shotId, outcome.credits));
+      if (outcome.credits > 0) {
+        await applyLedger(ledger.chargeForPassingAsset(outcome.shotId, outcome.credits));
+      }
     }
     await applyLedger(ledger.releaseUnusedOnCompletion());
     // From here the pack is delivered and fully settled; a failure writing

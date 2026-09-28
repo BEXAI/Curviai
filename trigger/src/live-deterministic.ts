@@ -14,16 +14,12 @@ import {
   buildProductReference,
   decodeMask,
   decodeToRgba,
-  dilate,
-  encodeJpeg,
   encodePng,
-  fidelityReport,
   makeAmazonMain,
   makeCutoutPng,
   makeSweep,
   nonZeroMask,
   PRODUCT_RESIZE_KERNEL,
-  qcKindForSpec,
   rawToSharp,
   solidCanvas,
   type ProductPlacement,
@@ -31,10 +27,11 @@ import {
   type RawMask,
   type Shot,
 } from "@curvi/pipeline";
-import { stillStyle } from "@curvi/pipeline/seed";
+import { canvasDefaults, stillStyle } from "@curvi/pipeline/seed";
 import { getSpec, type ChannelSpec } from "@curvi/specs";
+import { ShotUnavailableError } from "./errors";
 import type { LiveProduct, StillRender } from "./live-product";
-import { ShotUnavailableError } from "./pipeline-runner";
+import { canvasSizeFor, encodeForSpec, stillQcErosion } from "./shot-outputs";
 
 type ShotType = Shot["type"];
 
@@ -46,16 +43,6 @@ export const DETERMINISTIC_LIVE_TYPES: ReadonlySet<ShotType> = new Set<ShotType>
   "sweep_brand",
   "collection_thumb",
 ]);
-
-/** Matches the QC edge margin the runner passes to pixelChecks. */
-const QC_EDGE_MARGIN_PX = 2;
-/** JPEG quality ladder, same steps as the whiten helper's encoder. */
-const JPEG_QUALITIES = [90, 80, 70, 60, 50, 40] as const;
-/** Higher qualities tried, in order, when a JPEG fails the rule 3 check. */
-const JPEG_FIDELITY_QUALITIES = [95, 98, 100] as const;
-/** Product longest side over canvas longest side for the transparent cutout
- * when the spec sets no fill rule; mirrors makeAmazonMain's default target. */
-const CUTOUT_FILL_TARGET = 0.875;
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
@@ -109,7 +96,7 @@ function brandHex(brandColors: string[] | undefined): string {
 async function renderOnWhite(product: LiveProduct, spec: ChannelSpec): Promise<StillRender> {
   const main = await makeAmazonMain(product.productPng, product.maskPng, spec);
   const reference = await referenceFor(product, main.placement, main.width, main.height);
-  return encodeForSpec(main.raw, main.mask, reference, spec, { buffer: main.jpeg, format: "jpg" });
+  return encodeStill(main.raw, main.mask, reference, spec, main.placement, main.jpeg);
 }
 
 /**
@@ -126,16 +113,15 @@ async function renderCutout(product: LiveProduct, spec: ChannelSpec): Promise<St
   const cutout = await makeCutoutPng(product.productPng, product.maskPng);
   const trimmed = await decodeToRgba(cutout.png);
 
-  const canvasW = spec.width ?? 2000;
-  const canvasH = spec.height ?? canvasW;
+  const { width: canvasW, height: canvasH } = canvasSizeFor(spec);
   const canvasLong = Math.max(canvasW, canvasH);
   const fillTarget = spec.fill
-    ? Math.min(spec.fill.max, Math.max(spec.fill.min, CUTOUT_FILL_TARGET))
-    : CUTOUT_FILL_TARGET;
+    ? Math.min(spec.fill.max, Math.max(spec.fill.min, canvasDefaults.cutoutFillTarget))
+    : canvasDefaults.cutoutFillTarget;
   const scale = Math.min(
     (fillTarget * canvasLong) / Math.max(trimmed.width, trimmed.height),
-    (canvasW * 0.98) / trimmed.width,
-    (canvasH * 0.98) / trimmed.height,
+    (canvasW * canvasDefaults.maxAxisShare) / trimmed.width,
+    (canvasH * canvasDefaults.maxAxisShare) / trimmed.height,
   );
   const targetW = Math.max(1, Math.round(trimmed.width * scale));
   const targetH = Math.max(1, Math.round(trimmed.height * scale));
@@ -169,7 +155,9 @@ async function renderCutout(product: LiveProduct, spec: ChannelSpec): Promise<St
     canvasH,
     "replace",
   );
-  return { image, mask: alphaMask(image), encoded: { buffer: png, format: "png" }, productReference };
+  const mask = alphaMask(image);
+  const fidelityErosion = await stillQcErosion(mask, targetW / cutout.crop.width);
+  return { image, mask, encoded: { buffer: png, format: "png" }, productReference, fidelityErosion };
 }
 
 /** Studio sweep in the given color at the spec size. */
@@ -185,7 +173,7 @@ async function renderSweep(product: LiveProduct, spec: ChannelSpec, hex: string)
     height: spec.height,
   });
   const reference = await referenceFor(product, sweep.placement, sweep.width, sweep.height);
-  return encodeForSpec(sweep.raw, sweep.mask, reference, spec, { buffer: sweep.jpeg, format: "jpg" });
+  return encodeStill(sweep.raw, sweep.mask, reference, spec, sweep.placement, sweep.jpeg);
 }
 
 /**
@@ -213,86 +201,25 @@ function allowsTransparency(spec: ChannelSpec): boolean {
 }
 
 /**
- * Pick an encoding the spec allows and that fits spec.maxBytes: JPEG first
- * (stepping quality down to fit), then lossless PNG. For a solid background
- * spec a JPEG is only kept when its decoded background is still exactly the
- * spec color outside the QC edge margin; codec ringing that dirties it sends
- * the shot to PNG, which keeps the forced background bit exact. A JPEG is
- * also only kept when its product pixels pass the same rule 3 fidelity check
- * the runner applies. On detailed products codec error can push single
- * pixels past the limit; then higher qualities are tried, and PNG after
- * those, instead of loosening the check.
+ * Encodes a placed still for its spec (see encodeForSpec) after sizing the
+ * rule 3 check region from the placement scale, so the encoding is verified
+ * with exactly the erosion the runner applies. A thin product gets a smaller
+ * erosion (never into the resize edge band) instead of an empty region.
  */
-async function encodeForSpec(
+async function encodeStill(
   raw: RawImage,
   mask: RawMask,
   productReference: RawImage,
   spec: ChannelSpec,
-  firstJpeg?: { buffer: Buffer; format: "jpg" },
+  placement: ProductPlacement,
+  firstJpeg: Buffer,
 ): Promise<StillRender> {
-  const maxBytes = spec.maxBytes ?? Number.POSITIVE_INFINITY;
-  const allows = (f: string): boolean => !spec.formats || (spec.formats as readonly string[]).includes(f);
-  const solidRgb = spec.background?.type === "solid" ? spec.background.rgb : undefined;
-  const checkMask = solidRgb ? await dilate(mask, QC_EDGE_MARGIN_PX) : null;
-  const kind = qcKindForSpec(spec);
-
-  if (allows("jpg")) {
-    for (const quality of JPEG_QUALITIES) {
-      const buffer =
-        quality === JPEG_QUALITIES[0] && firstJpeg ? firstJpeg.buffer : await encodeJpeg(raw, quality);
-      if (buffer.length > maxBytes) {
-        continue;
-      }
-      const image = await decodeToRgba(buffer);
-      if (solidRgb && checkMask && !backgroundExact(image, checkMask, solidRgb)) {
-        // Lower quality only adds more ringing; go straight to PNG.
-        break;
-      }
-      if ((await fidelityReport(productReference, image, mask, { kind })).pass) {
-        return { image, mask, encoded: { buffer, format: "jpg" }, productReference };
-      }
-      // Lower quality only drifts further from the product; try higher.
-      for (const higher of JPEG_FIDELITY_QUALITIES) {
-        if (higher <= quality) {
-          continue;
-        }
-        const better = await encodeJpeg(raw, higher);
-        if (better.length > maxBytes) {
-          break;
-        }
-        const betterImage = await decodeToRgba(better);
-        if (solidRgb && checkMask && !backgroundExact(betterImage, checkMask, solidRgb)) {
-          continue;
-        }
-        if ((await fidelityReport(productReference, betterImage, mask, { kind })).pass) {
-          return { image: betterImage, mask, encoded: { buffer: better, format: "jpg" }, productReference };
-        }
-      }
-      break;
-    }
-  }
-  if (allows("png")) {
-    const buffer = await encodePng(raw);
-    if (buffer.length <= maxBytes) {
-      return { image: await decodeToRgba(buffer), mask, encoded: { buffer, format: "png" }, productReference };
-    }
-  }
-  throw new ShotUnavailableError(
-    "We could not save this image in a format and size this channel accepts, so it needs review.",
-  );
-}
-
-function backgroundExact(image: RawImage, checkMask: RawMask, rgb: readonly [number, number, number]): boolean {
-  for (let i = 0; i < checkMask.data.length; i++) {
-    if (checkMask.data[i] !== 0) {
-      continue;
-    }
-    const o = i * 4;
-    if (image.data[o] !== rgb[0] || image.data[o + 1] !== rgb[1] || image.data[o + 2] !== rgb[2]) {
-      return false;
-    }
-  }
-  return true;
+  const fidelityErosion = await stillQcErosion(mask, placement.width / Math.max(1, placement.crop.width));
+  const out = await encodeForSpec(raw, mask, productReference, spec, {
+    firstJpeg,
+    erodePx: fidelityErosion.erodePx,
+  });
+  return { image: out.image, mask, encoded: out.encoded, productReference, fidelityErosion };
 }
 
 function alphaMask(image: RawImage): RawMask {
