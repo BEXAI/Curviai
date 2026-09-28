@@ -99,6 +99,17 @@ function privateBucket(): string {
   return optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
 }
 
+/** Writes a photo the server fetched for the workspace (a product link
+ * import) under the same ws/{workspaceId}/src/ prefix a browser upload
+ * uses, and returns its key. */
+export async function putSourceObject(workspaceId: string, body: Buffer, contentType: string): Promise<string> {
+  const key = sourceUploadKey(workspaceId);
+  await r2Client().send(
+    new PutObjectCommand({ Bucket: privateBucket(), Key: key, Body: body, ContentType: contentType }),
+  );
+  return key;
+}
+
 /** Writes generated output bytes under the workspace's out prefix. */
 export async function putGeneratedObject(key: string, body: Buffer, contentType: string): Promise<void> {
   await r2Client().send(

@@ -10,6 +10,9 @@ import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { estimatePackCredits, type EstimateMode } from "@/lib/pack-estimate";
 import { intentFor, type SubmitIntent } from "@/lib/submit-intent";
 import { track } from "@/lib/track";
+import { requestPhotoImport } from "@/lib/url-import/client";
+import { IMPORT_TITLE_MAX, sellerNotesFrom, type ImportedImage, type ImportedProduct } from "@/lib/url-import/types";
+import { ProductLinkImport } from "./product-link-import";
 
 export interface ChannelOption {
   id: string;
@@ -226,6 +229,32 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
     }
   }
 
+  // A product link fills the name and notes of a new product.
+  function applyImportedProduct(product: ImportedProduct) {
+    setProductId("new");
+    setConfirmedAttach(null);
+    if (product.title) {
+      setNewProductTitle(product.title.slice(0, IMPORT_TITLE_MAX));
+    }
+    const notes = sellerNotesFrom(product);
+    if (notes) {
+      setDescription(notes);
+    }
+  }
+
+  // A photo picked from the imported listing is copied into this
+  // workspace's uploads by the server, then used like an upload.
+  async function handleImportedPhoto(image: ImportedImage, index: number) {
+    const seq = ++uploadSeq.current;
+    const name = `photo ${index + 1} from your listing`;
+    setSubmitError(null);
+    setUpload({ phase: "uploading", name });
+    const outcome = await requestPhotoImport(image.url, name);
+    if (seq === uploadSeq.current) {
+      setUpload(outcome);
+    }
+  }
+
   async function submit() {
     setSubmitError(null);
     if (uploading || submitting) {
@@ -312,6 +341,11 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
       <div className="space-y-8">
         <section>
           <h2 className="text-lg font-semibold text-ink-950">1. Add your product</h2>
+          <ProductLinkImport
+            onProduct={applyImportedProduct}
+            onPickPhoto={(image, index) => void handleImportedPhoto(image, index)}
+            busy={uploading}
+          />
           <div
             className={cn(
               "mt-3 rounded-xl border-2 border-dashed p-6 text-center transition-colors",
