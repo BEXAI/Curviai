@@ -220,6 +220,20 @@ export function comingSoonFeatures(): Feature[] {
 
 // Channels
 
+export interface ChannelSpecAvailability {
+  /** Spec id in the registry, for example "amazon.main". */
+  specId: string;
+  /** How lists name these files after the channel, for example "main images" in "Amazon main images". */
+  files: string;
+  status: Availability;
+  /**
+   * Wording that names this spec on its own. A coming soon spec whose
+   * channel has other live specs needs one, so copy that mentions it
+   * without saying coming soon is caught (see unqualifiedClaims).
+   */
+  mentions?: RegExp;
+}
+
 export interface ChannelFamily {
   /** The spec id prefix, for example "amazon" for "amazon.main". */
   family: string;
@@ -227,32 +241,96 @@ export interface ChannelFamily {
   status: Availability;
 }
 
+/** Channel names by spec id prefix, in the order copy lists them. */
+const CHANNEL_NAMES: readonly { family: string; name: string }[] = [
+  { family: "amazon", name: "Amazon" },
+  { family: "shopify", name: "Shopify" },
+  { family: "walmart", name: "Walmart" },
+  { family: "etsy", name: "Etsy" },
+  { family: "ebay", name: "eBay" },
+  { family: "tiktokshop", name: "TikTok Shop" },
+  { family: "google", name: "Google Merchant" },
+  { family: "meta", name: "Meta" },
+  { family: "pinterest", name: "Pinterest" },
+];
+
 /**
- * Which marketplace and social channels a pack delivers files for today.
- * The spec registry describes more channels than the planner fills, so this
- * list, not the registry, decides what copy may promise. A test plans a
- * pack with every channel selected and fails when this drifts.
+ * Which channel specs a pack makes files for today, spec by spec. The spec
+ * registry describes more than the pipeline fills, so this list, not the
+ * registry, decides what copy and the channel requirement pages may
+ * promise. A test runs the planner and the runner's channel fitting for
+ * each spec picked on its own and for every spec picked together, at the
+ * credits the server reserves, and fails when a flag here drifts from what
+ * ships. Flip a flag in the same change that ships or pulls the files.
  */
-export const CHANNEL_FAMILIES: readonly ChannelFamily[] = [
-  { family: "amazon", name: "Amazon", status: "live" },
-  { family: "shopify", name: "Shopify", status: "live" },
-  { family: "google", name: "Google Merchant", status: "live" },
-  { family: "meta", name: "Meta", status: "live" },
-  { family: "walmart", name: "Walmart", status: "coming_soon" },
-  { family: "etsy", name: "Etsy", status: "coming_soon" },
-  { family: "ebay", name: "eBay", status: "coming_soon" },
-  { family: "tiktokshop", name: "TikTok Shop", status: "coming_soon" },
-  { family: "pinterest", name: "Pinterest", status: "coming_soon" },
+export const CHANNEL_SPECS: readonly ChannelSpecAvailability[] = [
+  { specId: "amazon.main", files: "main images", status: "live" },
+  { specId: "amazon.secondary", files: "secondary images", status: "live" },
+  { specId: "amazon.aplus.basic_header", files: "A plus basic headers", status: "live" },
+  {
+    specId: "amazon.aplus.premium_full",
+    files: "A plus premium modules",
+    status: "coming_soon",
+    mentions: /A plus premium/i,
+  },
+  { specId: "shopify.product", files: "product images", status: "live" },
+  { specId: "shopify.hero_banner", files: "hero banners", status: "live" },
+  { specId: "walmart.main", files: "main images", status: "live" },
+  { specId: "etsy.listing", files: "listing images", status: "live" },
+  { specId: "ebay.listing", files: "listing images", status: "live" },
+  { specId: "tiktokshop.main", files: "main images", status: "live" },
+  { specId: "google.merchant.main", files: "main images", status: "live" },
+  { specId: "google.merchant.lifestyle", files: "lifestyle images", status: "live" },
+  { specId: "meta.feed_1x1", files: "feed squares", status: "live" },
+  { specId: "meta.feed_4x5", files: "feed portraits", status: "live" },
+  { specId: "meta.story_9x16", files: "stories", status: "live" },
+  { specId: "pinterest.pin", files: "pins", status: "live" },
 ];
 
 export function familyOf(specId: string): string {
   return specId.split(".")[0] ?? specId;
 }
 
-/** Image channel families in the registry, for the drift test. */
-export function registryImageFamilies(): string[] {
-  return [...new Set(listSpecs().map((spec) => familyOf(spec.id)).filter((family) => family !== "video"))];
+/** Image spec ids in the registry, for the drift test. */
+export function registryImageSpecIds(): string[] {
+  return listSpecs()
+    .map((spec) => spec.id)
+    .filter((id) => familyOf(id) !== "video");
 }
+
+/** A spec missing from CHANNEL_SPECS counts as coming soon, so a new registry entry is never sold by default. */
+export function specAvailability(specId: string): Availability {
+  return CHANNEL_SPECS.find((spec) => spec.specId === specId)?.status ?? "coming_soon";
+}
+
+export function isSpecLive(specId: string): boolean {
+  return specAvailability(specId) === "live";
+}
+
+/** "Amazon" for "amazon", the family itself when it has no name yet. */
+export function channelName(family: string): string {
+  return CHANNEL_NAMES.find((channel) => channel.family === family)?.name ?? family;
+}
+
+/** "Amazon A plus premium modules". */
+export function specFilesName(spec: ChannelSpecAvailability): string {
+  return `${channelName(familyOf(spec.specId))} ${spec.files}`;
+}
+
+/** Files name for a spec id, or undefined for a spec missing from CHANNEL_SPECS. */
+export function specFilesNameFor(specId: string): string | undefined {
+  const spec = CHANNEL_SPECS.find((entry) => entry.specId === specId);
+  return spec ? specFilesName(spec) : undefined;
+}
+
+/** A channel is live when a pack makes files for at least one of its specs. */
+export const CHANNEL_FAMILIES: readonly ChannelFamily[] = CHANNEL_NAMES.map(({ family, name }) => ({
+  family,
+  name,
+  status: CHANNEL_SPECS.some((spec) => familyOf(spec.specId) === family && spec.status === "live")
+    ? "live"
+    : "coming_soon",
+}));
 
 export function liveChannelNames(): string[] {
   return CHANNEL_FAMILIES.filter((channel) => channel.status === "live").map((channel) => channel.name);
@@ -262,9 +340,56 @@ export function comingSoonChannelNames(): string[] {
   return CHANNEL_FAMILIES.filter((channel) => channel.status === "coming_soon").map((channel) => channel.name);
 }
 
-const comingSoonChannelPattern = (): RegExp | null => {
+/** "Amazon, Shopify, Walmart, Etsy and more": the first live channels, for short lines such as the hero. */
+export function liveChannelShortList(max = 4): string {
+  const names = liveChannelNames();
+  return names.length > max ? `${names.slice(0, max).join(", ")} and more` : joinList(names);
+}
+
+/**
+ * The files a pack can include today, grouped by channel, for example
+ * "Amazon main images and secondary images; and Meta feed squares".
+ */
+export function liveFilesPhrase(): string {
+  const groups = CHANNEL_NAMES.flatMap(({ family, name }) => {
+    const files = CHANNEL_SPECS.filter((spec) => familyOf(spec.specId) === family && spec.status === "live").map(
+      (spec) => spec.files,
+    );
+    return files.length > 0 ? [`${name} ${joinList(files)}`] : [];
+  });
+  if (groups.length <= 1) {
+    return groups.join("");
+  }
+  return `${groups.slice(0, -1).join("; ")}; and ${groups[groups.length - 1]}`;
+}
+
+/** Files that are on the way, for example "Amazon A plus premium modules". */
+export function comingSoonFileNames(): string[] {
+  return CHANNEL_SPECS.filter((spec) => spec.status === "coming_soon").map(specFilesName);
+}
+
+/**
+ * "Amazon A plus premium modules and video formats are coming soon." for the
+ * files on the way plus any extra items, or "" when nothing is.
+ */
+export function comingSoonFilesSentence(extra: readonly string[] = []): string {
+  const items = [...comingSoonFileNames(), ...extra];
+  return items.length > 0 ? `${joinList(items)} are coming soon.` : "";
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const comingSoonChannelPatterns = (): RegExp[] => {
   const names = comingSoonChannelNames();
-  return names.length > 0 ? new RegExp(`\\b(${names.join("|")})\\b`, "i") : null;
+  const patterns = names.length > 0 ? [new RegExp(`\\b(${names.map(escapeRegExp).join("|")})\\b`, "i")] : [];
+  for (const spec of CHANNEL_SPECS) {
+    if (spec.status === "coming_soon" && spec.mentions) {
+      patterns.push(spec.mentions);
+    }
+  }
+  return patterns;
 };
 
 /** "A, B and C". */
@@ -276,17 +401,15 @@ export function joinList(items: readonly string[]): string {
 }
 
 /**
- * Sentences that mention a feature or channel which is not live, without
- * saying it is coming soon. Copy that sells only what runs returns [].
+ * Sentences that mention a feature, channel or channel file which is not
+ * live, without saying it is coming soon. Copy that sells only what runs
+ * returns [].
  */
 export function unqualifiedClaims(text: string): string[] {
   const patterns = comingSoonFeatures()
     .map((feature) => feature.mentions)
     .filter((pattern): pattern is RegExp => pattern !== undefined);
-  const channels = comingSoonChannelPattern();
-  if (channels) {
-    patterns.push(channels);
-  }
+  patterns.push(...comingSoonChannelPatterns());
   const sentences = text.match(/[^.!?]+[.!?]*/g) ?? [];
   return sentences
     .map((sentence) => sentence.trim())

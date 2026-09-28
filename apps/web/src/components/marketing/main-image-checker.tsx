@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
+import { checkerVerdictCopy } from "./tool-copy";
 
 interface CheckRow {
   label: string;
@@ -21,15 +22,19 @@ interface Analysis {
 const ANALYSIS_MAX_SIDE = 1000;
 const NON_WHITE_CHANNEL_THRESHOLD = 250;
 const BORDER_WHITE_PASS_SHARE = 0.97;
-const MIN_LONG_SIDE = 1600;
-const MIN_FILL = 0.85;
+
+/** The amazon.main thresholds, passed in from the spec registry (CLAUDE.md rule 2). */
+export interface CheckerRules {
+  minLongSide: number;
+  fillMinPercent: number;
+}
 
 /**
  * Runs the real Amazon main image checks in the browser: longest side,
  * pure white border share and product fill ratio from a non white pixel scan.
  * Nothing is uploaded anywhere.
  */
-function analyzeImage(img: HTMLImageElement, fileName: string, previewUrl: string): Analysis {
+function analyzeImage(img: HTMLImageElement, fileName: string, previewUrl: string, rules: CheckerRules): Analysis {
   const width = img.naturalWidth;
   const height = img.naturalHeight;
   const scale = Math.min(1, ANALYSIS_MAX_SIDE / Math.max(width, height));
@@ -89,8 +94,8 @@ function analyzeImage(img: HTMLImageElement, fileName: string, previewUrl: strin
 
   const rows: CheckRow[] = [
     {
-      label: `Longest side is at least ${MIN_LONG_SIDE} px so zoom works`,
-      pass: longSide >= MIN_LONG_SIDE,
+      label: `Longest side is at least ${rules.minLongSide} px so zoom works`,
+      pass: longSide >= rules.minLongSide,
       measured: `Measured ${width} by ${height} px, longest side ${longSide} px`,
     },
     {
@@ -99,8 +104,8 @@ function analyzeImage(img: HTMLImageElement, fileName: string, previewUrl: strin
       measured: `Measured ${(borderWhiteShare * 100).toFixed(1)} percent of edge pixels at exactly 255 255 255`,
     },
     {
-      label: "Product fills at least 85 percent of the frame",
-      pass: hasProduct && fillRatio >= MIN_FILL,
+      label: `Product fills at least ${rules.fillMinPercent} percent of the frame`,
+      pass: hasProduct && fillRatio * 100 >= rules.fillMinPercent,
       measured: hasProduct
         ? `Measured fill ${(fillRatio * 100).toFixed(1)} percent of the longest frame side`
         : "No product pixels found, the image is almost entirely white",
@@ -117,7 +122,7 @@ function analyzeImage(img: HTMLImageElement, fileName: string, previewUrl: strin
   };
 }
 
-export function MainImageChecker() {
+export function MainImageChecker({ rules }: { rules: CheckerRules }) {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -130,7 +135,7 @@ export function MainImageChecker() {
     const img = new Image();
     img.onload = () => {
       try {
-        setAnalysis(analyzeImage(img, file.name, url));
+        setAnalysis(analyzeImage(img, file.name, url, rules));
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Could not analyze that file");
         URL.revokeObjectURL(url);
@@ -144,7 +149,7 @@ export function MainImageChecker() {
       setBusy(false);
     };
     img.src = url;
-  }, []);
+  }, [rules]);
 
   return (
     <div className="space-y-6">
@@ -215,15 +220,9 @@ export function MainImageChecker() {
               </ul>
             </div>
             {!analysis.allPass ? (
-              <p className="mt-4 rounded-lg bg-accent-50 p-4 text-sm text-ink-700">
-                Curvi fixes all of this automatically. It keeps your real product pixels, rebuilds the
-                background to pure white, corrects the fill ratio and exports at marketplace resolution.
-              </p>
+              <p className="mt-4 rounded-lg bg-accent-50 p-4 text-sm text-ink-700">{checkerVerdictCopy.fail}</p>
             ) : (
-              <p className="mt-4 rounded-lg bg-emerald-50 p-4 text-sm text-ink-700">
-                This image passes the automated checks. Curvi can still build the rest of your pack,
-                lifestyle scenes, channel crops and video, from the same photo.
-              </p>
+              <p className="mt-4 rounded-lg bg-emerald-50 p-4 text-sm text-ink-700">{checkerVerdictCopy.pass}</p>
             )}
           </CardContent>
         </Card>

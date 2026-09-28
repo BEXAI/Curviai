@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { tiers, type TierDefinition } from "@curvi/pipeline/seed";
 import { isStripeConfigured, siteUrl } from "@/lib/env";
-import { amazonMainRules, joinList, liveChannelNames } from "@/lib/marketing-facts";
+import { amazonMainRules, joinList, liveChannelNames, type Availability } from "@/lib/marketing-facts";
 
 /**
  * Search, answer engine and generative engine metadata for the marketing
@@ -52,7 +52,7 @@ export const SITE_FEATURES = [
   "Product pixels never regenerated, so labels and logos never warp",
   `Channel sized image files for ${joinList(liveChannelNames())}`,
   "A compliance report that checks background, fill and resolution for every file",
-  "Brand kit colors used for brand color backgrounds in the pack",
+  "Your first brand kit color used for the brand color background shot in packs",
   "Free browser tools: an Amazon main image checker, a white background fixer and a marketplace image resizer",
 ];
 
@@ -141,11 +141,22 @@ export function fitDescription(text: string, max = DESCRIPTION_MAX): string {
   return `${cut.slice(0, cut.lastIndexOf(" "))}.`;
 }
 
-export function channelPageSeo(displayName: string): { title: string; description: string } {
+/**
+ * A channel page sells files only when a pack makes them (the spec level
+ * availability in lib/marketing-facts). Otherwise the snippet says the files
+ * are coming soon, so search results never promise them.
+ */
+export function channelPageSeo(
+  displayName: string,
+  status: Availability,
+): { title: string; description: string } {
+  const rules = `${displayName} rules: size, background, product fill, text, format and file size`;
   return {
     title: `${displayName} requirements and size guide`,
     description: fitDescription(
-      `${displayName} rules: size, background, product fill, text, format and file size, plus how AI image optimization passes them the first time.`,
+      status === "live"
+        ? `${rules}, and how Curvi builds and measures files to match.`
+        : `${rules}, with Curvi files for it coming soon.`,
     ),
   };
 }

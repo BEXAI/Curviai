@@ -12,6 +12,8 @@ test("home renders headline and nav", async ({ page }) => {
   await expect(header.getByRole("link", { name: "Help" })).toBeVisible();
   await expect(header.getByRole("link", { name: "Log in" })).toBeVisible();
   await expect(header.getByRole("link", { name: "Get started" })).toBeVisible();
+  // Signed out visitors never see the signed in shortcut.
+  await expect(header.getByRole("link", { name: "Open app" })).toHaveCount(0);
 });
 
 test("pricing shows all four tier prices", async ({ page }) => {

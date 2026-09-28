@@ -3,10 +3,10 @@ import { isStripeConfigured } from "@/lib/env";
 import {
   amazonMainRules,
   annualSavingsPhrase,
-  comingSoonChannelNames,
+  comingSoonFilesSentence,
   formatCredits,
   freeCredits,
-  joinList,
+  liveFilesPhrase,
   rolloverSentence,
   topUpMonths,
   typicalPackCredits,
@@ -74,8 +74,10 @@ export const helpArticles: HelpArticle[] = [
     slug: "which-channels-are-supported",
     title: "Which channels are supported?",
     body: [
-      "Images: Amazon main and secondary images, Amazon A plus banners, Shopify product images and hero banners, Google Merchant lifestyle images, and Meta feed and story crops. Each file is sized for its channel, and marketplace files never carry badges or watermarks.",
-      `${joinList(comingSoonChannelNames())} are coming soon, and so is video for Amazon listings and vertical social feeds.`,
+      `You pick the channels for each pack. Curvi makes ${liveFilesPhrase()}. Each file is sized for its channel, and marketplace files never carry badges or watermarks.`,
+      [comingSoonFilesSentence(), "Video for Amazon listings and vertical social feeds is coming soon."]
+        .filter((sentence) => sentence.length > 0)
+        .join(" "),
     ],
     structured: "always",
   },
@@ -83,7 +85,7 @@ export const helpArticles: HelpArticle[] = [
     slug: "what-is-a-brand-kit",
     title: "What is a brand kit?",
     body: [
-      "A brand kit stores your brand colors. Once they are set, packs use them for brand color backgrounds, so your Amazon gallery and your Shopify store look like one brand.",
+      "A brand kit stores your brand colors. Once they are set, packs use your first brand color for the brand color background shot.",
       "You can already save your logo, fonts and a style preset in the brand kit, and using them in packs is coming soon. Each workspace has one brand kit, and more brand kits on higher plans are coming soon.",
     ],
     structured: "always",

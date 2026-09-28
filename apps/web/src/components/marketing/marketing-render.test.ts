@@ -1,10 +1,13 @@
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { freeCredits, typicalPackCredits } from "@/lib/marketing-facts";
+import { freeCredits, isSpecLive, typicalPackCredits, unqualifiedClaims } from "@/lib/marketing-facts";
+import { brandKitCopy } from "./brand-kit-copy";
 import { categories } from "./categories";
 import { afterDemoImage, beforeDemoImage, galleryCases, isIllustrationSrc } from "./demo-images";
 import { homeFaqs, homeFeatures } from "./home-copy";
+import { imageSpecs, specSlug } from "./spec-slug";
+import { checkerVerdictCopy, toolPackCta } from "./tool-copy";
 
 // The web tsconfig keeps JSX as is for Next.js, so Vitest compiles it to
 // React.createElement calls. Components only call it while rendering, so a
@@ -32,6 +35,13 @@ vi.mock("@/lib/services", () => ({
     ensureWorkspace: async () => dashboard.workspace,
     listProducts: async () => [],
     listRecentJobs: async () => [],
+    getBrandKit: async () => ({
+      name: "Test kit",
+      colors: ["#1D2433"],
+      fonts: { heading: "Inter", body: "Inter" },
+      stylePreset: "minimal_studio",
+      hasLogo: false,
+    }),
   }),
 }));
 
@@ -42,6 +52,37 @@ vi.mock("next/link", () => ({
 
 function render(element: React.ReactElement): string {
   return renderToStaticMarkup(element);
+}
+
+/**
+ * Visible text of the element carrying a data-testid, with block ends read
+ * as sentence ends so unqualifiedClaims sees headings and buttons apart.
+ */
+function testIdText(html: string, testId: string): string {
+  const at = html.indexOf(`data-testid="${testId}"`);
+  if (at < 0) {
+    return "";
+  }
+  const open = html.lastIndexOf("<", at);
+  const tag = /^<(\w+)/.exec(html.slice(open))?.[1] ?? "div";
+  const tags = new RegExp(`<(/?)${tag}\\b[^>]*>`, "g");
+  tags.lastIndex = open;
+  let depth = 0;
+  for (let match = tags.exec(html); match; match = tags.exec(html)) {
+    depth += match[1] ? -1 : 1;
+    if (depth === 0) {
+      return html
+        .slice(open, match.index + match[0].length)
+        .replace(/<\/(h\d|p|a|li|button)>/g, ". ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&#x27;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, "&")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+  }
+  return "";
 }
 
 /** JSON-LD FAQ questions in rendered markup. */
@@ -216,5 +257,140 @@ describe("pages", () => {
     expect(html).toContain("Coming soon");
     expect(html).toContain('data-testid="illustration-label"');
     expect(html).not.toContain("Makeover reference");
+  });
+});
+
+describe("channel requirement pages", () => {
+  it("sell files only for specs a pack makes and label the rest coming soon", async () => {
+    const page = await import("@/app/(marketing)/channels/[channel]/image-requirements/page");
+    for (const spec of imageSpecs()) {
+      const params = () => Promise.resolve({ channel: specSlug(spec.id) });
+      const html = render(await page.default({ params: params() }));
+      const intro = testIdText(html, "channel-intro");
+      const cta = testIdText(html, "channel-cta");
+      const description = String((await page.generateMetadata({ params: params() })).description);
+      expect(intro.length, spec.id).toBeGreaterThan(0);
+      expect(cta.length, spec.id).toBeGreaterThan(0);
+      expect(unqualifiedClaims(intro), `${spec.id} intro`).toEqual([]);
+      expect(unqualifiedClaims(cta), `${spec.id} call to action`).toEqual([]);
+      expect(unqualifiedClaims(description), `${spec.id} search snippet`).toEqual([]);
+      if (isSpecLive(spec.id)) {
+        expect(html, spec.id).not.toContain('data-testid="coming-soon"');
+        expect(intro, spec.id).toContain("Curvi builds");
+        expect(description, spec.id).not.toMatch(/coming soon/i);
+      } else {
+        expect(html, spec.id).toContain('data-testid="coming-soon"');
+        expect(intro, spec.id).toMatch(/coming soon/i);
+        expect(cta, spec.id).toMatch(/coming soon/i);
+        expect(html, spec.id).not.toContain("Curvi builds");
+        expect(description, spec.id).toMatch(/coming soon/i);
+      }
+      expect(html, spec.id).not.toMatch(/passes them the first time|meets every rule/);
+    }
+  });
+
+  it("show an exact size only for specs that accept one size", async () => {
+    const page = await import("@/app/(marketing)/channels/[channel]/image-requirements/page");
+    const pin = render(await page.default({ params: Promise.resolve({ channel: "pinterest-pin" }) }));
+    expect(pin).toContain("Exact size");
+    expect(pin).not.toContain("Recommended size");
+    const main = render(await page.default({ params: Promise.resolve({ channel: "amazon-main" }) }));
+    expect(main).toContain("Recommended size");
+    expect(main).not.toContain("Exact size");
+  });
+
+  it("keep brand names capitalized in the explanation", async () => {
+    const page = await import("@/app/(marketing)/channels/[channel]/image-requirements/page");
+    const html = render(await page.default({ params: Promise.resolve({ channel: "ebay-listing" }) }));
+    expect(html).toContain("eBay listing image");
+    expect(html).not.toMatch(/\bebay listing image/);
+  });
+});
+
+describe("free tool pages", () => {
+  it("sell only what a pack makes today in the shared call to action", async () => {
+    const { ToolPageShell } = await import("./tool-page-shell");
+    const html = render(
+      React.createElement(ToolPageShell, {
+        currentPath: "/tools/main-image-checker",
+        title: "Tool",
+        description: "About.",
+        children: null,
+      }),
+    );
+    const cta = testIdText(html, "tool-pack-cta");
+    expect(cta).toContain(toolPackCta.body);
+    expect(cta).not.toMatch(/video/i);
+    expect(unqualifiedClaims(cta)).toEqual([]);
+  });
+
+  it("keep the checker verdicts free of video claims", () => {
+    for (const text of Object.values(checkerVerdictCopy)) {
+      expect(text).not.toMatch(/video/i);
+      expect(unqualifiedClaims(text)).toEqual([]);
+    }
+  });
+
+  it("state the checker thresholds from the amazon.main spec", async () => {
+    const { default: CheckerPage, metadata } = await import("@/app/(marketing)/tools/main-image-checker/page");
+    const { amazonMainRules } = await import("@/lib/marketing-facts");
+    const rules = amazonMainRules();
+    const html = render(React.createElement(CheckerPage));
+    expect(html).toContain(`at least ${rules.fillMinPercent} percent`);
+    expect(html).toContain(`at least ${rules.minLongSide} px`);
+    expect(String(metadata.description)).toContain(`${rules.fillMinPercent} percent fill`);
+  });
+});
+
+describe("signup page", () => {
+  it("states the seed free grant and promises no share page", async () => {
+    const { default: SignupPage } = await import("@/app/(marketing)/signup/page");
+    const html = render(React.createElement(SignupPage));
+    const lead = testIdText(html, "signup-lead");
+    expect(lead).toContain(`Start free with ${freeCredits()} credits`);
+    expect(lead).not.toMatch(/share page/i);
+    expect(unqualifiedClaims(lead)).toEqual([]);
+  });
+});
+
+describe("brand kit page", () => {
+  it("says packs use brand colors today and the rest is coming soon", async () => {
+    const { default: BrandPage } = await import("@/app/app/brand/page");
+    const html = render(await BrandPage());
+    const intro = testIdText(html, "brand-kit-intro");
+    expect(intro).toContain(brandKitCopy.intro);
+    expect(intro).toMatch(/brand color/);
+    expect(html).not.toContain("keep every pack consistent");
+    expect(html).not.toContain("Sets the default look");
+    expect(html).not.toContain("Save the kit to apply");
+    for (const hint of [brandKitCopy.fontsHint, brandKitCopy.logoHint, brandKitCopy.presetHint]) {
+      expect(html).toContain(hint);
+      expect(unqualifiedClaims(hint)).toEqual([]);
+    }
+    expect(unqualifiedClaims(intro)).toEqual([]);
+  });
+});
+
+describe("site header", () => {
+  it("offers log in and signup to signed out visitors", async () => {
+    const { SiteHeader } = await import("./site-header");
+    const html = render(React.createElement(SiteHeader));
+    expect(html).toContain('href="/login"');
+    expect(html).toContain('href="/signup"');
+    expect(html).toContain("Get started");
+    expect(html).not.toContain("Open app");
+  });
+
+  it("offers Open app instead of signup to signed in visitors", async () => {
+    const { HeaderActionsView } = await import("./header-actions");
+    const html = render(
+      React.createElement(HeaderActionsView, { signedIn: true, links: [{ href: "/pricing", label: "Pricing" }] }),
+    );
+    expect(html).toContain('href="/app"');
+    expect(html).toContain("Open app");
+    expect(html).toContain('href="/pricing"');
+    expect(html).not.toContain("Get started");
+    expect(html).not.toContain('href="/signup"');
+    expect(html).not.toContain('href="/login"');
   });
 });

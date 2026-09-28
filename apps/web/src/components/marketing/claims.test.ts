@@ -3,9 +3,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { creditCosts } from "@curvi/pipeline/seed";
 import { buildLlmsTxt } from "@/lib/llms";
-import { freeCredits, typicalPackCredits, unqualifiedClaims } from "@/lib/marketing-facts";
-import { SITE_FEATURES } from "@/lib/seo";
+import { freeCredits, specAvailability, typicalPackCredits, unqualifiedClaims } from "@/lib/marketing-facts";
+import { SITE_FEATURES, channelPageSeo } from "@/lib/seo";
+import { brandKitCopy } from "./brand-kit-copy";
 import { categories } from "./categories";
+import { channelPageCopy } from "./channel-copy";
 import { complianceDemoRows } from "./compliance-badge-demo";
 import { helpArticles, helpClosing, structuredHelpArticles } from "./help-articles";
 import {
@@ -16,6 +18,9 @@ import {
   homeHero,
   homeSteps,
 } from "./home-copy";
+import { signupLead } from "./signup-copy";
+import { imageSpecs, specDisplayName } from "./spec-slug";
+import { checkerVerdictCopy, toolPackCta } from "./tool-copy";
 
 // CLAUDE.md rule 9: no emojis, no arrows, no dashes as punctuation. Hyphens
 // inside words such as "e-commerce" are fine.
@@ -58,6 +63,20 @@ function liveCopy(): { where: string; text: string }[] {
       where: `compliance demo ${row.rule}`,
       text: `${row.rule}. ${row.requirement}. ${row.measured}.`,
     })),
+    { where: "free tool pack call to action", text: `${toolPackCta.title} ${toolPackCta.body}` },
+    { where: "main image checker, image passes", text: checkerVerdictCopy.pass },
+    { where: "main image checker, image fails", text: checkerVerdictCopy.fail },
+    { where: "signup lead", text: signupLead() },
+    ...Object.entries(brandKitCopy).map(([key, text]) => ({ where: `brand kit ${key}`, text })),
+    ...imageSpecs().flatMap((spec) => {
+      const copy = channelPageCopy(spec);
+      const seo = channelPageSeo(specDisplayName(spec.id), specAvailability(spec.id));
+      return [
+        { where: `channel page ${spec.id} intro`, text: copy.intro },
+        { where: `channel page ${spec.id} call to action`, text: `${copy.ctaTitle}. ${copy.ctaBody}` },
+        { where: `channel page ${spec.id} search snippet`, text: seo.description },
+      ];
+    }),
   ];
 }
 
@@ -113,6 +132,7 @@ describe("numbers in copy", () => {
     expect(helpClosing).toContain(`${freeCredits()} credits`);
     const help = helpArticles.find((article) => article.slug === "how-credits-work");
     expect(help?.body.join(" ")).toContain(`about ${typicalPackCredits()} credits`);
+    expect(signupLead()).toContain(`${freeCredits()} credits`);
   });
 
   it("never repeat the old pack size, share page or annual discount claims", () => {
@@ -157,7 +177,12 @@ const OWNED_SOURCES = [
   "../../app/(marketing)/gallery/page.tsx",
   "../../app/(marketing)/for/[category]/page.tsx",
   "../../app/(marketing)/s/[slug]/page.tsx",
+  "../../app/(marketing)/signup/page.tsx",
+  "../../app/(marketing)/channels/[channel]/image-requirements/page.tsx",
+  "../../app/(marketing)/tools/main-image-checker/page.tsx",
   "../../app/app/page.tsx",
+  "../../app/app/brand/page.tsx",
+  "../app/brand-kit-form.tsx",
   "./categories.ts",
   "./compliance-badge-demo.tsx",
   "./before-after-slider.tsx",
@@ -168,8 +193,16 @@ const OWNED_SOURCES = [
   "./home-copy.ts",
   "./help-articles.ts",
   "./coming-soon-badge.tsx",
+  "./channel-copy.ts",
+  "./signup-copy.ts",
+  "./brand-kit-copy.ts",
+  "./tool-copy.ts",
+  "./tool-page-shell.tsx",
+  "./main-image-checker.tsx",
+  "./header-actions.tsx",
   "../../lib/llms.ts",
   "../../lib/marketing-facts.ts",
+  "../../lib/seo.ts",
 ];
 
 const LITERALS: { name: string; pattern: RegExp }[] = [
