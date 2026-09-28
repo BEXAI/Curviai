@@ -42,6 +42,8 @@ export const RATE_LIMIT_POLICIES = {
   "uploads.complete": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },
   "jobs.create": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
   "products.create": { user: { limit: 120, windowSeconds: HOUR }, ip: { limit: 240, windowSeconds: HOUR } },
+  // Each side by side image fetches two pictures and renders a new one.
+  "jobs.makeover": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitPolicyName = keyof typeof RATE_LIMIT_POLICIES;

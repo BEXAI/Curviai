@@ -31,6 +31,7 @@ import { publicJobError } from "@/lib/job-copy";
 import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { buildGeneratePackInput } from "@/lib/jobs/payload";
+import { pickSourcePhoto } from "@/lib/makeover";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
 import { brandKitInputSchema, brandKitIssueNotice } from "@/lib/validation/brand-kit";
@@ -524,6 +525,31 @@ export class DbService implements Services {
       );
     }
 
+    // The seller's original photo for the before and after reveal, signed
+    // like the shot previews and only for a pack that serves files.
+    let sourceImageUrl: string | null = null;
+    if (current.status === "done" && isR2Configured() && shots.some((s) => s.imageUrl)) {
+      const mediaRows = await this.db.query.sourceMedia.findMany({
+        where: (t, { and, eq, like }) =>
+          and(
+            eq(t.productId, current.productId),
+            eq(t.workspaceId, workspaceId),
+            like(t.r2Key, `ws/${workspaceId}/src/%`),
+          ),
+        orderBy: (t, { desc }) => [desc(t.createdAt)],
+        limit: 50,
+      });
+      const source = pickSourcePhoto(mediaRows, current.createdAt, (key) => isWorkspaceSourceKey(workspaceId, key));
+      if (source) {
+        try {
+          sourceImageUrl = await presignObjectGet(source.r2Key);
+        } catch {
+          // Unsignable object: the board shows no reveal.
+          sourceImageUrl = null;
+        }
+      }
+    }
+
     return {
       id: current.id,
       productId: current.productId,
@@ -538,6 +564,7 @@ export class DbService implements Services {
       // Raw worker errors can name providers; the board gets plain copy and
       // the detail stays in the row and the logs.
       error: current.status === "failed" ? publicJobError(current.error) : null,
+      sourceImageUrl,
     };
   }
 
