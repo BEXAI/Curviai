@@ -8,6 +8,7 @@
  */
 
 import { createDb, type Db } from "@curvi/db";
+import { costCaps } from "@curvi/pipeline/seed";
 import { DbJobStore } from "./db-store";
 import type { PipelineDeps } from "./pipeline-runner";
 import { buildR2Uploader } from "./r2";
@@ -32,7 +33,16 @@ export function buildDbRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps 
     reserveHandledExternally: true,
     uploader: buildR2Uploader(),
   });
-  return { ...buildRuntimeDeps(opts), store };
+  return {
+    ...buildRuntimeDeps(opts),
+    store,
+    // Video and avatar shots wait for their providers; skipping them keeps
+    // real packs honest instead of charging for placeholder renders. Spend
+    // ceilings come from the seed per plan section 4.4.
+    excludeShotMethods: ["video_generate", "avatar"],
+    assetCostCapMicros: costCaps.imageAssetMicros,
+    packCostCapMicros: costCaps.packMicros,
+  };
 }
 
 /** Db backed deps when DATABASE_URL exists, demo deps otherwise. */

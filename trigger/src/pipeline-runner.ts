@@ -899,11 +899,11 @@ export async function runGeneratePack(
       throw new Error("Product analysis response failed schema validation");
     }
     const profile = analysis.value;
-    await store.saveProfile?.(input.jobId, profile);
     const profileBlock = moderationBlockReasons(intake.value, profile);
     if (profileBlock.length > 0) {
       throw new Error(`This product was flagged for ${profileBlock.join(", ")} and needs a manual review before a pack can run`);
     }
+    await store.saveProfile?.(input.jobId, profile);
 
     // Plan shots: LLM planner recipe first, deterministic planShots when the
     // response is schema invalid. Concept mode drops marketplace channels
