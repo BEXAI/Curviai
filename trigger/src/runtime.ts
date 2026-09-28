@@ -9,7 +9,7 @@
  */
 
 import { InMemoryBreakerStore, InMemoryCapStore, InMemoryCostMeter, ProviderRegistry, SpendCaps } from "@curvi/ai";
-import type { CostAwareProvider, ProviderRequest, ProviderResponse, RoutingTable } from "@curvi/ai";
+import type { CapStore, CostAwareProvider, ProviderRequest, ProviderResponse, RoutingTable } from "@curvi/ai";
 import {
   encodeJpeg,
   encodePng,
@@ -201,6 +201,15 @@ export class DemoShotGenerator implements ShotGenerator {
 
 export interface RuntimeDepsOptions {
   packOutDir?: string;
+  /** Shared running totals for the spend caps. Without one the caps count
+   * per process only, which is fine for demo mode and tests but not for
+   * production, where every task run builds fresh deps. */
+  capStore?: CapStore;
+  /** True when the run settles real customer credits (the db backed store).
+   * The demo generator is then never used, even with no provider keys:
+   * charging for synthetic placeholders is never acceptable. Local db
+   * development can opt back in with CURVI_ALLOW_DEMO_GENERATION=1. */
+  realCredits?: boolean;
 }
 
 /** Demo mode notice shown by task wrappers when no provider env is set. */
@@ -213,7 +222,7 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   // The founder raises the $150 global hard stop through this env var
   // (plan 4.4). The other cap amounts are platform constants in @curvi/ai.
   const hardStopUsd = Number(optionalEnv("DAILY_SPEND_HARD_STOP_USD") ?? "");
-  const caps = new SpendCaps(new InMemoryCapStore(), () => new Date(), {
+  const caps = new SpendCaps(opts.capStore ?? new InMemoryCapStore(), () => new Date(), {
     globalDailyHardStopMicros:
       Number.isFinite(hardStopUsd) && hardStopUsd > 0 ? Math.round(hardStopUsd * 1_000_000) : undefined,
   });
@@ -226,12 +235,16 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     caps,
   };
   const wiring = wireLiveProviders(registry, routing);
-  const demoGenerator = new DemoShotGenerator();
   const loadMedia = makeR2MediaLoader();
+  // Any live provider key means real customers and real spend, so the demo
+  // generator (synthetic placeholder images built to pass QC) must never run.
+  // Shots the live path cannot produce go to needs review with no charge.
+  // A db backed run settles real credits, so it never uses the demo generator
+  // either: with no keys the live generator marks every shot unavailable.
+  const liveMode = wiring.llmLive || wiring.imageProviders.length > 0 || wiring.cutoutLive;
+  const demoAllowed = !opts.realCredits || optionalEnv("CURVI_ALLOW_DEMO_GENERATION") === "1";
   const generator =
-    wiring.imageProviders.length > 0 && wiring.cutoutLive && loadMedia
-      ? new LiveShotGenerator({ ai, wiring, loadMedia, fallback: demoGenerator })
-      : demoGenerator;
+    liveMode || !demoAllowed ? new LiveShotGenerator({ ai, wiring, loadMedia }) : new DemoShotGenerator();
   return {
     ai,
     store: new InMemoryJobStore(),

@@ -21,6 +21,8 @@ import {
   sql,
   eq,
   and,
+  lt,
+  notInArray,
 } from "@curvi/db";
 import { tierByKey, tiers, type TierKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -305,23 +307,41 @@ export class DbService implements Services {
       return null;
     }
     // Reconcile runs orphaned by an instance restart: the runner heartbeats
-    // updated_at on every state change and stored asset, so a job that has
-    // not moved in this window will never finish. Fail it, free the credits.
+    // updated_at on every state change, every shot attempt and every stored
+    // asset, so a job that has not moved in this window will never finish.
+    // The update re-checks both conditions in SQL, so a run that heartbeats
+    // or finishes between the read above and this write is never clobbered,
+    // and only the request that wins the update releases the credits. The
+    // worker refuses to leave a terminal state, so a failed job stays failed.
     if (!TERMINAL_JOB_STATES.has(job.status) && Date.now() - job.updatedAt.getTime() > STALE_JOB_MS) {
-      await this.db
+      const jobId = job.id;
+      const staleBefore = new Date(Date.now() - STALE_JOB_MS);
+      const reconciledError = "The run was interrupted before finishing. Reserved credits were released.";
+      const [reconciled] = await this.db
         .update(generationJobs)
-        .set({
-          status: "failed",
-          error: "The run was interrupted before finishing. Reserved credits were released.",
-          updatedAt: new Date(),
-        })
-        .where(eq(generationJobs.id, job.id));
-      try {
-        await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${job.id}::uuid)`);
-      } catch {
-        // Nothing held, or already released.
+        .set({ status: "failed", error: reconciledError, updatedAt: new Date() })
+        .where(
+          and(
+            eq(generationJobs.id, jobId),
+            notInArray(generationJobs.status, ["done", "failed", "canceled"]),
+            lt(generationJobs.updatedAt, staleBefore),
+          ),
+        )
+        .returning();
+      if (reconciled) {
+        try {
+          await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`);
+        } catch (err) {
+          console.error(`[jobs] could not release credits for reconciled job ${jobId}`, err);
+        }
+        job = reconciled;
+      } else {
+        // Lost the race: the run moved or finished. Show its current row.
+        const current = await this.db.query.generationJobs.findFirst({ where: (t, { eq }) => eq(t.id, jobId) });
+        if (current) {
+          job = current;
+        }
       }
-      job = { ...job, status: "failed", error: "The run was interrupted before finishing. Reserved credits were released." };
     }
     const [product, steps, assetRows] = await Promise.all([
       this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, job.productId) }),

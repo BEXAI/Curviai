@@ -75,7 +75,20 @@ Waves 2 and 3 (same day): provision_workspace (migration 0007) creates the first
 
 Merge and production migration (2026-09-28): the deploy branch (worktree-ui-update-plan, previously origin/main) was merged into main. Migration numbers were reconciled: 0004_signup_bootstrap and 0005_brand_logo stay, main's migrations became 0006 to 0009 (so provision_workspace is now 0009). Production Supabase (tmwvjmvzjvpeagatjmud) was checked read only and found at 0005 with no drizzle.__drizzle_migrations table. 0006 to 0009 were applied in one guarded transaction through the SQL editor, and all ten migrations were recorded in drizzle.__drizzle_migrations with sha256 hashes and journal timestamps, so pnpm db:migrate treats production as current. Verified afterwards: pack_files with RLS and its member read policy, numeric(12,1) ledger, generation_jobs channels and mode, numeric ledger functions and provision_workspace executable by service_role only, existing ledger balance unchanged. Functional fix plan from the post merge audit: Update.md.
 
+Live pack safety (2026-09-28, Update.md 2.1, 5.2, 1.6, 3.1), done because production has live Anthropic, Gemini, BFL and Photoroom keys:
+- Live mode never substitutes demo images.
+- Provider spend is reserved against caps before each live call.
+- Credits are charged only after the pack is stored.
+- The worker cannot revive a job the stale reconciler failed; the reconciler releases credits only when it wins a conditional update.
+- Tests cover each path in trigger/src/live-runtime.test.ts, pipeline-runner.test.ts, db-store.test.ts (real SQL on PGlite) and apps/web/src/lib/services/db.test.ts.
+- The reviewer agent confirmed settlement in every path. It then found that spend caps were per process, and that a database-backed run with no keys still charged for demo output. Both are fixed:
+  - Migration 0010 adds spend_cap_counters: platform table, RLS on, no client privileges. PgCapStore (trigger/src/cap-store.ts, cap-store.test.ts) is shared across runs.
+  - Database-backed runs never use the demo generator unless CURVI_ALLOW_DEMO_GENERATION=1.
+- Migration 0010 must be applied to production before the code that uses it is deployed.
+
 ## Open follow ups
+
+- Live paths for deterministic and template shots (amazon_main, alt angles, cutout, sweeps, infographic and similar). Live packs currently deliver lifestyle composites only; the rest go to needs review at no charge.
 
 - OCR engine and embedding similarity (DINOv2 or CLIP) implementations behind the existing pluggable QC interfaces; semanticChecks is still not invoked from the runner.
 - c2pa-node manifest signing once a signing certificate exists.

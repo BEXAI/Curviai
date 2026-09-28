@@ -190,3 +190,85 @@ describe("DbJobStore settles a pack run end to end", () => {
     expect(await balance()).toBe(before + 10);
   });
 });
+
+describe("DbJobStore guards live pack runs", () => {
+  async function newJob(reserve: number): Promise<string> {
+    const [p] = await db.select().from(products).where(eq(products.workspaceId, ws));
+    const [j] = await db
+      .insert(generationJobs)
+      .values({ workspaceId: ws, productId: p.id, status: "queued" })
+      .returning();
+    if (reserve > 0) {
+      await client.query("select reserve_credits($1, $2, $3)", [ws, reserve, j.id]);
+    }
+    return j.id;
+  }
+
+  const packInput = (id: string): GeneratePackInput => ({
+    jobId: id,
+    workspaceId: ws,
+    tier: "starter",
+    channels: ["amazon"],
+    creditBudget: 10,
+    images: [{ mediaId: "m1" }],
+    mode: "listing",
+  });
+
+  it("refuses to move a terminal job and leaves heartbeats off it", async () => {
+    const id = await newJob(0);
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true });
+    await db.update(generationJobs).set({ status: "failed" }).where(eq(generationJobs.id, id));
+    const [before] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+
+    expect(await store.setJobState(id, "qc")).toBe(false);
+    expect(await store.heartbeat(id)).toBe(false);
+
+    const [after] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+    expect(after.status).toBe("failed");
+    expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+  });
+
+  it("heartbeats a live job", async () => {
+    const id = await newJob(0);
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    await db.update(generationJobs).set({ status: "generating", updatedAt: old }).where(eq(generationJobs.id, id));
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true });
+    expect(await store.heartbeat(id)).toBe(true);
+    const [row] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+    expect(row.updatedAt.getTime()).toBeGreaterThan(old.getTime());
+    expect(row.status).toBe("generating");
+  });
+
+  it("charges nothing for a job the reconciler already failed and released", async () => {
+    const id = await newJob(10);
+    const startBalance = await balance();
+    // What the web reconciler does to a stale job.
+    await db.update(generationJobs).set({ status: "failed" }).where(eq(generationJobs.id, id));
+    await client.query("select release_credits($1, $2)", [ws, id]);
+    const afterReconcile = await balance();
+    expect(afterReconcile).toBe(startBalance + 10);
+
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true, uploader: new FakeUploader() });
+    const summary = await runGeneratePack(packInput(id), { ...buildRuntimeDeps(), store, clock: systemClock });
+
+    expect(summary.state).toBe("failed");
+    expect(await balance()).toBe(afterReconcile);
+    const rows = await db.select().from(creditLedger).where(eq(creditLedger.jobId, id));
+    expect(rows.filter((r) => r.reason === "charge")).toHaveLength(0);
+    const [row] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+    expect(row.status).toBe("failed");
+  });
+
+  it("fails the run and returns the hold when the pack cannot be stored", async () => {
+    const id = await newJob(10);
+    const held = await balance();
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true, uploader: null });
+    const summary = await runGeneratePack(packInput(id), { ...buildRuntimeDeps(), store, clock: systemClock });
+
+    expect(summary.state).toBe("failed");
+    expect(summary.error).toContain("Pack storage is not configured");
+    expect(await balance()).toBe(held + 10);
+    const rows = await db.select().from(creditLedger).where(eq(creditLedger.jobId, id));
+    expect(rows.filter((r) => r.reason === "charge")).toHaveLength(0);
+  });
+});

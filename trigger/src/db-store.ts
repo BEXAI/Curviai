@@ -22,7 +22,9 @@ import {
   loadChannelSpecs,
   packFiles,
   sql,
+  and,
   eq,
+  notInArray,
   type Db,
 } from "@curvi/db";
 import type { PackFileReport } from "@curvi/pipeline";
@@ -44,6 +46,8 @@ export interface DbJobStoreOptions {
   uploader?: PackUploader | null;
 }
 
+const TERMINAL_JOB_STATES: JobState[] = ["done", "failed", "canceled"];
+
 interface ComplianceReport {
   files: PackFileReport[];
 }
@@ -56,13 +60,39 @@ export class DbJobStore implements JobStore {
     private readonly opts: DbJobStoreOptions = {},
   ) {}
 
-  async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<void> {
+  /**
+   * Moves the job to a new state unless it is already terminal. A terminal
+   * row means the stale run reconciler (or an earlier failure) settled the
+   * job; returning false tells the runner to stop instead of reviving it and
+   * charging against a reservation that was already released.
+   */
+  async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<boolean> {
     const error =
       state === "failed" && meta && typeof meta.error === "string" ? meta.error : undefined;
-    await this.db
+    const rows = await this.db
       .update(generationJobs)
       .set({ status: state, updatedAt: new Date(), ...(error !== undefined ? { error } : {}) })
-      .where(eq(generationJobs.id, jobId));
+      .where(and(eq(generationJobs.id, jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)))
+      .returning({ id: generationJobs.id });
+    return rows.length > 0;
+  }
+
+  /** Bumps updated_at on a live job so a long generation phase never looks
+   * stale to the reconciler. Returns false, and touches nothing, once the job
+   * is terminal. */
+  async heartbeat(jobId: string): Promise<boolean> {
+    const rows = await this.db
+      .update(generationJobs)
+      .set({ updatedAt: new Date() })
+      .where(and(eq(generationJobs.id, jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)))
+      .returning({ id: generationJobs.id });
+    return rows.length > 0;
+  }
+
+  /** Returns everything the ledger still holds for the job. Idempotent:
+   * release_credits without an amount releases zero when nothing is held. */
+  async releaseAllHeld(jobId: string, workspaceId: string): Promise<void> {
+    await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`);
   }
 
   async appendLedger(entry: JobLedgerEntry): Promise<void> {
@@ -115,15 +145,16 @@ export class DbJobStore implements JobStore {
       status: asset.status === "passed" ? "done" : "failed",
       costMicros: Math.round(asset.costMicros),
     });
+    await this.heartbeat(asset.jobId);
   }
 
   async savePack(pack: StoredPack): Promise<void> {
     const uploader = this.opts.uploader ?? null;
     if (!uploader) {
-      console.warn(
-        `[db-store] R2 is not configured, so the pack for job ${pack.jobId} stays in ${pack.outDir} and no files were recorded.`,
-      );
-      return;
+      // Without storage the customer can never download the pack, so this
+      // must fail the run: the runner then releases the held credits instead
+      // of charging for files that were never delivered.
+      throw new Error("Pack storage is not configured, so the pack could not be delivered.");
     }
 
     const report = JSON.parse(await readFile(pack.reportPath, "utf8")) as ComplianceReport;

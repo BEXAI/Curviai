@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import {
   actAs,
+  actAsAnon,
+  actAsAuthenticated,
   actAsSuperuser,
   createAppUserRole,
   createTestDb,
@@ -29,6 +31,8 @@ const EXPECTED_TABLES = [
   "integrations",
   "events",
   "churn_scores",
+  "pack_files",
+  "spend_cap_counters",
 ];
 
 const USER_A = "00000000-0000-4000-8000-00000000000a";
@@ -208,5 +212,34 @@ describe("row level security isolation", () => {
         .insert(generationJobs)
         .values({ workspaceId: wsA, productId: productA, idempotencyKey: "owner-job-1" }),
     ).rejects.toThrow(/idempotency_key/);
+  });
+});
+
+describe("spend cap counters (platform table)", () => {
+  it("are invisible and unwritable to signed in users and anon", async () => {
+    await actAsSuperuser(client);
+    await client.query("insert into spend_cap_counters (key, total_micros) values ('caps:global:2026-09-28', 5)");
+
+    for (const become of [() => actAsAuthenticated(client, USER_A), () => actAsAnon(client)]) {
+      await become();
+      // Either the revoke or RLS with no policies stops it; both are fine.
+      const visible = await client
+        .query("select * from spend_cap_counters")
+        .then((r) => r.rows.length)
+        .catch(() => 0);
+      expect(visible).toBe(0);
+      await expect(
+        client.query("insert into spend_cap_counters (key, total_micros) values ('caps:pack:x', 1)"),
+      ).rejects.toThrow(/permission denied|row-level security/);
+      await expect(
+        client.query("update spend_cap_counters set total_micros = 0 where key = 'caps:global:2026-09-28'"),
+      ).resolves.toMatchObject({ affectedRows: 0 });
+    }
+
+    // An app member connection sees no rows: RLS is on with no policies.
+    await actAs(client, USER_A);
+    const rows = await client.query("select * from spend_cap_counters");
+    expect(rows.rows).toHaveLength(0);
+    await actAsSuperuser(client);
   });
 });

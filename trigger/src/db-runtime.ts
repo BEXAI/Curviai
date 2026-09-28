@@ -1,14 +1,15 @@
 /**
  * Database backed runtime wiring. When DATABASE_URL is set, tasks and the web
  * app's inline fallback persist job state, assets, ledger settlement and pack
- * files to Postgres and R2 through DbJobStore. Generation itself still runs on
- * the demo providers until real provider routing is seeded, which
- * docs/verification.md records as an open follow up; persistence and credit
- * settlement are real either way.
+ * files to Postgres and R2 through DbJobStore, and keep the spend cap totals
+ * in Postgres. Generation runs on the live providers whose keys are set;
+ * because credits are real here, shots no live provider covers go to needs
+ * review instead of the demo generator.
  */
 
 import { createDb, type Db } from "@curvi/db";
 import { costCaps } from "@curvi/pipeline/seed";
+import { PgCapStore } from "./cap-store";
 import { DbJobStore } from "./db-store";
 import type { PipelineDeps } from "./pipeline-runner";
 import { buildR2Uploader } from "./r2";
@@ -34,7 +35,9 @@ export function buildDbRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps 
     uploader: buildR2Uploader(),
   });
   return {
-    ...buildRuntimeDeps(opts),
+    // Spend cap totals live in Postgres so every task run, subtask retry and
+    // web instance shares them; real credits rule out the demo generator.
+    ...buildRuntimeDeps({ ...opts, capStore: new PgCapStore(db), realCredits: true }),
     store,
     // Video and avatar shots wait for their providers; skipping them keeps
     // real packs honest instead of charging for placeholder renders. Spend

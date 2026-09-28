@@ -239,6 +239,17 @@ export const channelSpecs = pgTable("channel_specs", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Shared running totals for provider spend caps (plan 4.4): one row per
+ * cap key (per asset, per pack, per day). Platform table, not tenant data:
+ * RLS is on with no policies, so only the worker's owner connection reads
+ * or writes it. Every Trigger.dev run and web instance shares these totals,
+ * which an in process counter cannot do. */
+export const spendCapCounters = pgTable("spend_cap_counters", {
+  key: text("key").primaryKey(),
+  totalMicros: bigint("total_micros", { mode: "number" }).notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const assetVariants = pgTable(
   "asset_variants",
   {
