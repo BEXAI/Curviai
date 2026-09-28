@@ -363,6 +363,27 @@ describe("workspaces.plan follows the subscription (Update.md 1.1)", () => {
     ]);
   });
 
+  it("acknowledges a subscription event for a workspace deleted with its account", async () => {
+    const ws = await newWorkspace();
+    const sub = { id: "sub_gone", workspaceId: ws, status: "active", price: "price_growth_monthly" };
+    await processStripeEvent(subscriptionEvent("evt_g1", "customer.subscription.created", sub), table, store());
+    await db.delete(workspaces).where(eq(workspaces.id, ws));
+    // Account deletion cancels a subscription already set to end; Stripe
+    // then sends the deletion, naming the workspace in its metadata.
+    const outcome = await store().upsertSubscription({
+      workspaceId: ws,
+      stripeCustomerId: "cus_sub",
+      externalId: "sub_gone",
+      tier: "growth",
+      status: "canceled",
+      periodEnd: null,
+    });
+    expect(outcome).toEqual({ status: "unrouted" });
+    const result = await processStripeEvent(subscriptionEvent("evt_g2", "customer.subscription.deleted", sub), table, store());
+    expect(result.handled).toBe(true);
+    expect(await db.select().from(subscriptions).where(eq(subscriptions.externalId, "sub_gone"))).toEqual([]);
+  });
+
   it("keeps the plan when a live subscription is on a price the table does not know", async () => {
     const ws = await newWorkspace("growth");
     await processStripeEvent(

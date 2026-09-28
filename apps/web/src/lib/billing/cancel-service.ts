@@ -123,7 +123,8 @@ export async function readSubscriptionFacts(
     itemId: item?.id ?? null,
     cadence: mapping?.kind === "tier" ? mapping.cadence : null,
     hasDiscount: (subscription.discounts ?? []).length > 0,
-    cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
+    // The portal may schedule the end with cancel_at instead of the flag.
+    cancelAtPeriodEnd: subscription.cancel_at_period_end === true || typeof subscription.cancel_at === "number",
     paused: subscription.pause_collection !== null && subscription.pause_collection !== undefined,
     periodEnd: item?.current_period_end ? new Date(item.current_period_end * 1000) : null,
   };
@@ -155,15 +156,6 @@ async function resolve(
     return fail(409, "no_plan", "You are on the Free plan, so there is no plan to cancel.");
   }
   const state = await deps.loadState(workspace.id);
-  if (state.pending) {
-    return fail(
-      409,
-      "already_pending",
-      state.pending.outcome === "canceled"
-        ? "Your plan is already set to end. Open the customer portal to renew it."
-        : "Billing is already paused. It starts again on its own.",
-    );
-  }
   let facts: SubscriptionFacts | null = null;
   const subscriptionId = account.subscription?.externalId;
   if (deps.stripe && subscriptionId && isOpenSubscription(account.subscription?.status)) {
@@ -179,6 +171,19 @@ async function resolve(
     if (facts?.paused) {
       return fail(409, "already_pending", "Billing is already paused. It starts again on its own.");
     }
+  }
+  // Stripe's own facts win when we have them: a seller who renewed in the
+  // customer portal still has an old pending cancel_flows row, which must
+  // not block the flow. Only without Stripe facts does the recorded pass
+  // stand in for them.
+  if (!facts && state.pending) {
+    return fail(
+      409,
+      "already_pending",
+      state.pending.outcome === "canceled"
+        ? "Your plan is already set to end. Open the customer portal to renew it."
+        : "Billing is already paused. It starts again on its own.",
+    );
   }
   const offers = eligibleOffers({
     tier,

@@ -39,6 +39,58 @@ function servesFiles(job: { status: string; creditsCharged: number | null }): bo
   return job.status === "done" || Number(job.creditsCharged ?? 0) > 0;
 }
 
+/** One displayable file per shot, keys checked against the workspace, hero
+ * first. `variantRows` may hold other assets' variants; each asset takes
+ * only its own. */
+function pickShotFiles(
+  workspaceId: string,
+  assetRows: AssetRow[],
+  variantRows: VariantRow[],
+): Array<{ asset: AssetRow; variant: VariantRow }> {
+  const files: Array<{ asset: AssetRow; variant: VariantRow }> = [];
+  for (const asset of assetRows) {
+    const variant = pickDisplayVariant(
+      variantRows.filter((v) => v.assetId === asset.id && isWorkspaceKey(workspaceId, v.r2Key)),
+    );
+    if (variant) {
+      files.push({ asset, variant });
+    }
+  }
+  const hero = pickHeroAsset(files.map((f) => f.asset));
+  return files.sort((a, b) => (a.asset === hero ? -1 : b.asset === hero ? 1 : 0));
+}
+
+/** The public image of one shot file on a share page. */
+function shareImage(slug: string, title: string, file: { asset: AssetRow; variant: VariantRow }): PublicShareImage {
+  return {
+    ref: `v_${file.variant.id}`,
+    src: shareImagePath(slug, `v_${file.variant.id}`),
+    alt: `${title}, ${shotLabel(file.asset.shotType).toLowerCase()}`,
+  };
+}
+
+const DEFAULT_SHARE_TITLE = "A product photo makeover";
+
+/** The public gallery listing is the same for every visitor, so it is kept
+ * in process for this long instead of reloaded on every page view. A
+ * publish or take down in this process clears it at once; other instances
+ * catch up within the window. Images are still checked live by the image
+ * route, so a page taken down never serves a file from a stale listing. */
+export const GALLERY_CACHE_MS = 60_000;
+const MAX_GALLERY_ROWS = 60;
+
+type GalleryCache = Map<number, { at: number; entries: Promise<GalleryEntry[]> }>;
+const galleryCaches = new WeakMap<Db, GalleryCache>();
+
+function galleryCacheFor(db: Db): GalleryCache {
+  let cache = galleryCaches.get(db);
+  if (!cache) {
+    cache = new Map();
+    galleryCaches.set(db, cache);
+  }
+  return cache;
+}
+
 const SLUG_ATTEMPTS = 4;
 
 export class DbShareStore implements ShareStore {
@@ -75,17 +127,7 @@ export class DbShareStore implements ShareStore {
           ),
         ),
     });
-    const files: Array<{ asset: AssetRow; variant: VariantRow }> = [];
-    for (const asset of assetRows) {
-      const variant = pickDisplayVariant(
-        variantRows.filter((v) => v.assetId === asset.id && isWorkspaceKey(job.workspaceId, v.r2Key)),
-      );
-      if (variant) {
-        files.push({ asset, variant });
-      }
-    }
-    const hero = pickHeroAsset(files.map((f) => f.asset));
-    return files.sort((a, b) => (a.asset === hero ? -1 : b.asset === hero ? 1 : 0));
+    return pickShotFiles(job.workspaceId, assetRows, variantRows);
   }
 
   /** The photo the pack was made from: the product's newest image uploaded
@@ -219,6 +261,7 @@ export class DbShareStore implements ShareStore {
         .set({ published: false })
         .where(and(eq(galleryItems.shareSlug, publishedSlug), eq(galleryItems.workspaceId, workspace.id)));
     }
+    this.clearGalleryCache();
     return { ok: true, status: await this.statusFor(workspace, job) };
   }
 
@@ -242,6 +285,7 @@ export class DbShareStore implements ShareStore {
         .update(galleryItems)
         .set({ published: false })
         .where(and(eq(galleryItems.shareSlug, share.slug), eq(galleryItems.workspaceId, workspace.id)));
+      this.clearGalleryCache();
     }
     return { ok: true, status: await this.statusFor(workspace, job) };
   }
@@ -285,12 +329,8 @@ export class DbShareStore implements ShareStore {
     if (!heroFile) {
       return null;
     }
-    const title = share.title ?? "A product photo makeover";
-    const image = (file: { asset: AssetRow; variant: VariantRow }): PublicShareImage => ({
-      ref: `v_${file.variant.id}`,
-      src: shareImagePath(slug, `v_${file.variant.id}`),
-      alt: `${title}, ${shotLabel(file.asset.shotType).toLowerCase()}`,
-    });
+    const title = share.title ?? DEFAULT_SHARE_TITLE;
+    const image = (file: { asset: AssetRow; variant: VariantRow }): PublicShareImage => shareImage(slug, title, file);
     const hasBefore = (await this.beforeKey(share)) !== null;
     const [gallery, product] = await Promise.all([
       this.db.query.galleryItems.findFirst({
@@ -335,20 +375,126 @@ export class DbShareStore implements ShareStore {
     return file && isWorkspaceKey(share.workspaceId, file.variant.r2Key) ? file.variant.r2Key : null;
   }
 
+  /** The public gallery, served from the in process cache for up to
+   * GALLERY_CACHE_MS. Concurrent misses share one load. */
   async listGallery(limit: number): Promise<GalleryEntry[]> {
+    const size = Math.max(1, Math.min(Math.floor(limit) || 1, MAX_GALLERY_ROWS));
+    const cache = galleryCacheFor(this.db);
+    const now = Date.now();
+    const hit = cache.get(size);
+    if (hit && now - hit.at < GALLERY_CACHE_MS) {
+      return hit.entries;
+    }
+    const entries = this.loadGallery(size);
+    cache.set(size, { at: now, entries });
+    // A failed load is not kept, so the next view tries again.
+    entries.catch(() => {
+      if (cache.get(size)?.entries === entries) {
+        cache.delete(size);
+      }
+    });
+    return entries;
+  }
+
+  /** Forgets the cached gallery listing, after a publish or a take down. */
+  private clearGalleryCache(): void {
+    galleryCaches.delete(this.db);
+  }
+
+  /**
+   * Builds the gallery with a fixed number of queries whatever the row
+   * count: the rows, then their jobs, assets, variants, before photos and
+   * products each in one batched read. Every row is checked as getPublic
+   * checks it: a valid slug, a job in the share's workspace that serves
+   * files, and keys under that workspace's prefix.
+   */
+  private async loadGallery(size: number): Promise<GalleryEntry[]> {
     const rows = await this.db
-      .select({ slug: shareLinks.slug })
+      .select({
+        slug: shareLinks.slug,
+        workspaceId: shareLinks.workspaceId,
+        jobId: shareLinks.jobId,
+        title: shareLinks.title,
+        assetId: shareLinks.assetId,
+        beforeMediaId: shareLinks.beforeMediaId,
+      })
       .from(galleryItems)
       .innerJoin(shareLinks, eq(galleryItems.shareSlug, shareLinks.slug))
       .where(and(eq(galleryItems.published, true), eq(shareLinks.isPublic, true)))
       .orderBy(sql`${galleryItems.consentAt} desc`)
-      .limit(Math.max(1, Math.min(limit, 60)));
+      .limit(size);
+    const shares = rows.filter(
+      (row): row is typeof row & { jobId: string } => isShareSlug(row.slug) && typeof row.jobId === "string",
+    );
+    if (shares.length === 0) {
+      return [];
+    }
+    const unique = (values: Array<string | null>): string[] => [...new Set(values.filter((v): v is string => !!v))];
+
+    const jobRows = await this.db.query.generationJobs.findMany({
+      where: (t, { inArray }) => inArray(t.id, unique(shares.map((s) => s.jobId))),
+    });
+    const jobs = new Map(jobRows.filter(servesFiles).map((job) => [job.id, job]));
+    const live = shares.filter((s) => jobs.get(s.jobId)?.workspaceId === s.workspaceId);
+    if (live.length === 0) {
+      return [];
+    }
+    const liveJobs = [...new Set(live.map((s) => jobs.get(s.jobId)!))];
+
+    const assetRows = await this.db.query.assets.findMany({
+      where: (t, { inArray }) => inArray(t.jobId, liveJobs.map((j) => j.id)),
+    });
+    const [variantRows, mediaRows, productRows] = await Promise.all([
+      assetRows.length > 0
+        ? this.db.query.assetVariants.findMany({
+            where: (t, { inArray }) => inArray(t.assetId, assetRows.map((a) => a.id)),
+          })
+        : Promise.resolve([]),
+      unique(live.map((s) => s.beforeMediaId)).length > 0
+        ? this.db.query.sourceMedia.findMany({
+            columns: { id: true, workspaceId: true, r2Key: true },
+            where: (t, { inArray }) => inArray(t.id, unique(live.map((s) => s.beforeMediaId))),
+          })
+        : Promise.resolve([]),
+      this.db.query.products.findMany({
+        columns: { id: true, workspaceId: true, profile: true },
+        where: (t, { inArray }) => inArray(t.id, unique(liveJobs.map((j) => j.productId))),
+      }),
+    ]);
+    const media = new Map(mediaRows.map((m) => [m.id, m]));
+    const productsById = new Map(productRows.map((p) => [p.id, p]));
+
     const entries: GalleryEntry[] = [];
-    for (const row of rows) {
-      const share = await this.getPublic(row.slug);
-      if (share?.after) {
-        entries.push({ slug: share.slug, title: share.title, category: share.category, before: share.before, after: share.after });
+    for (const share of live) {
+      const job = jobs.get(share.jobId)!;
+      // Only the job's own assets, in its workspace, and their own variants.
+      const jobAssets = assetRows.filter((a) => a.jobId === job.id && a.workspaceId === job.workspaceId);
+      const jobVariants = variantRows.filter((v) => v.workspaceId === job.workspaceId);
+      const files = pickShotFiles(job.workspaceId, jobAssets, jobVariants);
+      const heroFile = files.find((f) => f.asset.id === share.assetId) ?? files[0];
+      if (!heroFile) {
+        continue;
       }
+      const title = share.title ?? DEFAULT_SHARE_TITLE;
+      const before = share.beforeMediaId ? media.get(share.beforeMediaId) : undefined;
+      const hasBefore =
+        before !== undefined &&
+        before.workspaceId === share.workspaceId &&
+        isWorkspaceSourceKey(share.workspaceId, before.r2Key);
+      const product = productsById.get(job.productId);
+      const category =
+        product && product.workspaceId === job.workspaceId && typeof product.profile?.category === "string"
+          ? product.profile.category
+          : null;
+      entries.push({
+        slug: share.slug,
+        title,
+        category,
+        before: hasBefore
+          ? { ref: "before", src: shareImagePath(share.slug, "before"), alt: `${title}, the original photo` }
+          : null,
+        after: shareImage(share.slug, title, heroFile),
+      });
     }
     return entries;
   }

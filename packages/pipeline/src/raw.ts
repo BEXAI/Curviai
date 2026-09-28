@@ -105,8 +105,9 @@ export async function normalizeOrientation(buffer: Buffer): Promise<Buffer> {
  * pixel, so 48 MB to 190 MB per copy), which is what ran a 512 MB instance
  * out of memory. Downscaling resamples the real photo, it never regenerates
  * product pixels (CLAUDE.md rule 3). Bytes already upright and within the
- * bound come back unchanged; PNG stays PNG, anything else becomes a high
- * quality JPEG.
+ * bound come back unchanged; PNG stays PNG, and so does any file with an
+ * alpha channel (a transparent WebP would lose its transparency to a white
+ * or black flatten as JPEG); anything else becomes a high quality JPEG.
  */
 export async function prepareWorkingSource(buffer: Buffer, maxSide: number): Promise<Buffer> {
   const meta = await sharp(buffer).metadata();
@@ -119,7 +120,7 @@ export async function prepareWorkingSource(buffer: Buffer, maxSide: number): Pro
   const working = sharp(buffer)
     .rotate()
     .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true });
-  return meta.format === "png"
+  return meta.format === "png" || meta.hasAlpha === true
     ? working.png().toBuffer()
     : working.jpeg({ quality: 95, chromaSubsampling: "4:4:4" }).toBuffer();
 }

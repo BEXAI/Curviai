@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { brandKits, generationJobs, products, shareLinks, sourceMedia, workspaces } from "@curvi/db/schema";
+import { brandKits, generationJobs, platformSettings, products, shareLinks, sourceMedia, workspaces } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, type Db } from "@curvi/db";
-import { purgeCutoff, purgeStaleSourceMedia } from "./purge";
+import { ORPHAN_CURSOR_KEY, purgeCutoff, purgeStaleSourceMedia } from "./purge";
 import { MemoryTrustStorage } from "./storage";
 
 const NOW = new Date("2026-09-28T12:00:00Z");
@@ -152,5 +152,51 @@ describe("purgeStaleSourceMedia", () => {
     for (const kept of [`ws/${ws}/src/logo`, `ws/${ws}/src/fresh`, `ws/${ws}/out/job/main.jpg`, referenced.key]) {
       expect(storage.objects.has(kept), kept).toBe(true);
     }
+  });
+});
+
+describe("the orphan sweep cursor", () => {
+  it("resumes after the last workspace it finished instead of always starting from the first", async () => {
+    await db.delete(platformSettings).where(eq(platformSettings.key, ORPHAN_CURSOR_KEY));
+    // Ids that sort after every random workspace: A, whose young files fill
+    // the whole listing budget, then B, which holds an old orphan.
+    const a = "ffffffff-ffff-4fff-8fff-00000000000a";
+    const b = "ffffffff-ffff-4fff-8fff-00000000000b";
+    await db.insert(workspaces).values([
+      { id: a, name: "Busy" },
+      { id: b, name: "Quiet" },
+    ]);
+    storage.seed(`ws/${a}/src/young-1`, Buffer.from("x"), daysAgo(2));
+    storage.seed(`ws/${a}/src/young-2`, Buffer.from("x"), daysAgo(2));
+    storage.seed(`ws/${b}/src/abandoned`, Buffer.from("x"), daysAgo(40));
+    const sweep = (dryRun = false) =>
+      purgeStaleSourceMedia({ db: db as unknown as Db, storage, now: NOW, dryRun, maxOrphanObjects: 2 });
+    const cursor = async () =>
+      (await db.select().from(platformSettings).where(eq(platformSettings.key, ORPHAN_CURSOR_KEY)))[0]?.value as
+        | { workspaceId: string }
+        | undefined;
+
+    // First run: A takes the whole budget and is cut short, so B is not
+    // reached (before the cursor, every run stopped here).
+    expect((await sweep()).orphansDeleted).toBe(0);
+    expect(storage.objects.has(`ws/${b}/src/abandoned`)).toBe(true);
+    const first = await cursor();
+    expect(first?.workspaceId).toBeDefined();
+    expect(first?.workspaceId).not.toBe(a);
+
+    // A dry run leaves the cursor alone.
+    await sweep(true);
+    expect(await cursor()).toEqual(first);
+
+    // Second run starts at A; A alone fills the budget, so it is passed over.
+    await sweep();
+    expect((await cursor())?.workspaceId).toBe(a);
+
+    // Third run resumes after A and reaches B.
+    expect((await sweep()).orphansDeleted).toBe(1);
+    expect(storage.objects.has(`ws/${b}/src/abandoned`)).toBe(false);
+    expect(storage.objects.has(`ws/${a}/src/young-1`)).toBe(true);
+    // It wrapped round to the first workspaces and stopped short of A again.
+    expect((await cursor())?.workspaceId).not.toBe(a);
   });
 });

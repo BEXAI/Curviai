@@ -351,3 +351,12 @@ Not verified: how well Haiku 4.5 separates a photo of a monitor or a cropped scr
 | Recipe body hashes survive the jsonb round trip: after `loadRecipes` (pnpm db:seed), the recipes table compares equal to the compiled seed once object keys are sorted. | apps/web/src/lib/recipe-drift.ts | apps/web/src/lib/recipe-drift.test.ts against PGlite with every migration, 2026-09-28 | Implementer (p12/health) |
 
 Not verified: none of the probes has run against a real key yet. Run `GET /api/health/providers` with the cron secret after the deploy (docs/LAUNCH_CHECKLIST.md, Phase 12 health).
+
+### Account deletion with a plan set to end (fix/pipeline-billing, recorded 2026-09-28)
+
+| Fact | Where | Source | Checked by |
+|---|---|---|---|
+| Cancel a subscription: `DELETE /v1/subscriptions/:id` (SDK `stripe.subscriptions.cancel(id, params, options)`). It cancels immediately and the customer is not charged again. Optional params: `cancellation_details` (`comment`, `feedback`), `invoice_now` (final invoice for unbilled metered usage and pending prorations, default false) and `prorate` (credit for unused time, default false). Returns the Subscription with `status: "canceled"`. With both false, pending prorations are removed. | apps/web/src/lib/trust/account.ts deleteAccountData | docs.stripe.com/api/subscriptions/cancel; installed stripe 18.5.0 types (SubscriptionCancelParams) | Implementer (fix/pipeline-billing), fetched 2026-09-28 |
+| Subscription object: `cancel_at_period_end` (boolean) says whether it will cancel at the end of the current period; `cancel_at` (timestamp, nullable) is a future date at which it will be canceled automatically. Either one means Stripe ends the subscription on its own, so both count as set to end. Status values are `incomplete`, `incomplete_expired`, `trialing`, `active`, `past_due`, `canceled`, `unpaid`, `paused`. | account.ts subscriptionIsEnding; cancel-service.ts readSubscriptionFacts; stripe-webhook.ts subscriptionState | docs.stripe.com/api/subscriptions/object; installed stripe 18.5.0 types (`cancel_at: number \| null`, `cancel_at_period_end: boolean`) | Implementer (fix/pipeline-billing), fetched 2026-09-28 |
+
+Not verified: whether the customer portal, as configured for Curvi, sets `cancel_at_period_end` or `cancel_at` when a seller cancels there (the code accepts both). Confirm in test mode. The subscriptions table has no `cancel_at_period_end` column, so the webhook carries the flag only through the in memory store; deletion reads Stripe live.

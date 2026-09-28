@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   assetVariants,
   assets,
@@ -11,7 +11,7 @@ import {
 } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, loadChannelSpecs, type Db } from "@curvi/db";
-import { DbShareStore } from "./db-store";
+import { DbShareStore, GALLERY_CACHE_MS } from "./db-store";
 import { isShareSlug } from "./pick";
 import type { ShareWorkspace } from "./types";
 
@@ -212,6 +212,59 @@ describe("the gallery", () => {
     const items = await db.select().from(galleryItems).where(eq(galleryItems.shareSlug, slug));
     expect(items).toHaveLength(1);
     expect(items[0].published).toBe(false);
+  });
+});
+
+describe("the gallery listing's cost", () => {
+  it("loads every row in a fixed number of queries, with the same entries getPublic gives", async () => {
+    const slugs: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const f = await makePack();
+      const result = await store.publish(f.ws, f.jobId, { kind: "before_after", gallery: true });
+      if (!result.ok) throw new Error("publish failed");
+      slugs.push(result.status.slug!);
+    }
+    const query = vi.spyOn(client, "query");
+    const entries = await new DbShareStore(db as unknown as Db).listGallery(60);
+    const queries = query.mock.calls.length;
+    query.mockRestore();
+    // Rows, jobs, assets, then variants, before photos and products: six,
+    // however many rows there are (it was about seven per row).
+    expect(queries).toBeGreaterThan(0);
+    expect(queries).toBeLessThanOrEqual(6);
+    for (const slug of slugs) {
+      const entry = entries.find((e) => e.slug === slug);
+      const page = await store.getPublic(slug);
+      expect(entry).toEqual({
+        slug,
+        title: page?.title,
+        category: page?.category,
+        before: page?.before,
+        after: page?.after,
+      });
+      expect(entry?.category).toBe("home_kitchen");
+      expect(entry?.before?.src).toBe(`/s/${slug}/image/before`);
+    }
+  });
+
+  it("serves the public listing from the cache for 60 seconds", async () => {
+    const f = await makePack();
+    const result = await store.publish(f.ws, f.jobId, { kind: "before_after", gallery: true });
+    if (!result.ok) throw new Error("publish failed");
+    const slug = result.status.slug!;
+    const start = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+    try {
+      expect((await store.listGallery(50)).map((e) => e.slug)).toContain(slug);
+      // Taken out behind the store's back (another instance, say).
+      await db.update(galleryItems).set({ published: false }).where(eq(galleryItems.shareSlug, slug));
+      clock.mockReturnValue(start + GALLERY_CACHE_MS - 1);
+      expect((await store.listGallery(50)).map((e) => e.slug)).toContain(slug);
+      clock.mockReturnValue(start + GALLERY_CACHE_MS + 1);
+      expect((await store.listGallery(50)).map((e) => e.slug)).not.toContain(slug);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 

@@ -37,6 +37,7 @@ const MESSAGES = {
   not_image: "That link is not a JPEG, PNG, WEBP, GIF or TIFF photo. Pick another photo.",
   too_large: "That photo is over 25 MB. Pick another photo, or add a smaller one with Choose a file.",
   pixels: `That photo is over ${PIXEL_CAP_MEGAPIXELS} megapixels. Pick another photo, or add a smaller one.`,
+  unreadable: "We could not read the size of that photo. Pick another photo, or add it with Choose a file.",
   timeout: "The store took too long to send that photo. Try again.",
   unreachable: "We could not download that photo. Try again, or add it with Choose a file.",
 } as const;
@@ -147,6 +148,13 @@ export async function importPhoto(rawUrl: string, deps: { fetcher?: ImportFetche
     return { ok: false, reason: "not_image", message: MESSAGES.not_image };
   }
   const size = imageDimensions(body, contentType);
+  const readable = size !== null && size.width > 0 && size.height > 0;
+  // A header we cannot size could hide any pixel count, so only TIFF (whose
+  // header this module does not parse) goes on unsized; server side ingest
+  // reads it with sharp and applies the same cap before any decode.
+  if (!readable && contentType !== "image/tiff") {
+    return { ok: false, reason: "not_image", message: MESSAGES.unreadable };
+  }
   if (size && !withinPixelCap(size.width, size.height)) {
     return { ok: false, reason: "too_large", message: MESSAGES.pixels };
   }

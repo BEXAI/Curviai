@@ -113,6 +113,29 @@ describe("importPhoto", () => {
     expect(result).toMatchObject({ ok: false, reason: "too_large" });
   });
 
+  it("refuses a photo whose size cannot be read, except TIFF", async () => {
+    // A JPEG with no frame header in reach: the pixel cap cannot be checked.
+    const sizeless = await importPhoto("https://cdn.example.com/x", {
+      fetcher: serve(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00])),
+    });
+    expect(sizeless).toMatchObject({ ok: false, reason: "not_image" });
+    expect(sizeless.ok ? "" : sizeless.message).toContain("could not read the size");
+    // A WebP chunk this module does not size, and a zero sized PNG.
+    const oddWebp = Buffer.alloc(30);
+    oddWebp.write("RIFF", 0, "latin1");
+    oddWebp.write("WEBP", 8, "latin1");
+    oddWebp.write("ALPH", 12, "latin1");
+    expect(await importPhoto("https://cdn.example.com/x", { fetcher: serve(oddWebp) })).toMatchObject({ ok: false });
+    expect(await importPhoto("https://cdn.example.com/x", { fetcher: serve(png(0, 0)) })).toMatchObject({ ok: false });
+
+    // TIFF has no header parser here; server side ingest checks its pixels.
+    const tiff = Buffer.concat([Buffer.from([0x49, 0x49, 0x2a, 0x00]), Buffer.alloc(12)]);
+    expect(sniffImageType(tiff)).toBe("image/tiff");
+    const result = await importPhoto("https://cdn.example.com/x", { fetcher: serve(tiff) });
+    expect(result).toMatchObject({ ok: true, photo: { contentType: "image/tiff" } });
+    expect(result.ok && result.photo.width).toBeUndefined();
+  });
+
   it("maps fetch refusals to plain messages", async () => {
     for (const reason of ["blocked_host", "too_large", "timeout", "network"] as const) {
       const fetcher = vi.fn<ImportFetcher>(async () => {

@@ -811,6 +811,32 @@ describe("subscription sync (Update.md 1.1)", () => {
     expect(store.subscriptions.get("sub_1")?.status).toBe("canceled");
   });
 
+  it("carries whether Stripe will end the subscription on its own", async () => {
+    const store = new InMemoryBillingStore();
+    await processStripeEvent(subEvent("evt_end_0", "customer.subscription.created"), table, store);
+    expect(store.subscriptions.get("sub_1")?.cancelAtPeriodEnd).toBe(false);
+    await processStripeEvent(
+      subEvent("evt_end_1", "customer.subscription.updated", { cancel_at_period_end: true }),
+      table,
+      store,
+    );
+    expect(store.subscriptions.get("sub_1")).toMatchObject({ status: "active", cancelAtPeriodEnd: true });
+    // The portal can schedule the end with cancel_at instead.
+    await processStripeEvent(
+      subEvent("evt_end_2", "customer.subscription.updated", { cancel_at_period_end: false, cancel_at: 1_790_000_000 }),
+      table,
+      store,
+    );
+    expect(store.subscriptions.get("sub_1")?.cancelAtPeriodEnd).toBe(true);
+    // Renewed in the portal.
+    await processStripeEvent(
+      subEvent("evt_end_3", "customer.subscription.updated", { cancel_at_period_end: false, cancel_at: null }),
+      table,
+      store,
+    );
+    expect(store.subscriptions.get("sub_1")?.cancelAtPeriodEnd).toBe(false);
+  });
+
   describe("events out of order, without a Stripe lookup", () => {
     it("created (incomplete) arriving after updated (active) keeps active", async () => {
       const store = new InMemoryBillingStore();

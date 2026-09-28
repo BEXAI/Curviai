@@ -15,7 +15,8 @@
  * A second sweep removes orphan uploads: objects under ws/{id}/src/ older
  * than 30 days that no source_media row and no brand kit logo points at (a
  * photo uploaded to the new pack form and never used). It lists storage, so
- * it is bounded per run by maxOrphanObjects.
+ * it is bounded per run by maxOrphanObjects, and resumes where the last run
+ * stopped (a cursor in platform_settings, key purge:orphan_cursor).
  *
  * Storage is deleted first and the row only once its objects are gone, so a
  * failed delete is retried on the next run instead of leaving an object no
@@ -23,7 +24,7 @@
  * (apps/web/src/app/api/cron/purge-source-media/route.ts).
  */
 
-import { sql, type Db } from "@curvi/db";
+import { platformSettings, sql, type Db } from "@curvi/db";
 import { isWorkspaceObjectKey } from "@/lib/object-keys";
 import type { TrustStorage } from "./storage";
 
@@ -117,28 +118,74 @@ export async function purgeStaleSourceMedia(options: PurgeOptions): Promise<Purg
     report.rowsDeleted = done.length;
   }
 
-  report.orphansDeleted = await purgeOrphanUploads(db, storage, cutoff, dryRun, options.maxOrphanObjects ?? 5000);
+  report.orphansDeleted = await purgeOrphanUploads(db, storage, cutoff, dryRun, options.maxOrphanObjects ?? 5000, now);
   return report;
 }
 
-/** Deletes old objects under each workspace's source prefix that nothing
- * points at. Returns how many were deleted (or would be, on a dry run). */
+/** platform_settings key holding the last workspace the orphan sweep
+ * finished, so the next run resumes after it. */
+export const ORPHAN_CURSOR_KEY = "purge:orphan_cursor";
+
+async function readOrphanCursor(db: Db): Promise<string | null> {
+  const [row] = rowsOf<{ value: unknown }>(
+    await db.execute(sql`select value from platform_settings where key = ${ORPHAN_CURSOR_KEY}`),
+  );
+  const value = row?.value as { workspaceId?: unknown } | null | undefined;
+  const id = typeof value?.workspaceId === "string" ? value.workspaceId : null;
+  return id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id : null;
+}
+
+async function writeOrphanCursor(db: Db, workspaceId: string, at: Date): Promise<void> {
+  await db
+    .insert(platformSettings)
+    .values({ key: ORPHAN_CURSOR_KEY, value: { workspaceId, at: at.toISOString() }, updatedAt: at })
+    .onConflictDoUpdate({
+      target: platformSettings.key,
+      set: { value: sql`excluded.value`, updatedAt: sql`excluded.updated_at` },
+    });
+}
+
+/**
+ * Deletes old objects under each workspace's source prefix that nothing
+ * points at. Returns how many were deleted (or would be, on a dry run).
+ *
+ * The listing budget covers only part of a large bucket, so the sweep
+ * resumes after the last workspace it finished (ORPHAN_CURSOR_KEY) and
+ * wraps around to the first, instead of starting from the first workspace
+ * every run and never reaching the rest. A workspace the budget cut short
+ * is not counted as finished, so the next run lists it again; one that
+ * alone is larger than the budget is passed over, so it cannot hold the
+ * sweep in place. A dry run leaves the cursor where it was.
+ */
 async function purgeOrphanUploads(
   db: Db,
   storage: TrustStorage,
   cutoff: Date,
   dryRun: boolean,
   budget: number,
+  now: Date,
 ): Promise<number> {
-  const workspaceRows = rowsOf<{ id: string }>(await db.execute(sql`select id from workspaces order by id`));
+  const cursor = await readOrphanCursor(db);
+  const workspaceRows = rowsOf<{ id: string }>(
+    await db.execute(
+      cursor
+        ? sql`select id from workspaces order by (id <= ${cursor}::uuid), id`
+        : sql`select id from workspaces order by id`,
+    ),
+  );
   let listed = 0;
   let deleted = 0;
-  for (const { id } of workspaceRows) {
+  let finished: string | null = null;
+  for (const [index, { id }] of workspaceRows.entries()) {
     if (listed >= budget) {
       break;
     }
-    const objects = await storage.list(`ws/${id}/src/`, budget - listed);
+    const allowance = budget - listed;
+    const objects = await storage.list(`ws/${id}/src/`, allowance);
     listed += objects.length;
+    if (objects.length < allowance || index === 0) {
+      finished = id;
+    }
     const old = objects.filter((o) => o.lastModified !== null && o.lastModified < cutoff);
     if (old.length === 0) {
       continue;
@@ -162,6 +209,14 @@ async function purgeOrphanUploads(
     }
     const failed = await storage.deleteMany(orphans);
     deleted += orphans.length - failed.length;
+  }
+  if (!dryRun && finished) {
+    try {
+      await writeOrphanCursor(db, finished, now);
+    } catch (err) {
+      // The next run starts from the old cursor again; nothing is lost.
+      console.warn("[purge] could not save the orphan sweep cursor", err instanceof Error ? err.message : err);
+    }
   }
   return deleted;
 }
