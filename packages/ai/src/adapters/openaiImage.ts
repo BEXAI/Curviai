@@ -19,6 +19,7 @@
 import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderErrorCode, ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
 import { requestJson, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
@@ -83,6 +84,20 @@ export class OpenaiImageProvider implements CostAwareProvider {
     this.fetchFn = config.fetchFn ?? fetch;
     this.model = config.model;
     this.priceTable = config.priceTable;
+  }
+
+  /**
+   * Key probe: GET /v1/models/{model} (retrieve model), a metadata read
+   * that also confirms the model is available to this key (OpenAI API
+   * reference, checked 2026-09-28). Never generates an image.
+   */
+  probe(options?: ProbeOptions): Promise<ProbeResult> {
+    return probeRequest(
+      this.fetchFn,
+      `${this.baseUrl}/v1/models/${encodeURIComponent(this.model)}`,
+      { method: "GET", headers: { authorization: `Bearer ${this.apiKey}` } },
+      options,
+    );
   }
 
   supports(task: string): boolean {

@@ -9,8 +9,19 @@
  * restart a running instance over it; the uptime monitor alerts on the body
  * instead. Demo mode
  * (no database) always reports ok. The response carries no secrets; see
- * lib/service-health.ts. Provider configuration detail stays on
- * /api/health/providers.
+ * lib/service-health.ts.
+ *
+ * Configuration drift (lib/config-health.ts) is listed under `warnings` as
+ * stable codes: missing storage or provider keys per stage, recipes rows
+ * unlike the seed, crons that never ran or are overdue, a bad
+ * CURVI_SHOT_CONCURRENCY and memory near the container limit. The public
+ * response stays coarse. A request with `Authorization: Bearer
+ * <CRON_SECRET>` (compared in constant time, lib/cron-auth.ts) also gets
+ * `details`: each warning in plain words, the recipe differences (hashes and
+ * model ids, never prompts), key presence per stage, cron run times, shot
+ * concurrency and memory. A wrong or missing secret gets the public response,
+ * never an error, since Render polls this path without one. Key probes live
+ * on /api/health/providers.
  *
  * Never rate limited: Render polls this every few seconds and counts a 429
  * as a failure. It calls no limiter, the middleware matcher does not cover
@@ -18,8 +29,11 @@
  */
 
 import { NextResponse } from "next/server";
+import { recipeSeedRows } from "@curvi/pipeline/seed";
+import { liveProviderTargets } from "@curvi/trigger/provider-probes";
+import { buildConfigReport, cachedConfigReport, createConfigReportCache, type ConfigReport, type ConfigReportCache } from "@/lib/config-health";
+import { checkCronAuth } from "@/lib/cron-auth";
 import { isR2Configured, optionalEnv } from "@/lib/env";
-import { DEFAULT_PROVIDER_ENTRIES } from "@/lib/health";
 import { currentInlinePackRunner } from "@/lib/jobs/inline-runner";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
@@ -33,7 +47,10 @@ import {
 
 export const dynamic = "force-dynamic";
 
-const globalScope = globalThis as typeof globalThis & { __curviHealthCache?: HealthCache };
+const globalScope = globalThis as typeof globalThis & {
+  __curviHealthCache?: HealthCache;
+  __curviConfigReportCache?: ConfigReportCache;
+};
 
 /** One per process, so the boot readiness gate and the schema memory hold
  * across requests and route bundles. */
@@ -42,37 +59,50 @@ function healthCache(): HealthCache {
   return globalScope.__curviHealthCache;
 }
 
-/** Configuration a db mode instance needs to deliver packs, as stable codes. */
-function configWarnings(): string[] {
-  const warnings: string[] = [];
-  if (!isR2Configured()) {
-    warnings.push("storage_not_configured");
-  }
-  const configuredKinds = new Set(
-    DEFAULT_PROVIDER_ENTRIES.filter((entry) => optionalEnv(entry.envVar)).map((entry) => entry.kind),
-  );
-  if (!configuredKinds.has("llm")) {
-    warnings.push("no_llm_provider");
-  }
-  if (!configuredKinds.has("image")) {
-    warnings.push("no_image_provider");
-  }
-  return warnings;
+function configReportCache(): ConfigReportCache {
+  globalScope.__curviConfigReportCache ??= createConfigReportCache();
+  return globalScope.__curviConfigReportCache;
 }
 
-export async function GET(): Promise<NextResponse> {
+function configReport(mode: "demo" | "db", databaseOk: boolean, fresh: boolean): Promise<ConfigReport> {
+  return cachedConfigReport(configReportCache(), { databaseOk, fresh }, () =>
+    buildConfigReport({
+      mode,
+      databaseOk,
+      db: getDb,
+      readEnv: optionalEnv,
+      storageConfigured: isR2Configured(),
+      providerTargets: liveProviderTargets(optionalEnv),
+      seedRecipes: recipeSeedRows,
+    }),
+  );
+}
+
+export async function GET(request: Request): Promise<NextResponse> {
+  const authorized = checkCronAuth(request.headers) === "ok";
+  const mode = isDbMode() ? "db" : "demo";
+  const seen: { report?: ConfigReport } = {};
+
   const result = await runHealthCheck({
-    mode: isDbMode() ? "db" : "demo",
+    mode,
     pingDatabase: async () => {
       await getDb().execute(sql`select 1`);
     },
     latestAppliedMigration: () => readLatestAppliedMigration(getDb()),
     runnerStats: () => currentInlinePackRunner()?.stats() ?? null,
-    configWarnings,
+    configWarnings: async ({ database }) => {
+      seen.report = await configReport(mode, database === "ok", authorized);
+      return seen.report.warnings.map((warning) => warning.code);
+    },
     commit: optionalEnv("RENDER_GIT_COMMIT") ?? null,
     cache: healthCache(),
   });
-  return NextResponse.json(result.body, {
+
+  let body: typeof result.body & { details?: ConfigReport } = result.body;
+  if (authorized) {
+    body = { ...result.body, details: seen.report ?? (await configReport(mode, false, true)) };
+  }
+  return NextResponse.json(body, {
     status: result.status,
     headers: { "Cache-Control": "no-store" },
   });

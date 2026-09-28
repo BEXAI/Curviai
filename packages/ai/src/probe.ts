@@ -1,0 +1,160 @@
+/**
+ * Key probes: the cheapest authenticated call each provider offers, used by
+ * the protected GET /api/health/providers route so a bad or revoked key shows
+ * up before a customer pack and not during one.
+ *
+ * A probe only reads account or model metadata (a model resource, a credit
+ * balance). It never generates anything and never spends money, so it runs
+ * outside callWithFailover on purpose: there is nothing to meter, a retry
+ * would only hide a bad key, and a probe failure must not trip the circuit
+ * breaker that live packs rely on. Every probe has a hard timeout and never
+ * throws; failures come back as data.
+ */
+
+import type { Provider } from "./types";
+
+/** Hard ceiling on one probe, network wait included. */
+export const PROBE_TIMEOUT_MS = 10_000;
+
+export interface ProbeOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface ProbeResult {
+  /** True when the provider accepted the key. */
+  ok: boolean;
+  /** HTTP status of the probe call; null when no response came back. */
+  status: number | null;
+  latencyMs: number;
+  /** Short plain reason when ok is false. Never a key or a response body. */
+  error?: string;
+  /** Set when the provider has no free authenticated endpoint to call. */
+  skipped?: string;
+}
+
+/** A provider that can check its own key. */
+export interface ProbeableProvider extends Provider {
+  probe(options?: ProbeOptions): Promise<ProbeResult>;
+}
+
+export function isProbeable(provider: Provider): provider is ProbeableProvider {
+  return typeof (provider as Partial<ProbeableProvider>).probe === "function";
+}
+
+/** Plain reason for a refused probe, by status. */
+export function probeStatusReason(status: number): string {
+  if (status === 401) return "The provider refused the key.";
+  if (status === 403) return "The key is not allowed to make this call, or the account has no credit left.";
+  if (status === 404) return "The provider does not know this model or endpoint.";
+  if (status === 429) return "The provider is rate limiting this key.";
+  if (status >= 500) return "The provider had a server error.";
+  return `The provider answered with status ${status}.`;
+}
+
+/** Plain reason for a probe that ran out of time. */
+function noAnswer(timeoutMs: number): string {
+  if (timeoutMs < 1_000) return `No answer within ${timeoutMs} milliseconds.`;
+  const seconds = Math.round(timeoutMs / 1_000);
+  return `No answer within ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+}
+
+type FetchLike = typeof fetch;
+
+/**
+ * One GET (or other metadata request) with a hard timeout. Resolves with the
+ * status and latency; never throws. The response body is discarded unread,
+ * so nothing the provider echoes can leak into the report.
+ */
+export async function probeRequest(
+  fetchFn: FetchLike,
+  url: string,
+  init: RequestInit,
+  options: ProbeOptions = {},
+  now: () => number = Date.now,
+): Promise<ProbeResult> {
+  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(options.signal?.reason);
+  if (options.signal?.aborted) {
+    controller.abort(options.signal.reason);
+  } else {
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error("probe timed out"));
+  }, timeoutMs);
+  const started = now();
+  try {
+    const res = await fetchFn(url, { ...init, signal: controller.signal });
+    const latencyMs = Math.max(0, now() - started);
+    await res.body?.cancel().catch(() => undefined);
+    return res.ok
+      ? { ok: true, status: res.status, latencyMs }
+      : { ok: false, status: res.status, latencyMs, error: probeStatusReason(res.status) };
+  } catch (err) {
+    const latencyMs = Math.max(0, now() - started);
+    if (timedOut) {
+      return { ok: false, status: null, latencyMs, error: noAnswer(timeoutMs) };
+    }
+    const name = err instanceof Error ? err.name : "Error";
+    return { ok: false, status: null, latencyMs, error: `The call did not reach the provider (${name}).` };
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/** A probe that was not run, for providers without a free endpoint. */
+export function skippedProbe(reason: string): ProbeResult {
+  return { ok: true, status: null, latencyMs: 0, skipped: reason };
+}
+
+export interface ProbeTarget {
+  name: string;
+  provider: Provider;
+}
+
+export interface ProbeReport extends ProbeResult {
+  name: string;
+}
+
+/**
+ * Probes every target at once. A provider without a probe method is
+ * reported as skipped. A probe that throws or ignores its timeout is caught
+ * and reported as failed, so the caller always gets one result per target.
+ */
+export async function probeProviders(targets: ProbeTarget[], options: ProbeOptions = {}): Promise<ProbeReport[]> {
+  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
+  return Promise.all(
+    targets.map(async ({ name, provider }): Promise<ProbeReport> => {
+      if (!isProbeable(provider)) {
+        return { name, ...skippedProbe("This provider has no key probe.") };
+      }
+      let guard: ReturnType<typeof setTimeout> | undefined;
+      const started = Date.now();
+      try {
+        const backstop = new Promise<ProbeResult>((resolve) => {
+          guard = setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                status: null,
+                latencyMs: Date.now() - started,
+                error: noAnswer(timeoutMs),
+              }),
+            timeoutMs + 1_000,
+          );
+        });
+        return { name, ...(await Promise.race([provider.probe({ ...options, timeoutMs }), backstop])) };
+      } catch (err) {
+        const reason = err instanceof Error ? err.name : "Error";
+        return { name, ok: false, status: null, latencyMs: Date.now() - started, error: `The probe failed (${reason}).` };
+      } finally {
+        if (guard) clearTimeout(guard);
+      }
+    }),
+  );
+}

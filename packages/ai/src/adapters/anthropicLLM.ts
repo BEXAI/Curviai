@@ -20,6 +20,7 @@
 import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
 import {
   base64Bytes,
   imageDimensions,
@@ -174,6 +175,20 @@ export class AnthropicLLMProvider implements CostAwareProvider {
 
   supports(task: string): boolean {
     return this.tasks.includes(task);
+  }
+
+  /**
+   * Key probe: GET /v1/models/{model}, a free metadata read that also
+   * confirms the model id exists for this key (Models API, checked
+   * 2026-09-28). Never generates tokens.
+   */
+  probe(options?: ProbeOptions): Promise<ProbeResult> {
+    return probeRequest(
+      this.fetchFn,
+      `${this.baseUrl}/v1/models/${encodeURIComponent(this.model)}`,
+      { method: "GET", headers: { "x-api-key": this.apiKey, "anthropic-version": this.anthropicVersion } },
+      options,
+    );
   }
 
   /** The model a request runs on and its prices. A recipe selected model

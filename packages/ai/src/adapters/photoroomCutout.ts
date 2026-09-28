@@ -12,12 +12,15 @@
 import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
 import { resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const PHOTOROOM_API_KEY_ENV = "PHOTOROOM_API_KEY";
 
 export interface PhotoroomCutoutConfig extends AdapterCommonConfig {
   priceTable: { perCallMicros: number };
+  /** Host of the account details endpoint the key probe reads. */
+  accountBaseUrl?: string;
 }
 
 export interface PhotoroomCutoutInput {
@@ -38,6 +41,7 @@ export class PhotoroomCutoutProvider implements CostAwareProvider {
 
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly accountBaseUrl: string;
   private readonly fetchFn: FetchLike;
   private readonly tasks: string[];
   private readonly priceTable: { perCallMicros: number };
@@ -49,8 +53,25 @@ export class PhotoroomCutoutProvider implements CostAwareProvider {
     this.tasks = config.tasks;
     this.apiKey = resolveApiKey(config.name, config.apiKey, PHOTOROOM_API_KEY_ENV);
     this.baseUrl = config.baseUrl ?? "https://sdk.photoroom.com";
+    this.accountBaseUrl = config.accountBaseUrl ?? "https://image-api.photoroom.com";
     this.fetchFn = config.fetchFn ?? fetch;
     this.priceTable = config.priceTable;
+  }
+
+  /**
+   * Key probe: GET {accountBaseUrl}/v2/account, the account details
+   * endpoint that serves both Remove Background and Image Editing keys
+   * (Photoroom docs, checked 2026-09-28). It lives on image-api.photoroom.com,
+   * not on the segment host. A 403 means the key is not allowed or the
+   * credit balance is zero. Never segments an image.
+   */
+  probe(options?: ProbeOptions): Promise<ProbeResult> {
+    return probeRequest(
+      this.fetchFn,
+      `${this.accountBaseUrl}/v2/account`,
+      { method: "GET", headers: { "x-api-key": this.apiKey } },
+      options,
+    );
   }
 
   supports(task: string): boolean {

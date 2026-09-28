@@ -14,7 +14,9 @@
     "./live-runtime": "./src/live-runtime.ts",
     "./db-runtime": "./src/db-runtime.ts",
     "./db-store": "./src/db-store.ts",
-    "./state": "./src/state.ts"
+    "./state": "./src/state.ts",
+    "./provider-probes": "./src/provider-probes.ts",
+    "./shot-concurrency": "./src/shot-concurrency.ts"
   },
   "scripts": {
     "dev": "trigger.dev dev",

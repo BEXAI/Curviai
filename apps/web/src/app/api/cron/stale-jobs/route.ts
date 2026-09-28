@@ -8,6 +8,7 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { checkCronAuth } from "@/lib/cron-auth";
+import { recordCronSuccess } from "@/lib/cron-health";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
 import { sweepStaleJobs } from "@/lib/services/reconcile";
@@ -28,7 +29,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true, mode: "demo", reconciled: 0 }, { headers: NO_STORE });
   }
   try {
-    const result = await sweepStaleJobs(getDb());
+    const db = getDb();
+    const result = await sweepStaleJobs(db);
+    if (result.releaseFailures.length === 0) {
+      // Health warns when this goes stale (lib/cron-health.ts).
+      await recordCronSuccess(db, "stale-jobs");
+    }
     if (result.reconciled.length > 0) {
       console.warn(
         JSON.stringify({
