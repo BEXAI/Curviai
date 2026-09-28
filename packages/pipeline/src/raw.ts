@@ -35,6 +35,17 @@ export function maskToSharp(mask: RawMask): sharp.Sharp {
  * same size.
  */
 
+/**
+ * Turns off libvips' operation cache (by default up to 50 MB, 20 files and
+ * 100 operations, per the sharp docs checked 2026-09-28). The pipeline never
+ * repeats an operation on the same input, so the cache only held memory on
+ * a small instance. Thread concurrency is left alone: sharp already runs one
+ * thread on glibc Linux without jemalloc, which is Render.
+ */
+export function limitImageMemory(): void {
+  sharp.cache(false);
+}
+
 /** Decode any sharp readable buffer into raw RGBA, upright per EXIF. */
 export async function decodeToRgba(buffer: Buffer): Promise<RawImage> {
   const { data, info } = await sharp(buffer).rotate().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -85,6 +96,32 @@ export async function normalizeOrientation(buffer: Buffer): Promise<Buffer> {
   return meta.format === "png"
     ? upright.png().toBuffer()
     : upright.jpeg({ quality: 95, chromaSubsampling: "4:4:4" }).toBuffer();
+}
+
+/**
+ * The source photo at working size: upright per EXIF and downscaled so its
+ * long edge is at most maxSide. Phone cameras shoot 12 to 48 megapixels, and
+ * every stage after the cutout holds the product as raw RGBA (4 bytes per
+ * pixel, so 48 MB to 190 MB per copy), which is what ran a 512 MB instance
+ * out of memory. Downscaling resamples the real photo, it never regenerates
+ * product pixels (CLAUDE.md rule 3). Bytes already upright and within the
+ * bound come back unchanged; PNG stays PNG, anything else becomes a high
+ * quality JPEG.
+ */
+export async function prepareWorkingSource(buffer: Buffer, maxSide: number): Promise<Buffer> {
+  const meta = await sharp(buffer).metadata();
+  const oriented = Boolean(meta.orientation && meta.orientation !== 1);
+  // Orientations 5 to 8 swap width and height, which does not change the long edge.
+  const longEdge = Math.max(meta.width ?? 0, meta.height ?? 0);
+  if (!oriented && longEdge > 0 && longEdge <= maxSide) {
+    return buffer;
+  }
+  const working = sharp(buffer)
+    .rotate()
+    .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true });
+  return meta.format === "png"
+    ? working.png().toBuffer()
+    : working.jpeg({ quality: 95, chromaSubsampling: "4:4:4" }).toBuffer();
 }
 
 export async function encodeJpeg(img: RawImage, quality = 90): Promise<Buffer> {

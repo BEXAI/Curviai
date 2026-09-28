@@ -575,11 +575,45 @@ export interface PipelineDeps {
    * generate-shot subtask. Defaults to Promise.allSettled over runShot, with
    * a shot that throws turned into a needs review outcome. */
   runShots?: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>;
+  /** Shots the default fan out runs at once (DEFAULT_SHOT_CONCURRENCY when
+   * unset). Every running shot holds decoded RGBA copies of the product, so
+   * an unbounded fan out of a 20 shot pack ran a 512 MB instance out of
+   * memory. */
+  shotConcurrency?: number;
   /** Where buildPack writes zips. A temp dir when omitted. */
   packOutDir?: string;
   /** Called when the global daily spend crosses the alert line (plan 4.4:
    * $50 alert). Defaults to a console warning in the runtime wiring. */
   onSpendAlert?: (totalMicros: number) => void;
+}
+
+/** Shots run at once by the default fan out. Two keeps a pack's peak memory
+ * to about two shots' worth of raw images while still overlapping provider
+ * waits; raise it with CURVI_SHOT_CONCURRENCY on larger instances. */
+export const DEFAULT_SHOT_CONCURRENCY = 2;
+
+/** Promise.allSettled over items with at most `limit` calls in flight,
+ * results in input order. */
+export async function allSettledWithLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        results[i] = { status: "fulfilled", value: await fn(items[i] as T) };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
+  };
+  const width = Math.max(1, Math.min(Math.floor(limit) || 1, items.length));
+  await Promise.all(Array.from({ length: width }, worker));
+  return results;
 }
 
 export interface GeneratePackInput {
@@ -2159,7 +2193,11 @@ export async function runGeneratePack(
     const runShots =
       deps.runShots ??
       (async (shots: Shot[], c: ShotContext): Promise<ShotOutcome[]> => {
-        const settledShots = await Promise.allSettled(shots.map((s) => runShot(s, c, fanOutDeps)));
+        const settledShots = await allSettledWithLimit(
+          shots,
+          deps.shotConcurrency ?? DEFAULT_SHOT_CONCURRENCY,
+          (s) => runShot(s, c, fanOutDeps),
+        );
         return Promise.all(
           settledShots.map((result, i) =>
             result.status === "fulfilled" ? result.value : recordShotFailure(store, shots[i], c, result.reason),

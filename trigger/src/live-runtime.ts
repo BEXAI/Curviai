@@ -46,7 +46,7 @@ import {
   deriveQcErodePx,
   encodePng,
   HarmonizeAspectError,
-  normalizeOrientation,
+  prepareWorkingSource,
   rawToSharp,
   renderTemplateStill,
   TEMPLATE_STILL_TYPES,
@@ -76,7 +76,16 @@ import {
   type ImageModelSeedRow,
   type PresetKey,
 } from "@curvi/pipeline/seed";
-import { getSpec, type ChannelSpec } from "@curvi/specs";
+import { getSpec, listSpecs, type ChannelSpec } from "@curvi/specs";
+
+/** Long edge of the source photo the live shots work from: the largest
+ * channel output (from the spec registry) plus headroom, so no spec is ever
+ * upscaled and a 48 megapixel phone photo is not held as raw RGBA at full
+ * size in every stage. */
+export const WORKING_SOURCE_MAX_PX = Math.ceil(
+  Math.max(...listSpecs().map((spec) => Math.max(spec.width ?? 0, spec.height ?? 0, spec.minWidth ?? 0, spec.minHeight ?? 0))) *
+    1.25,
+);
 import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
 import type { LiveProduct, StillRender } from "./live-product";
@@ -779,8 +788,10 @@ export class LiveShotGenerator implements ShotGenerator {
         }
         // Phone photos often carry their rotation only as an EXIF tag, which
         // the cutout service ignores: send the pixels upright (Update.md
-        // 7.8). Bytes sharp cannot read go as they are; the service may.
-        const upright = await normalizeOrientation(source).catch(() => source);
+        // 7.8), downscaled to working size so the cutout and every raw copy
+        // after it stay bounded. Bytes sharp cannot read go as they are; the
+        // service may.
+        const upright = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
         let cutout: CallResult<PhotoroomCutoutOutput>;
         try {
           cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(

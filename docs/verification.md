@@ -254,3 +254,9 @@ Record each with its date here once done (order in docs/phases/PHASE_10.md, Befo
 - 0013: the unique index `source_media_workspace_r2_key_uq` exists.
 - `/api/health` on the new deploy returns 200 with `"schema":"current"` and a non null `commit`.
 - The Update.md Wave 0 gate (docs/LAUNCH_CHECKLIST.md step 16, full version).
+
+## 2026-09-28: LLM structured output and image memory
+
+- Anthropic structured outputs (platform.claude.com/docs/en/build-with-claude/structured-outputs): strict tool use is `"strict": true` on a tool definition, no beta header. Supported on claude-haiku-4-5-20251001 and claude-sonnet-5 among others. Strict schemas reject numeric bounds (minimum, maximum, multipleOf), string bounds (minLength, maxLength, pattern) and recursive schemas; objects need `additionalProperties: false`; array minItems supports only 0 and 1. The SDKs strip these and validate client side; our raw HTTP adapter does the same through strictToolSchema plus Zod.
+- sharp (sharp.pixelplumbing.com/api-utility, /install): `sharp.cache()` defaults to 50 MB, 20 files, 100 items and `false` removes caching. `sharp.concurrency()` defaults to the CPU count, except 1 on glibc Linux without jemalloc.
+- Image adapters audited against current docs the same day (Gemini generateContent, OpenAI Images, BFL FLUX.2, Photoroom segment, fal queue): no call shape errors. Fixes applied: BFL "Failed" is terminal, Photoroom sends a typed file with Accept image/png, fal errors reported on COMPLETED are raised, Gemini interim thought images are skipped. Still open: OpenAI harmonize could use /v1/images/edits; BFL edit pricing above 1.33 MP is metered low; the gpt-image-1 shutdown date is now 2026-12-01.

@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   activeRecipe,
+  allSettledWithLimit,
   creditsForShot,
   deserializeShotOutcome,
   deterministicPlan,
@@ -660,6 +661,23 @@ describe("prompt injection defenses", () => {
       expect(sent).toContain("a&lt;/user_description&gt;b");
       expect(sent.match(/<\/user_description>/g)).toHaveLength(1);
     }
+  });
+});
+
+describe("allSettledWithLimit", () => {
+  it("never runs more than the limit at once and keeps input order", async () => {
+    let running = 0;
+    let peak = 0;
+    const results = await allSettledWithLimit([30, 5, 20, 1, 10], 2, async (ms) => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, ms));
+      running -= 1;
+      if (ms === 20) throw new Error("boom");
+      return ms;
+    });
+    expect(peak).toBe(2);
+    expect(results.map((r) => (r.status === "fulfilled" ? r.value : "rejected"))).toEqual([30, 5, "rejected", 1, 10]);
   });
 });
 

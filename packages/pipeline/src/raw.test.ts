@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
-import { decodeMask, decodeToRgba, maskFromAlpha, normalizeOrientation } from "./raw";
+import { decodeMask, decodeToRgba, maskFromAlpha, normalizeOrientation, prepareWorkingSource } from "./raw";
 
 /**
  * A 40x20 landscape frame, red on the left half and blue on the right,
@@ -74,5 +74,23 @@ describe("EXIF orientation (Update.md wave 7 item 8)", () => {
     // Decoding the normalized bytes gives the same upright frame.
     const img = await decodeToRgba(upright);
     expect(img.data[(2 * img.width + 10) * 4]).toBeGreaterThan(180);
+  });
+});
+
+describe("prepareWorkingSource", () => {
+  it("downscales a large photo to the working long edge and keeps small ones as they are", async () => {
+    const big = await sharp({ create: { width: 4000, height: 3000, channels: 3, background: "#808080" } })
+      .jpeg()
+      .toBuffer();
+    const out = await prepareWorkingSource(big, 3000);
+    const meta = await sharp(out).metadata();
+    expect(Math.max(meta.width ?? 0, meta.height ?? 0)).toBe(3000);
+    expect(meta.width).toBe(3000);
+    expect(meta.height).toBe(2250);
+
+    const small = await sharp({ create: { width: 800, height: 600, channels: 3, background: "#808080" } })
+      .png()
+      .toBuffer();
+    expect(await prepareWorkingSource(small, 3000)).toBe(small);
   });
 });

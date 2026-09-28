@@ -13,6 +13,7 @@ import type { CapStore, CostAwareProvider, ProviderRequest, ProviderResponse, Ro
 import {
   encodeJpeg,
   encodePng,
+  limitImageMemory,
   QC_THRESHOLDS,
   qcKindForSpec,
   solidCanvas,
@@ -286,6 +287,7 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   // Shots the live path cannot produce go to needs review with no charge.
   // A db backed run settles real credits, so it never uses the demo generator
   // either: with no keys the live generator marks every shot unavailable.
+  limitImageMemory();
   const liveMode = wiring.llmLive || wiring.imageProviders.length > 0 || wiring.cutoutLive;
   const demoAllowed = !opts.realCredits || optionalEnv("CURVI_ALLOW_DEMO_GENERATION") === "1";
   const generator =
@@ -298,7 +300,18 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     loadMedia: loadMedia ?? undefined,
     packOutDir: opts.packOutDir,
     onSpendAlert,
+    ...shotConcurrencyFromEnv(),
   };
+}
+
+/** CURVI_SHOT_CONCURRENCY (1 to 8) when set to a whole number; the runner's
+ * default otherwise. */
+function shotConcurrencyFromEnv(): { shotConcurrency?: number } {
+  const raw = optionalEnv("CURVI_SHOT_CONCURRENCY")?.trim();
+  if (!raw || !/^\d+$/.test(raw)) {
+    return {};
+  }
+  return { shotConcurrency: Math.min(8, Math.max(1, Number(raw))) };
 }
 
 /** Demo workspaces for the weekly drop cron in envless mode. */
