@@ -131,6 +131,9 @@ describe("publicJobError", () => {
       "interrupted",
     );
     expect(publicJobError("The pack could not be queued.")).toContain("could not start");
+    expect(publicJobError("We could not plan the shots for this product, so nothing was charged.")).toContain(
+      "nothing was charged",
+    );
     expect(publicJobError("credit reservation failed")).toContain("not enough credits");
   });
 

@@ -228,6 +228,13 @@ How each row was checked (the "Checked by" column):
 | Render environment variables: "Save only" applies new values at the next deploy; `sync: false` values are prompted only when a Blueprint is first created and ignored on later Blueprint updates. | docs/phases/PHASE_10.md Before deploy step 2 | render.com/docs/configure-environment-variables; render.com/docs/blueprint-spec | Implementer (F4) |
 | drizzle-orm 0.44.7 `migrate()` records each migration's journal `when` in `drizzle.__drizzle_migrations.created_at` and applies only migrations newer than the newest row. | /api/health schema check, docs/phases/PHASE_10.md step 5 | installed source node_modules/drizzle-orm/pg-core/dialect.js | Implementer (F4) |
 
+### Batch 1 integration pass (recorded 2026-09-28)
+
+| Fact | Where | Source | Checked by |
+|---|---|---|---|
+| "When calculating proration credits or debits, Stripe uses the subscription's discounted price, not the original price." Proration line items are `discountable=false`, so no further discount appears on them. | apps/web/src/lib/billing/stripe-webhook.ts prorationShare, docs/STRIPE_SETUP.md | docs.stripe.com/billing/subscriptions/prorations ("Prorations and discounts"); docs.stripe.com/api/invoice-line-item/object (`discountable`: "Always false for prorations") | Orchestrator, fetched 2026-09-28 |
+| stripe-node 18.5.0 retries network errors twice by default (`maxNetworkRetries` 2); per request `RequestOptions.maxNetworkRetries` and `timeout` are honored. | apps/web/src/lib/billing/stripe.ts STRIPE_LOOKUP_OPTIONS | installed apps/web/node_modules/stripe source | Implementer (G1) |
+
 ### Still unverified (batch 1)
 
 1. **Harmonize output sizes behind the aspect tolerance.** `HARMONIZE_ASPECT_TOLERANCE = 0.04` (packages/pipeline/src/composite/index.ts) is the implementer's own figure. Neither the Gemini API reference nor the image generation guide lists output pixel sizes per aspect ratio (the guide at ai.google.dev/gemini-api/docs/image-generation was rechecked on 2026-09-28: it lists the ratios and the 512, 1K, 2K and 4K sizes, but no per ratio pixel table), and no BFL output size table was checked. The outcome depends on those sizes. Example: shopify.hero_banner is 2400x1000 (2.4:1) and its nearest Gemini ratio is 21:9. An output of 1584x672 drifts 1.8 percent and passes; 1536x672 drifts 4.8 percent and the shot fails. To close: at the first live key, run a harmonize call for a 1:1 and a 2.4:1 canvas on each image provider in the chain (the Gemini and BFL models in the seed), record width x height here with the date, and set the tolerance from those figures.

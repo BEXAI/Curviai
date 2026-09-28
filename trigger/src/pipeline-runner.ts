@@ -1760,6 +1760,10 @@ export function deterministicPlan(profile: ProductProfile, options: RunnerPlanOp
   return fitShotsToChannels(planShots(profile, everything), fit);
 }
 
+/** Job error when neither shot planner produced a plan. Plain copy the
+ * board shows; credits held for the pack are released by the failure path. */
+export const PLAN_FAILED_MESSAGE = "We could not plan the shots for this product, so nothing was charged.";
+
 /** Job error when no shot in the pack passed. Plain copy the board shows. */
 function noShotPassedMessage(outcomes: readonly ShotOutcome[]): string {
   if (outcomes.length === 0) {
@@ -1947,10 +1951,18 @@ export async function runGeneratePack(
       excludeMethods,
     };
     // The deterministic plan is the fallback, and the bar an LLM plan must
-    // meet: every picked spec it delivers at this budget needs a shot in the
-    // LLM plan too (a Walmart pick next to Amazon, say), or the LLM plan is
-    // rejected and this one runs.
-    const fallback = deterministicPlan(profile, planOptions, fit);
+    // meet: every picked spec it delivers at this budget needs a file in the
+    // fitted LLM plan too (a Walmart pick next to Amazon, say), or the LLM
+    // plan is rejected and this one runs. Coverage is checked after
+    // fitShotsToChannels, which fills slots the LLM plan leaves to the runner,
+    // such as Google's main image. A deterministic planner failure never
+    // sinks a valid LLM plan.
+    let fallback: ShotList | null = null;
+    try {
+      fallback = deterministicPlan(profile, planOptions, fit);
+    } catch (planErr) {
+      console.error(`[runner] job ${input.jobId} deterministic plan failed`, planErr);
+    }
     const check = validateLlmShotList(planned.raw, {
       budget: input.creditBudget,
       mediaIds: input.images.map((image) => image.mediaId),
@@ -1958,24 +1970,36 @@ export async function runGeneratePack(
       mode,
       requireAmazonMain: profile.imageQuality.usableForMain && profile.photographedAngles.includes("front"),
       excludeMethods,
-      requiredSpecs: [...coveredSpecs(fallback.shots)],
     });
-    let shotList: ShotList;
+    let chosen: ShotList | null = null;
     if (check.ok) {
-      shotList = fitShotsToChannels(check.shotList, fit);
-      plannerSource = "llm";
+      const fitted = fitShotsToChannels(check.shotList, fit);
+      const fittedSpecs = coveredSpecs(fitted.shots);
+      const uncovered = fallback ? [...coveredSpecs(fallback.shots)].filter((specId) => !fittedSpecs.has(specId)) : [];
+      if (uncovered.length === 0) {
+        chosen = fitted;
+        plannerSource = "llm";
+      } else {
+        planRejection = `the plan has no shot for ${uncovered.join(", ")}`;
+      }
     } else {
       planRejection = check.reason;
+    }
+    if (!chosen) {
       // Only an actual plan that was turned down is worth a log line; a
       // response with no shots at all (demo mode) just falls back.
       const attempted =
         !!planned.raw && typeof planned.raw === "object" && Array.isArray((planned.raw as { shots?: unknown }).shots);
       if (attempted) {
-        console.warn(`[runner] job ${input.jobId} LLM shot plan rejected: ${check.reason}`);
+        console.warn(`[runner] job ${input.jobId} LLM shot plan rejected: ${planRejection}`);
       }
-      shotList = fallback;
+      if (!fallback) {
+        throw new Error(PLAN_FAILED_MESSAGE);
+      }
+      chosen = fallback;
       plannerSource = "deterministic";
     }
+    const shotList: ShotList = chosen;
     plannedShots = shotList.shots.length;
     skipped = [
       ...conceptExcluded.map((channel) => ({

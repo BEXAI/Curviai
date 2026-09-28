@@ -12,6 +12,7 @@ import {
   capShotsPerChannel,
   channelLimitViolations,
   planShots,
+  printableDimensions,
   specAcceptsImage,
   trimToBudget,
 } from "./deterministic";
@@ -130,6 +131,27 @@ describe("planShots", () => {
     // The full label rides on the shot for the template to lay out.
     const label = withDims.shots.find((s) => s.type === "dimensions")?.callouts;
     expect(label).toEqual(["10 x 10 x 12 cm"]);
+  });
+
+  it("never plans a dimensions label longer than a callout may be", () => {
+    // 47 characters with a metric conversion: the conversion is dropped.
+    const long = "12.5 x 8.25 x 4 inches (31.75 x 20.96 x 10.2 cm)";
+    const plan = planShots(profile({ dimensions: { value: long, source: "user" } }), baseOpts);
+    expect(() => ShotList.parse(plan)).not.toThrow();
+    expect(plan.shots.find((s) => s.type === "dimensions")?.callouts).toEqual(["12.5 x 8.25 x 4 inches"]);
+    // A label that cannot be printed whole is skipped, never cut mid figure.
+    const unprintable = "12.5 inches wide by 8.25 inches deep by 4 inches tall";
+    const skipped = planShots(profile({ dimensions: { value: unprintable, source: "packaging" } }), baseOpts);
+    expect(() => ShotList.parse(skipped)).not.toThrow();
+    expect(skipped.shots.some((s) => s.type === "dimensions")).toBe(false);
+    expect(skipped.skipped.find((s) => s.type === "dimensions")?.reason).toContain("too long to print");
+  });
+
+  it("keeps a dimensions label whole or not at all", () => {
+    expect(printableDimensions("  10 x 10 x 12 cm ")).toBe("10 x 10 x 12 cm");
+    expect(printableDimensions("")).toBeNull();
+    expect(printableDimensions("x".repeat(41))).toBeNull();
+    expect(printableDimensions("x".repeat(40))).toBe("x".repeat(40));
   });
 
   it("plans in_the_box and comparison only when the seller supplied facts", () => {

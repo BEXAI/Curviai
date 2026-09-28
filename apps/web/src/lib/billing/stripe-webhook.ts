@@ -560,23 +560,34 @@ export function timeShareBounds(
 const SEED_CURRENCY = "usd";
 
 /**
- * Share of a full billing period a proration line stands for, 0 to 1, taken
- * from Stripe's own proration. Stripe prorates against the subscription's
- * real current period, so the line amount over the tier's full period price
- * (from the seed, in cents) is the share it charged or returned, also for
- * short and clamped periods where a calendar month would be wrong.
- * - A charge line (amount > 0) counts that share and never more, so it never
- *   grants more than Stripe charged. A discount on the line can only make
- *   it grant less.
- * - A credit line (amount < 0) counts that share, or the calendar share of
- *   the time left when that is bigger, so it never takes back less than
- *   Stripe returned, and neither a discount nor a Stripe price below the
- *   seed price can shrink a debit below the time given back.
- * Neither counts more than one full period, since a period's grant is one
- * period's allowance whatever Stripe charged for it.
- * When the amount cannot be compared with the seed price (another currency,
- * or no price), a charge line counts the smallest share the time allows and
- * a credit line the largest, so neither side can create credits.
+ * How far Stripe's amount share may sit outside the time bounds and still
+ * count as an undiscounted, seed priced proration (cent rounding).
+ */
+const AMOUNT_SHARE_TOLERANCE = 0.005;
+
+/**
+ * Share of a full billing period a proration line stands for, 0 to 1.
+ *
+ * Stripe prorates against the subscription's real current period, so when
+ * the price matches the seed and no discount applies, the line amount over
+ * the tier's full period price (from the seed, in cents) is exactly the
+ * share of time it covers, also for short and clamped periods where a
+ * calendar month would be wrong. That share always falls inside the time
+ * bounds of the line (timeShareBounds), and both sides of a change use it.
+ *
+ * Stripe computes prorations from the subscription's discounted price
+ * (docs.stripe.com/billing/subscriptions/prorations, "Prorations and
+ * discounts", checked 2026-09-28), so a coupon shrinks the amount share
+ * below the time left on both sides. Renewals grant a full allowance
+ * whatever the discount, so plan change credits must follow time, not
+ * money, or a discounted customer could downgrade right after a renewal and
+ * keep credits. When the amount share is outside the time bounds (a
+ * discount, a Stripe price that differs from the seed, another currency,
+ * no price), the line counts the side of the time bounds that cannot create
+ * credits: a charge line the shortest share of time it can cover, a credit
+ * line the longest. Each tier has at least twice the credits of the one
+ * below, so an upgrade still always adds credits, and no upgrade, downgrade
+ * or round trip can add credits beyond what the time paid for.
  */
 export function prorationShare(
   line: { amount: number; periodStart: number | null; periodEnd: number | null },
@@ -588,11 +599,13 @@ export function prorationShare(
     price.priceCents > 0 &&
     Number.isFinite(line.amount) &&
     (currency ?? SEED_CURRENCY).toLowerCase() === SEED_CURRENCY;
-  if (!comparable) {
-    return line.amount < 0 ? ceiling : floor;
+  if (comparable) {
+    const stripeShare = Math.abs(line.amount) / price.priceCents;
+    if (stripeShare >= floor - AMOUNT_SHARE_TOLERANCE && stripeShare <= ceiling + AMOUNT_SHARE_TOLERANCE) {
+      return clampShare(Math.min(Math.max(stripeShare, floor), ceiling));
+    }
   }
-  const stripeShare = Math.abs(line.amount) / price.priceCents;
-  return clampShare(line.amount < 0 ? Math.max(stripeShare, floor) : stripeShare);
+  return line.amount < 0 ? ceiling : floor;
 }
 
 type TierMapping = Extract<PriceMapping, { kind: "tier" }>;

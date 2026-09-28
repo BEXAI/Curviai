@@ -279,22 +279,29 @@ describe("proration share (money-plan-change)", () => {
     // Half of the real 28 day period is left; a calendar month says 14 of 31 days.
     expect(prorationShare(credit, PRO_MONTHLY)).toBe(0.5);
     expect(prorationShare(charge, GROWTH_MONTHLY)).toBe(0.5);
-    // Right after a full price renewal Stripe returns the whole price.
+    // A minute after a full price renewal Stripe returns almost the whole
+    // price; the share never passes the time actually left.
     const renewal = { amount: -PRO_CENTS, periodStart: JAN31_FEB28.start + 60, periodEnd: JAN31_FEB28.end };
-    expect(prorationShare(renewal, PRO_MONTHLY)).toBe(1);
+    expect(prorationShare(renewal, PRO_MONTHLY)).toBeCloseTo(1, 4);
   });
 
-  it("never counts a charge for more than Stripe charged, nor a credit for less than Stripe returned", () => {
+  it("follows time, not money, when the amount share falls outside the time bounds", () => {
     const half = { periodStart: HALF_MONTH.start, periodEnd: HALF_MONTH.end };
-    // A Stripe price below the seed price: the charge counts what was paid,
-    // the credit never less than the time given back.
-    expect(prorationShare({ ...half, amount: 3000 }, PRO_MONTHLY)).toBeCloseTo(3000 / PRO_CENTS, 10);
+    // A discount or a Stripe price below the seed shrinks the amount share;
+    // the line still stands for half of the period.
+    expect(prorationShare({ ...half, amount: 3000 }, PRO_MONTHLY)).toBe(0.5);
     expect(prorationShare({ ...half, amount: -3000 }, PRO_MONTHLY)).toBe(0.5);
-    // A credit bigger than the time share counts what Stripe returned.
-    expect(prorationShare({ ...half, amount: -11175 }, PRO_MONTHLY)).toBe(0.75);
-    // Never more than one full period either way.
-    expect(prorationShare({ ...half, amount: PRO_CENTS * 2 }, PRO_MONTHLY)).toBe(1);
-    expect(prorationShare({ ...half, amount: -PRO_CENTS * 2 }, PRO_MONTHLY)).toBe(1);
+    // A Stripe price above the seed returns more money, not more time.
+    expect(prorationShare({ ...half, amount: -11175 }, PRO_MONTHLY)).toBe(0.5);
+    expect(prorationShare({ ...half, amount: PRO_CENTS * 2 }, PRO_MONTHLY)).toBe(0.5);
+    expect(prorationShare({ ...half, amount: -PRO_CENTS * 2 }, PRO_MONTHLY)).toBe(0.5);
+    // On a clamped period the time bounds differ: a charge counts the
+    // shortest share, a credit the longest.
+    const changeAt = utc("2027-02-14T00:00:00Z");
+    const feb = { periodStart: changeAt, periodEnd: JAN31_FEB28.end };
+    const discounted = Math.round(stripeProration(PRO_CENTS, JAN31_FEB28, changeAt) * 0.3);
+    expect(prorationShare({ ...feb, amount: discounted }, PRO_MONTHLY)).toBeCloseTo(14 / 31, 10);
+    expect(prorationShare({ ...feb, amount: -discounted }, PRO_MONTHLY)).toBe(0.5);
   });
 
   it("uses the side of the time bounds that cannot create credits when amounts are not comparable", () => {
@@ -571,6 +578,66 @@ describe("plan changes never create credits (money-plan-change exploit loop)", (
     const owed = growth.creditsPerMonth * 12 * (364 / 365) - growth.creditsPerMonth;
     expect(store.balance("ws_9")).toBeLessThanOrEqual(-owed + 0.1);
     expect(store.spend("ws_9", 0.5)).toBe(false);
+  });
+
+  // Stripe prorates a discounted subscription from its discounted price, so
+  // with 70 percent off every proration amount is 30 percent of the list
+  // price share. Renewals still grant a full allowance.
+  const discounted = (cents: number) => Math.round(cents * 0.3);
+
+  it("a paid upgrade with a large discount still adds credits", async () => {
+    const store = new InMemoryBillingStore();
+    await processStripeEvent(
+      changeLines("in_up_coupon", "price_growth_monthly", "price_pro_monthly", discounted(3950), discounted(7450), 15),
+      table,
+      store,
+    );
+    expect(store.balance("ws_9")).toBe(PRO_GROWTH_MONTH / 2);
+  });
+
+  it("a discounted customer who downgrades right after a renewal keeps only the day paid for", async () => {
+    const store = new InMemoryBillingStore();
+    await processStripeEvent(
+      invoiceEvent("in_pro_coupon", "subscription_cycle", [line({ price: "price_pro_monthly", amount: discounted(14900) })]),
+      table,
+      store,
+    );
+    expect(store.balance("ws_9")).toBe(pro.creditsPerMonth);
+    await processStripeEvent(
+      changeLines(
+        "in_down_coupon",
+        "price_pro_monthly",
+        "price_growth_monthly",
+        discounted(Math.round((14900 * 29) / 30)),
+        discounted(Math.round((7900 * 29) / 30)),
+        29,
+      ),
+      table,
+      store,
+    );
+    // One of thirty days on Pro was paid for, so at most that day's share of
+    // the Pro minus Growth allowance may stay above the Growth allowance.
+    expect(store.balance("ws_9")).toBeLessThanOrEqual(growth.creditsPerMonth + PRO_GROWTH_MONTH / 30 + 0.1);
+  });
+
+  it("a discounted upgrade followed by a downgrade adds nothing", async () => {
+    const store = new InMemoryBillingStore();
+    await processStripeEvent(
+      invoiceEvent("in_growth_coupon", "subscription_cycle", [line({ price: "price_growth_monthly", amount: discounted(7900) })]),
+      table,
+      store,
+    );
+    await processStripeEvent(
+      changeLines("in_up_rt", "price_growth_monthly", "price_pro_monthly", discounted(3950), discounted(7450), 15),
+      table,
+      store,
+    );
+    await processStripeEvent(
+      changeLines("in_down_rt", "price_pro_monthly", "price_growth_monthly", discounted(7450), discounted(3950), 15),
+      table,
+      store,
+    );
+    expect(store.balance("ws_9")).toBeLessThanOrEqual(growth.creditsPerMonth);
   });
 });
 

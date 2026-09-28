@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AllProvidersFailedError,
   BreakerOpenError,
@@ -31,6 +31,7 @@ import {
   deserializeShotOutcome,
   deterministicPlan,
   fitShotsToChannels,
+  PLAN_FAILED_MESSAGE,
   runGeneratePack,
   runShot,
   serializeShotOutcome,
@@ -58,6 +59,22 @@ import {
   type StoredPack,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
+
+// planShots passes through to the real planner unless a test switches it to
+// fail, to show a planner failure never sinks a valid LLM plan.
+const plannerControl = vi.hoisted(() => ({ fail: false }));
+vi.mock("@curvi/pipeline", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@curvi/pipeline")>();
+  return {
+    ...actual,
+    planShots: (...args: Parameters<typeof actual.planShots>) => {
+      if (plannerControl.fail) {
+        throw new Error("the deterministic planner failed");
+      }
+      return actual.planShots(...args);
+    },
+  };
+});
 import { demoProfile, DemoShotGenerator } from "./runtime";
 
 const intakeKey = activeRecipe("intake").key;
@@ -1633,6 +1650,50 @@ describe("the LLM plan must cover every picked spec the planner delivers (2.11)"
     const summary = await runGeneratePack(input, deps);
     expect(summary.plannerSource).toBe("llm");
     expect(summary.planRejection).toBeUndefined();
+  });
+
+  it("keeps an Amazon and Google LLM plan that leaves Google's main slot to the runner", async () => {
+    const input: GeneratePackInput = { ...baseInput, channels: ["amazon.main", "google.merchant.main"], creditBudget: 10 };
+    const deps = makeDeps({
+      ai: makeAi({ plan: new MockProvider({ name: "mock-plan", tasks: [planKey], output: { shots: [main], skipped: [] } }) }),
+    });
+    const summary = await runGeneratePack(input, deps);
+    expect(summary.state).toBe("done");
+    expect(summary.plannerSource).toBe("llm");
+    expect(summary.planRejection).toBeUndefined();
+    const files = await packReport(summary);
+    expect(files.filter((f) => f.specId === "google.merchant.main").map((f) => f.ref)).toEqual([main.id]);
+  });
+
+  it("runs a valid LLM plan when the deterministic planner fails", async () => {
+    const input: GeneratePackInput = { ...baseInput, channels: ["amazon.main"], creditBudget: 10 };
+    const deps = makeDeps({
+      ai: makeAi({ plan: new MockProvider({ name: "mock-plan", tasks: [planKey], output: { shots: [main], skipped: [] } }) }),
+    });
+    plannerControl.fail = true;
+    try {
+      const summary = await runGeneratePack(input, deps);
+      expect(summary.state).toBe("done");
+      expect(summary.plannerSource).toBe("llm");
+    } finally {
+      plannerControl.fail = false;
+    }
+  });
+
+  it("fails with plain copy and no charge when neither planner can plan", async () => {
+    const input: GeneratePackInput = { ...baseInput, channels: ["amazon.main"], creditBudget: 10 };
+    const deps = makeDeps({
+      ai: makeAi({ plan: new MockProvider({ name: "mock-plan", tasks: [planKey], output: { shots: [], skipped: [] } }) }),
+    });
+    plannerControl.fail = true;
+    try {
+      const summary = await runGeneratePack(input, deps);
+      expect(summary.state).toBe("failed");
+      expect(summary.error).toBe(PLAN_FAILED_MESSAGE);
+      expect(deps.store.ledger.filter((e) => e.reason === "charge")).toHaveLength(0);
+    } finally {
+      plannerControl.fail = false;
+    }
   });
 });
 

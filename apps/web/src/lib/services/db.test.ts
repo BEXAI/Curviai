@@ -703,9 +703,9 @@ describe("DbService.listJobFiles and downloads", () => {
     expect(await service(w.user).getJobFileDownload(w.id, jobId, `v_${variantId}`)).toBeNull();
   });
 
-  // A run the time cap or a restart settled as failed can still finish its
-  // upload afterwards, and those files were never charged. Like the pack
-  // zip route, files are served only once the pack is done.
+  // A run the time cap or a restart settled as failed writes no files and
+  // charges nothing. Files are served once the pack is done, or once it
+  // charged for what it delivered.
   it.each(["failed", "canceled", "queued", "generating", "qc"] as const)(
     "lists, previews and serves no files while the job is %s",
     async (status) => {
@@ -754,6 +754,19 @@ describe("DbService.listJobFiles and downloads", () => {
     expect(shot?.channels).toEqual(["amazon.main"]);
     expect(shot?.imageUrl).toContain("X-Amz-Signature");
     expect(shot?.downloadUrl).toBe(`/api/jobs/${jobId}/files/v_${variantId}`);
+  });
+
+  it("still serves files a failed pack already charged for", async () => {
+    Object.assign(process.env, R2_ENV);
+    const w = await makeWorkspace(0);
+    const { jobId, variantId } = await deliveredJob(w, "failed");
+    await db.update(generationJobs).set({ creditsCharged: 4 }).where(eq(generationJobs.id, jobId));
+    const svc = service(w.user);
+
+    const view = await svc.listJobFiles(w.id, jobId);
+    expect(view?.files.some((f) => f.id === `v_${variantId}`)).toBe(true);
+    const download = await svc.getJobFileDownload(w.id, jobId, `v_${variantId}`);
+    expect(download?.filename).toBe("MUG1.MAIN.jpg");
   });
 });
 

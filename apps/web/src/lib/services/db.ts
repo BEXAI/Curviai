@@ -195,11 +195,14 @@ function fileDownloadPath(jobId: string, fileId: string): string {
   return `/api/jobs/${jobId}/files/${fileId}`;
 }
 
-/** Files are served only for a finished pack, like the pack zip route. A
- * run the time cap or a restart settled as failed can still finish writing
- * files afterwards, and those were never charged, so they stay unserved. */
-function servesFiles(status: string): boolean {
-  return status === "done";
+/** Files are served for a finished pack, and for any pack that charged for
+ * files it delivered. Charges run only after the pack is stored, and a job
+ * that was settled has no hold left to charge against, so a charged job
+ * really delivered what it billed for, even if it later ended failed. A run
+ * the time cap or a restart settled writes no files and charges nothing, so
+ * it stays unserved. */
+function servesFiles(job: { status: string; creditsCharged: number | null }): boolean {
+  return job.status === "done" || Number(job.creditsCharged ?? 0) > 0;
 }
 
 /**
@@ -468,9 +471,9 @@ export class DbService implements Services {
     // Delivered variants give each finished shot its real channels, a
     // preview and a download link. DbJobStore records each asset's shot id
     // in its qc verdict, so a variant maps to its shot through its asset.
-    // Only a finished pack shows them, since the download route serves
-    // files for nothing else (servesFiles).
-    if (assetRows.length > 0 && servesFiles(current.status)) {
+    // Only a finished or charged pack shows them, since the download route
+    // serves files for nothing else (servesFiles).
+    if (assetRows.length > 0 && servesFiles(current)) {
       const shotIdByAssetId = new Map<string, string>();
       for (const a of assetRows) {
         const shotId = a.qc && typeof a.qc.shotId === "string" ? a.qc.shotId : null;
@@ -961,8 +964,8 @@ export class DbService implements Services {
     if (!job) {
       return null;
     }
-    if (!servesFiles(job.status)) {
-      // Nothing is listed or signed until the pack is done.
+    if (!servesFiles(job)) {
+      // Nothing is listed or signed until the pack is done or charged.
       return { jobId: job.id, status: job.status as JobStatus, files: [] };
     }
     const assetRows = await this.db.query.assets.findMany({
@@ -1044,7 +1047,7 @@ export class DbService implements Services {
     const job = await this.db.query.generationJobs.findFirst({
       where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
     });
-    if (!job || !servesFiles(job.status)) {
+    if (!job || !servesFiles(job)) {
       return null;
     }
     let file: { r2Key: string; filename: string } | null = null;

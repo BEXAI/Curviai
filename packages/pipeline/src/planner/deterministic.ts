@@ -149,6 +149,30 @@ export function specAcceptsImage(spec: ChannelSpec, kind: PlannedImageKind): boo
   }
 }
 
+/** Longest label a Shot callout may carry (ShotList schema). */
+const MAX_CALLOUT_CHARS = 40;
+
+/**
+ * The dimensions label to print, or null when it cannot be printed whole.
+ * A trailing parenthetical (often the metric conversion) is dropped when
+ * that makes the label fit. A measurement is never cut in the middle, since
+ * a truncated figure would print a wrong fact on a charged image.
+ */
+export function printableDimensions(value: string): string | null {
+  const label = value.replace(/\s+/g, " ").trim();
+  if (label.length === 0) {
+    return null;
+  }
+  if (label.length <= MAX_CALLOUT_CHARS) {
+    return label;
+  }
+  const withoutParenthetical = label.replace(/\s*\([^()]*\)\s*$/, "").trim();
+  if (withoutParenthetical.length > 0 && withoutParenthetical.length <= MAX_CALLOUT_CHARS) {
+    return withoutParenthetical;
+  }
+  return null;
+}
+
 export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList {
   const primaryMedia = opts.primaryMediaId ?? "source_1";
   const mediaFor = (angle: string): string =>
@@ -358,7 +382,8 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   // dimensions only if dimensions exist.
   // Only a measurement the seller gave or the packaging shows is printed; a
   // model guess never ships as a fact on a charged image.
-  if (profile.dimensions && profile.dimensions.source !== "unknown") {
+  const dimensionsLabel = profile.dimensions ? printableDimensions(profile.dimensions.value) : null;
+  if (profile.dimensions && profile.dimensions.source !== "unknown" && dimensionsLabel) {
     planGallery(
       {
         type: "dimensions",
@@ -367,12 +392,14 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
         stylePreset: "none",
         // The template draws this label beside the product and trims it at a
         // word boundary; a label that cannot fit goes to needs review.
-        callouts: [profile.dimensions.value],
+        callouts: [dimensionsLabel],
         credits: creditCosts.deterministic,
         priority: 5,
       },
       "text",
     );
+  } else if (profile.dimensions && profile.dimensions.source !== "unknown") {
+    skip("dimensions", "template", "the dimensions are too long to print on the image");
   } else {
     skip(
       "dimensions",

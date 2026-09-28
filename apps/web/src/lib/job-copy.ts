@@ -210,6 +210,11 @@ export function publicJobError(raw: string | null | undefined): string | null {
   if (r.includes("already finished or failed elsewhere")) {
     return "This pack was stopped. Credits held for it went back to your balance.";
   }
+  // trigger/src/pipeline-runner.ts PLAN_FAILED_MESSAGE: neither planner
+  // produced a plan, and the hold is released.
+  if (r.includes("could not plan the shots")) {
+    return "We could not plan the shots for this product, so nothing was charged. Try again, or contact us if it keeps happening.";
+  }
   if (r.includes("cost cap") || r.includes("spend cap")) {
     return "This pack hit a safety limit on generation and was stopped. Credits held for it went back to your balance.";
   }
