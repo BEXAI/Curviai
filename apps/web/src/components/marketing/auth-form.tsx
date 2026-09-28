@@ -23,11 +23,22 @@ export function AuthForm({ mode }: AuthFormProps) {
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState<"idle" | "busy" | "sent" | "error">("idle");
   const [message, setMessage] = useState<string | null>(null);
+  const [nextPath, setNextPath] = useState("/app");
 
   useEffect(() => {
-    const fromQuery = new URLSearchParams(window.location.search).get("email");
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get("email");
     if (fromQuery) {
       setEmail(fromQuery);
+    }
+    const next = params.get("next");
+    if (next && next.startsWith("/") && !next.startsWith("//")) {
+      setNextPath(next);
+    }
+    const error = params.get("error");
+    if (error) {
+      setStatus("error");
+      setMessage(error);
     }
   }, []);
 
@@ -109,9 +120,10 @@ export function AuthForm({ mode }: AuthFormProps) {
     }
     setStatus("busy");
     setMessage(null);
+    const callback = `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`;
     const result =
       mode === "signup"
-        ? await supabase.auth.signUp({ email, password })
+        ? await supabase.auth.signUp({ email, password, options: { emailRedirectTo: callback } })
         : await supabase.auth.signInWithPassword({ email, password });
     if (result.error) {
       setStatus("error");
@@ -120,10 +132,12 @@ export function AuthForm({ mode }: AuthFormProps) {
     }
     if (mode === "signup" && !result.data.session) {
       setStatus("sent");
-      setMessage("Check your inbox to confirm your email, then log in.");
+      setMessage(
+        "Almost there. We sent a confirmation link to your inbox. Open it on this device and your workspace will be ready. Check spam if it does not arrive in a minute.",
+      );
       return;
     }
-    window.location.href = "/app";
+    window.location.href = nextPath;
   }
 
   return (
@@ -165,23 +179,30 @@ export function AuthForm({ mode }: AuthFormProps) {
             <p className={"text-sm " + (status === "error" ? "text-red-600" : "text-emerald-700")}>{message}</p>
           ) : null}
         </form>
-        <p className="mt-4 text-sm text-ink-500">
-          {mode === "signup" ? (
-            <>
-              Already have an account?{" "}
-              <Link href="/login" className="font-medium text-ink-900 underline">
-                Log in
-              </Link>
-            </>
-          ) : (
-            <>
-              New to Curvi?{" "}
-              <Link href="/signup" className="font-medium text-ink-900 underline">
-                Create an account
-              </Link>
-            </>
-          )}
-        </p>
+        <div className="mt-4 flex items-center justify-between text-sm text-ink-500">
+          <p>
+            {mode === "signup" ? (
+              <>
+                Already have an account?{" "}
+                <Link href="/login" className="font-medium text-ink-900 underline">
+                  Log in
+                </Link>
+              </>
+            ) : (
+              <>
+                New to Curvi?{" "}
+                <Link href="/signup" className="font-medium text-ink-900 underline">
+                  Create an account
+                </Link>
+              </>
+            )}
+          </p>
+          {mode === "login" ? (
+            <Link href="/forgot-password" className="font-medium text-ink-900 underline">
+              Forgot password?
+            </Link>
+          ) : null}
+        </div>
       </CardContent>
     </Card>
   );

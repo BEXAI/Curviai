@@ -120,6 +120,13 @@ export interface Services {
   readonly mode: ServiceMode;
   /** The caller's workspace, or null when nobody is signed in (db mode only). */
   getCurrentWorkspace(): Promise<WorkspaceSummary | null>;
+  /**
+   * The caller's workspace, bootstrapping one when a signed in user has none
+   * (safety net behind the auth.users trigger). Null only when signed out.
+   */
+  ensureWorkspace(): Promise<WorkspaceSummary | null>;
+  /** Renames the workspace. Owner and admin only in db mode. */
+  renameWorkspace(workspaceId: string, name: string): Promise<SaveResult>;
   listProducts(workspaceId: string): Promise<ProductSummary[]>;
   getProduct(workspaceId: string, productId: string): Promise<ProductSummary | null>;
   listRecentJobs(workspaceId: string, limit?: number): Promise<JobSummary[]>;

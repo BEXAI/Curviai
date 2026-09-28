@@ -100,6 +100,8 @@ interface DemoJobRecord {
 export class DemoStore {
   readonly jobs = new Map<string, DemoJobRecord>();
   readonly jobIdByIdempotencyKey = new Map<string, string>();
+  /** Rename override for the demo workspace; null keeps the default name. */
+  workspaceName: string | null = null;
   private counter = 0;
 
   nextJobId(): string {
@@ -235,10 +237,23 @@ export class DemoService implements Services {
   async getCurrentWorkspace(): Promise<WorkspaceSummary> {
     return {
       id: DEMO_WORKSPACE_ID,
-      name: DEMO_WORKSPACE_NAME,
+      name: this.store.workspaceName ?? DEMO_WORKSPACE_NAME,
       plan: DEMO_TIER,
       creditBalance: this.balance(),
     };
+  }
+
+  async ensureWorkspace(): Promise<WorkspaceSummary> {
+    return this.getCurrentWorkspace();
+  }
+
+  async renameWorkspace(_workspaceId: string, name: string): Promise<SaveResult> {
+    const trimmed = name.trim().slice(0, 80);
+    if (!trimmed) {
+      return { ok: false, notice: "Workspace name cannot be empty." };
+    }
+    this.store.workspaceName = trimmed;
+    return { ok: true, notice: "Workspace name saved for this demo session." };
   }
 
   async listProducts(_workspaceId: string): Promise<ProductSummary[]> {

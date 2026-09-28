@@ -9,14 +9,18 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
+  const workspace = await services.ensureWorkspace();
   if (!workspace) {
     return (
       <div className="mx-auto max-w-md py-16 text-center">
-        <h1 className="text-2xl font-bold text-ink-950">No workspace yet</h1>
+        <h1 className="text-2xl font-bold text-ink-950">Sign in to open your workspace</h1>
         <p className="mt-3 text-ink-600">
-          Sign in and your workspace appears here. If you just signed up, finish the signup flow first.
+          Log in and your workspace loads here. New accounts get a workspace and 15 free credits the moment
+          they confirm their email.
         </p>
+        <Link href="/login?next=/app" className={buttonVariants({ variant: "secondary", className: "mt-6" })}>
+          Log in
+        </Link>
       </div>
     );
   }

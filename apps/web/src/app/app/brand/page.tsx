@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function BrandPage() {
   const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
+  const workspace = await services.ensureWorkspace();
   if (!workspace) {
     return (
       <div className="mx-auto max-w-md py-16 text-center">

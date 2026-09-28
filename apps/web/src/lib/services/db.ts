@@ -10,7 +10,7 @@
  * bypasses RLS by design (the plan's service role pattern).
  */
 
-import { createDb, type Db, brandKits, generationJobs, sql, eq } from "@curvi/db";
+import { createDb, type Db, brandKits, generationJobs, workspaces, sql, eq, and } from "@curvi/db";
 import { tiers, type TierKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { optionalEnv } from "@/lib/env";
@@ -128,6 +128,45 @@ export class DbService implements Services {
       plan: workspace.plan,
       creditBalance: await this.creditBalance(workspace.id),
     };
+  }
+
+  async ensureWorkspace(): Promise<WorkspaceSummary | null> {
+    const existing = await this.getCurrentWorkspace();
+    if (existing) {
+      return existing;
+    }
+    const userId = await this.deps.getUserId();
+    if (!userId) {
+      return null;
+    }
+    const supabase = await this.deps.getSupabase();
+    const email = supabase ? (await supabase.auth.getUser()).data.user?.email ?? null : null;
+    // Same SECURITY DEFINER bootstrap the auth.users trigger runs; idempotent
+    // per user, so a race with the trigger is harmless.
+    await this.db.execute(sql`select bootstrap_workspace(${userId}::uuid, ${email})`);
+    return this.getCurrentWorkspace();
+  }
+
+  async renameWorkspace(workspaceId: string, name: string): Promise<SaveResult> {
+    const userId = await this.deps.getUserId();
+    if (!userId) {
+      return { ok: false, notice: "Sign in to rename the workspace." };
+    }
+    const membership = await this.db.query.members.findFirst({
+      where: (t) => and(eq(t.userId, userId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!membership || !["owner", "admin"].includes(membership.role)) {
+      return { ok: false, notice: "Only owners and admins can rename the workspace." };
+    }
+    const trimmed = name.trim().slice(0, 80);
+    if (!trimmed) {
+      return { ok: false, notice: "Workspace name cannot be empty." };
+    }
+    await this.db
+      .update(workspaces)
+      .set({ name: trimmed, updatedAt: new Date() })
+      .where(eq(workspaces.id, workspaceId));
+    return { ok: true, notice: "Workspace name saved." };
   }
 
   private async creditBalance(workspaceId: string): Promise<number> {

@@ -51,7 +51,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
+  const workspace = await services.ensureWorkspace();
   if (!workspace) {
     return NextResponse.json({ error: "Sign in to create a pack." }, { status: 401 });
   }

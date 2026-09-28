@@ -4,13 +4,15 @@ import type { ReactNode } from "react";
 import { AppNav } from "@/components/app/app-nav";
 import { Wordmark } from "@/components/marketing/site-header";
 import { isDbMode } from "@/lib/services";
+import { getSessionUser } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
   title: { template: "%s | Curvi", default: "App | Curvi" },
 };
 
-export default function AppLayout({ children }: { children: ReactNode }) {
+export default async function AppLayout({ children }: { children: ReactNode }) {
   const demo = !isDbMode();
+  const user = demo ? null : await getSessionUser();
   return (
     <div className="min-h-screen bg-ink-50">
       <header className="border-b border-ink-100 bg-white">
@@ -18,7 +20,24 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           <Link href="/app" aria-label="Curvi app home">
             <Wordmark />
           </Link>
-          <AppNav />
+          <div className="flex flex-wrap items-center gap-4">
+            <AppNav />
+            {user ? (
+              <div className="flex items-center gap-3 border-l border-ink-100 pl-4">
+                <span className="hidden max-w-48 truncate text-xs text-ink-500 sm:block" title={user.email ?? ""}>
+                  {user.email}
+                </span>
+                <form action="/auth/signout" method="post">
+                  <button
+                    type="submit"
+                    className="rounded-lg px-2.5 py-1.5 text-sm font-medium text-ink-600 transition-colors hover:bg-ink-50 hover:text-ink-950"
+                  >
+                    Sign out
+                  </button>
+                </form>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
       {demo ? (
