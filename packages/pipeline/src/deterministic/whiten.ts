@@ -6,8 +6,31 @@
 import sharp from "sharp";
 import type { ChannelSpec } from "@curvi/specs";
 import { hexToRgb } from "../color";
-import { boundingBoxOfMask, nonZeroMask } from "../mask";
+import { boundingBoxOfMask, nonZeroMask, type BBox } from "../mask";
 import { decodeMask, decodeToRgba, type RawImage, type RawMask } from "../raw";
+
+/** Resize kernel every deterministic helper scales the product with. */
+export const PRODUCT_RESIZE_KERNEL = "lanczos3" as const;
+
+/**
+ * Where a helper put the product: the box it cropped from the source cutout,
+ * and the rectangle on the output canvas that crop was scaled into (with
+ * PRODUCT_RESIZE_KERNEL). buildProductReference rebuilds the product pixels
+ * from this alone, so rule 3 checks never trust the compositing code.
+ */
+export interface ProductPlacement {
+  /** Crop box in source (cutout) pixel coordinates. */
+  crop: BBox;
+  /** Left edge of the scaled crop on the output canvas. */
+  left: number;
+  /** Top edge of the scaled crop on the output canvas. */
+  top: number;
+  /** Scaled crop width on the output canvas. */
+  width: number;
+  /** Scaled crop height on the output canvas. */
+  height: number;
+  kernel: typeof PRODUCT_RESIZE_KERNEL;
+}
 
 export interface WhitenResult {
   /** Final encoded JPEG, quality stepped down until under spec.maxBytes. */
@@ -21,6 +44,8 @@ export interface WhitenResult {
   /** Product bounding box longest side over canvas longest side. */
   fillRatio: number;
   jpegQuality: number;
+  /** Crop box and canvas rectangle the product was placed at. */
+  placement: ProductPlacement;
 }
 
 const DEFAULT_FILL_TARGET = 0.875;
@@ -71,14 +96,14 @@ export async function makeAmazonMain(
     raw: { width: source.width, height: source.height, channels: 4 },
   })
     .extract(region)
-    .resize(targetW, targetH, { fit: "fill", kernel: "lanczos3" })
+    .resize(targetW, targetH, { fit: "fill", kernel: PRODUCT_RESIZE_KERNEL })
     .raw()
     .toBuffer();
   const maskCrop = await sharp(mask.data, {
     raw: { width: mask.width, height: mask.height, channels: 1 },
   })
     .extract(region)
-    .resize(targetW, targetH, { fit: "fill", kernel: "lanczos3" })
+    .resize(targetW, targetH, { fit: "fill", kernel: PRODUCT_RESIZE_KERNEL })
     .toColourspace("b-w")
     .raw()
     .toBuffer();
@@ -122,6 +147,14 @@ export async function makeAmazonMain(
     height: canvasH,
     fillRatio: Math.max(targetW, targetH) / canvasLong,
     jpegQuality: quality,
+    placement: {
+      crop: region,
+      left: offsetX,
+      top: offsetY,
+      width: targetW,
+      height: targetH,
+      kernel: PRODUCT_RESIZE_KERNEL,
+    },
   };
 }
 
@@ -129,6 +162,8 @@ export interface CutoutResult {
   png: Buffer;
   width: number;
   height: number;
+  /** Source box the PNG was trimmed to; its alpha is the source mask. */
+  crop: BBox;
 }
 
 /** Transparent PNG cutout trimmed to the product bounding box. */
@@ -145,13 +180,14 @@ export async function makeCutoutPng(sourceBuffer: Buffer, maskBuffer: Buffer): P
   for (let i = 0; i < mask.data.length; i++) {
     rgba[i * 4 + 3] = mask.data[i];
   }
+  const crop = { left: bbox.left, top: bbox.top, width: bbox.width, height: bbox.height };
   const png = await sharp(rgba, {
     raw: { width: source.width, height: source.height, channels: 4 },
   })
-    .extract({ left: bbox.left, top: bbox.top, width: bbox.width, height: bbox.height })
+    .extract(crop)
     .png()
     .toBuffer();
-  return { png, width: bbox.width, height: bbox.height };
+  return { png, width: bbox.width, height: bbox.height, crop };
 }
 
 export interface SweepOptions {
@@ -168,6 +204,8 @@ export interface SweepResult {
   mask: RawMask;
   width: number;
   height: number;
+  /** Crop box and canvas rectangle the product was placed at. */
+  placement: ProductPlacement;
 }
 
 /**
@@ -223,14 +261,14 @@ export async function makeSweep(
     raw: { width: source.width, height: source.height, channels: 4 },
   })
     .extract(region)
-    .resize(targetW, targetH, { fit: "fill", kernel: "lanczos3" })
+    .resize(targetW, targetH, { fit: "fill", kernel: PRODUCT_RESIZE_KERNEL })
     .raw()
     .toBuffer();
   const maskCrop = await sharp(mask.data, {
     raw: { width: mask.width, height: mask.height, channels: 1 },
   })
     .extract(region)
-    .resize(targetW, targetH, { fit: "fill", kernel: "lanczos3" })
+    .resize(targetW, targetH, { fit: "fill", kernel: PRODUCT_RESIZE_KERNEL })
     .toColourspace("b-w")
     .raw()
     .toBuffer();
@@ -277,7 +315,85 @@ export async function makeSweep(
     mask: nonZeroMask({ data: outMaskData, width: canvasW, height: canvasH }),
     width: canvasW,
     height: canvasH,
+    placement: {
+      crop: region,
+      left: offsetX,
+      top: offsetY,
+      width: targetW,
+      height: targetH,
+      kernel: PRODUCT_RESIZE_KERNEL,
+    },
   };
+}
+
+export interface ProductReferenceOptions {
+  /**
+   * Replace ("replace") or cap ("min") the source alpha with this mask before
+   * cropping, matching how the renderer prepared its cutout. Alpha changes
+   * the premultiplied resize near the edge, so it must match to compare.
+   */
+  alpha?: { mask: RawMask; mode: "replace" | "min" };
+}
+
+/**
+ * The rule 3 reference for a placed product: a canvas of the output size
+ * holding, inside placement, the source cutout cropped to placement.crop and
+ * scaled to placement.width x placement.height with placement.kernel, and
+ * nothing else (no background, shadow, text, color transform or encoding).
+ * Alpha is 255 where the product was placed and 0 elsewhere. Built only from
+ * the source and the placement, so any recolor a renderer applies after
+ * placing the product shows up in fidelityReport(reference, output, mask).
+ */
+export async function buildProductReference(
+  source: RawImage,
+  placement: ProductPlacement,
+  canvasWidth: number,
+  canvasHeight: number,
+  opts: ProductReferenceOptions = {},
+): Promise<RawImage> {
+  let data = source.data;
+  if (opts.alpha) {
+    const { mask, mode } = opts.alpha;
+    if (mask.width !== source.width || mask.height !== source.height) {
+      throw new Error(
+        `Mask size ${mask.width}x${mask.height} does not match image ${source.width}x${source.height}`,
+      );
+    }
+    data = Buffer.from(source.data);
+    for (let i = 0; i < mask.data.length; i++) {
+      const o = i * 4 + 3;
+      data[o] = mode === "replace" ? mask.data[i] : Math.min(data[o], mask.data[i]);
+    }
+  }
+  const { crop, width, height } = placement;
+  const scaled = await sharp(data, {
+    raw: { width: source.width, height: source.height, channels: 4 },
+  })
+    .extract({ left: crop.left, top: crop.top, width: crop.width, height: crop.height })
+    .resize(width, height, { fit: "fill", kernel: placement.kernel })
+    .raw()
+    .toBuffer();
+
+  const out = Buffer.alloc(canvasWidth * canvasHeight * 4, 0);
+  for (let y = 0; y < height; y++) {
+    const cy = placement.top + y;
+    if (cy < 0 || cy >= canvasHeight) {
+      continue;
+    }
+    for (let x = 0; x < width; x++) {
+      const cx = placement.left + x;
+      if (cx < 0 || cx >= canvasWidth) {
+        continue;
+      }
+      const src = (y * width + x) * 4;
+      const dst = (cy * canvasWidth + cx) * 4;
+      out[dst] = scaled[src];
+      out[dst + 1] = scaled[src + 1];
+      out[dst + 2] = scaled[src + 2];
+      out[dst + 3] = 255;
+    }
+  }
+  return { data: out, width: canvasWidth, height: canvasHeight, channels: 4 };
 }
 
 function drawContactShadow(

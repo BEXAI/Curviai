@@ -157,7 +157,11 @@ export interface JobStore {
  * or a spend cap block. The shot goes to needs review and its credits are
  * released; nothing placeholder is ever delivered or charged. */
 export class ShotUnavailableError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /** Provider spend already made for this attempt, so it stays on the books. */
+    readonly costMicros = 0,
+  ) {
     super(message);
     this.name = "ShotUnavailableError";
   }
@@ -217,6 +221,13 @@ export interface ShotGeneration {
   productReference?: RawImage;
   encoded: { buffer: Buffer; format: string };
   costMicros: number;
+  /** True when rule 3 must be proven for this output even though its method
+   * is not a composite (live stills in Listing Mode). */
+  fidelityRequired?: boolean;
+  /** Mask erosion for the fidelity check when the product was scaled up: a
+   * resize blends product and background across the kernel's reach, which
+   * grows with the scale. Interior pixels are still checked strictly. */
+  fidelityErodePx?: number;
   /** True when the generator reserved its provider spend against the caps
    * before each call; runShot then skips its after the fact reservation so
    * the spend is not counted twice. */
@@ -231,6 +242,8 @@ export interface ShotGenerateArgs {
   useFallbackProvider: boolean;
   jobId: string;
   workspaceId: string;
+  /** Workspace brand kit colors (hex), for brand colored stills. */
+  brandColors?: string[];
 }
 
 export interface ShotGenerator {
@@ -245,6 +258,8 @@ export interface ShotContext {
   /** Listing or concept; concept packs mark every generated output as fully
    * synthetic (plan 2.7). Defaults to listing when omitted. */
   mode?: "listing" | "concept";
+  /** Workspace brand kit colors (hex), passed through to the generator. */
+  brandColors?: string[];
 }
 
 /** IPTC digital source marking per plan 5.7.2: composited scenes carry
@@ -368,6 +383,8 @@ export interface GeneratePackInput {
   hasBoxContents?: boolean;
   hasComparisonFacts?: boolean;
   hasVideoSource?: boolean;
+  /** Workspace brand kit colors (hex), for brand colored stills. */
+  brandColors?: string[];
 }
 
 export interface GeneratePackSummary {
@@ -655,9 +672,11 @@ export async function runShot(
         useFallbackProvider,
         jobId: ctx.jobId,
         workspaceId: ctx.workspaceId,
+        brandColors: ctx.brandColors,
       });
     } catch (err) {
       if (err instanceof ShotUnavailableError) {
+        costMicros += err.costMicros;
         return unusable(err.message);
       }
       throw err;
@@ -692,10 +711,14 @@ export async function runShot(
     // its paste back (no product reference or no mask) never passes.
     let fidelity: FidelityReport | null = null;
     let fidelityInputsMissing = false;
-    if (COMPOSITE_METHODS.has(shot.method)) {
+    // Live stills (deterministic and template) carry the rule 3 proof too:
+    // any generation that supplies a reference is checked, and one that
+    // declares it must supply one fails closed without it.
+    if (COMPOSITE_METHODS.has(shot.method) || generation.fidelityRequired || generation.productReference) {
       if (generation.productReference && generation.mask) {
         fidelity = await fidelityReport(generation.productReference, generation.image, generation.mask, {
           kind: qcKindForSpec(spec),
+          ...(generation.fidelityErodePx !== undefined ? { erodePx: generation.fidelityErodePx } : {}),
         });
       } else {
         fidelityInputsMissing = true;
@@ -1085,6 +1108,7 @@ export async function runGeneratePack(
       sku: input.sku,
       seoSlug: input.seoSlug,
       mode: input.mode ?? "listing",
+      brandColors: input.brandColors,
     };
     // Pack level spend cap: a shared tracker gates every generation attempt
     // across the parallel fan out, so a runaway pack stops mid flight.

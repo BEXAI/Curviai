@@ -155,7 +155,9 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   }
 
   // dimensions only if dimensions exist.
-  if (profile.dimensions) {
+  // Only a measurement the seller gave or the packaging shows is printed; a
+  // model guess never ships as a fact on a charged image.
+  if (profile.dimensions && profile.dimensions.source !== "unknown") {
     shots.push({
       id: nextId("dimensions"),
       type: "dimensions",
@@ -163,11 +165,17 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
       method: "template",
       channels: secondaryChannels(selected),
       stylePreset: "none",
+      // The template draws this label beside the product and trims it at a
+      // word boundary; a label that cannot fit goes to needs review.
+      callouts: [profile.dimensions.value],
       credits: creditCosts.deterministic,
       priority: 5,
     });
   } else {
-    skipped.push({ type: "dimensions", reason: "no dimensions provided" });
+    skipped.push({
+      type: "dimensions",
+      reason: profile.dimensions ? "dimensions not confirmed by the seller or packaging" : "no dimensions provided",
+    });
   }
 
   if (opts.hasBoxContents) {

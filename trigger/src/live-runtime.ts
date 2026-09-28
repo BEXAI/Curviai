@@ -37,7 +37,14 @@ import {
 import {
   compositeShot,
   decodeToRgba,
+  deriveQcErodePx,
   encodeJpeg,
+  encodePng,
+  maskToSharp,
+  renderTemplateStill,
+  TEMPLATE_STILL_TYPES,
+  TemplateUnavailableError,
+  type TemplateStillType,
   type ImageOutput,
   type HarmonizeInput,
   type RawImage,
@@ -53,11 +60,14 @@ import {
   photoroomSeed,
   presets,
   recipeSeedRows,
+  stillStyle,
   templates,
   type ImageModelSeedRow,
   type PresetKey,
 } from "@curvi/pipeline/seed";
 import { getSpec } from "@curvi/specs";
+import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
+import type { LiveProduct } from "./live-product";
 import {
   isSpendCapBlock,
   ShotUnavailableError,
@@ -319,6 +329,71 @@ export function makeR2MediaLoader(readEnv: ReadEnv = readEnvDefault): MediaLoade
   };
 }
 
+/**
+ * Refuses still shots that can never render, before the cutout is paid for.
+ * The renderers repeat these checks; this only saves the spend.
+ */
+function precheckStill(shot: ShotGenerateArgs["shot"], label: string): void {
+  const spec = getSpec(shot.channels[0]);
+  const solidBackground = spec.background?.type === "solid";
+  const needsText = shot.type === "infographic" || shot.type === "dimensions";
+  if (needsText && spec.textAllowed === false) {
+    throw new ShotUnavailableError(`This channel does not allow text, so the ${label} image needs review.`);
+  }
+  if (needsText && !(shot.callouts ?? []).some((c) => c.trim().length > 0)) {
+    throw new ShotUnavailableError(`The ${label} image has nothing to show yet, so it needs review.`);
+  }
+  if (solidBackground && (needsText || shot.type === "sweep_gray" || shot.type === "sweep_brand")) {
+    throw new ShotUnavailableError(`This channel needs a plain background, so the ${label} image needs review.`);
+  }
+}
+
+/** Maps a still renderer failure to a plain spoken, per shot refusal. */
+function stillFailure(err: unknown, label: string, costMicros: number, args: ShotGenerateArgs): ShotUnavailableError {
+  if (err instanceof ShotUnavailableError) {
+    return new ShotUnavailableError(err.message, costMicros);
+  }
+  if (err instanceof TemplateUnavailableError) {
+    console.warn(`[live] ${args.shot.id} template refused: ${err.message}`);
+    return new ShotUnavailableError(`The ${label} image could not be laid out for this channel, so it needs review.`, costMicros);
+  }
+  console.error(`[live] ${args.shot.id} still render failed`, err);
+  return new ShotUnavailableError(`The ${label} image could not be rendered, so it needs review.`, costMicros);
+}
+
+/** Lanczos3 reaches 3 source pixels on each side of an edge. */
+const RESIZE_KERNEL_REACH_PX = 3;
+
+function maskArea(mask: RawMask): number {
+  let area = 0;
+  for (let i = 0; i < mask.data.length; i++) {
+    if (mask.data[i] > 127) area += 1;
+  }
+  return area;
+}
+
+/**
+ * Fidelity erosion for a still whose product was scaled up. The resize blends
+ * product and background within the kernel's reach, measured in canvas pixels
+ * that is the reach times the scale, so a small cutout blown up to channel
+ * size would otherwise fail on its edge band alone. Undefined (the default
+ * erosion) when the product was not scaled up.
+ */
+export function upscaleErodePx(cutoutMask: RawMask, placedMask: RawMask | null): number | undefined {
+  if (!placedMask) return undefined;
+  const source = maskArea(cutoutMask);
+  const placed = maskArea(placedMask);
+  if (source === 0 || placed === 0) return undefined;
+  const scale = Math.sqrt(placed / source);
+  if (scale <= 1) return undefined;
+  return Math.max(deriveQcErodePx(), Math.ceil(RESIZE_KERNEL_REACH_PX * scale) + 1);
+}
+
+/** Single channel PNG of a mask, for helpers that take encoded buffers. */
+function encodeMaskPng(mask: RawMask): Promise<Buffer> {
+  return maskToSharp(mask).png().toBuffer();
+}
+
 /** Mask from the alpha channel of an RGBA cutout. */
 export function alphaMask(image: RawImage): RawMask {
   const data = Buffer.alloc(image.width * image.height, 0);
@@ -328,7 +403,7 @@ export function alphaMask(image: RawImage): RawMask {
   return { data, width: image.width, height: image.height };
 }
 
-const LIVE_METHODS: ReadonlySet<string> = new Set(["composite_generate", "edit_generate"]);
+const COMPOSITE_METHODS: ReadonlySet<string> = new Set(["composite_generate", "edit_generate"]);
 
 export interface LiveShotGeneratorOptions {
   ai: PipelineDeps["ai"];
@@ -337,23 +412,39 @@ export interface LiveShotGeneratorOptions {
   loadMedia: MediaLoader | null;
 }
 
+/** A cut out product plus what it cost; cached per job and source photo. */
+interface ProductLoad {
+  product: LiveProduct;
+  costMicros: number;
+}
+
+type CapsHooks = CapsHook[] | undefined;
+
 /**
- * Real shot generator for composite and edit methods: load the source photo
- * from R2, cut the product out with Photoroom, generate the scene plate
- * through the image chain, and paste the original product pixels back via
- * compositeShot so the fidelity lock holds.
+ * Real shot generator. Every still starts from the seller's own photo: load
+ * it from R2, cut the product out with Photoroom (once per job and photo,
+ * shared by every shot and attempt that uses it), then
+ * - composite and edit methods generate a scene plate through the image
+ *   chain and paste the original product pixels back via compositeShot;
+ * - deterministic methods (white main image, alt angles, cutout, sweeps,
+ *   collection thumb) place the real pixels with the whiten helpers;
+ * - template methods (infographic, dimensions, A+ banner, social crops)
+ *   place the real pixels on a seeded background with rendered text.
+ * No path regenerates product pixels (CLAUDE.md rule 3).
  *
- * Anything it cannot produce for real (deterministic, template and video
- * methods until their live paths land, a missing or foreign source photo, a
- * spend cap block) throws ShotUnavailableError: the shot goes to needs
- * review with its credits released. It never substitutes demo output, which
- * would ship a placeholder as the customer's product and charge for it.
+ * Anything it cannot produce for real (video and avatar methods, template
+ * types without the data they need, a missing or foreign source photo, a
+ * provider that is not configured, a spend cap block) throws
+ * ShotUnavailableError: the shot goes to needs review with its credits
+ * released. It never substitutes demo output.
  *
  * Every provider call reserves its estimated cost against the per asset,
- * pack and global day caps before it runs (plan 4.4), so the hard stop
- * actually stops spend instead of noticing it afterwards.
+ * pack and global day caps before it runs (plan 4.4).
  */
 export class LiveShotGenerator implements ShotGenerator {
+  private readonly products = new Map<string, Promise<ProductLoad>>();
+  private readonly productCostClaimed = new Set<string>();
+
   constructor(private readonly opts: LiveShotGeneratorOptions) {}
 
   async generate(args: ShotGenerateArgs): Promise<ShotGeneration> {
@@ -367,52 +458,140 @@ export class LiveShotGenerator implements ShotGenerator {
     }
   }
 
-  private async generateLive(args: ShotGenerateArgs): Promise<ShotGeneration> {
-    const { ai, wiring, loadMedia } = this.opts;
+  private capsFor(args: ShotGenerateArgs): CapsHooks {
+    const caps = this.opts.ai.caps;
+    return caps
+      ? [
+          { spendCaps: caps, capKind: "image_asset", assetId: args.shot.id },
+          { spendCaps: caps, capKind: "pack", jobId: args.jobId },
+          { spendCaps: caps, capKind: "global_day" },
+        ]
+      : undefined;
+  }
+
+  /**
+   * The cut out product for this shot's source photo. The Photoroom call runs
+   * once per job and photo; the first shot to use it carries its cost, every
+   * later shot and retry reuses it for free. A failed load is not cached, so
+   * the next attempt tries again.
+   */
+  private async productFor(args: ShotGenerateArgs, caps: CapsHooks): Promise<ProductLoad> {
+    const { ai, loadMedia } = this.opts;
     const label = args.shot.type.replaceAll("_", " ");
-    if (!LIVE_METHODS.has(args.shot.method)) {
-      throw new ShotUnavailableError(`The ${label} shot is not produced by live providers yet.`);
-    }
-    if (wiring.imageProviders.length === 0 || !wiring.cutoutLive || !loadMedia) {
-      throw new ShotUnavailableError(
-        `The ${label} shot needs the image, cutout and storage providers, and at least one is not configured.`,
-      );
-    }
     // Source photos live under the workspace's own prefix; anything else
     // (a planner hallucination or another tenant's key) is never loaded.
     if (!args.shot.sourceMediaId.startsWith(`ws/${args.workspaceId}/`)) {
       throw new ShotUnavailableError(`The ${label} shot does not point at one of this product's photos.`);
     }
-    const source = await loadMedia(args.shot.sourceMediaId);
-    if (!source || source.length === 0) {
-      throw new ShotUnavailableError(`The source photo for the ${label} shot could not be loaded.`);
+    const key = `${args.jobId}:${args.shot.sourceMediaId}`;
+    let pending = this.products.get(key);
+    if (!pending) {
+      pending = (async (): Promise<ProductLoad> => {
+        const source = loadMedia ? await loadMedia(args.shot.sourceMediaId) : null;
+        if (!source || source.length === 0) {
+          throw new ShotUnavailableError(`The source photo for the ${label} shot could not be loaded.`);
+        }
+        const cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
+          ai.registry,
+          ai.routing,
+          ai.meter,
+          ai.breakerStore,
+          {
+            task: CUTOUT_TASK,
+            input: { imageBytes: source, format: "png" },
+            workspaceId: args.workspaceId,
+            jobId: args.jobId,
+            stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
+          },
+          { caps },
+        );
+        const productRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
+        const mask = alphaMask(productRgba);
+        if (!mask.data.some((v) => v > 0)) {
+          throw new ShotUnavailableError(`No product was found in the source photo for the ${label} shot.`);
+        }
+        const product: LiveProduct = {
+          productRgba,
+          mask,
+          productPng: await encodePng(productRgba),
+          maskPng: await encodeMaskPng(mask),
+        };
+        return { product, costMicros: cutout.costMicros };
+      })();
+      this.products.set(key, pending);
+      pending.catch(() => this.products.delete(key));
+    }
+    const loaded = await pending;
+    if (this.productCostClaimed.has(key)) {
+      return { product: loaded.product, costMicros: 0 };
+    }
+    this.productCostClaimed.add(key);
+    return loaded;
+  }
+
+  private async generateLive(args: ShotGenerateArgs): Promise<ShotGeneration> {
+    const { wiring, loadMedia } = this.opts;
+    const { shot } = args;
+    const label = shot.type.replaceAll("_", " ");
+    const method = shot.method;
+    const isComposite = COMPOSITE_METHODS.has(method);
+    if (!isComposite && method !== "deterministic" && method !== "template") {
+      throw new ShotUnavailableError(`The ${label} shot is not produced by live providers yet.`);
+    }
+    if (method === "deterministic" && !DETERMINISTIC_LIVE_TYPES.has(shot.type)) {
+      throw new ShotUnavailableError(`The ${label} shot is not produced by live providers yet.`);
+    }
+    if (method === "template" && !TEMPLATE_STILL_TYPES.has(shot.type)) {
+      throw new ShotUnavailableError(`The ${label} shot needs seller details this pack does not have.`);
+    }
+    if (!wiring.cutoutLive || !loadMedia || (isComposite && wiring.imageProviders.length === 0)) {
+      throw new ShotUnavailableError(
+        `The ${label} shot needs the ${isComposite ? "image, cutout" : "cutout"} and storage providers, and at least one is not configured.`,
+      );
     }
 
-    const caps: CapsHook[] | undefined = ai.caps
-      ? [
-          { spendCaps: ai.caps, capKind: "image_asset", assetId: args.shot.id },
-          { spendCaps: ai.caps, capKind: "pack", jobId: args.jobId },
-          { spendCaps: ai.caps, capKind: "global_day" },
-        ]
-      : undefined;
+    // Refusals that need no cutout happen before any money is spent.
+    if (!isComposite) {
+      precheckStill(shot, label);
+    }
 
-    const cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
-      ai.registry,
-      ai.routing,
-      ai.meter,
-      ai.breakerStore,
-      {
-        task: CUTOUT_TASK,
-        input: { imageBytes: source, format: "png" },
-        workspaceId: args.workspaceId,
-        jobId: args.jobId,
-        stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
-      },
-      { caps },
-    );
-    const productRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
-    const mask = alphaMask(productRgba);
+    const caps = this.capsFor(args);
+    const { product, costMicros: productCost } = await this.productFor(args, caps);
+    const spendReserved = caps !== undefined;
 
+    if (method === "deterministic" || method === "template") {
+      try {
+        const still =
+          method === "deterministic"
+            ? await renderDeterministicShot({ shot, product, brandColors: args.brandColors })
+            : await renderTemplateStill({
+                type: shot.type as TemplateStillType,
+                spec: getSpec(shot.channels[0]),
+                productPng: product.productPng,
+                maskPng: product.maskPng,
+                callouts: shot.callouts,
+                backgroundHex:
+                  (stillStyle.presetBackgroundHex as Record<string, string>)[shot.stylePreset] ??
+                  stillStyle.defaultBackgroundHex,
+                textHex: stillStyle.textHex,
+                accentHex: stillStyle.accentHex,
+              });
+        return {
+          ...still,
+          costMicros: productCost,
+          spendReserved,
+          fidelityRequired: true,
+          fidelityErodePx: upscaleErodePx(product.mask, still.mask),
+        };
+      } catch (err) {
+        // A still that cannot be rendered ends this shot only, never the
+        // pack, and keeps the cutout cost it already spent on the books.
+        throw stillFailure(err, label, productCost, args);
+      }
+    }
+
+    const { productRgba, mask } = product;
+    const { ai } = this.opts;
     const specId = args.shot.channels[0];
     const spec = getSpec(specId);
     const width = spec.width ?? spec.minWidth ?? 1200;
@@ -473,8 +652,8 @@ export class LiveShotGenerator implements ShotGenerator {
       mask: result.canvasMask,
       productReference: result.productReference,
       encoded,
-      costMicros: cutout.costMicros + result.costMicros,
-      spendReserved: caps !== undefined,
+      costMicros: productCost + result.costMicros,
+      spendReserved,
     };
   }
 }

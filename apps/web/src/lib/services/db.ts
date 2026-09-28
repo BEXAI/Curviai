@@ -553,6 +553,16 @@ export class DbService implements Services {
       };
     }
 
+    // Brand colors are optional styling: a failed lookup must never fail a
+    // job that already holds its credit reservation.
+    let brandColors: string[] = [];
+    try {
+      const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
+      brandColors = Array.isArray(kit?.colors) ? kit.colors.filter((c): c is string => typeof c === "string") : [];
+    } catch (err) {
+      console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
+    }
+
     try {
       await enqueueGeneratePack(
         buildGeneratePackInput({
@@ -570,6 +580,7 @@ export class DbService implements Services {
           },
           media: media.map((m) => ({ r2Key: m.r2Key, kind: m.kind })),
           userDescription: input.userDescription,
+          brandColors,
         }),
       );
     } catch (err) {

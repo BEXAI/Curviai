@@ -57,3 +57,25 @@ describe("buildGeneratePackInput", () => {
     expect(input.hasVideoSource).toBe(false);
   });
 });
+
+describe("buildGeneratePackInput brand colors", () => {
+  const base = {
+    jobId: "job1",
+    workspaceId: "ws1",
+    tier: "starter" as const,
+    channels: ["amazon.main"],
+    mode: "listing" as const,
+    creditBudget: 5,
+    product: { id: "p1", title: "Mug", mode: "listing" as const, amazonSku: null },
+    media: [{ r2Key: "m1", kind: "image" as const }],
+  };
+
+  it("passes only valid hex colors", () => {
+    const input = buildGeneratePackInput({ ...base, brandColors: ["#1A2B3C", "red", "#abc", "#FFFFFF"] });
+    expect(input.brandColors).toEqual(["#1A2B3C", "#FFFFFF"]);
+  });
+
+  it("sends an empty list without a brand kit", () => {
+    expect(buildGeneratePackInput({ ...base, brandColors: null }).brandColors).toEqual([]);
+  });
+});

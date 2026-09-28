@@ -40,6 +40,8 @@ export function buildGeneratePackInput(args: {
   product: PayloadProduct;
   media: PayloadMedia[];
   userDescription?: string;
+  /** Brand kit colors; only valid #RRGGBB values pass through. */
+  brandColors?: string[] | null;
 }): GeneratePackInput {
   return {
     jobId: args.jobId,
@@ -52,6 +54,9 @@ export function buildGeneratePackInput(args: {
       .filter((m) => m.kind !== "video")
       .map((m) => ({ mediaId: m.r2Key })),
     userDescription: args.userDescription,
+    brandColors: (Array.isArray(args.brandColors) ? args.brandColors : [])
+      .filter((c) => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c))
+      .slice(0, 6),
     sku: args.product.amazonSku ?? undefined,
     seoSlug: seoSlugFor(args.product.title),
     hasVideoSource: args.media.some((m) => m.kind === "video"),
