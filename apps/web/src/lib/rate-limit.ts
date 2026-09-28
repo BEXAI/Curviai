@@ -44,6 +44,10 @@ export const RATE_LIMIT_POLICIES = {
   "products.create": { user: { limit: 120, windowSeconds: HOUR }, ip: { limit: 240, windowSeconds: HOUR } },
   // Each side by side image fetches two pictures and renders a new one.
   "jobs.makeover": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
+  // Product link imports make the server fetch outside pages, so they are
+  // counted per workspace (the "user" rule) as well as per IP.
+  "imports.product": { user: { limit: 30, windowSeconds: HOUR }, ip: { limit: 60, windowSeconds: HOUR } },
+  "imports.photo": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitPolicyName = keyof typeof RATE_LIMIT_POLICIES;
