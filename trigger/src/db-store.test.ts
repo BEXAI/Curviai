@@ -25,7 +25,7 @@ import {
 } from "@curvi/db/schema";
 import { endExiftool } from "@curvi/pipeline";
 import { DbJobStore } from "./db-store";
-import { runGeneratePack, systemClock, type GeneratePackInput } from "./pipeline-runner";
+import { runGeneratePack, systemClock, type GeneratePackInput, type UndeliveredShot } from "./pipeline-runner";
 import { buildRuntimeDeps } from "./runtime";
 import type { PackUploader } from "./r2";
 
@@ -139,6 +139,36 @@ describe("DbJobStore settles a pack run end to end", () => {
     // (savePlan) come on top of those.
     const finalRows = stepRows.filter((s) => s.status === "done" || s.status === "needs_review");
     expect(finalRows.length).toBe(assetRows.length);
+  });
+
+  it("turns a shot the packager left out into needs review on the board", async () => {
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true });
+    const before = await db.select().from(assets).where(eq(assets.jobId, jobId));
+    const target = before.find((a) => a.approved) ?? before[0];
+    const shotId = target.qc?.shotId as string;
+    const reason = "This channel already has as many images as it allows, so this one was left out of the pack and not charged.";
+
+    await store.markShotUndelivered({
+      jobId,
+      workspaceId: ws,
+      shotId,
+      shotType: target.shotType as UndeliveredShot["shotType"],
+      reason,
+    });
+
+    const rows = await db.select().from(assets).where(eq(assets.jobId, jobId));
+    const after = rows.find((a) => a.id === target.id)!;
+    expect(after.approved).toBe(false);
+    expect(after.qc).toMatchObject({ shotId, status: "needs_review", pass: false, repairHint: reason, delivered: false });
+    // Other shots' rows are untouched.
+    for (const other of before.filter((a) => a.id !== target.id)) {
+      const now = rows.find((a) => a.id === other.id)!;
+      expect(now.approved).toBe(other.approved);
+      expect(now.qc).toEqual(other.qc);
+    }
+    const steps = await db.select().from(jobSteps).where(eq(jobSteps.jobId, jobId));
+    const latest = steps.filter((s) => s.shotId === shotId).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).at(-1);
+    expect(latest).toMatchObject({ status: "needs_review", error: reason, stage: target.shotType });
   });
 
   it("uploads and records asset variants and pack files", async () => {

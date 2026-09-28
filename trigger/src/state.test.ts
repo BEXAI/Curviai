@@ -134,6 +134,16 @@ describe("JobLedgerPlan", () => {
     expect(() => plan.releaseForFailedShot("s06", 100)).toThrowError(/outstanding/);
   });
 
+  it("releases a passing shot the packager did not deliver, with the reason", () => {
+    const plan = new JobLedgerPlan();
+    plan.reserveOnQueue(10);
+    const action = plan.releaseForUndeliveredShot("sec9", 0.5, "channel image limit: amazon.secondary takes at most 8 images");
+    expect(action).toMatchObject({ reason: "release", credits: 0.5, ref: "sec9" });
+    expect(action.note).toBe("shot not delivered: channel image limit: amazon.secondary takes at most 8 images");
+    expect(plan.released).toBe(0.5);
+    expect(() => plan.releaseForUndeliveredShot("sec10", 100, "x")).toThrowError(/outstanding/);
+  });
+
   it("releases the whole remainder on job failure", () => {
     const plan = new JobLedgerPlan();
     plan.reserveOnQueue(10);

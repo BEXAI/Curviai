@@ -14,6 +14,7 @@ import {
 import { MockProvider } from "./testing";
 import {
   AllProvidersFailedError,
+  billedMicrosOf,
   BreakerOpenError,
   CapStoreUnavailableError,
   hasProviderErrorCode,
@@ -54,6 +55,7 @@ describe("callWithFailover", () => {
     expect(result.costMicros).toBe(10);
     expect(result.attempts).toBe(1);
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(result.billedFailureMicros).toBe(0);
     expect(p2.invocations).toBe(0);
   });
 
@@ -501,6 +503,9 @@ describe("billed failures: a timeout after a paid create never pays again (Updat
     });
 
     expect(result.provider).toBe("p2");
+    // The caller sees the failed attempt's billed spend next to the winner's.
+    expect(result.costMicros).toBe(50_000);
+    expect(result.billedFailureMicros).toBe(60_000);
     // One paid create on p1, never a second one.
     expect(p1.invocations).toBe(1);
     expect(h.sleeps).toEqual([]);
@@ -514,6 +519,37 @@ describe("billed failures: a timeout after a paid create never pays again (Updat
     // The billed spend stays on the caps instead of being released.
     expect(await store.get("caps:pack:j1")).toBe(110_000);
     expect(await store.get(GLOBAL_KEY)).toBe(110_000);
+  });
+
+  it("reports the billed total of a failed chain on AllProvidersFailedError and billedMicrosOf", async () => {
+    const p1 = new MockProvider({ name: "p1", reportBilledMicros: 60_000, failTimes: Infinity });
+    const p2 = new MockProvider({
+      name: "p2",
+      failTimes: Infinity,
+      failWith: () => new ProviderError("declined", "p2", TASK, false, undefined, { code: "content_blocked", billedCostMicros: 1_500 }),
+    });
+    const p3 = new MockProvider({ name: "p3", failTimes: Infinity });
+    const h = harness([p1, p2, p3]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), { sleep: h.sleep }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(AllProvidersFailedError);
+    expect((err as AllProvidersFailedError).billedCostMicros).toBe(61_500);
+    expect(billedMicrosOf(err)).toBe(61_500);
+    // The meter recorded the same spend.
+    expect(h.meter.totalForJob("j1")).toBe(61_500);
+    expect(billedMicrosOf((err as AllProvidersFailedError).errors[1])).toBe(1_500);
+    expect(billedMicrosOf(new Error("plain"))).toBe(0);
+  });
+
+  it("sums the errors when an AllProvidersFailedError is built without a total", () => {
+    const billed = new ProviderError("x", "p1", TASK, false, undefined, { billedCostMicros: 700 });
+    const plain = new ProviderError("y", "p2", TASK, true);
+    expect(new AllProvidersFailedError(TASK, [billed, plain]).billedCostMicros).toBe(700);
+    expect(new AllProvidersFailedError(TASK, []).billedCostMicros).toBe(0);
+    expect(new AllProvidersFailedError(TASK, [billed], 900).billedCostMicros).toBe(900);
   });
 
   it("reports the billed timeout as a non retryable ProviderTimeoutError", async () => {

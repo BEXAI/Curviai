@@ -240,6 +240,12 @@ describe("rule 3 on every live output", () => {
     { shot: shotOf("social_1x1", "template", ["meta.feed_1x1"]) },
     { shot: shotOf("lifestyle", "composite_generate", ["meta.feed_1x1"], { scene: "kitchen counter" }) },
     { shot: shotOf("shopify_hero", "composite_generate", ["shopify.hero_banner"]) },
+    // Marketplace listing slots the runner now keeps and packs (Update.md 2.11).
+    { shot: shotOf("alt_angle_white", "deterministic", ["etsy.listing"], { stylePreset: "none" }) },
+    { shot: shotOf("alt_angle_white", "deterministic", ["ebay.listing"], { stylePreset: "none" }) },
+    { shot: shotOf("alt_angle_white", "deterministic", ["walmart.main"], { stylePreset: "none" }) },
+    { shot: shotOf("alt_angle_white", "deterministic", ["tiktokshop.main"], { stylePreset: "none" }) },
+    { shot: shotOf("social_9x16", "template", ["pinterest.pin"]) },
   ];
 
   for (const { shot } of cases) {

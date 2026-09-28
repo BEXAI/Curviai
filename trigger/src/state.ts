@@ -153,6 +153,17 @@ export class JobLedgerPlan {
     return { reason: "release", credits, ref: shotRef, note: "shot needs review" };
   }
 
+  /**
+   * Released when a shot passed QC but none of its files made it into the
+   * delivered pack (the packager left it out, for example over a channel
+   * image limit). Only delivered files are ever charged.
+   */
+  releaseForUndeliveredShot(shotRef: string, credits: number, reason: string): LedgerAction {
+    this.assertHolds(credits, "release");
+    this.releasedCredits += credits;
+    return { reason: "release", credits, ref: shotRef, note: `shot not delivered: ${reason}` };
+  }
+
   /** Releases everything still outstanding when the job fails or is canceled. */
   releaseRemainderOnFailure(cause: "failed" | "canceled" = "failed"): LedgerAction | null {
     const remainder = this.outstanding;

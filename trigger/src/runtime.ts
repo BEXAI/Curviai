@@ -24,6 +24,7 @@ import type { ChurnSignals } from "./churn";
 import { LiveShotGenerator, makeR2MediaLoader, wireLiveProviders } from "./live-runtime";
 import { canvasSizeFor } from "./shot-outputs";
 import type { DropWorkspace } from "./drops";
+import { SpendAlertNotifier } from "./spend-alerts";
 import {
   activeRecipe,
   InMemoryJobStore,
@@ -210,6 +211,38 @@ export interface RuntimeDepsOptions {
    * charging for synthetic placeholders is never acceptable. Local db
    * development can opt back in with CURVI_ALLOW_DEMO_GENERATION=1. */
   realCredits?: boolean;
+  /** Founder notice when global daily provider spend passes the alert line.
+   * Wired both as the runner's onSpendAlert and as every routed provider
+   * call's onCapAlert (Update.md 5.7). Defaults to a process wide founder
+   * notifier without a database (email when Resend is configured, otherwise
+   * a structured log line), once per day. */
+  onSpendAlert?: (totalMicros: number) => void;
+}
+
+const runtimeScope = globalThis as typeof globalThis & { __curviRuntimeSpendAlerts?: SpendAlertNotifier };
+
+/** The founder spend alert for runs without a database: one notifier per
+ * process, so its once per day dedupe spans every pack. */
+export function defaultSpendAlert(): (totalMicros: number) => void {
+  runtimeScope.__curviRuntimeSpendAlerts ??= new SpendAlertNotifier();
+  return runtimeScope.__curviRuntimeSpendAlerts.onSpendAlert;
+}
+
+/**
+ * Receives the bookkeeping errors the router swallows so they can never turn
+ * a paid call into a retry or a double release (meter, breaker, reservation
+ * release, alert delivery). A structured error line log search and alerting
+ * can match; error reporting (Sentry) hooks in here once its SDK is wired.
+ */
+export function reportAiInternalError(err: unknown, context: string): void {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      event: "ai_internal_error",
+      context,
+      error: err instanceof Error ? err.message : String(err),
+    }),
+  );
 }
 
 /** Demo mode notice shown by task wrappers when no provider env is set. */
@@ -227,12 +260,15 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
       Number.isFinite(hardStopUsd) && hardStopUsd > 0 ? Math.round(hardStopUsd * 1_000_000) : undefined,
   });
   const routing = demoRoutingTable();
+  const onSpendAlert = opts.onSpendAlert ?? defaultSpendAlert();
   const ai: PipelineDeps["ai"] = {
     registry,
     routing,
     meter: new InMemoryCostMeter(),
     breakerStore: new InMemoryBreakerStore(),
     caps,
+    onCapAlert: onSpendAlert,
+    onInternalError: reportAiInternalError,
   };
   const wiring = wireLiveProviders(registry, routing);
   const loadMedia = makeR2MediaLoader();
@@ -252,11 +288,7 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     generator,
     loadMedia: loadMedia ?? undefined,
     packOutDir: opts.packOutDir,
-    onSpendAlert: (totalMicros) => {
-      console.warn(
-        `[caps] Global daily provider spend is at $${(totalMicros / 1_000_000).toFixed(2)}, past the alert line.`,
-      );
-    },
+    onSpendAlert,
   };
 }
 

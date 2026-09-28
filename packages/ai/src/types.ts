@@ -42,6 +42,15 @@ export interface CallResult<TOut = unknown> extends ProviderResponse<TOut> {
   /** Total attempts across all providers tried, including the successful one. */
   attempts: number;
   latencyMs: number;
+  /**
+   * Spend the failed attempts of this call were billed anyway, in USD micros:
+   * for example a paid async create on a provider that then stalled, before
+   * the chain failed over to the one that delivered. costMicros is only the
+   * delivering attempt, so a caller that books job or shot cost adds this to
+   * match what the meter recorded and the spend caps hold. Zero when no
+   * failed attempt was billed.
+   */
+  billedFailureMicros: number;
 }
 
 export interface CostMeterEntry {
@@ -179,12 +188,26 @@ export class ProviderError extends Error {
 }
 
 export class AllProvidersFailedError extends Error {
+  /**
+   * Spend every failed attempt in the chain was billed anyway, in USD micros,
+   * as the router metered it and kept it against the spend caps. errors holds
+   * only each provider's last error, so the router passes the running total;
+   * without it the total is summed from errors.
+   */
+  readonly billedCostMicros: number;
+
   constructor(
     readonly task: string,
     readonly errors: ProviderError[],
+    billedCostMicros?: number,
   ) {
     super(`All providers failed for task ${task}: ${errors.map((e) => `${e.provider}: ${e.message}`).join("; ")}`);
     this.name = "AllProvidersFailedError";
+    const summed = errors.reduce((sum, e) => sum + e.billedCostMicros, 0);
+    this.billedCostMicros =
+      billedCostMicros !== undefined && Number.isFinite(billedCostMicros) && billedCostMicros > summed
+        ? Math.ceil(billedCostMicros)
+        : summed;
   }
 }
 
@@ -231,4 +254,16 @@ export function providerErrorsOf(err: unknown): ProviderError[] {
  * show "the image service declined this scene" instead of a generic failure. */
 export function hasProviderErrorCode(err: unknown, code: ProviderErrorCode): boolean {
   return providerErrorsOf(err).some((e) => e.code === code);
+}
+
+/**
+ * Provider spend a failed call was billed anyway, in USD micros: the chain
+ * total of an AllProvidersFailedError, a single ProviderError's
+ * billedCostMicros, zero for anything else. Callers add it to the job or shot
+ * cost so COGS matches what the meter recorded and the spend caps hold.
+ */
+export function billedMicrosOf(err: unknown): number {
+  if (err instanceof AllProvidersFailedError) return err.billedCostMicros;
+  if (err instanceof ProviderError) return err.billedCostMicros;
+  return 0;
 }

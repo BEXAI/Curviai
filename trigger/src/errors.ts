@@ -18,3 +18,22 @@ export class ShotUnavailableError extends Error {
     this.name = "ShotUnavailableError";
   }
 }
+
+/**
+ * A generator failure that is not a refusal of the shot (a provider outage,
+ * an unexpected runtime error) raised after provider spend was already made
+ * for the attempt, for example a cutout and a scene plate that were paid for
+ * before the harmonize chain went down. The runner books costMicros on the
+ * shot, so job COGS matches what the meter recorded and the spend caps hold,
+ * then treats original like any other unexpected error.
+ */
+export class ShotFailedAfterSpendError extends Error {
+  constructor(
+    readonly original: unknown,
+    /** Provider spend of the failed attempt, in USD micros. */
+    readonly costMicros: number,
+  ) {
+    super(original instanceof Error ? original.message : String(original), { cause: original });
+    this.name = "ShotFailedAfterSpendError";
+  }
+}

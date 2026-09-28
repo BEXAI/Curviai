@@ -11,13 +11,19 @@
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
   AnthropicLLMProvider,
+  ASYNC_JOB_TIMEOUT_MARGIN_MS,
   BflFluxProvider,
   callWithFailover,
+  downloadBytes,
+  type CallResult,
   type CapsHook,
   GeminiImageProvider,
+  hasProviderErrorCode,
   OpenaiImageProvider,
   PhotoroomCutoutProvider,
   ProviderError,
+  providerErrorsOf,
+  signalOf,
   type BflFluxInput,
   type BflFluxOutput,
   type CostAwareProvider,
@@ -39,6 +45,8 @@ import {
   decodeToRgba,
   deriveQcErodePx,
   encodePng,
+  HarmonizeAspectError,
+  normalizeOrientation,
   rawToSharp,
   renderTemplateStill,
   TEMPLATE_STILL_TYPES,
@@ -50,6 +58,7 @@ import {
   type RawImage,
   type RawMask,
   type ScenePlateInput,
+  withHarmonizeAspectGuard,
 } from "@curvi/pipeline";
 import {
   CUTOUT_TASK,
@@ -68,11 +77,15 @@ import {
   type PresetKey,
 } from "@curvi/pipeline/seed";
 import { getSpec, type ChannelSpec } from "@curvi/specs";
-import { ShotUnavailableError } from "./errors";
+import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
 import type { LiveProduct, StillRender } from "./live-product";
+import { isWorkspaceObjectKey } from "./object-keys";
 import {
+  failureSpendMicros,
   isSpendCapBlock,
+  routedCallHooks,
+  SHOT_CONTENT_BLOCKED,
   type PipelineDeps,
   type ShotGenerateArgs,
   type ShotGeneration,
@@ -114,9 +127,18 @@ export interface LiveWiring {
  * contract: ScenePlateInput in, ImageOutput png out. Each family speaks its
  * own request and response shape; the bridge normalizes both sides.
  */
-export class ScenePlateBridge implements Provider {
+export class ScenePlateBridge implements CostAwareProvider {
   readonly name: string;
   readonly kind: ProviderKind = "image";
+  /**
+   * The router's per attempt timeout floor (Update.md 5.1): the inner
+   * adapter's own floor (an async job's polling window plus margin) plus one
+   * more margin for downloading the result, so the router never aborts a
+   * paid job while its image is still downloading.
+   */
+  readonly minTimeoutMs: number;
+  /** downloadBytes takes the fetch signature; the bridge's fetch is URL only. */
+  private readonly downloadFetch: typeof fetch;
 
   constructor(
     private readonly inner: CostAwareProvider,
@@ -125,6 +147,9 @@ export class ScenePlateBridge implements Provider {
     private readonly fetchFn: FetchLike = fetch,
   ) {
     this.name = name;
+    this.minTimeoutMs = (inner.minTimeoutMs ?? 0) + ASYNC_JOB_TIMEOUT_MARGIN_MS;
+    this.downloadFetch = ((input: string | URL | Request, init?: RequestInit) =>
+      this.fetchFn(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, init)) as typeof fetch;
   }
 
   supports(task: string): boolean {
@@ -167,7 +192,7 @@ export class ScenePlateBridge implements Provider {
           height: clampToStep(input.height, 32, 320, 1440),
         },
       });
-      const buffer = await this.download(res.output.imageUrl, req.task);
+      const buffer = await this.download(res.output.imageUrl, req);
       return { buffer, costMicros: res.costMicros };
     }
     const res = await this.inner.invoke<OpenaiImageInput, OpenaiImageOutput>({
@@ -179,7 +204,7 @@ export class ScenePlateBridge implements Provider {
       return { buffer: Buffer.from(image.dataBase64, "base64"), costMicros: res.costMicros };
     }
     if (image.url) {
-      const buffer = await this.download(image.url, req.task);
+      const buffer = await this.download(image.url, req);
       return { buffer, costMicros: res.costMicros };
     }
     throw new ProviderError("OpenAI image response had neither data nor url", this.name, req.task, true);
@@ -213,19 +238,43 @@ export class ScenePlateBridge implements Provider {
         ...req,
         input: { prompt: input.prompt, inputImageBase64: input.png.toString("base64") },
       });
-      const buffer = await this.download(res.output.imageUrl, req.task);
+      const buffer = await this.download(res.output.imageUrl, req);
       return { buffer, costMicros: res.costMicros };
     }
     return { buffer: input.png, costMicros: 0 };
   }
 
-  private async download(url: string, task: string): Promise<Buffer> {
-    const res = await this.fetchFn(url);
-    if (!res.ok) {
-      throw new ProviderError(`Image download failed with status ${res.status}`, this.name, task, true);
-    }
-    return Buffer.from(await res.arrayBuffer());
+  /** Downloads a result URL with the router's abort signal, so a timed out
+   * attempt stops downloading too; failures map to ProviderErrors. */
+  private async download(url: string, req: ProviderRequest): Promise<Buffer> {
+    const bytes = await downloadBytes(this.downloadFetch, url, {
+      provider: this.name,
+      task: req.task,
+      signal: signalOf(req),
+    });
+    return Buffer.from(bytes);
   }
+}
+
+/**
+ * The provider registered for a scene plate bridge: the bridge behind the
+ * harmonize shape guard (Update.md 2.14), so a harmonize output in another
+ * shape than the canvas fails inside the provider chain and the router fails
+ * over to the next image provider, instead of compositeShot refusing the
+ * result after the chain returned. The bridge's timeout floor and cost
+ * estimate stay visible to the router.
+ */
+export function guardScenePlate(bridge: ScenePlateBridge): CostAwareProvider {
+  const guarded = withHarmonizeAspectGuard(bridge);
+  return {
+    name: guarded.name,
+    kind: guarded.kind,
+    supports: (task: string) => guarded.supports(task),
+    invoke: <TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> =>
+      guarded.invoke<TIn, TOut>(req),
+    estimateCostMicros: (req: ProviderRequest) => bridge.estimateCostMicros(req),
+    minTimeoutMs: bridge.minTimeoutMs,
+  };
 }
 
 function clampToStep(value: number, step: number, min: number, max: number): number {
@@ -329,7 +378,7 @@ export function wireLiveProviders(
         : row.family === "bfl"
           ? new BflFluxProvider(config)
           : new OpenaiImageProvider(config);
-    registry.register(new ScenePlateBridge(inner, row.family, row.providerName, fetchFn));
+    registry.register(guardScenePlate(new ScenePlateBridge(inner, row.family, row.providerName, fetchFn)));
     wiring.imageProviders.push(row.providerName);
   }
   if (wiring.imageProviders.length > 0) {
@@ -465,6 +514,11 @@ export const MAX_CUTOUT_COVERAGE = 0.95;
 const SEGMENTATION_FAILED =
   "We could not separate the product from its background in this photo, so this shot needs review.";
 const NO_PRODUCT_FOUND = "The cutout found no product in this photo, so this shot needs review.";
+/** Every image provider returned the lighting pass in another shape than
+ * the canvas, so the product could not be placed back in register. */
+export const HARMONIZE_SHAPE_REFUSED =
+  "The image service returned this scene in the wrong shape, so this shot needs review.";
+const SPEND_CAP_REACHED = "Spend cap reached before this shot could be generated.";
 
 /**
  * Why a cutout mask cannot be used, or null when it can: empty, covering
@@ -514,6 +568,26 @@ interface ProductLoad {
   costMicros: number;
 }
 
+/** A cutout call that failed after it was billed; the first shot to see the
+ * failure books the spend, the others waiting on the same load do not. */
+class ProductLoadError extends Error {
+  claimed = false;
+  constructor(
+    readonly original: unknown,
+    readonly billedMicros: number,
+  ) {
+    super(original instanceof Error ? original.message : String(original), { cause: original });
+    this.name = "ProductLoadError";
+  }
+}
+
+/** Provider spend of one generate or derive call, across every provider call
+ * it made: the cutout it claimed, scene plates, harmonization, and the
+ * billed attempts of any chain that failed. */
+interface AttemptSpend {
+  micros: number;
+}
+
 type CapsHooks = CapsHook[] | undefined;
 
 /**
@@ -548,13 +622,11 @@ export class LiveShotGenerator implements ShotGenerator {
   constructor(private readonly opts: LiveShotGeneratorOptions) {}
 
   async generate(args: ShotGenerateArgs): Promise<ShotGeneration> {
+    const spend: AttemptSpend = { micros: 0 };
     try {
-      return await this.generateLive(args);
+      return await this.generateLive(args, spend);
     } catch (err) {
-      if (isSpendCapBlock(err)) {
-        throw new ShotUnavailableError("Spend cap reached before this shot could be generated.");
-      }
-      throw err;
+      throw attemptFailure(err, spend);
     }
   }
 
@@ -568,6 +640,20 @@ export class LiveShotGenerator implements ShotGenerator {
    * around the product and checked with a wider erosion.
    */
   async deriveForSpec(args: ShotGenerateArgs, from: ShotGeneration, specId: string): Promise<ShotGeneration> {
+    const spend: AttemptSpend = { micros: 0 };
+    try {
+      return await this.deriveLive(args, from, specId, spend);
+    } catch (err) {
+      throw attemptFailure(err, spend);
+    }
+  }
+
+  private async deriveLive(
+    args: ShotGenerateArgs,
+    from: ShotGeneration,
+    specId: string,
+    spend: AttemptSpend,
+  ): Promise<ShotGeneration> {
     const spec = getSpec(specId);
     const source = from.canvas ?? from.image;
     if (!from.mask || !from.productReference) {
@@ -589,7 +675,7 @@ export class LiveShotGenerator implements ShotGenerator {
         mask: from.mask,
         productReference: from.productReference,
         encoded: out.encoded,
-        costMicros: 0,
+        costMicros: spend.micros,
         spendReserved: true,
         fidelityRequired: true,
         fidelityErodePx: erosion.erodePx,
@@ -600,7 +686,7 @@ export class LiveShotGenerator implements ShotGenerator {
 
     const target = canvasSizeFor(spec);
     if (sameAspect(source, target)) {
-      const { product } = await this.productFor({ ...args, shot }, this.capsFor(args));
+      const product = await this.productFor({ ...args, shot }, this.capsFor(args), spend);
       const plate = await rawToSharp(source)
         .resize(target.width, target.height, { fit: "fill", kernel: "lanczos3" })
         .png()
@@ -633,7 +719,7 @@ export class LiveShotGenerator implements ShotGenerator {
         workspaceId: args.workspaceId,
         jobId: args.jobId,
       });
-      return this.finishComposite(result, spec, 0, true);
+      return this.finishComposite(result, spec, spend.micros, true);
     }
 
     const resized = await resizeCanvasTo(source, from.mask, from.productReference, erosion, target);
@@ -646,7 +732,7 @@ export class LiveShotGenerator implements ShotGenerator {
       mask: resized.mask,
       productReference: resized.productReference,
       encoded: out.encoded,
-      costMicros: 0,
+      costMicros: spend.micros,
       spendReserved: true,
       fidelityRequired: true,
       fidelityErodePx: resized.erosion.erodePx,
@@ -668,20 +754,19 @@ export class LiveShotGenerator implements ShotGenerator {
 
   /**
    * The cut out product for this shot's source photo. The Photoroom call runs
-   * once per job and photo; the first shot to use it carries its cost, every
-   * later shot and retry reuses it for free. A failed load is not cached, so
-   * the next attempt tries again; an unusable cutout is cached as a refusal,
-   * so the photo is never cut out twice only to be refused again.
+   * once per job and photo; the first shot to use it books its cost into its
+   * spend, every later shot and retry reuses it for free. A failed load is
+   * not cached, so the next attempt tries again (its billed spend is booked
+   * once); an unusable cutout is cached as a refusal, so the photo is never
+   * cut out twice only to be refused again.
    */
-  private async productFor(
-    args: ShotGenerateArgs,
-    caps: CapsHooks,
-  ): Promise<{ product: LiveProduct; costMicros: number }> {
+  private async productFor(args: ShotGenerateArgs, caps: CapsHooks, spend: AttemptSpend): Promise<LiveProduct> {
     const { ai, loadMedia } = this.opts;
     const label = args.shot.type.replaceAll("_", " ");
     // Source photos live under the workspace's own prefix; anything else
-    // (a planner hallucination or another tenant's key) is never loaded.
-    if (!args.shot.sourceMediaId.startsWith(`ws/${args.workspaceId}/`)) {
+    // (a planner hallucination, another tenant's key, a traversal) is never
+    // loaded (Update.md 4.1).
+    if (!isWorkspaceObjectKey(args.workspaceId, args.shot.sourceMediaId)) {
       throw new ShotUnavailableError(`The ${label} shot does not point at one of this product's photos.`);
     }
     const key = `${args.jobId}:${args.shot.sourceMediaId}`;
@@ -692,26 +777,37 @@ export class LiveShotGenerator implements ShotGenerator {
         if (!source || source.length === 0) {
           throw new ShotUnavailableError(`The source photo for the ${label} shot could not be loaded.`);
         }
-        const cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
-          ai.registry,
-          ai.routing,
-          ai.meter,
-          ai.breakerStore,
-          {
-            task: CUTOUT_TASK,
-            input: { imageBytes: source, format: "png" },
-            workspaceId: args.workspaceId,
-            jobId: args.jobId,
-            stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
-          },
-          { caps },
-        );
+        // Phone photos often carry their rotation only as an EXIF tag, which
+        // the cutout service ignores: send the pixels upright (Update.md
+        // 7.8). Bytes sharp cannot read go as they are; the service may.
+        const upright = await normalizeOrientation(source).catch(() => source);
+        let cutout: CallResult<PhotoroomCutoutOutput>;
+        try {
+          cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
+            ai.registry,
+            ai.routing,
+            ai.meter,
+            ai.breakerStore,
+            {
+              task: CUTOUT_TASK,
+              input: { imageBytes: upright, format: "png" },
+              workspaceId: args.workspaceId,
+              jobId: args.jobId,
+              stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
+            },
+            { caps, ...routedCallHooks(ai) },
+          );
+        } catch (err) {
+          const billed = failureSpendMicros(err);
+          throw billed > 0 ? new ProductLoadError(err, billed) : err;
+        }
+        const costMicros = cutout.costMicros + cutout.billedFailureMicros;
         const productRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
         const mask = alphaMask(productRgba);
         const refusal = segmentationRefusal(mask);
         if (refusal) {
           console.warn(`[live] job ${args.jobId} photo ${args.shot.sourceMediaId} cutout refused: ${refusal}`);
-          return { product: null, refusal, costMicros: cutout.costMicros };
+          return { product: null, refusal, costMicros };
         }
         const product: LiveProduct = {
           productRgba,
@@ -719,18 +815,32 @@ export class LiveShotGenerator implements ShotGenerator {
           productPng: await encodePng(productRgba),
           maskPng: await encodeMaskPng(mask),
         };
-        return { product, costMicros: cutout.costMicros };
+        return { product, costMicros };
       })();
       this.products.set(key, pending);
       pending.catch(() => this.products.delete(key));
     }
-    const loaded = await pending;
-    const costMicros = this.productCostClaimed.has(key) ? 0 : loaded.costMicros;
-    this.productCostClaimed.add(key);
-    if (!loaded.product) {
-      throw new ShotUnavailableError(loaded.refusal ?? SEGMENTATION_FAILED, costMicros);
+    let loaded: ProductLoad;
+    try {
+      loaded = await pending;
+    } catch (err) {
+      if (err instanceof ProductLoadError) {
+        if (!err.claimed) {
+          err.claimed = true;
+          spend.micros += err.billedMicros;
+        }
+        throw err.original;
+      }
+      throw err;
     }
-    return { product: loaded.product, costMicros };
+    if (!this.productCostClaimed.has(key)) {
+      this.productCostClaimed.add(key);
+      spend.micros += loaded.costMicros;
+    }
+    if (!loaded.product) {
+      throw new ShotUnavailableError(loaded.refusal ?? SEGMENTATION_FAILED);
+    }
+    return loaded.product;
   }
 
   /** Scene prompt and product fill for a composite, all from seed data. */
@@ -762,19 +872,12 @@ export class LiveShotGenerator implements ShotGenerator {
     spendReserved: boolean,
   ): Promise<ShotGeneration> {
     const erosion = await compositeQcErosion(result.canvasMask, result.effectivePasteErodePx);
-    let out: Awaited<ReturnType<typeof encodeForSpec>>;
-    try {
-      out = await encodeForSpec(result.finalRaw, result.canvasMask, result.productReference, spec, {
-        preferPng: true,
-        erodePx: erosion.erodePx,
-      });
-    } catch (err) {
-      if (err instanceof ShotUnavailableError) {
-        // The scene was paid for; keep that spend on the books.
-        throw new ShotUnavailableError(err.message, costMicros);
-      }
-      throw err;
-    }
+    // A spec no encoding can meet throws ShotUnavailableError; generate()
+    // books the paid scene on it from the attempt's spend.
+    const out = await encodeForSpec(result.finalRaw, result.canvasMask, result.productReference, spec, {
+      preferPng: true,
+      erodePx: erosion.erodePx,
+    });
     return {
       image: out.image,
       mask: result.canvasMask,
@@ -789,7 +892,7 @@ export class LiveShotGenerator implements ShotGenerator {
     };
   }
 
-  private async generateLive(args: ShotGenerateArgs): Promise<ShotGeneration> {
+  private async generateLive(args: ShotGenerateArgs, spend: AttemptSpend): Promise<ShotGeneration> {
     const { wiring, loadMedia } = this.opts;
     const { shot } = args;
     const label = shot.type.replaceAll("_", " ");
@@ -816,7 +919,7 @@ export class LiveShotGenerator implements ShotGenerator {
     }
 
     const caps = this.capsFor(args);
-    const { product, costMicros: productCost } = await this.productFor(args, caps);
+    const product = await this.productFor(args, caps, spend);
     const spendReserved = caps !== undefined;
 
     if (method === "deterministic" || method === "template") {
@@ -842,7 +945,7 @@ export class LiveShotGenerator implements ShotGenerator {
           mask: still.mask,
           productReference: still.productReference,
           encoded: still.encoded,
-          costMicros: productCost,
+          costMicros: spend.micros,
           spendReserved,
           fidelityRequired: true,
           ...(erosion ? { fidelityErodePx: erosion.erodePx, fidelityErodeFloorPx: erosion.floorPx } : {}),
@@ -850,7 +953,7 @@ export class LiveShotGenerator implements ShotGenerator {
       } catch (err) {
         // A still that cannot be rendered ends this shot only, never the
         // pack, and keeps the cutout cost it already spent on the books.
-        throw stillFailure(err, label, productCost, args);
+        throw stillFailure(err, label, spend.micros, args);
       }
     }
 
@@ -867,15 +970,25 @@ export class LiveShotGenerator implements ShotGenerator {
         ? [...wiring.imageProviders.slice(1), wiring.imageProviders[0]]
         : wiring.imageProviders;
     const sceneRouting: RoutingTable = { [SCENE_PLATE_TASK]: chain, [HARMONIZE_TASK]: chain };
+    // Every scene call's spend, billed failures included, lands on this
+    // attempt, so a shot that fails after a paid plate still books it.
     const routedScene: Provider = {
       name: "scene-plate-chain",
       kind: "image",
       supports: (task) => task === SCENE_PLATE_TASK || task === HARMONIZE_TASK,
       invoke: async <TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> => {
-        const result = await callWithFailover<TIn, TOut>(ai.registry, sceneRouting, ai.meter, ai.breakerStore, req, {
-          caps,
-        });
-        return { output: result.output, costMicros: result.costMicros };
+        try {
+          const result = await callWithFailover<TIn, TOut>(ai.registry, sceneRouting, ai.meter, ai.breakerStore, req, {
+            caps,
+            ...routedCallHooks(ai),
+          });
+          const costMicros = result.costMicros + result.billedFailureMicros;
+          spend.micros += costMicros;
+          return { output: result.output, costMicros };
+        } catch (err) {
+          spend.micros += failureSpendMicros(err);
+          throw err;
+        }
       },
     };
 
@@ -895,6 +1008,30 @@ export class LiveShotGenerator implements ShotGenerator {
       jobId: args.jobId,
     });
 
-    return this.finishComposite(result, spec, productCost + result.costMicros, spendReserved);
+    return this.finishComposite(result, spec, spend.micros, spendReserved);
   }
+}
+
+/**
+ * Maps whatever ended a live attempt to what the runner needs, always with
+ * the attempt's provider spend so it stays on the shot's books: a refusal,
+ * a spend cap block, a content block or a harmonize output in the wrong
+ * shape becomes ShotUnavailableError (that one shot goes to review, never
+ * the pack); anything else after spend is wrapped in
+ * ShotFailedAfterSpendError, and a failure before any spend passes through.
+ */
+function attemptFailure(err: unknown, spend: AttemptSpend): unknown {
+  if (err instanceof ShotUnavailableError) {
+    return new ShotUnavailableError(err.message, spend.micros);
+  }
+  if (isSpendCapBlock(err)) {
+    return new ShotUnavailableError(SPEND_CAP_REACHED, spend.micros);
+  }
+  if (hasProviderErrorCode(err, "content_blocked")) {
+    return new ShotUnavailableError(SHOT_CONTENT_BLOCKED, spend.micros);
+  }
+  if (providerErrorsOf(err).some((e) => e instanceof HarmonizeAspectError)) {
+    return new ShotUnavailableError(HARMONIZE_SHAPE_REFUSED, spend.micros);
+  }
+  return spend.micros > 0 ? new ShotFailedAfterSpendError(err, spend.micros) : err;
 }

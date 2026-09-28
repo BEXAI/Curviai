@@ -36,6 +36,15 @@ export interface PackAsset {
   /** Raw pixels and mask enable the full deterministic checks. */
   raw?: RawImage;
   mask?: RawMask;
+  /**
+   * Decodes the pixels and mask on demand when raw is not supplied, called
+   * with the exact bytes that ship (after IPTC tagging). Lets a caller hand
+   * over many files holding only their encoded bytes: each file is decoded
+   * when it is checked and released before the next, instead of every
+   * decoded canvas staying in memory until packaging. A loader that throws
+   * leaves that file with the file level checks.
+   */
+  loadPixels?: (bytes: Buffer) => Promise<{ raw: RawImage; mask?: RawMask }>;
   sku?: string;
   seoSlug?: string;
   /** Sequence number for {nn} and {n} naming slots. */
@@ -185,8 +194,16 @@ export async function buildPack(
     let checks: CheckItem[] = [];
     let measured: PackFileReport["measured"] = null;
     let pass = true;
-    if (asset.raw) {
-      const report = await pixelChecks(asset.raw, asset.mask ?? null, spec, {
+    let pixels: { raw: RawImage; mask?: RawMask } | null = asset.raw ? { raw: asset.raw, mask: asset.mask } : null;
+    if (!pixels && asset.loadPixels) {
+      try {
+        pixels = await asset.loadPixels(buffer);
+      } catch {
+        notes.push("raw pixels could not be decoded");
+      }
+    }
+    if (pixels) {
+      const report = await pixelChecks(pixels.raw, pixels.mask ?? null, spec, {
         encoded: { bytes: buffer.length, format },
         edgeMarginPx: asset.edgeMarginPx,
       });

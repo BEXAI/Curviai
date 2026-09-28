@@ -7,19 +7,26 @@
  *
  * Flow: intake and analyze through the LLM recipes, plan shots (LLM planner,
  * validated and repriced from the seed, with the deterministic planner as
- * fallback), fit every shot to the selected channel families, fan out per
- * shot generation, QC each channel output of each shot with deterministic
- * pixel checks on the shipped bytes plus a fidelity report and the planRetry
- * loop, package via buildPack, and account for credits with JobLedgerPlan:
- * reserve on queued, charge per passing shot after delivery, release for
- * shots that need review and on failure. One failing shot never fails the
- * pack; a pack fails only when no shot passes.
+ * fallback), fit every shot to the selected channel specs (undeliverable
+ * methods out first, then the selection, channel file limits and the
+ * budget), fan out per shot generation, QC each channel output of each shot
+ * with deterministic pixel checks on the shipped bytes plus a fidelity
+ * report and the planRetry loop, package via buildPack, and account for
+ * credits with JobLedgerPlan: reserve on queued, charge each shot whose file
+ * is in the delivered pack, release for shots that need review, shots the
+ * packager left out, and on failure. One failing shot never fails the pack;
+ * a pack fails only when nothing can be delivered. Provider spend, billed
+ * failures included, is booked on the shot and the job (COGS).
  */
 
 import {
   AllProvidersFailedError,
+  billedMicrosOf,
   callWithFailover,
+  hasProviderErrorCode,
+  providerErrorsOf,
   type BreakerStore,
+  type CallWithFailoverOptions,
   type CapsHook,
   type CostMeter,
   type ProviderRegistry,
@@ -28,9 +35,13 @@ import {
 } from "@curvi/ai";
 import {
   buildPack,
+  capShotsPerChannel,
+  CHANNEL_LIMIT_REASON,
+  channelLimitViolations,
   channelOf,
   decodeToRgba,
   fidelityReport,
+  HarmonizeAspectError,
   pixelChecks,
   planRetry,
   encodeVisionJpeg,
@@ -52,7 +63,8 @@ import {
 import { creditCosts, recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
 import { getSpec, hasSpec, isMarketplaceSpec, listSpecs, type ChannelSpec } from "@curvi/specs";
 import { z } from "zod";
-import { ShotUnavailableError } from "./errors";
+import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
+import { isWorkspaceObjectKey } from "./object-keys";
 import {
   canvasSizeFor,
   decodeMaskPng,
@@ -63,10 +75,22 @@ import {
 import { isTerminal, JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 
 export type { JobState } from "./state";
-export { ShotUnavailableError } from "./errors";
+export { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 
 /** Plain copy for a shot that ended on an unexpected provider or runtime error. */
 export const SHOT_PROVIDER_TROUBLE = "Our image provider had trouble with this shot, so it needs review.";
+/** Plain copy for a shot an image provider's safety system declined (Update.md 5.4). */
+export const SHOT_CONTENT_BLOCKED = "The image service declined to make this scene, so this shot needs review.";
+/** Plain copy for a passing shot the packager left out because its channel
+ * already had as many images as it allows (Update.md 2.10). */
+export const SHOT_CHANNEL_FULL =
+  "This channel already has as many images as it allows, so this one was left out of the pack and not charged.";
+/** Plain copy for a passing shot the packager left out for another reason. */
+export const SHOT_NOT_DELIVERED = "This image could not be added to the pack, so it was left out and not charged.";
+/** Skipped reason for shots whose method no live provider delivers yet. */
+export const PROVIDER_NOT_ENABLED = "provider not enabled";
+/** Skipped reason for shots none of whose channel specs the seller picked. */
+export const CHANNEL_NOT_SELECTED = "channel not selected";
 /** Plain copy for a shot the pack spend cap stopped before it ran. */
 const PACK_CAP_REACHED =
   "This pack reached its spending limit before this shot could be made, so it needs review.";
@@ -91,6 +115,21 @@ export interface AiDeps {
    * day caps, and each shot's generation cost is gated by the per asset caps
    * (plan 4.4). Providers must estimate costs; unestimated calls fail closed. */
   caps?: SpendCaps;
+  /** Passed to every routed call (Update.md 5.7): called with the global
+   * daily total when a reservation reaches the alert line. The runtime wires
+   * it to the founder spend alert, which dedupes per day. */
+  onCapAlert?: (globalDayTotalMicros: number) => void;
+  /** Passed to every routed call: receives the bookkeeping errors the router
+   * swallows (meter, breaker, release, alert). Wire it to error reporting. */
+  onInternalError?: (err: unknown, context: string) => void;
+}
+
+/** The alert and error hooks every routed call carries. */
+export function routedCallHooks(ai: AiDeps): Pick<CallWithFailoverOptions, "onCapAlert" | "onInternalError"> {
+  return {
+    ...(ai.onCapAlert ? { onCapAlert: ai.onCapAlert } : {}),
+    ...(ai.onInternalError ? { onInternalError: ai.onInternalError } : {}),
+  };
 }
 
 /** The cap layers for a routed LLM call: the job's pack budget plus the
@@ -182,17 +221,63 @@ export interface JobStore {
   /** Failure path safety sweep: returns every credit the ledger still holds
    * for the job, whatever the in process plan believes is outstanding. */
   releaseAllHeld?(jobId: string, workspaceId: string): Promise<void>;
+  /** A shot that passed QC but whose files the packager left out (a channel
+   * image limit): its asset row turns into needs review with reason, so the
+   * board never shows a delivered, charged card for it. Display only: the
+   * runner releases its credits whatever this does. */
+  markShotUndelivered?(update: UndeliveredShot): Promise<void>;
+}
+
+/** A passing shot the packager did not deliver, and why (plain copy). */
+export interface UndeliveredShot {
+  jobId: string;
+  workspaceId: string;
+  shotId: string;
+  shotType: Shot["type"];
+  reason: string;
 }
 
 /** True when a provider chain failed because a spend cap refused at least
- * one provider. The remaining providers failing too (breaker open, outage)
- * does not change that the cap is what stopped the shot, so it goes to needs
- * review rather than failing the whole pack. */
+ * one provider, or the cap reservation could not be made (fail closed). The
+ * remaining providers failing too (breaker open, outage) does not change
+ * that the cap is what stopped the shot, so it goes to needs review rather
+ * than failing the whole pack. Reads the router's error codes, never text. */
 export function isSpendCapBlock(err: unknown): boolean {
   return (
     err instanceof AllProvidersFailedError &&
-    err.errors.some((e) => e.message.startsWith("Spend cap blocked"))
+    (hasProviderErrorCode(err, "cap_blocked") || hasProviderErrorCode(err, "cap_unavailable"))
   );
+}
+
+/**
+ * Provider spend a failed provider call or generation still incurred, in USD
+ * micros: the router's billed total for a failed chain (billedMicrosOf), or
+ * the paid but rejected output a HarmonizeAspectError reports, whichever is
+ * larger per error so nothing is counted twice. Added to the shot or job
+ * cost so COGS matches what the spend caps hold.
+ */
+export function failureSpendMicros(err: unknown): number {
+  const perError = providerErrorsOf(err).reduce(
+    (sum, e) => sum + Math.max(e.billedCostMicros, e instanceof HarmonizeAspectError ? e.costMicros : 0),
+    0,
+  );
+  return Math.max(billedMicrosOf(err), perError);
+}
+
+/**
+ * Splits a generator failure into the error to handle and the provider
+ * spend it carries: a refusal's own cost, the spend a
+ * ShotFailedAfterSpendError wraps, or the billed cost of a raw provider
+ * failure.
+ */
+export function generationFailure(err: unknown): { error: unknown; costMicros: number } {
+  if (err instanceof ShotUnavailableError) {
+    return { error: err, costMicros: err.costMicros };
+  }
+  if (err instanceof ShotFailedAfterSpendError) {
+    return { error: err.original, costMicros: err.costMicros };
+  }
+  return { error: err, costMicros: failureSpendMicros(err) };
 }
 
 /** The job reached a terminal state outside this run; stop working on it. */
@@ -224,6 +309,16 @@ export class InMemoryJobStore implements JobStore {
 
   async savePack(pack: StoredPack): Promise<void> {
     this.packs.push(pack);
+  }
+
+  async markShotUndelivered(update: UndeliveredShot): Promise<void> {
+    for (const asset of this.assets) {
+      if (asset.jobId === update.jobId && asset.shotId === update.shotId) {
+        asset.status = "needs_review";
+        asset.encoded = undefined;
+        asset.verdict = { ...asset.verdict, pass: false, repairHint: update.reason.slice(0, 300) };
+      }
+    }
   }
 }
 
@@ -350,9 +445,22 @@ export interface ShotOutcomeBase {
   failure?: string;
 }
 
+/**
+ * One delivered file as the runner holds it until packaging: the encoded
+ * bytes that ship plus the product mask as a PNG, never decoded pixels. A
+ * 2000 px RGBA canvas is 16 MB while its file is a few hundred KB, and every
+ * shot of a pack runs at once, so buildPack decodes each file through
+ * loadPixels only when it checks it (Update.md 2.15, inline runner memory).
+ */
+export type ShotPackAsset = PackAsset & {
+  /** The product mask as a single channel PNG, for the pack side checks and
+   * the subtask boundary. */
+  maskPng?: Buffer;
+};
+
 export interface ShotOutcome extends ShotOutcomeBase {
   /** One file per passing channel output; feeds buildPack. */
-  packAssets?: PackAsset[];
+  packAssets?: ShotPackAsset[];
 }
 
 /** One delivered file in JSON safe form. */
@@ -377,22 +485,38 @@ export async function serializeShotOutcome(outcome: ShotOutcome): Promise<Serial
     return base;
   }
   const files = await Promise.all(
-    packAssets.map(async (asset): Promise<SerializedPackFile> => ({
-      specId: asset.specId,
-      encodedBase64: asset.buffer.toString("base64"),
-      ...(asset.format !== undefined ? { format: asset.format } : {}),
-      ...(asset.mask ? { maskPngBase64: (await encodeMaskPng(asset.mask)).toString("base64") } : {}),
-      ...(asset.edgeMarginPx !== undefined ? { edgeMarginPx: asset.edgeMarginPx } : {}),
-    })),
+    packAssets.map(async (asset): Promise<SerializedPackFile> => {
+      const maskPng = asset.maskPng ?? (asset.mask ? await encodeMaskPng(asset.mask) : undefined);
+      return {
+        specId: asset.specId,
+        encodedBase64: asset.buffer.toString("base64"),
+        ...(asset.format !== undefined ? { format: asset.format } : {}),
+        ...(maskPng ? { maskPngBase64: maskPng.toString("base64") } : {}),
+        ...(asset.edgeMarginPx !== undefined ? { edgeMarginPx: asset.edgeMarginPx } : {}),
+      };
+    }),
   );
   return { ...base, files };
 }
 
 /**
- * Rebuilds pack assets on the pack task side. The raw pixels are decoded
- * from the shipped bytes, which is exactly what QC measured in the subtask,
- * so the compliance report keeps its measured pixel checks in Trigger mode
- * instead of falling back to file level checks.
+ * Decodes a delivered file for the pack side checks: the pixels of the bytes
+ * that ship and the mask from its PNG. buildPack calls it one file at a time.
+ */
+export function lazyPackPixels(maskPng: Buffer | undefined): NonNullable<PackAsset["loadPixels"]> {
+  return async (bytes: Buffer) => {
+    const raw = await decodeToRgba(bytes);
+    // A mask that no longer decodes costs the mask aware checks, not the file.
+    const mask = maskPng ? await decodeMaskPng(maskPng).catch(() => undefined) : undefined;
+    return mask ? { raw, mask } : { raw };
+  };
+}
+
+/**
+ * Rebuilds pack assets on the pack task side. Nothing is decoded here: the
+ * packager decodes each shipped file (the bytes QC measured in the subtask)
+ * and its mask when it checks it, so the compliance report keeps its
+ * measured pixel checks in Trigger mode without holding every canvas.
  */
 export async function deserializeShotOutcome(
   serialized: SerializableShotOutcome,
@@ -403,27 +527,22 @@ export async function deserializeShotOutcome(
   if (base.status !== "passed" || !files || files.length === 0) {
     return outcome;
   }
-  outcome.packAssets = await Promise.all(
-    files.map(async (file): Promise<PackAsset> => {
-      const buffer = Buffer.from(file.encodedBase64, "base64");
-      const raw = await decodeToRgba(buffer).catch(() => undefined);
-      const mask = file.maskPngBase64
-        ? await decodeMaskPng(Buffer.from(file.maskPngBase64, "base64")).catch(() => undefined)
-        : undefined;
-      return {
-        specId: file.specId,
-        buffer,
-        format: file.format,
-        ...(raw ? { raw } : {}),
-        ...(mask ? { mask } : {}),
-        ...(file.edgeMarginPx !== undefined ? { edgeMarginPx: file.edgeMarginPx } : {}),
-        sku: ctx.sku,
-        seoSlug: ctx.seoSlug,
-        ref: base.shotId,
-        digitalSource: base.digitalSource,
-      };
-    }),
-  );
+  outcome.packAssets = files.map((file): ShotPackAsset => {
+    const buffer = Buffer.from(file.encodedBase64, "base64");
+    const maskPng = file.maskPngBase64 ? Buffer.from(file.maskPngBase64, "base64") : undefined;
+    return {
+      specId: file.specId,
+      buffer,
+      format: file.format,
+      ...(maskPng ? { maskPng } : {}),
+      loadPixels: lazyPackPixels(maskPng),
+      ...(file.edgeMarginPx !== undefined ? { edgeMarginPx: file.edgeMarginPx } : {}),
+      sku: ctx.sku,
+      seoSlug: ctx.seoSlug,
+      ref: base.shotId,
+      digitalSource: base.digitalSource,
+    };
+  });
   return outcome;
 }
 
@@ -434,7 +553,10 @@ export interface PipelineDeps {
   generator: ShotGenerator;
   /** Loads source media bytes for LLM vision input; metadata only when absent. */
   loadMedia?: (mediaId: string) => Promise<Buffer | null>;
-  /** Shot methods to skip after planning, e.g. video until its provider is wired. */
+  /** Shot methods no live provider delivers yet (video, avatar). They are
+   * sent to both planners as undeliverableMethods and removed from either
+   * plan before any budget check, so they never take a deliverable shot's
+   * place (Update.md 1.7). */
   excludeShotMethods?: Array<Shot["method"]>;
   /** Spend ceiling per shot including retries; further attempts stop at it. */
   assetCostCapMicros?: number;
@@ -512,18 +634,25 @@ function sniffImageMime(bytes: Buffer): string {
 /**
  * Anthropic vision blocks for the uploaded photos, so intake and the product
  * analyzer judge the actual pixels instead of metadata. Empty when the deps
- * carry no media loader (demo mode) or nothing loads.
+ * carry no media loader (demo mode) or nothing loads. Only keys under the
+ * job's own workspace prefix are ever loaded (Update.md 4.1): the loader
+ * reads with owner credentials, so another tenant's key is skipped.
  */
-async function visionBlocks(
-  deps: PipelineDeps,
+export async function visionBlocks(
+  deps: Pick<PipelineDeps, "loadMedia">,
   images: GeneratePackInput["images"],
+  workspaceId: string,
   limit = 3,
 ): Promise<unknown[]> {
   if (!deps.loadMedia) {
     return [];
   }
   const blocks: unknown[] = [];
-  for (const image of images.slice(0, limit)) {
+  const owned = images.filter((image) => isWorkspaceObjectKey(workspaceId, image.mediaId));
+  if (owned.length < images.length) {
+    console.warn(`[runner] skipped ${images.length - owned.length} photo keys outside workspace ${workspaceId}`);
+  }
+  for (const image of owned.slice(0, limit)) {
     const bytes = await deps.loadMedia(image.mediaId).catch(() => null);
     if (!bytes || bytes.length === 0) {
       continue;
@@ -543,6 +672,7 @@ async function visionBlocks(
 interface LlmCall<T> {
   value: T | null;
   raw: unknown;
+  /** The delivering call plus any billed failed attempts before it. */
   costMicros: number;
 }
 
@@ -622,14 +752,14 @@ async function llmJson<T>(
       jobId: ctx.jobId,
       stepId: ctx.stepId,
     },
-    { caps: llmCapsHooks(ai) },
+    { caps: llmCapsHooks(ai), ...routedCallHooks(ai) },
   );
   const raw = extractJsonOutput(result.output);
   const parsed = schema.safeParse(raw);
   return {
     value: parsed.success ? (parsed.data as T) : null,
     raw,
-    costMicros: result.costMicros,
+    costMicros: result.costMicros + result.billedFailureMicros,
   };
 }
 
@@ -712,7 +842,7 @@ interface ShotSpend {
 interface OutputRun {
   summary: ShotOutputSummary;
   /** The file to deliver, when the output passed. */
-  packAsset?: PackAsset;
+  packAsset?: ShotPackAsset;
   /** The accepted generation, kept so other channels can be derived from it. */
   generation?: ShotGeneration;
   /** True when no further output of this shot should be attempted (the job
@@ -821,7 +951,9 @@ async function checkGeneration(
 /**
  * Reserves a generation's cost against the caps when the generator did not
  * already reserve before each provider call, and reports the global alert.
- * Returns a refusal reason when a cap blocks.
+ * A generator that reserved per call already reported the alert through the
+ * router's onCapAlert, so nothing is read again here. Returns a refusal
+ * reason when a cap blocks.
  */
 async function settleGenerationSpend(
   shot: Shot,
@@ -829,12 +961,7 @@ async function settleGenerationSpend(
   deps: PipelineDeps,
   generation: ShotGeneration,
 ): Promise<string | null> {
-  if (deps.ai.caps && generation.spendReserved) {
-    const global = await deps.ai.caps.checkAndReserveGlobalDay(0);
-    if (global.alert) {
-      deps.onSpendAlert?.(global.totalMicros);
-    }
-  } else if (deps.ai.caps && generation.costMicros > 0) {
+  if (deps.ai.caps && !generation.spendReserved && generation.costMicros > 0) {
     const spend = await reserveGenerationSpend(deps.ai.caps, shot, ctx, generation.costMicros);
     if (spend.alert && spend.alertTotalMicros !== undefined) {
       deps.onSpendAlert?.(spend.alertTotalMicros);
@@ -894,14 +1021,20 @@ async function runOutput(
         brandColors: ctx.brandColors,
       });
     } catch (err) {
-      if (err instanceof ShotUnavailableError) {
-        spent.micros += err.costMicros;
-        return stop(err.message, false);
+      // Whatever ended the attempt, the provider spend it made stays on the
+      // shot's books (Update.md 5.1), so COGS matches what the caps hold.
+      const { error, costMicros } = generationFailure(err);
+      spent.micros += costMicros;
+      if (error instanceof ShotUnavailableError) {
+        return stop(error.message, false);
+      }
+      if (hasProviderErrorCode(error, "content_blocked")) {
+        return stop(SHOT_CONTENT_BLOCKED, false);
       }
       // A provider outage on this shot (for example every image or cutout
       // provider failing) ends this shot only; its siblings carry on.
-      console.error(`[runner] shot ${shot.id} for ${specId} failed on attempt ${attempt}`, err);
-      return stop(SHOT_PROVIDER_TROUBLE, true, errorDetail(err));
+      console.error(`[runner] shot ${shot.id} for ${specId} failed on attempt ${attempt}`, error);
+      return stop(SHOT_PROVIDER_TROUBLE, true, errorDetail(error));
     }
     spent.micros += generation.costMicros;
 
@@ -945,6 +1078,7 @@ async function runOutput(
       spent.micros += judged.costMicros;
       verdict = judged.value ?? deterministicVerdict(pixel, fidelity);
     } catch (err) {
+      spent.micros += failureSpendMicros(err);
       // A cap reached at the judge ends this shot, not the whole pack.
       if (isSpendCapBlock(err)) {
         return stop("Spend cap reached before this shot could be checked.", true);
@@ -987,7 +1121,7 @@ async function runOutput(
     if (decision.action === "accept") {
       return {
         summary: summary("passed"),
-        packAsset: packAssetFor(shot, specId, ctx, generation, checked.shipped),
+        packAsset: await packAssetFor(shot, specId, ctx, generation),
         generation: { ...generation, image: checked.shipped },
         stopShot: false,
       };
@@ -1003,19 +1137,21 @@ async function runOutput(
   }
 }
 
-function packAssetFor(
+/** The file a passing output delivers: its encoded bytes and mask PNG,
+ * decoded again only when the packager checks it. */
+async function packAssetFor(
   shot: Shot,
   specId: string,
   ctx: ShotContext,
   generation: ShotGeneration,
-  shipped: RawImage,
-): PackAsset {
+): Promise<ShotPackAsset> {
+  const maskPng = generation.mask ? await encodeMaskPng(generation.mask) : undefined;
   return {
     specId,
     buffer: generation.encoded.buffer,
     format: generation.encoded.format,
-    raw: shipped,
-    mask: generation.mask ?? undefined,
+    ...(maskPng ? { maskPng } : {}),
+    loadPixels: lazyPackPixels(maskPng),
     sku: ctx.sku,
     seoSlug: ctx.seoSlug,
     edgeMarginPx: QC_EDGE_MARGIN_PX,
@@ -1062,12 +1198,13 @@ async function deriveOutput(
       ? await deps.generator.deriveForSpec(args, from, specId)
       : await deps.generator.generate(args);
   } catch (err) {
-    if (err instanceof ShotUnavailableError) {
-      spent.micros += err.costMicros;
-      return stop(err.message, false);
+    const { error, costMicros } = generationFailure(err);
+    spent.micros += costMicros;
+    if (error instanceof ShotUnavailableError) {
+      return stop(error.message, false);
     }
-    console.error(`[runner] shot ${shot.id} could not be prepared for ${specId}`, err);
-    return stop("This image could not be prepared for this channel, so it needs review.", false, errorDetail(err));
+    console.error(`[runner] shot ${shot.id} could not be prepared for ${specId}`, error);
+    return stop("This image could not be prepared for this channel, so it needs review.", false, errorDetail(error));
   }
   spent.micros += generation.costMicros;
   const capped = await settleGenerationSpend(shot, ctx, deps, generation);
@@ -1095,7 +1232,7 @@ async function deriveOutput(
     measured,
   };
   return pass
-    ? { summary, packAsset: packAssetFor(shot, specId, ctx, generation, checked.shipped), stopShot: false }
+    ? { summary, packAsset: await packAssetFor(shot, specId, ctx, generation), stopShot: false }
     : { summary, stopShot: false };
 }
 
@@ -1177,7 +1314,7 @@ export async function runShot(
     digitalSource: digitalSourceFor(shot.method, ctx.mode),
     measured: representative.measured,
     outputs: runs.map((r) => r.summary),
-    ...(passedRuns.length > 0 ? { packAssets: passedRuns.map((r) => r.packAsset as PackAsset) } : {}),
+    ...(passedRuns.length > 0 ? { packAssets: passedRuns.map((r) => r.packAsset as ShotPackAsset) } : {}),
     ...(passedRuns.length === 0 && failure !== undefined ? { failure } : {}),
   };
   await deps.store.saveAsset(toStoredAsset(outcome, ctx));
@@ -1297,9 +1434,23 @@ export function isMarketplaceChannel(channel: string): boolean {
 }
 
 /** Channel families of the selected channels ("amazon.main" and "amazon"
- * both select the amazon family). */
+ * both select the amazon family). Decides which zips a pack gets and which
+ * families an LLM plan may name at all. */
 export function selectedFamilies(channels: readonly string[]): Set<string> {
   return new Set(channels.map((c) => channelOf(c)));
+}
+
+/**
+ * True when the seller picked this channel spec (Update.md 2.11). A spec id
+ * selects only itself, so a seller who ticked meta.feed_1x1 gets no 4x5 or
+ * story crop, and amazon.main alone gets no A+ banner; a bare family
+ * ("amazon") or a group prefix ("amazon.aplus") selects every spec under it.
+ */
+export function isSpecSelected(channels: readonly string[], specId: string): boolean {
+  if (!hasSpec(specId)) {
+    return false;
+  }
+  return channels.some((c) => c === specId || (!hasSpec(c) && specId.startsWith(`${c}.`)));
 }
 
 /**
@@ -1337,6 +1488,11 @@ export interface LlmPlanRules {
   mode: "listing" | "concept";
   /** True when a usable front photo exists, so Amazon needs its main image. */
   requireAmazonMain: boolean;
+  /** Shot methods no live provider delivers yet (video, avatar). Their shots
+   * are dropped before every other check, so a plan that follows the recipe
+   * and includes them is neither rejected nor trimmed against a stills only
+   * budget (Update.md 1.7). */
+  excludeMethods?: ReadonlyArray<Shot["method"]>;
 }
 
 export type LlmPlanCheck = { ok: true; shotList: ShotList } | { ok: false; reason: string };
@@ -1347,17 +1503,31 @@ export type LlmPlanCheck = { ok: true; shotList: ShotList } | { ok: false; reaso
  * then taken from the seed), every shot draws from one of this job's photos, every
  * channel is a known spec inside the selected channel families (and never a
  * marketplace spec in concept mode), at most one shot targets amazon.main and
- * it is the deterministic amazon_main, Amazon gets its main image when a
- * usable front photo exists, and the plan fits the budget once every shot is
- * repriced from the seed (Update.md 1.7). Otherwise the deterministic planner
- * runs, and the reason is reported.
+ * it is the deterministic amazon_main, no channel spec gets more shots than
+ * it takes files (a ninth amazon.secondary), Amazon gets its main image when
+ * amazon.main is selected and a usable front photo exists, and the plan fits
+ * the budget once every shot is repriced from the seed (Update.md 1.7, 2.10,
+ * 2.12). Shots of an excluded method are dropped first, and each shot keeps
+ * only the channel specs the seller picked (a shot left with none is
+ * skipped), so the limits and the budget are checked against what would
+ * really run. Otherwise the deterministic planner runs, and the reason is
+ * reported.
  */
 export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanCheck {
   const parsed = ShotList.safeParse(raw);
   if (!parsed.success) {
     return { ok: false, reason: "the plan did not match the shot list schema" };
   }
-  const shots = parsed.data.shots;
+  const excluded = new Set(rules.excludeMethods ?? []);
+  const skipped: ShotList["skipped"] = [...parsed.data.skipped];
+  const shots: Shot[] = [];
+  for (const shot of parsed.data.shots) {
+    if (excluded.has(shot.method)) {
+      skipped.push({ type: shot.type, reason: PROVIDER_NOT_ENABLED });
+    } else {
+      shots.push(shot);
+    }
+  }
   const media = new Set(rules.mediaIds);
   const families = selectedFamilies(rules.channels);
   const ids = new Set<string>();
@@ -1389,22 +1559,49 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
       }
     }
   }
-  const mains = shots.filter((s) => s.channels.includes("amazon.main"));
+  // Only the specs the seller picked are generated and charged.
+  const narrowed: Shot[] = [];
+  for (const shot of shots) {
+    const kept = [...new Set(shot.channels.filter((c) => isSpecSelected(rules.channels, c)))];
+    if (kept.length === 0) {
+      skipped.push({ type: shot.type, reason: CHANNEL_NOT_SELECTED });
+      continue;
+    }
+    narrowed.push(kept.length === shot.channels.length ? shot : { ...shot, channels: kept });
+  }
+  if (narrowed.length === 0) {
+    return { ok: false, reason: "the plan has no shot for the selected channels" };
+  }
+  const mains = narrowed.filter((s) => s.channels.includes("amazon.main"));
   if (mains.length > 1) {
     return { ok: false, reason: "more than one shot targets amazon.main" };
   }
   if (mains.some((s) => s.type !== "amazon_main" || s.method !== "deterministic")) {
     return { ok: false, reason: "amazon.main must be the deterministic amazon_main shot" };
   }
-  if (rules.mode === "listing" && rules.requireAmazonMain && families.has("amazon") && mains.length === 0) {
+  // The packager delivers at most channelFileLimit files per spec; a plan
+  // over it would hold and generate shots that can never ship.
+  const [violation] = channelLimitViolations(narrowed);
+  if (violation) {
+    return {
+      ok: false,
+      reason: `${violation.count} shots target ${violation.specId}, which takes at most ${violation.limit}`,
+    };
+  }
+  if (
+    rules.mode === "listing" &&
+    rules.requireAmazonMain &&
+    isSpecSelected(rules.channels, "amazon.main") &&
+    mains.length === 0
+  ) {
     return { ok: false, reason: "Amazon is selected but the plan has no amazon_main shot" };
   }
-  const repriced = shots.map((s) => ({ ...s, credits: creditsForShot(s) }));
+  const repriced = narrowed.map((s) => ({ ...s, credits: creditsForShot(s) }));
   const total = repriced.reduce((sum, s) => sum + s.credits, 0);
   if (total > rules.budget) {
     return { ok: false, reason: `the plan needs ${total} credits and the budget is ${rules.budget}` };
   }
-  return { ok: true, shotList: { shots: repriced, skipped: parsed.data.skipped } };
+  return { ok: true, shotList: { shots: repriced, skipped } };
 }
 
 export interface FitOptions {
@@ -1413,39 +1610,63 @@ export interface FitOptions {
   budget: number;
   profile: ProductProfile;
   primaryMediaId?: string;
+  /** Shot methods no live provider delivers yet; their shots are skipped as
+   * "provider not enabled" before the budget trim, so they never take room
+   * a deliverable shot could use. */
+  excludeMethods?: ReadonlyArray<Shot["method"]>;
 }
 
 const GOOGLE_MAIN_SPEC = "google.merchant.main";
+/** ShotList schema cap. */
+const MAX_PLAN_SHOTS = 40;
 
 /**
- * Fits a plan to what the seller selected (Update.md 2.11). Every shot keeps
- * only the channel specs whose family was selected (never a marketplace spec
- * in concept mode); a shot left with none is skipped, so unselected channels
- * (for example social crops when no social channel was picked) cost nothing.
- * When Google is selected its main image slot is filled: the white main
- * image also ships to Google when there is one, otherwise a white front shot
- * is added within the budget. Shot ids are made unique.
+ * Fits a plan to what the seller selected and what can ship (Update.md 1.7,
+ * 2.10, 2.11), in this order, so every limit and the budget see only shots
+ * that would really run:
+ * 1. shots of an excluded method are skipped ("provider not enabled");
+ * 2. every shot keeps only the channel specs the seller picked (a spec id
+ *    selects only itself, a family every spec in it; never a marketplace
+ *    spec in concept mode), and a shot left with none is skipped, so
+ *    unselected crops, banners and heroes cost nothing;
+ * 3. when google.merchant.main is picked its slot is filled: the white main
+ *    image also ships to Google when there is one, otherwise a white front
+ *    shot is added;
+ * 4. no spec gets more shots than it takes files (capShotsPerChannel);
+ * 5. the plan is trimmed to the budget, lowest priority first;
+ * 6. shot ids are made unique.
+ * Shots aimed at any selected marketplace listing spec (etsy.listing,
+ * ebay.listing, walmart.main, tiktokshop.main) or at pinterest.pin are kept
+ * and packed like every other channel.
  */
 export function fitShotsToChannels(plan: ShotList, opts: FitOptions): ShotList {
-  const families = selectedFamilies(opts.channels);
+  const excluded = new Set(opts.excludeMethods ?? []);
   const skipped = [...plan.skipped];
-  const shots: Shot[] = [];
+  let shots: Shot[] = [];
   for (const shot of plan.shots) {
+    if (excluded.has(shot.method)) {
+      skipped.push({ type: shot.type, reason: PROVIDER_NOT_ENABLED });
+      continue;
+    }
     const kept = [
       ...new Set(
         shot.channels.filter(
-          (c) => hasSpec(c) && families.has(channelOf(c)) && !(opts.mode === "concept" && isMarketplaceSpec(c)),
+          (c) => isSpecSelected(opts.channels, c) && !(opts.mode === "concept" && isMarketplaceSpec(c)),
         ),
       ),
     ];
     if (kept.length === 0) {
-      skipped.push({ type: shot.type, reason: "channel not selected" });
+      skipped.push({ type: shot.type, reason: CHANNEL_NOT_SELECTED });
       continue;
     }
     shots.push({ ...shot, channels: kept });
   }
 
-  if (opts.mode === "listing" && families.has(channelOf(GOOGLE_MAIN_SPEC)) && !shots.some((s) => s.channels.includes(GOOGLE_MAIN_SPEC))) {
+  if (
+    opts.mode === "listing" &&
+    isSpecSelected(opts.channels, GOOGLE_MAIN_SPEC) &&
+    !shots.some((s) => s.channels.includes(GOOGLE_MAIN_SPEC))
+  ) {
     const whiteMain = shots.find((s) => s.type === "amazon_main" && s.method === "deterministic");
     const frontUsable =
       opts.profile.imageQuality.usableForMain && opts.profile.photographedAngles.includes("front");
@@ -1454,7 +1675,8 @@ export function fitShotsToChannels(plan: ShotList, opts: FitOptions): ShotList {
     } else if (!frontUsable || !opts.primaryMediaId) {
       skipped.push({ type: "google_main", reason: "needs photo" });
     } else {
-      const shot: Shot = {
+      // Priority 1, so the budget trim below keeps it over any extra.
+      shots.unshift({
         id: "s00_google_main",
         type: "alt_angle_white",
         sourceMediaId: opts.primaryMediaId,
@@ -1463,15 +1685,12 @@ export function fitShotsToChannels(plan: ShotList, opts: FitOptions): ShotList {
         stylePreset: "none",
         credits: creditsForShot({ type: "alt_angle_white", method: "deterministic" }),
         priority: 1,
-      };
-      const total = shots.reduce((sum, s) => sum + s.credits, 0);
-      if (total + shot.credits <= opts.budget) {
-        shots.unshift(shot);
-      } else {
-        skipped.push({ type: "google_main", reason: "credit budget" });
-      }
+      });
     }
   }
+
+  shots = capShotsPerChannel(shots, skipped);
+  shots = trimShotsToBudget(shots, opts.budget, skipped);
 
   // Shot ids key the ledger charges; a duplicate would hold credits forever.
   const seen = new Set<string>();
@@ -1484,6 +1703,52 @@ export function fitShotsToChannels(plan: ShotList, opts: FitOptions): ShotList {
     shot.id = id;
   }
   return { shots, skipped };
+}
+
+/**
+ * Keeps the plan within the credit budget and the schema's shot cap by
+ * dropping the lowest priority shot first (the largest number) and, among
+ * ties, the most expensive one, so a single drop frees the most budget: the
+ * planner's rule 6, applied after the plan was fitted to the selection.
+ */
+export function trimShotsToBudget(shots: readonly Shot[], budget: number, skipped: ShotList["skipped"]): Shot[] {
+  const kept = [...shots];
+  const total = (): number => kept.reduce((sum, s) => sum + s.credits, 0);
+  const dropOne = (reason: string): void => {
+    let dropIdx = 0;
+    for (let i = 1; i < kept.length; i++) {
+      const a = kept[i];
+      const b = kept[dropIdx];
+      if (a.priority > b.priority || (a.priority === b.priority && a.credits > b.credits)) {
+        dropIdx = i;
+      }
+    }
+    const [dropped] = kept.splice(dropIdx, 1);
+    skipped.push({ type: dropped.type, reason });
+  };
+  while (kept.length > 0 && total() > budget) {
+    dropOne("credit budget");
+  }
+  while (kept.length > MAX_PLAN_SHOTS) {
+    dropOne("shot cap");
+  }
+  return kept;
+}
+
+/** Plan options as the runner sends them: PlanOptions plus the shot methods
+ * no live provider delivers yet, so the planner (and the LLM planner, which
+ * sees these options) leaves them out before it trims to the budget. */
+export type RunnerPlanOptions = PlanOptions & { undeliverableMethods?: Array<Shot["method"]> };
+
+/**
+ * The deterministic planner's plan for a pack. planShots proposes every shot
+ * the product supports without a budget, so its own trim never keeps an
+ * unselected crop or banner over a shot the seller picked; fitShotsToChannels
+ * then narrows the plan to the selection and trims it to the real budget.
+ */
+export function deterministicPlan(profile: ProductProfile, options: RunnerPlanOptions, fit: FitOptions): ShotList {
+  const everything: RunnerPlanOptions = { ...options, creditBudget: Number.MAX_SAFE_INTEGER };
+  return fitShotsToChannels(planShots(profile, everything), fit);
 }
 
 /** Job error when no shot in the pack passed. Plain copy the board shows. */
@@ -1554,6 +1819,19 @@ export async function runGeneratePack(
     ...(error !== undefined ? { error } : {}),
   });
 
+  // Every LLM call's spend lands on the job's COGS, including the billed
+  // attempts of a chain that failed, before the failure propagates.
+  const bookedLlm = async <T>(call: Promise<LlmCall<T>>): Promise<LlmCall<T>> => {
+    try {
+      const result = await call;
+      costMicros += result.costMicros;
+      return result;
+    } catch (err) {
+      costMicros += failureSpendMicros(err);
+      throw err;
+    }
+  };
+
   if ((await store.setJobState(input.jobId, state)) === false) {
     // Already terminal before this run started (for example reconciled while
     // it waited in the queue); its reservation was settled there.
@@ -1565,17 +1843,18 @@ export async function runGeneratePack(
     // Intake and analyze, with the uploaded photos as vision input when a
     // media loader is wired.
     await advance(transition(state, "start_analysis"));
-    const photos = await visionBlocks(deps, input.images);
-    const intake = await llmJson<IntakeResult>(
-      deps.ai,
-      "intake",
-      IntakeResult,
-      { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
-      { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
-      photos,
-      IntakeResult,
+    const photos = await visionBlocks(deps, input.images, input.workspaceId);
+    const intake = await bookedLlm(
+      llmJson<IntakeResult>(
+        deps.ai,
+        "intake",
+        IntakeResult,
+        { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
+        { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
+        photos,
+        IntakeResult,
+      ),
     );
-    costMicros += intake.costMicros;
     if (!intake.value) {
       throw new Error("Intake response failed schema validation");
     }
@@ -1589,16 +1868,17 @@ export async function runGeneratePack(
       throw new Error(`This upload was flagged for ${intakeBlock.join(", ")} and needs a manual review before a pack can run`);
     }
 
-    const analysis = await llmJson<ProductProfile>(
-      deps.ai,
-      "analyze",
-      ProductProfile,
-      { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
-      { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
-      photos,
-      ProductProfile,
+    const analysis = await bookedLlm(
+      llmJson<ProductProfile>(
+        deps.ai,
+        "analyze",
+        ProductProfile,
+        { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
+        { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
+        photos,
+        ProductProfile,
+      ),
     );
-    costMicros += analysis.costMicros;
     if (!analysis.value) {
       throw new Error("Product analysis response failed schema validation");
     }
@@ -1610,15 +1890,18 @@ export async function runGeneratePack(
     await store.saveProfile?.(input.jobId, profile);
 
     // Plan shots: LLM planner recipe first, validated and repriced from the
-    // seed; the deterministic planShots when it is rejected. Concept mode
+    // seed; the deterministic planner when it is rejected. Concept mode
     // drops marketplace channels before planning; the exclusion is
-    // structural, not a pricing convention.
+    // structural, not a pricing convention. Shot methods no live provider
+    // delivers yet are left out before any budget check, on both paths, so
+    // they never cost a deliverable shot its place (Update.md 1.7).
     await advance(transition(state, "analysis_done"));
     const mode = input.mode ?? "listing";
     const conceptExcluded = mode === "concept" ? input.channels.filter((c) => isMarketplaceChannel(c)) : [];
     const effectiveChannels = input.channels.filter((c) => !conceptExcluded.includes(c));
     const primaryMediaId = input.images[0]?.mediaId;
-    const planOptions: PlanOptions = {
+    const excludeMethods = [...new Set(deps.excludeShotMethods ?? [])];
+    const planOptions: RunnerPlanOptions = {
       channels: effectiveChannels,
       tier: input.tier,
       creditBudget: input.creditBudget,
@@ -1626,27 +1909,38 @@ export async function runGeneratePack(
       hasComparisonFacts: input.hasComparisonFacts,
       hasVideoSource: input.hasVideoSource,
       primaryMediaId,
+      ...(excludeMethods.length > 0 ? { undeliverableMethods: excludeMethods } : {}),
     };
-    const planned = await llmJson<unknown>(
-      deps.ai,
-      "plan",
-      { safeParse: (data: unknown) => ({ success: true, data }) },
-      { profile, options: planOptions },
-      { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "plan" },
-      undefined,
-      ShotList,
+    const planned = await bookedLlm(
+      llmJson<unknown>(
+        deps.ai,
+        "plan",
+        { safeParse: (data: unknown) => ({ success: true, data }) },
+        { profile, options: planOptions },
+        { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "plan" },
+        undefined,
+        ShotList,
+      ),
     );
-    costMicros += planned.costMicros;
     const check = validateLlmShotList(planned.raw, {
       budget: input.creditBudget,
       mediaIds: input.images.map((image) => image.mediaId),
       channels: effectiveChannels,
       mode,
       requireAmazonMain: profile.imageQuality.usableForMain && profile.photographedAngles.includes("front"),
+      excludeMethods,
     });
+    const fit: FitOptions = {
+      channels: effectiveChannels,
+      mode,
+      budget: input.creditBudget,
+      profile,
+      primaryMediaId,
+      excludeMethods,
+    };
     let shotList: ShotList;
     if (check.ok) {
-      shotList = check.shotList;
+      shotList = fitShotsToChannels(check.shotList, fit);
       plannerSource = "llm";
     } else {
       planRejection = check.reason;
@@ -1657,25 +1951,8 @@ export async function runGeneratePack(
       if (attempted) {
         console.warn(`[runner] job ${input.jobId} LLM shot plan rejected: ${check.reason}`);
       }
-      shotList = planShots(profile, planOptions);
+      shotList = deterministicPlan(profile, planOptions, fit);
       plannerSource = "deterministic";
-    }
-    shotList = fitShotsToChannels(shotList, {
-      channels: effectiveChannels,
-      mode,
-      budget: input.creditBudget,
-      profile,
-      primaryMediaId,
-    });
-    if (deps.excludeShotMethods && deps.excludeShotMethods.length > 0) {
-      const excluded = new Set(deps.excludeShotMethods);
-      const kept = shotList.shots.filter((shot) => !excluded.has(shot.method));
-      for (const shot of shotList.shots) {
-        if (excluded.has(shot.method)) {
-          shotList.skipped.push({ type: shot.type, reason: "provider not enabled" });
-        }
-      }
-      shotList = { shots: kept, skipped: shotList.skipped };
     }
     plannedShots = shotList.shots.length;
     skipped = [
@@ -1718,23 +1995,26 @@ export async function runGeneratePack(
           throw new ShotUnavailableError(PACK_CAP_REACHED);
         }
       };
+      // Spend of a failed attempt counts toward the cap too.
+      const tracked = async (run: () => Promise<ShotGeneration>): Promise<ShotGeneration> => {
+        gate();
+        try {
+          const generation = await run();
+          generatedCostMicros += generation.costMicros;
+          return generation;
+        } catch (err) {
+          generatedCostMicros += generationFailure(err).costMicros;
+          throw err;
+        }
+      };
       fanOutDeps = {
         ...deps,
         generator: {
-          generate: async (args) => {
-            gate();
-            const generation = await inner.generate(args);
-            generatedCostMicros += generation.costMicros;
-            return generation;
-          },
+          generate: (args) => tracked(() => inner.generate(args)),
           ...(inner.deriveForSpec
             ? {
-                deriveForSpec: async (args: ShotGenerateArgs, from: ShotGeneration, specId: string) => {
-                  gate();
-                  const generation = await inner.deriveForSpec!(args, from, specId);
-                  generatedCostMicros += generation.costMicros;
-                  return generation;
-                },
+                deriveForSpec: (args: ShotGenerateArgs, from: ShotGeneration, specId: string) =>
+                  tracked(() => inner.deriveForSpec!(args, from, specId)),
               }
             : {}),
         },
@@ -1774,7 +2054,7 @@ export async function runGeneratePack(
     }
 
     // Packaging: one zip per selected channel family, one file per passing
-    // channel output.
+    // channel output. The packager decodes each file when it checks it.
     await advance(transition(state, "qc_done"));
     const packAssets = passing.flatMap((o) => o.packAssets ?? []);
     const families = [...selectedFamilies(effectiveChannels)];
@@ -1782,6 +2062,9 @@ export async function runGeneratePack(
       outDir: deps.packOutDir,
       writeFiles: true,
     });
+    if (built.report.files.length === 0) {
+      throw new Error("None of the shots in this pack could be delivered, so nothing was charged.");
+    }
     pack = {
       jobId: input.jobId,
       workspaceId: input.workspaceId,
@@ -1792,14 +2075,46 @@ export async function runGeneratePack(
     };
     await store.savePack(pack);
 
-    // QC accounting, part two: the files are delivered, so charge each
-    // passing shot once. The heartbeat keeps the reconciler off the job
-    // while the charges land.
+    // QC accounting, part two: charge each passing shot once, and only when
+    // at least one of its files is in the delivered pack (a ref in
+    // report.files). A shot the packager left out, for example a ninth
+    // amazon.secondary over the channel image limit, is released like a
+    // shot that needs review (Update.md 2.10, 2.12). The heartbeat keeps
+    // the reconciler off the job while the charges land.
+    const delivered = new Set(
+      built.report.files.map((f) => f.ref).filter((ref): ref is string => ref !== null),
+    );
+    const droppedFor = new Map<string, string>();
+    for (const drop of built.report.dropped) {
+      if (drop.ref !== null && !droppedFor.has(drop.ref)) {
+        droppedFor.set(drop.ref, drop.reason);
+      }
+    }
     await store.heartbeat?.(input.jobId);
     for (const outcome of passing) {
-      passed += 1;
+      if (delivered.has(outcome.shotId)) {
+        passed += 1;
+        if (outcome.credits > 0) {
+          await applyLedger(ledger.chargeForPassingAsset(outcome.shotId, outcome.credits));
+        }
+        continue;
+      }
+      needsReview += 1;
+      const reason = droppedFor.get(outcome.shotId) ?? "no file was delivered";
+      console.warn(`[runner] job ${input.jobId} shot ${outcome.shotId} passed but was not delivered: ${reason}`);
       if (outcome.credits > 0) {
-        await applyLedger(ledger.chargeForPassingAsset(outcome.shotId, outcome.credits));
+        await applyLedger(ledger.releaseForUndeliveredShot(outcome.shotId, outcome.credits, reason));
+      }
+      try {
+        await store.markShotUndelivered?.({
+          jobId: input.jobId,
+          workspaceId: input.workspaceId,
+          shotId: outcome.shotId,
+          shotType: outcome.shotType,
+          reason: reason.startsWith(CHANNEL_LIMIT_REASON) ? SHOT_CHANNEL_FULL : SHOT_NOT_DELIVERED,
+        });
+      } catch (markErr) {
+        console.warn(`[runner] could not mark shot ${outcome.shotId} as not delivered`, markErr);
       }
     }
     await applyLedger(ledger.releaseUnusedOnCompletion());
