@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { creditCosts, tierByKey, tiers, topUps } from "@curvi/pipeline/seed";
-import { estimatePackCredits } from "@/lib/pack-estimate";
+import { entitlementsFor, tierByKey, tiers, topUps } from "@curvi/pipeline/seed";
+import { FEATURES, unqualifiedClaims } from "@/lib/marketing-facts";
 import { billingCheckoutHref, parseCheckoutIntent, parseCheckoutStatus, signupHref } from "./intent";
 import { comingSoonFeatures, includedFeatures, planFeatures } from "./plan-features";
 import {
@@ -16,7 +16,6 @@ import {
   priceForCadence,
   tierDisplayName,
 } from "./plans";
-import { packsPerMonth, stillPackCredits, TYPICAL_PACK_CHANNELS } from "./pricing-copy";
 import { tierPriceEnvName, topUpPriceEnvName } from "./price-table";
 import { HANDLED_STRIPE_EVENTS } from "./stripe-webhook";
 
@@ -63,6 +62,27 @@ describe("plan features (Phase 10 decision 1)", () => {
     }
   });
 
+  it("takes each line's status from the site wide feature flags", () => {
+    const labels = (tier: (typeof tiers)[number]["key"]) => planFeatures(tier).map((feature) => feature.label);
+    for (const tier of tiers) {
+      for (const feature of planFeatures(tier.key)) {
+        // A line sold as included never names a feature that is not live, and
+        // a coming soon line always names one, so a flag flip moves it.
+        const claims = unqualifiedClaims(feature.label);
+        if (feature.status === "live") {
+          expect(claims, `${tier.key}: ${feature.label}`).toEqual([]);
+        } else {
+          expect(claims.length, `${tier.key}: ${feature.label}`).toBeGreaterThan(0);
+        }
+      }
+    }
+    const videoStatus: string = FEATURES.video.status;
+    expect(videoStatus === "live").toBe(includedFeatures("growth").includes("Generative video"));
+    expect(labels("pro")).toContain(`${entitlementsFor("pro").brandKits} brand kits`);
+    expect(labels("agency")).toContain(`${entitlementsFor("agency").clientWorkspaces} client workspaces`);
+    expect(labels("starter")).toContain(`${entitlementsFor("starter").brandKits} brand kit`);
+  });
+
   it("keeps features that do not run yet under coming soon", () => {
     const notLive = [
       "Templated video",
@@ -80,17 +100,6 @@ describe("plan features (Phase 10 decision 1)", () => {
     for (const label of notLive) {
       expect(allIncluded).not.toContain(label);
     }
-  });
-});
-
-describe("pricing copy numbers", () => {
-  it("quotes the pack size the estimate would charge, not a fixed range", () => {
-    const expected = estimatePackCredits(TYPICAL_PACK_CHANNELS, "listing", "starter").total;
-    expect(stillPackCredits()).toBe(expected);
-    expect(stillPackCredits()).toBeGreaterThanOrEqual(creditCosts.deterministic);
-    expect(packsPerMonth(tierByKey("starter").creditsPerMonth)).toBe(
-      Math.floor(tierByKey("starter").creditsPerMonth / expected),
-    );
   });
 });
 

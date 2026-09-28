@@ -2,57 +2,74 @@
  * What each plan includes today and what is coming. Phase 10 decision 1: a
  * feature that does not run in production is never listed as included in
  * what a plan pays for; it may appear only under a "Coming soon" label.
- * Flip a feature to live in the same change that ships it.
  *
- * Only wording lives here. Prices and credit amounts come from the seed.
+ * Each line names the site wide feature flags it depends on in
+ * lib/marketing-facts (FEATURES), so /pricing and /app/billing can never
+ * disagree with the rest of the site: flipping a flag there moves the line
+ * here. Counts come from the seed entitlements; only wording lives here.
  */
 
-import type { TierKey } from "@curvi/pipeline/seed";
+import { entitlementsFor, type TierKey } from "@curvi/pipeline/seed";
+import { FEATURES, type Availability, type FeatureKey } from "@/lib/marketing-facts";
 
-export type FeatureStatus = "live" | "coming_soon";
+export type FeatureStatus = Availability;
 
 export interface PlanFeature {
   label: string;
   status: FeatureStatus;
 }
 
-const STILLS = "Compliant main images, lifestyle scenes and channel sized crops";
-const REPORT = "Compliance report on every file";
+interface PlanLine {
+  label: string;
+  /** The line is included only while every one of these is live. */
+  needs: readonly FeatureKey[];
+}
 
-const PLAN_FEATURES: Record<TierKey, PlanFeature[]> = {
-  free: [
-    { label: STILLS, status: "live" },
-    { label: REPORT, status: "live" },
-    { label: "Public share page for a pack", status: "coming_soon" },
-  ],
+const STILLS: PlanLine = {
+  label: "Compliant main images, lifestyle scenes and channel sized crops",
+  needs: ["whiteMainImage", "lifestyleScenes"],
+};
+const REPORT: PlanLine = { label: "Compliance report on every file", needs: ["complianceReport"] };
+
+function brandKits(tier: TierKey): string {
+  const count = entitlementsFor(tier).brandKits;
+  return `${count} ${count === 1 ? "brand kit" : "brand kits"}`;
+}
+
+const PLAN_LINES: Record<TierKey, PlanLine[]> = {
+  free: [STILLS, REPORT, { label: "Public share page for a pack", needs: ["sharePages"] }],
   starter: [
-    { label: "1 brand kit", status: "live" },
-    { label: STILLS, status: "live" },
-    { label: REPORT, status: "live" },
-    { label: "Templated video", status: "coming_soon" },
+    { label: brandKits("starter"), needs: ["brandKitColors"] },
+    STILLS,
+    REPORT,
+    { label: "Templated video", needs: ["video"] },
   ],
   growth: [
-    { label: "Everything in Starter", status: "live" },
-    { label: "Generative video", status: "coming_soon" },
-    { label: "Fresh Creative Drop every Monday", status: "coming_soon" },
-    { label: "Shopify auto packs for new products", status: "coming_soon" },
+    { label: "Everything in Starter", needs: [] },
+    { label: "Generative video", needs: ["video"] },
+    { label: "Fresh Creative Drop every Monday", needs: ["freshCreativeDrop"] },
+    { label: "Shopify auto packs for new products", needs: ["shopifyAutoPacks"] },
   ],
   pro: [
-    { label: "Everything in Starter", status: "live" },
-    { label: "UGC hook ads", status: "coming_soon" },
-    { label: "3 brand kits", status: "coming_soon" },
-    { label: "Priority queue", status: "coming_soon" },
+    { label: "Everything in Starter", needs: [] },
+    { label: "UGC hook ads", needs: ["ugcAds"] },
+    { label: brandKits("pro"), needs: ["multipleBrandKits"] },
+    { label: "Priority queue", needs: ["priorityQueue"] },
   ],
   agency: [
-    { label: "Everything in Starter", status: "live" },
-    { label: "10 client workspaces", status: "coming_soon" },
-    { label: "Client review links", status: "coming_soon" },
-    { label: "White label share pages", status: "coming_soon" },
+    { label: "Everything in Starter", needs: [] },
+    { label: `${entitlementsFor("agency").clientWorkspaces} client workspaces`, needs: ["agencyWorkspaces"] },
+    { label: "Client review links", needs: ["reviewLinks"] },
+    { label: "White label share pages", needs: ["whiteLabel"] },
   ],
 };
 
+function lineStatus(line: PlanLine): FeatureStatus {
+  return line.needs.every((key) => FEATURES[key].status === "live") ? "live" : "coming_soon";
+}
+
 export function planFeatures(tier: TierKey): PlanFeature[] {
-  return PLAN_FEATURES[tier] ?? [];
+  return (PLAN_LINES[tier] ?? []).map((line) => ({ label: line.label, status: lineStatus(line) }));
 }
 
 /** Features a buyer gets today. Never contains a coming soon item. */
@@ -68,5 +85,3 @@ export function comingSoonFeatures(tier: TierKey): string[] {
     .filter((feature) => feature.status === "coming_soon")
     .map((feature) => feature.label);
 }
-
-export const COMING_SOON_LABEL = "Coming soon";

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isOpenSubscription, keepsPaidPlan, needsCardUpdate } from "./subscription-status";
+import {
+  acceptsSubscriptionStatus,
+  isOpenSubscription,
+  keepsPaidPlan,
+  needsCardUpdate,
+  pastDueMessage,
+} from "./subscription-status";
 
 describe("subscription status rules", () => {
   it("keeps the paid plan while Stripe retries a failed renewal", () => {
@@ -23,5 +29,35 @@ describe("subscription status rules", () => {
     expect(isOpenSubscription("past_due")).toBe(true);
     expect(isOpenSubscription("incomplete")).toBe(false);
     expect(isOpenSubscription("canceled")).toBe(false);
+  });
+
+  it("ignores a status that can only come from an older event", () => {
+    // Nothing leaves canceled or incomplete_expired.
+    for (const incoming of ["active", "past_due", "trialing", "incomplete", "unpaid"]) {
+      expect(acceptsSubscriptionStatus("canceled", incoming), incoming).toBe(false);
+      expect(acceptsSubscriptionStatus("incomplete_expired", incoming), incoming).toBe(false);
+    }
+    // Nothing goes back to incomplete once the first payment went through.
+    for (const current of ["active", "past_due", "trialing", "unpaid", "paused", "superseded"]) {
+      expect(acceptsSubscriptionStatus(current, "incomplete"), current).toBe(false);
+      expect(acceptsSubscriptionStatus(current, "incomplete_expired"), current).toBe(false);
+    }
+  });
+
+  it("accepts every forward move Stripe makes", () => {
+    expect(acceptsSubscriptionStatus(null, "incomplete")).toBe(true);
+    expect(acceptsSubscriptionStatus("incomplete", "active")).toBe(true);
+    expect(acceptsSubscriptionStatus("incomplete", "incomplete_expired")).toBe(true);
+    expect(acceptsSubscriptionStatus("active", "past_due")).toBe(true);
+    expect(acceptsSubscriptionStatus("past_due", "active")).toBe(true);
+    expect(acceptsSubscriptionStatus("past_due", "canceled")).toBe(true);
+    expect(acceptsSubscriptionStatus("canceled", "canceled")).toBe(true);
+  });
+
+  it("words the past due notice for who is reading it", () => {
+    expect(pastDueMessage("past_due", "Growth", true)).toBe(
+      "Stripe will try the card again over the next few days. Update the card to keep the Growth plan.",
+    );
+    expect(pastDueMessage("unpaid", "Pro", false)).toContain("Ask the workspace owner to update the card");
   });
 });

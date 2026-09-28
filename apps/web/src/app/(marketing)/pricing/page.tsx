@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { tierByKey } from "@curvi/pipeline/seed";
 import { JsonLd } from "@/components/json-ld";
 import { PricingTiers } from "@/components/marketing/pricing-tiers";
-import { packsPerMonth, stillPackCredits } from "@/lib/billing/pricing-copy";
+import { isStripeConfigured } from "@/lib/env";
+import { packsForCredits, typicalPackCredits } from "@/lib/marketing-facts";
 import { breadcrumbJsonLd, jsonLdGraph, pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
@@ -12,6 +13,7 @@ export const metadata: Metadata = pageMetadata({
 });
 
 export default function PricingPage() {
+  const starter = tierByKey("starter");
   return (
     <div className="mx-auto max-w-6xl px-6 py-16">
       <JsonLd
@@ -25,12 +27,17 @@ export default function PricingPage() {
       />
       <div className="mx-auto max-w-2xl text-center">
         <h1 className="text-4xl font-bold tracking-tight text-ink-950">Pricing</h1>
-        <p className="mt-4 text-lg text-ink-600">
-          Every plan buys credits. Credits buy assets. A pack of still images for one product, sized for
-          Amazon and Shopify, uses about {stillPackCredits()} credits, so Starter covers about{" "}
-          {packsPerMonth(tierByKey("starter").creditsPerMonth)} products a month.
+        <p className="mt-4 text-lg text-ink-600" data-testid="pricing-intro">
+          Every plan buys credits. Credits buy assets. A typical listing pack of still images uses about{" "}
+          {typicalPackCredits()} credits, so Starter covers about {packsForCredits(starter.creditsPerMonth)} listing
+          packs a month.
         </p>
         <p className="mt-2 text-sm text-ink-500">Prices are in US dollars. Cancel any time from Billing.</p>
+        {isStripeConfigured() ? null : (
+          <p className="mt-2 text-sm text-ink-500" data-testid="paid-plans-not-open">
+            Paid plans open soon. You can start on the free plan today.
+          </p>
+        )}
       </div>
       <div className="mt-12">
         <PricingTiers />

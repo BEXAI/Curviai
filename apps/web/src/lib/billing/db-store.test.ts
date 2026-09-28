@@ -23,6 +23,7 @@ const growth = tierByKey("growth");
 const pro = tierByKey("pro");
 const T0 = 1_790_000_000;
 const DAY = 24 * 60 * 60;
+const PRO_GROWTH_MONTH = pro.creditsPerMonth - growth.creditsPerMonth;
 
 let client: Awaited<ReturnType<typeof createTestDb>>["client"];
 let db: TestDb;
@@ -188,46 +189,119 @@ describe("annual grant (Update.md 1.2, decision 2)", () => {
     expect(row).toMatchObject({ reason: "grant", source: "stripe" });
   });
 
-  it("adds only the upgrade difference on a plan change invoice", async () => {
+  it("adds only the upgrade difference for the half month left", async () => {
     const ws = await newWorkspace();
     await processStripeEvent(
       invoice("in_upgrade", ws, "subscription_update", [
-        line("price_growth_monthly", -3900, true),
-        line("price_pro_monthly", 7400, true),
+        line("price_growth_monthly", -3950, true, 15),
+        line("price_pro_monthly", 7450, true, 15),
       ]),
       table,
       store(),
     );
-    expect(await balance(ws)).toBe(pro.creditsPerMonth - growth.creditsPerMonth);
+    expect(await balance(ws)).toBe(PRO_GROWTH_MONTH / 2);
   });
 });
 
 describe("plan change debit (money-plan-change)", () => {
-  it("takes back the downgrade difference once and never below zero", async () => {
+  function downgradeHalf(id: string, ws: string) {
+    return invoice(id, ws, "subscription_update", [
+      line("price_pro_monthly", -7450, true, 15),
+      line("price_growth_monthly", 3950, true, 15),
+    ]);
+  }
+
+  function upgradeHalf(id: string, ws: string) {
+    return invoice(id, ws, "subscription_update", [
+      line("price_growth_monthly", -3950, true, 15),
+      line("price_pro_monthly", 7450, true, 15),
+    ]);
+  }
+
+  async function newJob(ws: string): Promise<string> {
+    const [product] = await db.insert(products).values({ workspaceId: ws, title: "Lamp", mode: "listing" }).returning();
+    const [job] = await db.insert(generationJobs).values({ workspaceId: ws, productId: product.id }).returning();
+    return job.id;
+  }
+
+  async function reserve(ws: string, amount: number): Promise<"held" | "refused"> {
+    try {
+      await client.query("select reserve_credits($1, $2, $3)", [ws, amount, await newJob(ws)]);
+      return "held";
+    } catch (error) {
+      expect(String(error)).toMatch(/insufficient credit balance/);
+      return "refused";
+    }
+  }
+
+  it("takes back the downgrade difference once", async () => {
     const ws = await newWorkspace();
     await processStripeEvent(
       invoice("in_pro_month", ws, "subscription_cycle", [line("price_pro_monthly", 14900)]),
       table,
       store(),
     );
-    const downgrade = invoice("in_downgrade", ws, "subscription_update", [
-      line("price_pro_monthly", -7400, true),
-      line("price_growth_monthly", 3900, true),
-    ]);
+    const downgrade = downgradeHalf("in_downgrade", ws);
     await processStripeEvent(downgrade, table, store());
     await processStripeEvent(downgrade, table, store());
-    expect(await balance(ws)).toBe(growth.creditsPerMonth);
+    expect(await balance(ws)).toBe(pro.creditsPerMonth - PRO_GROWTH_MONTH / 2);
+  });
 
-    const empty = await newWorkspace();
+  it("takes the whole difference below zero, and the debt blocks new packs until covered", async () => {
+    const ws = await newWorkspace();
+    const result = await processStripeEvent(downgradeHalf("in_downgrade_empty", ws), table, store());
+    expect(result).toMatchObject({ action: "plan_change_credits_returned", credits: PRO_GROWTH_MONTH / 2 });
+    expect(await balance(ws)).toBe(-PRO_GROWTH_MONTH / 2);
+    const [debit] = await db.select().from(events).where(eq(events.name, "billing:stripe:invoice:in_downgrade_empty"));
+    expect(debit.props).toMatchObject({ kind: "debit", balanceBefore: 0, balanceAfter: -PRO_GROWTH_MONTH / 2 });
+
+    expect(await reserve(ws, 0.5)).toBe("refused");
+    // A top up that does not cover the whole debt still leaves packs blocked.
     await processStripeEvent(
-      invoice("in_downgrade_empty", empty, "subscription_update", [
-        line("price_pro_monthly", -7400, true),
-        line("price_growth_monthly", 3900, true),
-      ]),
+      event(`evt_top_${ws}`, "checkout.session.completed", {
+        id: `cs_${ws}`,
+        object: "checkout.session",
+        mode: "payment",
+        customer: `cus_${ws}`,
+        payment_status: "paid",
+        payment_intent: `pi_${ws}`,
+        metadata: { workspaceId: ws, priceId: "price_topup_100" },
+      }),
       table,
       store(),
     );
-    expect(await balance(empty)).toBe(0);
+    expect(await reserve(ws, 0.5)).toBe("refused");
+    // The next renewal covers the rest.
+    await processStripeEvent(
+      invoice("in_renewal_after_debt", ws, "subscription_cycle", [line("price_growth_monthly", 7900)]),
+      table,
+      store(),
+    );
+    expect(await balance(ws)).toBe(100 + growth.creditsPerMonth - PRO_GROWTH_MONTH / 2);
+    expect(await reserve(ws, 1)).toBe("held");
+  });
+
+  it("upgrade, spend, downgrade, repeat never nets credits (the exploit loop)", async () => {
+    const ws = await newWorkspace();
+    await processStripeEvent(
+      invoice("in_loop_growth", ws, "subscription_cycle", [line("price_growth_monthly", 7900)]),
+      table,
+      store(),
+    );
+    let spent = 0;
+    for (let round = 0; round < 3; round += 1) {
+      await processStripeEvent(upgradeHalf(`in_loop_up_${round}`, ws), table, store());
+      const available = await balance(ws);
+      if (available > 0 && (await reserve(ws, available)) === "held") {
+        spent += available;
+      }
+      await processStripeEvent(downgradeHalf(`in_loop_down_${round}`, ws), table, store());
+    }
+    // Credits used plus the (negative) balance are exactly the one Growth
+    // month that was paid for; every upgrade credit came back.
+    expect(spent + (await balance(ws))).toBe(growth.creditsPerMonth);
+    expect(await balance(ws)).toBe(-PRO_GROWTH_MONTH / 2);
+    expect(await reserve(ws, 0.5)).toBe("refused");
   });
 });
 
@@ -309,6 +383,110 @@ describe("workspaces.plan follows the subscription (Update.md 1.1)", () => {
     expect(rows.filter((row) => row.status === "active").map((row) => row.externalId)).toEqual(["sub_second"]);
     expect(rows.find((row) => row.externalId === "sub_first")?.status).toBe("superseded");
     expect(await planOf(ws)).toBe("pro");
+  });
+});
+
+describe("subscription events out of order (money-webhook-hardening)", () => {
+  function stripeSubscription(sub: { id: string; workspaceId: string; status: string; price: string }) {
+    return {
+      id: sub.id,
+      object: "subscription",
+      customer: "cus_sub",
+      status: sub.status,
+      metadata: { workspaceId: sub.workspaceId },
+      items: { data: [{ id: `si_${sub.id}`, current_period_end: T0, price: { id: sub.price } }] },
+    } as unknown as Stripe.Subscription;
+  }
+
+  async function statusOf(externalId: string): Promise<string | null> {
+    const [row] = await db.select().from(subscriptions).where(eq(subscriptions.externalId, externalId));
+    return row?.status ?? null;
+  }
+
+  it("a late created (incomplete) never moves an active subscription back, without a Stripe lookup", async () => {
+    const ws = await newWorkspace();
+    const sub = { id: "sub_late_created", workspaceId: ws, price: "price_growth_monthly" };
+    await processStripeEvent(subscriptionEvent("evt_lc_upd", "customer.subscription.updated", { ...sub, status: "active" }), table, store());
+    const late = await processStripeEvent(
+      subscriptionEvent("evt_lc_created", "customer.subscription.created", { ...sub, status: "incomplete" }),
+      table,
+      store(),
+    );
+    expect(late).toMatchObject({ action: "subscription_stale_ignored" });
+    expect(await statusOf(sub.id)).toBe("active");
+    expect(await planOf(ws)).toBe("growth");
+  });
+
+  it("a late update never revives a canceled subscription", async () => {
+    const ws = await newWorkspace();
+    const sub = { id: "sub_late_update", workspaceId: ws, price: "price_growth_monthly" };
+    await processStripeEvent(subscriptionEvent("evt_lu_c", "customer.subscription.created", { ...sub, status: "active" }), table, store());
+    await processStripeEvent(subscriptionEvent("evt_lu_d", "customer.subscription.deleted", { ...sub, status: "canceled" }), table, store());
+    await processStripeEvent(
+      subscriptionEvent("evt_lu_u", "customer.subscription.updated", { ...sub, status: "active", price: "price_pro_monthly" }),
+      table,
+      store(),
+    );
+    expect(await statusOf(sub.id)).toBe("canceled");
+    expect(await planOf(ws)).toBe("free");
+  });
+
+  it("reads Stripe's current state, so both delivery orders end on the same plan", async () => {
+    for (const order of [
+      ["created", "updated"],
+      ["updated", "created"],
+    ]) {
+      const ws = await newWorkspace();
+      const sub = { id: `sub_order_${order[0]}`, workspaceId: ws, price: "price_pro_monthly" };
+      const reads: string[] = [];
+      const lookup = {
+        invoiceIdForPaymentIntent: async () => null,
+        retrieveSubscription: async (id: string) => {
+          reads.push(id);
+          return stripeSubscription({ ...sub, status: "active" });
+        },
+      };
+      for (const kind of order) {
+        await processStripeEvent(
+          subscriptionEvent(`evt_order_${order[0]}_${kind}`, `customer.subscription.${kind}`, {
+            ...sub,
+            status: kind === "created" ? "incomplete" : "active",
+            price: "price_growth_monthly",
+          }),
+          table,
+          store(),
+          { lookup },
+        );
+      }
+      expect(reads, order.join(" then ")).toEqual([sub.id, sub.id]);
+      expect(await statusOf(sub.id), order.join(" then ")).toBe("active");
+      expect(await planOf(ws), order.join(" then ")).toBe("pro");
+    }
+  });
+
+  it("rolls back and retries when Stripe cannot be read", async () => {
+    const ws = await newWorkspace();
+    const lookup = {
+      invoiceIdForPaymentIntent: async () => null,
+      retrieveSubscription: async (): Promise<Stripe.Subscription | null> => {
+        throw new Error("stripe unavailable");
+      },
+    };
+    await expect(
+      processStripeEvent(
+        subscriptionEvent("evt_unreadable", "customer.subscription.created", {
+          id: "sub_unreadable",
+          workspaceId: ws,
+          status: "active",
+          price: "price_growth_monthly",
+        }),
+        table,
+        store(),
+        { lookup },
+      ),
+    ).rejects.toThrow("stripe unavailable");
+    expect(await statusOf("sub_unreadable")).toBeNull();
+    expect(await planOf(ws)).toBe("free");
   });
 });
 
@@ -410,23 +588,101 @@ describe("refund and dispute clawback (decision 3)", () => {
     expect(await balance(ws)).toBe(0);
   });
 
-  it("claws back a disputed subscription invoice found through the Stripe lookup", async () => {
+  function dispute(eventId: string, type: string, status: string, disputeId: string, paymentIntent: string) {
+    return event(eventId, type, {
+      id: disputeId,
+      object: "dispute",
+      charge: `ch_${disputeId}`,
+      payment_intent: paymentIntent,
+      status,
+    });
+  }
+
+  it("claws back a disputed subscription invoice found through the Stripe lookup when funds are withdrawn", async () => {
     const ws = await newWorkspace();
     await processStripeEvent(
       invoice("in_dispute_db", ws, "subscription_cycle", [line("price_growth_monthly", 7900)]),
       table,
       store(),
     );
-    const dispute = event("evt_dp", "charge.dispute.created", {
-      id: "dp_db",
-      object: "dispute",
-      charge: "ch_dp",
-      payment_intent: "pi_invoice_dp",
-    });
     const lookup = { invoiceIdForPaymentIntent: async () => "in_dispute_db" };
-    const result = await processStripeEvent(dispute, table, store(), { lookup });
+    const result = await processStripeEvent(
+      dispute("evt_dp", "charge.dispute.funds_withdrawn", "needs_response", "dp_db", "pi_invoice_dp"),
+      table,
+      store(),
+      { lookup },
+    );
     expect(result).toMatchObject({ action: "dispute_clawed_back", credits: growth.creditsPerMonth });
     expect(await balance(ws)).toBe(0);
+  });
+
+  it("takes nothing for an inquiry", async () => {
+    const ws = await toppedUp();
+    await processStripeEvent(
+      dispute("evt_inq_db", "charge.dispute.funds_withdrawn", "warning_needs_response", "dp_inq", `pi_${ws}`),
+      table,
+      store(),
+    );
+    expect(await balance(ws)).toBe(100);
+  });
+
+  it("gives back what the clawback took, once, when the dispute is won", async () => {
+    const ws = await toppedUp();
+    const [product] = await db.insert(products).values({ workspaceId: ws, title: "Cup", mode: "listing" }).returning();
+    const [job] = await db.insert(generationJobs).values({ workspaceId: ws, productId: product.id }).returning();
+    await client.query("select reserve_credits($1, $2, $3)", [ws, 40, job.id]);
+
+    const disputeId = `dp_won_${ws}`;
+    await processStripeEvent(dispute("evt_won_w", "charge.dispute.funds_withdrawn", "needs_response", disputeId, `pi_${ws}`), table, store());
+    await processStripeEvent(dispute("evt_won_w2", "charge.dispute.funds_withdrawn", "needs_response", disputeId, `pi_${ws}`), table, store());
+    expect(await balance(ws)).toBe(0);
+
+    const closed = await processStripeEvent(dispute("evt_won_c", "charge.dispute.closed", "won", disputeId, `pi_${ws}`), table, store());
+    expect(closed).toMatchObject({ action: "dispute_won_credits_restored", credits: 60 });
+    await processStripeEvent(dispute("evt_won_r", "charge.dispute.funds_reinstated", "won", disputeId, `pi_${ws}`), table, store());
+    expect(await balance(ws)).toBe(60);
+    const restores = (await ledgerRows(ws)).filter((row) => row.stepKey?.startsWith("clawback:") && row.delta > 0);
+    expect(restores).toHaveLength(1);
+
+    // After the win, a later full refund of the same payment sees nothing
+    // still taken back and collects the whole grant again.
+    await client.query("select release_credits($1, $2)", [ws, job.id]);
+    await processStripeEvent(refund("evt_after_win", `pi_${ws}`, 1500, 1500), table, store());
+    expect(await balance(ws)).toBe(0);
+  });
+
+  it("keeps the clawback when the dispute is lost", async () => {
+    const ws = await toppedUp();
+    const disputeId = `dp_lost_${ws}`;
+    await processStripeEvent(dispute("evt_lost_w", "charge.dispute.funds_withdrawn", "needs_response", disputeId, `pi_${ws}`), table, store());
+    await processStripeEvent(dispute("evt_lost_r", "charge.dispute.funds_reinstated", "lost", disputeId, `pi_${ws}`), table, store());
+    await processStripeEvent(dispute("evt_lost_c", "charge.dispute.closed", "lost", disputeId, `pi_${ws}`), table, store());
+    expect(await balance(ws)).toBe(0);
+  });
+
+  it("skips a withdrawal processed after the dispute was won", async () => {
+    const ws = await toppedUp();
+    const disputeId = `dp_late_${ws}`;
+    await processStripeEvent(dispute("evt_late_c", "charge.dispute.closed", "won", disputeId, `pi_${ws}`), table, store());
+    const late = await processStripeEvent(
+      dispute("evt_late_w", "charge.dispute.funds_withdrawn", "needs_response", disputeId, `pi_${ws}`),
+      table,
+      store(),
+    );
+    expect(late).toMatchObject({ action: "dispute_already_won" });
+    expect(await balance(ws)).toBe(100);
+  });
+
+  it("never restores more than the ledger shows was taken, whatever the events row claims", async () => {
+    const ws = await toppedUp();
+    const disputeId = `dp_forged_${ws}`;
+    await processStripeEvent(dispute("evt_f_w", "charge.dispute.funds_withdrawn", "needs_response", disputeId, `pi_${ws}`), table, store());
+    await db
+      .update(events)
+      .set({ props: { kind: "clawback", grant: `billing:stripe:checkout:cs_${ws}`, clawedBack: 5000 } })
+      .where(eq(events.name, `billing:stripe:clawback:dispute:${disputeId}`));
+    await processStripeEvent(dispute("evt_f_c", "charge.dispute.closed", "won", disputeId, `pi_${ws}`), table, store());
+    expect(await balance(ws)).toBe(100);
   });
 });
 

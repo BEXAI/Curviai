@@ -8,18 +8,29 @@
  *   migration 0003) and inserts the ledger row in the same transaction, so a
  *   failed ledger insert rolls the claim back and Stripe's retry grants
  *   exactly once (Update.md 1.3).
- * - A subscription change upserts the subscriptions row, retires any other
- *   active row for the workspace and sets workspaces.plan, under a lock on
- *   the workspace row (Update.md 1.1 and 1.5).
- * - A clawback (refund, dispute) or a plan change debit (downgrade) claims
- *   its dedupe name, reads the balance under the same workspace lock the
- *   ledger functions use and never takes it below zero.
+ * - A subscription change first takes a transaction scoped advisory lock on
+ *   the subscription, then reads the subscription's current state from Stripe,
+ *   then upserts the row, retires any other active row for the workspace and
+ *   sets workspaces.plan under a lock on the workspace row (Update.md 1.1 and
+ *   1.5). Handlers for one subscription therefore read and write in the same
+ *   order, so a late, older event can never overwrite a newer state. The
+ *   workspace row is locked only after the Stripe read, so credit holds are
+ *   never kept waiting on the network.
+ * - A clawback (refund, dispute) claims its dedupe name, reads the balance
+ *   under the same workspace lock the ledger functions use and never takes it
+ *   below zero (Phase 10 decision 3). A won dispute gives back what its
+ *   clawback took, under an advisory lock on the dispute.
+ * - A plan change debit (downgrade) takes the full credit difference, even
+ *   below zero. reserve_credits refuses any hold while the balance is below
+ *   what a pack needs, so the debt blocks new packs until a top up or the
+ *   next renewal covers it.
  */
 
 import { creditLedger, eq, events, sql, subscriptions, workspaces, type Db } from "@curvi/db";
 import { isPaidTierKey } from "./plans";
-import { keepsPaidPlan, SUPERSEDED_STATUS } from "./subscription-status";
+import { acceptsSubscriptionStatus, keepsPaidPlan, SUPERSEDED_STATUS } from "./subscription-status";
 import {
+  disputeKey,
   roundCredits,
   UnroutableBillingEventError,
   type BillingNote,
@@ -29,6 +40,9 @@ import {
   type CreditDebit,
   type CreditGrant,
   type DebitOutcome,
+  type RestoreOutcome,
+  type SubscriptionState,
+  type SubscriptionSyncOutcome,
   type SubscriptionUpdate,
 } from "./stripe-webhook";
 
@@ -73,6 +87,32 @@ export class DbBillingStore implements BillingStore {
 
   private async lockWorkspace(tx: Tx, workspaceId: string): Promise<void> {
     await tx.execute(sql`select 1 from workspaces where id = ${workspaceId} for update`);
+  }
+
+  /** Serializes every handler that shares `key` until the transaction ends. */
+  private async advisoryLock(tx: Tx, key: string): Promise<void> {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${this.eventName(`lock:${key}`)}))`);
+  }
+
+  private async balance(tx: Tx, workspaceId: string): Promise<number> {
+    const rows = (await tx.execute(
+      sql`select coalesce(sum(delta), 0) as balance from credit_ledger where workspace_id = ${workspaceId}`,
+    )) as unknown as Array<{ balance: string | number }> | { rows: Array<{ balance: string | number }> };
+    return Number(firstRow(rows)?.balance ?? 0);
+  }
+
+  /** Credits reversals took back from a grant and not yet given back. Read
+   * from the ledger, which members cannot write: clawbacks are refund rows
+   * and dispute restores are grant rows, both tagged with the grant. */
+  private async netClawedBack(tx: Tx, workspaceId: string, grantName: string): Promise<number> {
+    const rows = (await tx.execute(
+      sql`select coalesce(sum(-delta), 0) as net
+          from credit_ledger
+          where workspace_id = ${workspaceId}
+            and reason in ('refund', 'grant')
+            and step_key = ${clawbackStepKey(grantName)}`,
+    )) as unknown as Array<{ net: string | number }> | { rows: Array<{ net: string | number }> };
+    return Number(firstRow(rows)?.net ?? 0);
   }
 
   async recordGrantOnce(key: string, grant: CreditGrant): Promise<boolean> {
@@ -130,7 +170,7 @@ export class DbBillingStore implements BillingStore {
       .where(eq(workspaces.id, workspaceId));
   }
 
-  async upsertSubscription(update: SubscriptionUpdate): Promise<void> {
+  async upsertSubscription(update: SubscriptionUpdate): Promise<SubscriptionSyncOutcome> {
     const existing = await this.db.query.subscriptions.findFirst({
       where: (t, { eq }) => eq(t.externalId, update.externalId),
     });
@@ -142,15 +182,38 @@ export class DbBillingStore implements BillingStore {
           `No workspace for subscription ${update.externalId} (customer ${update.stripeCustomerId ?? "none"}).`,
         );
       }
-      return;
+      return { status: "unrouted" };
     }
 
-    await this.db.transaction(async (tx) => {
+    return this.db.transaction(async (tx): Promise<SubscriptionSyncOutcome> => {
+      await this.advisoryLock(tx, `subscription:${update.externalId}`);
+      // Read Stripe only after taking the lock: the handler that writes last
+      // is then also the one that read last.
+      const fresh = update.refresh ? await update.refresh() : null;
+      const incoming: SubscriptionState = fresh ?? {
+        tier: update.tier,
+        status: update.status,
+        periodEnd: update.periodEnd,
+      };
+
       await this.lockWorkspace(tx, workspaceId);
       const rows = await tx.select().from(subscriptions).where(eq(subscriptions.workspaceId, workspaceId));
       const current = rows.find((row) => row.externalId === update.externalId);
 
-      if (update.status === "active") {
+      if (current && !acceptsSubscriptionStatus(current.status, incoming.status)) {
+        console.warn(
+          JSON.stringify({
+            msg: "billing: older subscription state ignored",
+            workspaceId,
+            subscription: update.externalId,
+            kept: current.status,
+            incoming: incoming.status,
+          }),
+        );
+        return { status: "stale", kept: current.status ?? "unknown", incoming: incoming.status };
+      }
+
+      if (incoming.status === "active") {
         // A second active subscription would break the one active row index
         // and fail every retry. Checkout sends existing subscribers to the
         // portal, so this only happens for subscriptions made by hand; the
@@ -174,14 +237,14 @@ export class DbBillingStore implements BillingStore {
         }
       }
 
-      const periodEnd = update.periodEnd ? new Date(update.periodEnd) : (current?.periodEnd ?? null);
+      const periodEnd = incoming.periodEnd ? new Date(incoming.periodEnd) : (current?.periodEnd ?? null);
       if (current) {
         await tx
           .update(subscriptions)
-          .set({ tier: update.tier ?? current.tier, status: update.status, periodEnd })
+          .set({ tier: incoming.tier ?? current.tier, status: incoming.status, periodEnd })
           .where(eq(subscriptions.id, current.id));
-        current.tier = update.tier ?? current.tier;
-        current.status = update.status;
+        current.tier = incoming.tier ?? current.tier;
+        current.status = incoming.status;
       } else {
         const [inserted] = await tx
           .insert(subscriptions)
@@ -189,15 +252,16 @@ export class DbBillingStore implements BillingStore {
             workspaceId,
             provider: this.eventSource,
             externalId: update.externalId,
-            tier: update.tier ?? undefined,
-            status: update.status,
+            tier: incoming.tier ?? undefined,
+            status: incoming.status,
             periodEnd,
           })
           .returning();
         rows.push(inserted);
       }
 
-      await this.syncPlan(tx, workspaceId, rows, update);
+      await this.syncPlan(tx, workspaceId, rows, update.externalId, incoming.status);
+      return { status: "applied", subscriptionStatus: incoming.status };
     });
   }
 
@@ -210,7 +274,8 @@ export class DbBillingStore implements BillingStore {
     tx: Tx,
     workspaceId: string,
     rows: Array<typeof subscriptions.$inferSelect>,
-    update: SubscriptionUpdate,
+    externalId: string,
+    status: string,
   ): Promise<void> {
     const live = rows
       .filter((row) => keepsPaidPlan(row.status))
@@ -224,7 +289,7 @@ export class DbBillingStore implements BillingStore {
         JSON.stringify({
           msg: "billing: live subscription on an unmapped price, plan left unchanged",
           workspaceId,
-          subscription: update.externalId,
+          subscription: externalId,
         }),
       );
       return;
@@ -250,8 +315,8 @@ export class DbBillingStore implements BillingStore {
         from: workspace.plan,
         to: nextPlan,
         provider: this.eventSource,
-        subscription: update.externalId,
-        status: update.status,
+        subscription: externalId,
+        status,
       },
     });
   }
@@ -285,7 +350,12 @@ export class DbBillingStore implements BillingStore {
     return best;
   }
 
-  async clawbackOnce(eventId: string, clawback: CreditClawback): Promise<ClawbackOutcome> {
+  private async claimed(tx: Tx, name: string): Promise<boolean> {
+    const rows = await tx.select({ id: events.id }).from(events).where(eq(events.name, name)).limit(1);
+    return rows.length > 0;
+  }
+
+  async clawbackOnce(key: string, clawback: CreditClawback): Promise<ClawbackOutcome> {
     let grant = clawback.paymentIntentId ? await this.findGrant("paymentIntentId", clawback.paymentIntentId) : null;
     if (!grant && clawback.resolveInvoiceId) {
       // The Stripe lookup happens before the transaction so no row lock is
@@ -299,25 +369,31 @@ export class DbBillingStore implements BillingStore {
     const workspaceId = grant.workspaceId;
     const grantName = grant.name;
     const grantCredits = grant.credits;
-    const clawbackStepKey = `clawback:${grantName}`;
     const share = Number.isFinite(clawback.share) ? Math.min(1, Math.max(0, clawback.share)) : 1;
+    const disputeId = clawback.disputeId ?? null;
 
     return this.db.transaction(async (tx): Promise<ClawbackOutcome> => {
+      if (disputeId) {
+        await this.advisoryLock(tx, disputeKey(disputeId));
+        if (await this.claimed(tx, this.eventName(`restore:${disputeKey(disputeId)}`))) {
+          // The dispute was won before this withdrawal was processed.
+          const skipped = await tx
+            .insert(events)
+            .values({
+              workspaceId,
+              name: this.eventName(`clawback:${key}`),
+              props: { kind: "clawback", reason: clawback.reason, grant: grantName, disputeId, skipped: true, clawedBack: 0 },
+            })
+            .onConflictDoNothing()
+            .returning({ id: events.id });
+          return skipped.length === 0 ? { status: "duplicate" } : { status: "skipped" };
+        }
+      }
       await this.lockWorkspace(tx, workspaceId);
-      // What earlier refunds or disputes already took back for this grant,
-      // read from the ledger (members cannot write it), tagged by step_key.
-      const priorRows = (await tx.execute(
-        sql`select coalesce(sum(-delta), 0) as prior
-            from credit_ledger
-            where workspace_id = ${workspaceId}
-              and reason = 'refund'
-              and step_key = ${clawbackStepKey}`,
-      )) as unknown as Array<{ prior: string | number }> | { rows: Array<{ prior: string | number }> };
-      const prior = Number(firstRow(priorRows)?.prior ?? 0);
-      const balanceRows = (await tx.execute(
-        sql`select coalesce(sum(delta), 0) as balance from credit_ledger where workspace_id = ${workspaceId}`,
-      )) as unknown as Array<{ balance: string | number }> | { rows: Array<{ balance: string | number }> };
-      const balance = Number(firstRow(balanceRows)?.balance ?? 0);
+      // What earlier refunds or disputes already took back for this grant and
+      // did not give back, read from the ledger (members cannot write it).
+      const prior = await this.netClawedBack(tx, workspaceId, grantName);
+      const balance = await this.balance(tx, workspaceId);
 
       const targeted = Math.max(0, roundCredits(grantCredits * share - prior));
       const clawedBack = roundCredits(Math.min(targeted, Math.max(0, balance)));
@@ -326,13 +402,14 @@ export class DbBillingStore implements BillingStore {
         .insert(events)
         .values({
           workspaceId,
-          name: this.eventName(`clawback:${eventId}`),
+          name: this.eventName(`clawback:${key}`),
           props: {
             kind: "clawback",
             reason: clawback.reason,
             grant: grantName,
             chargeId: clawback.chargeId,
             paymentIntentId: clawback.paymentIntentId,
+            disputeId,
             share,
             targeted,
             clawedBack,
@@ -349,10 +426,61 @@ export class DbBillingStore implements BillingStore {
           delta: -clawedBack,
           reason: "refund",
           source: this.eventSource,
-          stepKey: clawbackStepKey,
+          stepKey: clawbackStepKey(grantName),
         });
       }
       return { status: "applied", workspaceId, targeted, clawedBack };
+    });
+  }
+
+  async restoreDisputeOnce(disputeId: string): Promise<RestoreOutcome> {
+    const key = disputeKey(disputeId);
+    return this.db.transaction(async (tx): Promise<RestoreOutcome> => {
+      await this.advisoryLock(tx, key);
+      const [clawRow] = await tx
+        .select({ workspaceId: events.workspaceId, props: events.props })
+        .from(events)
+        .where(eq(events.name, this.eventName(`clawback:${key}`)))
+        .limit(1);
+      const props = (clawRow?.props ?? {}) as { grant?: unknown; clawedBack?: unknown };
+      const workspaceId = clawRow?.workspaceId ?? null;
+      const grantName = typeof props.grant === "string" ? props.grant : null;
+      const clawedBack = Number(props.clawedBack ?? 0);
+
+      let restored = 0;
+      if (workspaceId && grantName && Number.isFinite(clawedBack) && clawedBack > 0) {
+        await this.lockWorkspace(tx, workspaceId);
+        // Never give back more than the ledger shows was taken from this
+        // grant and not yet returned, whatever the events row says.
+        const net = await this.netClawedBack(tx, workspaceId, grantName);
+        restored = roundCredits(Math.min(clawedBack, Math.max(0, net)));
+      }
+
+      // Claimed even when there is nothing to give back, so a withdrawal
+      // processed after the win is skipped instead of taking credits.
+      const inserted = await tx
+        .insert(events)
+        .values({
+          workspaceId,
+          name: this.eventName(`restore:${key}`),
+          props: { kind: "restore", reason: "dispute_won", disputeId, grant: grantName, restored },
+        })
+        .onConflictDoNothing()
+        .returning({ id: events.id });
+      if (inserted.length === 0) {
+        return { status: "duplicate" };
+      }
+      if (!workspaceId || !grantName || restored <= 0) {
+        return { status: "nothing_to_restore" };
+      }
+      await tx.insert(creditLedger).values({
+        workspaceId,
+        delta: restored,
+        reason: "grant",
+        source: this.eventSource,
+        stepKey: clawbackStepKey(grantName),
+      });
+      return { status: "applied", workspaceId, restored };
     });
   }
 
@@ -366,13 +494,11 @@ export class DbBillingStore implements BillingStore {
       }
       return { status: "duplicate" };
     }
+    const debited = roundCredits(debit.credits);
     return this.db.transaction(async (tx): Promise<DebitOutcome> => {
       await this.lockWorkspace(tx, workspaceId);
-      const balanceRows = (await tx.execute(
-        sql`select coalesce(sum(delta), 0) as balance from credit_ledger where workspace_id = ${workspaceId}`,
-      )) as unknown as Array<{ balance: string | number }> | { rows: Array<{ balance: string | number }> };
-      const balance = Number(firstRow(balanceRows)?.balance ?? 0);
-      const debited = roundCredits(Math.min(debit.credits, Math.max(0, balance)));
+      const balanceBefore = await this.balance(tx, workspaceId);
+      const balanceAfter = roundCredits(balanceBefore - debited);
       const inserted = await tx
         .insert(events)
         .values({
@@ -382,6 +508,8 @@ export class DbBillingStore implements BillingStore {
             kind: "debit",
             credits: debit.credits,
             debited,
+            balanceBefore,
+            balanceAfter,
             invoiceId: debit.invoiceId,
             stripeCustomerId: debit.stripeCustomerId,
             ...(debit.detail ? { detail: debit.detail } : {}),
@@ -393,6 +521,8 @@ export class DbBillingStore implements BillingStore {
         return { status: "duplicate" };
       }
       if (debited > 0) {
+        // In full, even below zero: Stripe returned the money for this time
+        // in full, so the credits it paid for go back too.
         await tx.insert(creditLedger).values({
           workspaceId,
           delta: -debited,
@@ -401,7 +531,17 @@ export class DbBillingStore implements BillingStore {
           stepKey: `plan_change:${debit.invoiceId}`,
         });
       }
-      return { status: "applied", debited };
+      if (balanceAfter < 0) {
+        console.warn(
+          JSON.stringify({
+            msg: "billing: plan change left the balance below zero, new packs wait until it is covered",
+            workspaceId,
+            invoiceId: debit.invoiceId,
+            balanceAfter,
+          }),
+        );
+      }
+      return { status: "applied", debited, balanceAfter };
     });
   }
 
@@ -416,6 +556,12 @@ export class DbBillingStore implements BillingStore {
       })
       .onConflictDoNothing();
   }
+}
+
+/** Ledger step key shared by every reversal of one grant, so a later
+ * reversal sees what earlier ones took and gave back. */
+function clawbackStepKey(grantName: string): string {
+  return `clawback:${grantName}`;
 }
 
 /** postgres-js returns rows as an array, PGlite as { rows }. */

@@ -17,6 +17,9 @@ import { getServices } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
+const NO_CUSTOMER_NOTICE =
+  "Start a plan first. The customer portal opens after your first payment, for cards, invoices and plan changes.";
+
 export async function POST(): Promise<NextResponse> {
   const workspace = await getServices().ensureWorkspace();
   if (!workspace) {
@@ -37,13 +40,9 @@ export async function POST(): Promise<NextResponse> {
 
   const account = await loadBillingAccount(workspace.id);
   if (!account.stripeCustomerId) {
-    return NextResponse.json(
-      {
-        error: "no_customer",
-        notice: "There is nothing to manage yet. The portal opens after your first payment.",
-      },
-      { status: 409 },
-    );
+    // Not a server fault: the workspace has never paid, so Stripe has no
+    // customer to open a portal for (Update.md 6.8).
+    return NextResponse.json({ error: "no_customer", notice: NO_CUSTOMER_NOTICE }, { status: 409 });
   }
 
   try {

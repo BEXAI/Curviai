@@ -170,6 +170,13 @@ const OWNED_SOURCES = [
   "./coming-soon-badge.tsx",
   "../../lib/llms.ts",
   "../../lib/marketing-facts.ts",
+  // Pricing and billing (package P2): prices, savings, pack sizes and feature
+  // availability come from the seeds and marketing-facts too.
+  "../../app/(marketing)/pricing/page.tsx",
+  "./pricing-tiers.tsx",
+  "../../app/app/billing/page.tsx",
+  "../app/billing-actions.tsx",
+  "../../lib/billing/plan-features.ts",
 ];
 
 const LITERALS: { name: string; pattern: RegExp }[] = [

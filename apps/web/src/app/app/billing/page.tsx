@@ -28,7 +28,8 @@ import {
   tierDisplayName,
 } from "@/lib/billing/plans";
 import { isStripeTaxEnabled } from "@/lib/billing/stripe";
-import { needsCardUpdate } from "@/lib/billing/subscription-status";
+import { needsCardUpdate, pastDueMessage } from "@/lib/billing/subscription-status";
+import { topUpMonths } from "@/lib/marketing-facts";
 import { getServices } from "@/lib/services";
 
 export const metadata: Metadata = { title: "Billing" };
@@ -97,7 +98,9 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       <div>
         <h1 className="text-2xl font-bold tracking-tight text-ink-950">Billing</h1>
         <p className="mt-1 text-sm text-ink-500">
-          You are on the {planName} plan with {workspace.creditBalance.toLocaleString("en-US")} credits.
+          {workspace.creditBalance < 0
+            ? `You are on the ${planName} plan with a balance ${formatCredits(-workspace.creditBalance)} below zero.`
+            : `You are on the ${planName} plan with ${formatCredits(workspace.creditBalance)}.`}
         </p>
       </div>
 
@@ -120,6 +123,17 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
               <PortalButton label="Update card" variant="primary" />
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {workspace.creditBalance < 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4" role="status" data-testid="negative-balance">
+          <p className="text-sm font-semibold text-amber-900">Your credit balance is below zero.</p>
+          <p className="mt-1 text-sm text-amber-800">
+            A move to a smaller plan returned money for time on the bigger plan, so the credits that time paid for were
+            taken back, including some you had already used. New packs can start again once a top up or your next
+            renewal brings the balance back up.
+          </p>
         </div>
       ) : null}
 
@@ -161,7 +175,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
         <p className="mt-1 text-sm text-ink-500">
           {subscribed
             ? "Changing plans opens the Stripe customer portal, where you confirm the new plan and any prorated charge."
-            : "Every plan buys credits. Unused subscription credits roll over for one cycle."}
+            : "Every plan buys credits. Credits you do not use stay in your balance from one billing period to the next."}
         </p>
         <div className="mt-4">
           <PlanPicker
@@ -183,7 +197,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
                 <p className="font-medium text-ink-900">
                   {formatCredits(topUp.credits)} for {formatUsd(topUp.usd)}
                 </p>
-                <p className="mt-1 text-xs text-ink-400">Lasts {topUp.expiresMonths} months.</p>
+                <p className="mt-1 text-xs text-ink-400">Stays usable for {topUpMonths()} months.</p>
                 <div className="mt-4">
                   {mode === "checkout" ? (
                     <CheckoutButton
@@ -206,14 +220,6 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       </section>
     </div>
   );
-}
-
-function pastDueMessage(status: string | undefined, plan: string, canBill: boolean): string {
-  const who = canBill ? "Update the card" : "Ask the workspace owner to update the card";
-  if (status === "unpaid") {
-    return `Stripe has stopped retrying. ${who} in the customer portal and pay the open invoice to get the ${plan} plan back.`;
-  }
-  return `Stripe will try the card again over the next few days. ${who} to keep the ${plan} plan.`;
 }
 
 function CurrentPlanCard({
@@ -249,7 +255,11 @@ function CurrentPlanCard({
         </div>
       </CardHeader>
       <CardContent>
-        <p className="text-sm text-ink-600">{formatCredits(creditBalance)} available.</p>
+        <p className="text-sm text-ink-600">
+          {creditBalance < 0
+            ? `Balance ${formatCredits(-creditBalance)} below zero.`
+            : `${formatCredits(creditBalance)} available.`}
+        </p>
         {periodLine ? <p className="mt-1 text-sm text-ink-600">{periodLine}</p> : null}
         {!subscription ? (
           <p className="mt-1 text-sm text-ink-500">No subscription yet. Pick a plan below when you are ready.</p>

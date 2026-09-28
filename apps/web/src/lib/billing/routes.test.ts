@@ -192,10 +192,19 @@ describe("POST /api/billing/checkout", () => {
 });
 
 describe("POST /api/billing/portal", () => {
-  it("answers 409 before the first payment", async () => {
+  it("answers 409 with a start a plan first notice before the first payment", async () => {
     const response = await portal();
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: "no_customer" });
+    const body = (await response.json()) as { error: string; notice: string };
+    expect(body.error).toBe("no_customer");
+    expect(body.notice).toMatch(/^Start a plan first\./);
+    expect(stripeMock.billingPortal.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("checks the role before the customer, so a client seat with no customer still gets 403", async () => {
+    state.role = "client";
+    const response = await portal();
+    expect(response.status).toBe(403);
   });
 
   it("opens the portal for the stored customer", async () => {

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // retries; every handler is idempotent, so the retry cannot double grant.
 
 const SECRET = "whsec_route_test";
-const behavior: { mode: "ok" | "unroutable" | "crash" } = { mode: "ok" };
+const behavior: { mode: "ok" | "unroutable" | "crash"; deps: unknown } = { mode: "ok", deps: null };
 
 vi.mock("@/lib/services", () => ({ isDbMode: () => false }));
 vi.mock("@/lib/services/db", () => ({ getDb: () => ({}) }));
@@ -15,6 +15,7 @@ vi.mock("@/lib/billing/stripe-webhook", async (importOriginal) => {
   return {
     ...original,
     processStripeEvent: async (...args: Parameters<typeof original.processStripeEvent>) => {
+      behavior.deps = args[3];
       if (behavior.mode === "unroutable") {
         throw new original.UnroutableBillingEventError("No workspace for billing grant invoice:in_1");
       }
@@ -42,6 +43,7 @@ const paidEvent = { id: "evt_route", type: "payment_intent.created", data: { obj
 
 beforeEach(() => {
   behavior.mode = "ok";
+  behavior.deps = null;
   vi.stubEnv("STRIPE_WEBHOOK_SECRET", SECRET);
   vi.stubEnv("STRIPE_SECRET_KEY", "");
   vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -80,5 +82,16 @@ describe("POST /api/webhooks/stripe", () => {
     const response = await POST(signedRequest(paidEvent));
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({ error: "processing_failed" });
+  });
+
+  it("gives the handler a Stripe lookup that reads subscriptions once Stripe has keys", async () => {
+    await POST(signedRequest(paidEvent));
+    expect(behavior.deps).toEqual({});
+
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_route");
+    await POST(signedRequest(paidEvent));
+    const lookup = (behavior.deps as { lookup?: Record<string, unknown> }).lookup;
+    expect(typeof lookup?.invoiceIdForPaymentIntent).toBe("function");
+    expect(typeof lookup?.retrieveSubscription).toBe("function");
   });
 });

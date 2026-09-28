@@ -3,10 +3,15 @@ import { describe, expect, it } from "vitest";
 import { tierByKey, topUps } from "@curvi/pipeline/seed";
 import { buildPriceTable, tierPriceEnvName, topUpPriceEnvName } from "./price-table";
 import {
+  billingPeriodStart,
+  ceilCredits,
+  floorCredits,
   HANDLED_STRIPE_EVENTS,
   InMemoryBillingStore,
   planInvoiceGrant,
   processStripeEvent,
+  prorationShare,
+  roundCredits,
   UnroutableBillingEventError,
   verifyStripeEvent,
 } from "./stripe-webhook";
@@ -205,6 +210,43 @@ describe("top ups (Update.md 1.4)", () => {
   });
 });
 
+/** Half of the September to October period that ends at T0 + 15 days. */
+const HALF_MONTH = { start: T0, end: T0 + 15 * DAY };
+const PRO_GROWTH_MONTH = pro.creditsPerMonth - growth.creditsPerMonth;
+
+function planOf(event: Stripe.Event) {
+  return planInvoiceGrant(event.data.object as Stripe.Invoice, table);
+}
+
+describe("proration share (money-plan-change)", () => {
+  const utc = (iso: string) => Date.parse(iso) / 1000;
+
+  it("measures a monthly line against the calendar month that ends with it", () => {
+    expect(prorationShare({ periodStart: HALF_MONTH.start, periodEnd: HALF_MONTH.end }, "monthly")).toBe(0.5);
+    expect(prorationShare({ periodStart: T0, periodEnd: T0 + 30 * DAY }, "monthly")).toBe(1);
+    expect(billingPeriodStart(utc("2027-03-31T00:00:00Z"), "monthly")).toBe(utc("2027-02-28T00:00:00Z"));
+    expect(billingPeriodStart(utc("2027-01-15T08:00:00Z"), "monthly")).toBe(utc("2026-12-15T08:00:00Z"));
+    expect(billingPeriodStart(utc("2028-02-29T00:00:00Z"), "annual")).toBe(utc("2027-02-28T00:00:00Z"));
+  });
+
+  it("measures an annual line against the year that ends with it", () => {
+    const end = utc("2027-09-21T00:00:00Z");
+    expect(prorationShare({ periodStart: end - 73 * DAY, periodEnd: end }, "annual")).toBeCloseTo(73 / 365, 10);
+  });
+
+  it("never counts more than a whole period", () => {
+    expect(prorationShare({ periodStart: T0 - 60 * DAY, periodEnd: T0 }, "monthly")).toBe(1);
+    expect(prorationShare({ periodStart: null, periodEnd: null }, "monthly")).toBe(1);
+  });
+
+  it("rounds grants down and debits up", () => {
+    expect(floorCredits(233.39)).toBe(233.3);
+    expect(ceilCredits(233.31)).toBe(233.4);
+    expect(floorCredits(350)).toBe(350);
+    expect(ceilCredits(350)).toBe(350);
+  });
+});
+
 describe("subscription invoices (Update.md 1.2, money-webhook-hardening)", () => {
   it("grants one month on a monthly cycle invoice, keyed on the invoice", async () => {
     const store = new InMemoryBillingStore();
@@ -233,30 +275,40 @@ describe("subscription invoices (Update.md 1.2, money-webhook-hardening)", () =>
     expect(store.grants[0].grant.credits).toBe(growth.creditsPerMonth * 12);
   });
 
-  it("grants only the upgrade difference on a plan change invoice", async () => {
-    const plan = planInvoiceGrant(
+  it("grants only the upgrade difference for the half month left", () => {
+    const plan = planOf(
       invoiceEvent("in_up", "subscription_update", [
-        line({ price: "price_growth_monthly", amount: -3900, proration: true }),
-        line({ price: "price_pro_monthly", amount: 7400, proration: true }),
-      ]).data.object as Stripe.Invoice,
-      table,
+        line({ price: "price_growth_monthly", amount: -3950, proration: true, ...HALF_MONTH }),
+        line({ price: "price_pro_monthly", amount: 7450, proration: true, ...HALF_MONTH }),
+      ]),
     );
-    expect(plan.credits).toBe(pro.creditsPerMonth - growth.creditsPerMonth);
+    expect(plan.credits).toBe(PRO_GROWTH_MONTH / 2);
+    expect(plan.debit).toBe(0);
     expect(plan.base).toBe(0);
+  });
+
+  it("grants the whole month's difference only when the change covers the whole month", () => {
+    const plan = planOf(
+      invoiceEvent("in_up_full", "subscription_update", [
+        line({ price: "price_growth_monthly", amount: -7900, proration: true }),
+        line({ price: "price_pro_monthly", amount: 14900, proration: true }),
+      ]),
+    );
+    expect(plan.credits).toBe(PRO_GROWTH_MONTH);
   });
 
   it("does not use the first line when a cycle invoice starts with a proration", async () => {
     const store = new InMemoryBillingStore();
     const event = invoiceEvent("in_cycle_mixed", "subscription_cycle", [
-      line({ price: "price_growth_monthly", amount: -3900, proration: true }),
-      line({ price: "price_pro_monthly", amount: 7400, proration: true }),
-      line({ price: "price_pro_monthly", amount: 14900 }),
+      line({ price: "price_growth_monthly", amount: -3950, proration: true, ...HALF_MONTH }),
+      line({ price: "price_pro_monthly", amount: 7450, proration: true, ...HALF_MONTH }),
+      line({ price: "price_pro_monthly", amount: 14900, start: HALF_MONTH.end, end: HALF_MONTH.end + 31 * DAY }),
     ]);
     await processStripeEvent(event, table, store);
-    expect(store.grants[0].grant.credits).toBe(pro.creditsPerMonth + (pro.creditsPerMonth - growth.creditsPerMonth));
+    expect(store.grants[0].grant.credits).toBe(pro.creditsPerMonth + PRO_GROWTH_MONTH / 2);
   });
 
-  it("takes back the credit difference on a downgrade, since Stripe returns the unused money", async () => {
+  it("takes back the same difference on a downgrade, since Stripe returns the unused money", async () => {
     const store = new InMemoryBillingStore();
     await processStripeEvent(
       invoiceEvent("in_pro_cycle", "subscription_cycle", [line({ price: "price_pro_monthly", amount: 14900 })]),
@@ -264,55 +316,70 @@ describe("subscription invoices (Update.md 1.2, money-webhook-hardening)", () =>
       store,
     );
     const downgrade = invoiceEvent("in_down", "subscription_update", [
-      line({ price: "price_pro_monthly", amount: -7400, proration: true }),
-      line({ price: "price_growth_monthly", amount: 3900, proration: true }),
+      line({ price: "price_pro_monthly", amount: -7450, proration: true, ...HALF_MONTH }),
+      line({ price: "price_growth_monthly", amount: 3950, proration: true, ...HALF_MONTH }),
     ]);
     const result = await processStripeEvent(downgrade, table, store);
     expect(result).toEqual({
       handled: true,
       action: "plan_change_credits_returned",
-      credits: pro.creditsPerMonth - growth.creditsPerMonth,
+      credits: PRO_GROWTH_MONTH / 2,
     });
-    expect(store.balance("ws_9")).toBe(growth.creditsPerMonth);
+    expect(store.balance("ws_9")).toBe(pro.creditsPerMonth - PRO_GROWTH_MONTH / 2);
     expect(await processStripeEvent(downgrade, table, store)).toMatchObject({ duplicate: true });
-    expect(store.balance("ws_9")).toBe(growth.creditsPerMonth);
+    expect(store.balance("ws_9")).toBe(pro.creditsPerMonth - PRO_GROWTH_MONTH / 2);
   });
 
-  it("never takes a downgrade below a zero balance", async () => {
+  it("takes the whole downgrade difference even below a zero balance", async () => {
     const store = new InMemoryBillingStore();
     const result = await processStripeEvent(
       invoiceEvent("in_down_empty", "subscription_update", [
-        line({ price: "price_pro_monthly", amount: -7400, proration: true }),
-        line({ price: "price_growth_monthly", amount: 3900, proration: true }),
+        line({ price: "price_pro_monthly", amount: -7450, proration: true, ...HALF_MONTH }),
+        line({ price: "price_growth_monthly", amount: 3950, proration: true, ...HALF_MONTH }),
       ]),
       table,
       store,
     );
-    expect(result).toMatchObject({ action: "plan_change_credits_returned", credits: 0 });
-    expect(store.balance("ws_9")).toBe(0);
+    expect(result).toMatchObject({ action: "plan_change_credits_returned", credits: PRO_GROWTH_MONTH / 2 });
+    expect(store.balance("ws_9")).toBe(-PRO_GROWTH_MONTH / 2);
+    expect(store.spend("ws_9", 0.5)).toBe(false);
   });
 
-  it("switching monthly to annual grants the year minus the month already granted", async () => {
-    const plan = planInvoiceGrant(
+  it("switching monthly to annual grants the year minus the unused half month", () => {
+    const plan = planOf(
       invoiceEvent("in_interval", "subscription_update", [
-        line({ price: "price_growth_monthly", amount: -3900, proration: true }),
+        line({ price: "price_growth_monthly", amount: -3950, proration: true, ...HALF_MONTH }),
         line({ price: "price_growth_annual", amount: 79200, end: T0 + 365 * DAY }),
-      ]).data.object as Stripe.Invoice,
-      table,
+      ]),
     );
-    expect(plan.credits).toBe(growth.creditsPerMonth * 12 - growth.creditsPerMonth);
+    expect(plan.credits).toBe(growth.creditsPerMonth * 12 - growth.creditsPerMonth / 2);
   });
 
-  it("prorates an annual upgrade by the months left", async () => {
-    const half = { start: T0, end: T0 + 182 * DAY };
-    const plan = planInvoiceGrant(
+  it("prorates an annual upgrade by the share of the year left", () => {
+    const left = { start: T0, end: T0 + 182 * DAY };
+    const plan = planOf(
       invoiceEvent("in_annual_up", "subscription_update", [
-        line({ price: "price_growth_annual", amount: -39600, proration: true, ...half }),
-        line({ price: "price_pro_annual", amount: 74400, proration: true, ...half }),
-      ]).data.object as Stripe.Invoice,
-      table,
+        line({ price: "price_growth_annual", amount: -39490, proration: true, ...left }),
+        line({ price: "price_pro_annual", amount: 74196, proration: true, ...left }),
+      ]),
     );
-    expect(plan.credits).toBe((pro.creditsPerMonth - growth.creditsPerMonth) * 6);
+    const exact = (pro.creditsPerMonth - growth.creditsPerMonth) * 12 * (182 / 365);
+    expect(plan.credits).toBeLessThanOrEqual(exact);
+    expect(plan.credits).toBeGreaterThan(exact - 0.1);
+  });
+
+  it("takes back the unused annual credits when a year plan moves to a month plan at once", () => {
+    const left = { start: T0, end: T0 + 182 * DAY };
+    const plan = planOf(
+      invoiceEvent("in_annual_down", "subscription_update", [
+        line({ price: "price_growth_annual", amount: -39490, proration: true, ...left }),
+        line({ price: "price_growth_monthly", amount: 7900, start: T0, end: T0 + 30 * DAY }),
+      ]),
+    );
+    const exact = growth.creditsPerMonth * 12 * (182 / 365) - growth.creditsPerMonth;
+    expect(plan.credits).toBe(0);
+    expect(plan.debit).toBeGreaterThanOrEqual(exact);
+    expect(plan.debit).toBeLessThan(exact + 0.1);
   });
 
   it("ignores manual invoices and unknown prices", async () => {
@@ -360,6 +427,84 @@ describe("subscription invoices (Update.md 1.2, money-webhook-hardening)", () =>
   });
 });
 
+describe("plan changes never create credits (money-plan-change exploit loop)", () => {
+  /** Upgrade Growth to Pro and back with `leftAtUp` and `leftAtDown` days
+   * of the 30 day period remaining, spending everything in between. */
+  function changeLines(id: string, from: string, to: string, fromAmount: number, toAmount: number, daysLeft: number) {
+    const period = { start: HALF_MONTH.end - daysLeft * DAY, end: HALF_MONTH.end };
+    return invoiceEvent(id, "subscription_update", [
+      line({ price: from, amount: -fromAmount, proration: true, ...period }),
+      line({ price: to, amount: toAmount, proration: true, ...period }),
+    ]);
+  }
+
+  it("upgrade, spend, downgrade, repeat leaves only what the Growth invoice paid for", async () => {
+    const store = new InMemoryBillingStore();
+    await processStripeEvent(
+      invoiceEvent("in_growth", "subscription_cycle", [line({ price: "price_growth_monthly", amount: 7900 })]),
+      table,
+      store,
+    );
+    let spent = 0;
+    for (let round = 0; round < 5; round += 1) {
+      await processStripeEvent(
+        changeLines(`in_up_${round}`, "price_growth_monthly", "price_pro_monthly", 3950, 7450, 15),
+        table,
+        store,
+      );
+      const available = store.balance("ws_9");
+      if (available > 0 && store.spend("ws_9", available)) {
+        spent += available;
+      }
+      await processStripeEvent(
+        changeLines(`in_down_${round}`, "price_pro_monthly", "price_growth_monthly", 7450, 3950, 15),
+        table,
+        store,
+      );
+    }
+    // Every upgrade credit came back on the matching downgrade, so the
+    // credits used plus the (negative) balance equal the one Growth month.
+    expect(roundCredits(spent + store.balance("ws_9"))).toBe(growth.creditsPerMonth);
+    expect(store.balance("ws_9")).toBe(-PRO_GROWTH_MONTH / 2);
+    expect(store.spend("ws_9", 0.5)).toBe(false);
+  });
+
+  it("keeps only the credits for the days actually paid for on the bigger plan", async () => {
+    const store = new InMemoryBillingStore();
+    await processStripeEvent(changeLines("in_up_t", "price_growth_monthly", "price_pro_monthly", 3950, 7450, 15), table, store);
+    await processStripeEvent(changeLines("in_down_t", "price_pro_monthly", "price_growth_monthly", 5267, 2633, 10), table, store);
+    // Five of thirty days on Pro were paid for, so at most five days of the
+    // Pro minus Growth allowance may remain.
+    const paidFor = PRO_GROWTH_MONTH * (5 / 30);
+    expect(store.balance("ws_9")).toBeLessThanOrEqual(paidFor);
+    expect(store.balance("ws_9")).toBeGreaterThan(paidFor - 0.2);
+  });
+
+  it("a year plan moved to a month plan and back cannot mint credits either", async () => {
+    const store = new InMemoryBillingStore();
+    await processStripeEvent(
+      invoiceEvent("in_year", "subscription_create", [
+        line({ price: "price_growth_annual", amount: 79200, start: T0, end: T0 + 365 * DAY }),
+      ]),
+      table,
+      store,
+    );
+    expect(store.spend("ws_9", growth.creditsPerMonth * 12)).toBe(true);
+    // Immediately to monthly: Stripe credits almost the whole year back.
+    await processStripeEvent(
+      invoiceEvent("in_to_month", "subscription_update", [
+        line({ price: "price_growth_annual", amount: -79000, proration: true, start: T0 + DAY, end: T0 + 365 * DAY }),
+        line({ price: "price_growth_monthly", amount: 7900, start: T0 + DAY, end: T0 + 31 * DAY }),
+      ]),
+      table,
+      store,
+    );
+    const owed = growth.creditsPerMonth * 12 * (364 / 365) - growth.creditsPerMonth;
+    expect(store.balance("ws_9")).toBeLessThanOrEqual(-owed + 0.1);
+    expect(store.spend("ws_9", 0.5)).toBe(false);
+  });
+});
+
 describe("subscription sync (Update.md 1.1)", () => {
   const base = {
     id: "sub_1",
@@ -378,23 +523,139 @@ describe("subscription sync (Update.md 1.1)", () => {
     },
   };
 
+  function subEvent(id: string, type: string, overrides: Record<string, unknown> = {}): Stripe.Event {
+    return verify({ id, type, data: { object: { ...base, ...overrides } } });
+  }
+
+  function withPrice(price: string) {
+    return { items: { data: [{ id: "si_1", current_period_end: 1_790_000_000, price: { id: price } }] } };
+  }
+
+  /** A Stripe lookup whose subscription reads return `current`. */
+  function lookupReturning(current: () => Record<string, unknown> | null) {
+    return {
+      invoiceIdForPaymentIntent: async () => null,
+      retrieveSubscription: async () => current() as unknown as Stripe.Subscription | null,
+    };
+  }
+
   it("syncs created and updated subscriptions and marks deletions canceled", async () => {
     const store = new InMemoryBillingStore();
-    const created = await processStripeEvent(
-      verify({ id: "evt_sub_0", type: "customer.subscription.created", data: { object: base } }),
-      table,
-      store,
-    );
+    const created = await processStripeEvent(subEvent("evt_sub_0", "customer.subscription.created"), table, store);
     expect(created).toEqual({ handled: true, action: "subscription_synced" });
     expect(store.subscriptions.get("sub_1")).toMatchObject({ workspaceId: "ws_2", tier: "starter", status: "active" });
     expect(store.subscriptions.get("sub_1")?.periodEnd).toBe(new Date(1_790_000_000 * 1000).toISOString());
 
-    await processStripeEvent(
-      verify({ id: "evt_sub_2", type: "customer.subscription.deleted", data: { object: base } }),
-      table,
-      store,
-    );
+    await processStripeEvent(subEvent("evt_sub_2", "customer.subscription.deleted"), table, store);
     expect(store.subscriptions.get("sub_1")?.status).toBe("canceled");
+  });
+
+  describe("events out of order, without a Stripe lookup", () => {
+    it("created (incomplete) arriving after updated (active) keeps active", async () => {
+      const store = new InMemoryBillingStore();
+      await processStripeEvent(subEvent("evt_upd", "customer.subscription.updated", { status: "active" }), table, store);
+      const late = await processStripeEvent(
+        subEvent("evt_created", "customer.subscription.created", { status: "incomplete" }),
+        table,
+        store,
+      );
+      expect(late).toEqual({ handled: true, action: "subscription_stale_ignored" });
+      expect(store.subscriptions.get("sub_1")?.status).toBe("active");
+    });
+
+    it("created (incomplete) then updated (active) in order ends active", async () => {
+      const store = new InMemoryBillingStore();
+      await processStripeEvent(subEvent("evt_created", "customer.subscription.created", { status: "incomplete" }), table, store);
+      await processStripeEvent(subEvent("evt_upd", "customer.subscription.updated", { status: "active" }), table, store);
+      expect(store.subscriptions.get("sub_1")?.status).toBe("active");
+    });
+
+    it("never moves a canceled or expired subscription to another status", async () => {
+      const store = new InMemoryBillingStore();
+      await processStripeEvent(subEvent("evt_del", "customer.subscription.deleted"), table, store);
+      await processStripeEvent(
+        subEvent("evt_old", "customer.subscription.updated", { status: "active", ...withPrice("price_pro_monthly") }),
+        table,
+        store,
+      );
+      expect(store.subscriptions.get("sub_1")).toMatchObject({ status: "canceled", tier: "starter" });
+
+      await processStripeEvent(
+        subEvent("evt_exp", "customer.subscription.updated", { id: "sub_exp", status: "incomplete_expired" }),
+        table,
+        store,
+      );
+      await processStripeEvent(
+        subEvent("evt_exp_old", "customer.subscription.created", { id: "sub_exp", status: "incomplete" }),
+        table,
+        store,
+      );
+      expect(store.subscriptions.get("sub_exp")?.status).toBe("incomplete_expired");
+    });
+  });
+
+  describe("events out of order, with the Stripe lookup", () => {
+    it("uses Stripe's current status and price whatever the payload says", async () => {
+      const store = new InMemoryBillingStore();
+      const now = { ...base, status: "active", ...withPrice("price_pro_monthly") };
+      const lookup = lookupReturning(() => now);
+      // The payload is the older created event: incomplete, on Starter.
+      await processStripeEvent(
+        subEvent("evt_created", "customer.subscription.created", { status: "incomplete" }),
+        table,
+        store,
+        { lookup },
+      );
+      expect(store.subscriptions.get("sub_1")).toMatchObject({ status: "active", tier: "pro" });
+    });
+
+    it("lands on the same state in either order", async () => {
+      for (const order of [
+        ["created", "updated"],
+        ["updated", "created"],
+      ]) {
+        const store = new InMemoryBillingStore();
+        let stripeNow: Record<string, unknown> = { ...base, status: "incomplete" };
+        const lookup = lookupReturning(() => stripeNow);
+        stripeNow = { ...base, status: "active", ...withPrice("price_growth_monthly") };
+        for (const kind of order) {
+          await processStripeEvent(
+            subEvent(`evt_${kind}`, `customer.subscription.${kind}`, {
+              status: kind === "created" ? "incomplete" : "active",
+            }),
+            table,
+            store,
+            { lookup },
+          );
+        }
+        expect(store.subscriptions.get("sub_1"), order.join(" then ")).toMatchObject({
+          status: "active",
+          tier: "growth",
+        });
+      }
+    });
+
+    it("falls back to the payload when Stripe no longer knows the subscription", async () => {
+      const store = new InMemoryBillingStore();
+      await processStripeEvent(subEvent("evt_gone", "customer.subscription.updated"), table, store, {
+        lookup: lookupReturning(() => null),
+      });
+      expect(store.subscriptions.get("sub_1")).toMatchObject({ status: "active", tier: "starter" });
+    });
+
+    it("fails the delivery when Stripe cannot be read, so Stripe retries", async () => {
+      const store = new InMemoryBillingStore();
+      const lookup = {
+        invoiceIdForPaymentIntent: async () => null,
+        retrieveSubscription: async (): Promise<Stripe.Subscription | null> => {
+          throw new Error("stripe timeout");
+        },
+      };
+      await expect(
+        processStripeEvent(subEvent("evt_down", "customer.subscription.updated"), table, store, { lookup }),
+      ).rejects.toThrow("stripe timeout");
+      expect(store.subscriptions.size).toBe(0);
+    });
   });
 });
 
@@ -421,6 +682,22 @@ describe("refunds and disputes (Phase 10 decision 3)", () => {
     });
   }
 
+  function disputeEvent(
+    eventId: string,
+    type: string,
+    status: string,
+    disputeId = "dp_1",
+    paymentIntent = "pi_topup_1",
+  ): Stripe.Event {
+    return verify({
+      id: eventId,
+      type,
+      data: {
+        object: { id: disputeId, object: "dispute", charge: "ch_1", payment_intent: paymentIntent, amount: 1500, status },
+      },
+    });
+  }
+
   it("claws back a refunded top up in proportion and only once per event", async () => {
     const store = await storeWithTopUp();
     const half = refundEvent("evt_refund_half", 750);
@@ -433,6 +710,98 @@ describe("refunds and disputes (Phase 10 decision 3)", () => {
     expect(store.balance("ws_1")).toBe(0);
   });
 
+  it("takes nothing for an inquiry", async () => {
+    const store = await storeWithTopUp();
+    const inquiry = await processStripeEvent(
+      disputeEvent("evt_inq", "charge.dispute.funds_withdrawn", "warning_needs_response"),
+      table,
+      store,
+    );
+    expect(inquiry).toEqual({ handled: true, action: "dispute_inquiry_ignored" });
+    expect(store.balance("ws_1")).toBe(100);
+    // charge.dispute.created no longer moves credits at all.
+    const created = await processStripeEvent(
+      disputeEvent("evt_created", "charge.dispute.created", "needs_response"),
+      table,
+      store,
+    );
+    expect(created).toEqual({ handled: false, action: "ignored" });
+    expect(store.balance("ws_1")).toBe(100);
+  });
+
+  it("claws back once when funds are withdrawn, keyed on the dispute", async () => {
+    const store = await storeWithTopUp();
+    const withdrawn = await processStripeEvent(
+      disputeEvent("evt_w1", "charge.dispute.funds_withdrawn", "needs_response"),
+      table,
+      store,
+    );
+    expect(withdrawn).toMatchObject({ action: "dispute_clawed_back", credits: 100 });
+    // A second withdrawal event for the same dispute takes nothing more.
+    const again = await processStripeEvent(
+      disputeEvent("evt_w2", "charge.dispute.funds_withdrawn", "needs_response"),
+      table,
+      store,
+    );
+    expect(again).toMatchObject({ duplicate: true });
+    expect(store.balance("ws_1")).toBe(0);
+  });
+
+  it("gives the credits back once when the dispute is won", async () => {
+    const store = await storeWithTopUp();
+    await processStripeEvent(disputeEvent("evt_w", "charge.dispute.funds_withdrawn", "needs_response"), table, store);
+    expect(store.balance("ws_1")).toBe(0);
+
+    const closed = await processStripeEvent(disputeEvent("evt_c", "charge.dispute.closed", "won"), table, store);
+    expect(closed).toMatchObject({ action: "dispute_won_credits_restored", credits: 100 });
+    const reinstated = await processStripeEvent(
+      disputeEvent("evt_r", "charge.dispute.funds_reinstated", "won"),
+      table,
+      store,
+    );
+    expect(reinstated).toMatchObject({ duplicate: true });
+    expect(store.balance("ws_1")).toBe(100);
+  });
+
+  it("gives back only what the clawback took when the balance was short", async () => {
+    const store = await storeWithTopUp();
+    expect(store.spend("ws_1", 70)).toBe(true);
+    await processStripeEvent(disputeEvent("evt_w", "charge.dispute.funds_withdrawn", "under_review"), table, store);
+    expect(store.balance("ws_1")).toBe(0);
+    await processStripeEvent(disputeEvent("evt_r", "charge.dispute.funds_reinstated", "won"), table, store);
+    expect(store.balance("ws_1")).toBe(30);
+  });
+
+  it("keeps the clawback when the dispute is lost, even when funds are reinstated", async () => {
+    const store = await storeWithTopUp();
+    await processStripeEvent(refundEvent("evt_refund_part", 300), table, store);
+    await processStripeEvent(disputeEvent("evt_w", "charge.dispute.funds_withdrawn", "needs_response"), table, store);
+    expect(store.balance("ws_1")).toBe(0);
+    // Stripe reinstates the refunded part of a partly refunded payment on a
+    // lost dispute; those credits were already taken back by the refund.
+    const reinstated = await processStripeEvent(
+      disputeEvent("evt_r", "charge.dispute.funds_reinstated", "lost"),
+      table,
+      store,
+    );
+    expect(reinstated).toEqual({ handled: true, action: "dispute_closed_noted" });
+    await processStripeEvent(disputeEvent("evt_c", "charge.dispute.closed", "lost"), table, store);
+    expect(store.balance("ws_1")).toBe(0);
+  });
+
+  it("skips a withdrawal processed after the dispute was already won", async () => {
+    const store = await storeWithTopUp();
+    const won = await processStripeEvent(disputeEvent("evt_c", "charge.dispute.closed", "won"), table, store);
+    expect(won).toEqual({ handled: true, action: "dispute_won_nothing_to_restore" });
+    const late = await processStripeEvent(
+      disputeEvent("evt_w", "charge.dispute.funds_withdrawn", "needs_response"),
+      table,
+      store,
+    );
+    expect(late).toEqual({ handled: true, action: "dispute_already_won" });
+    expect(store.balance("ws_1")).toBe(100);
+  });
+
   it("finds a subscription invoice through the Stripe lookup for a dispute", async () => {
     const store = new InMemoryBillingStore();
     await processStripeEvent(
@@ -440,15 +809,15 @@ describe("refunds and disputes (Phase 10 decision 3)", () => {
       table,
       store,
     );
-    const dispute = verify({
-      id: "evt_dispute",
-      type: "charge.dispute.created",
-      data: { object: { id: "dp_1", object: "dispute", charge: "ch_9", payment_intent: "pi_invoice_9", amount: 7900 } },
-    });
     const lookup = {
       invoiceIdForPaymentIntent: async (pi: string) => (pi === "pi_invoice_9" ? "in_disputed" : null),
     };
-    const result = await processStripeEvent(dispute, table, store, { lookup });
+    const result = await processStripeEvent(
+      disputeEvent("evt_dispute", "charge.dispute.funds_withdrawn", "needs_response", "dp_9", "pi_invoice_9"),
+      table,
+      store,
+      { lookup },
+    );
     expect(result).toMatchObject({ action: "dispute_clawed_back", credits: growth.creditsPerMonth });
     expect(store.balance("ws_9")).toBe(0);
   });
