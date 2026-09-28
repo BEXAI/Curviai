@@ -34,6 +34,17 @@ export interface MockProviderConfig {
   hangTimes?: number;
   /** When set, the provider exposes estimateCostMicros returning this. */
   estimateMicros?: number;
+  /** When set, the provider exposes estimateCostMicros calling this; it may
+   * throw to exercise a broken estimate. Wins over estimateMicros. */
+  estimate?: (req: ProviderRequest) => number;
+  /**
+   * Simulates an async job create that was accepted and paid for: every
+   * call reports this cost through the router's billing hook before it
+   * hangs, fails or succeeds.
+   */
+  reportBilledMicros?: number;
+  /** Exposed as the provider's minTimeoutMs. */
+  minTimeoutMs?: number;
 }
 
 export class MockProvider implements CostAwareProvider {
@@ -45,11 +56,15 @@ export class MockProvider implements CostAwareProvider {
   invocations = 0;
 
   estimateCostMicros?: (req: ProviderRequest) => number;
+  readonly minTimeoutMs: number | undefined;
 
   constructor(private readonly config: MockProviderConfig) {
     this.name = config.name;
     this.kind = config.kind ?? "llm";
-    if (config.estimateMicros !== undefined) {
+    this.minTimeoutMs = config.minTimeoutMs;
+    if (config.estimate !== undefined) {
+      this.estimateCostMicros = config.estimate;
+    } else if (config.estimateMicros !== undefined) {
       const estimate = config.estimateMicros;
       this.estimateCostMicros = () => estimate;
     }
@@ -63,6 +78,10 @@ export class MockProvider implements CostAwareProvider {
     this.invocations += 1;
     const call = this.invocations;
     this.calls.push(req);
+
+    if (this.config.reportBilledMicros !== undefined) {
+      (req as RoutedProviderRequest<TIn>).onBilled?.(this.config.reportBilledMicros);
+    }
 
     if (this.config.latencyMs) {
       await new Promise((resolve) => setTimeout(resolve, this.config.latencyMs));

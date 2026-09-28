@@ -58,7 +58,9 @@ export interface CapReservation {
   reservedMicros: number;
   /** Running total after the reservation, or the current total when blocked. */
   totalMicros: number;
-  /** Set on the global daily cap when the total is at or past the alert line. */
+  /** Set on an allowed global daily reservation when the running total is at
+   * or past the alert line. Never set on a blocked reservation: nothing was
+   * spent, and the hard stop already refused the call. */
   alert?: boolean;
   reason?: string;
 }
@@ -143,14 +145,32 @@ export class SpendCaps {
   /**
    * Global daily provider spend. Blocks at the hard stop; when allowed, sets
    * alert once the running total reaches the alert line so the caller can
-   * notify the founder.
+   * notify the founder. A blocked reservation never alerts.
    */
   async checkAndReserveGlobalDay(costMicros: number): Promise<CapReservation> {
     const key = `caps:global:${dayStamp(this.now())}`;
     const result = await this.reserve(key, costMicros, this.globalDailyHardStopMicros);
-    if (result.totalMicros >= SPEND_CAPS.globalDailyAlertMicros) {
+    if (result.allowed && this.globalDayAlertReached(result.totalMicros)) {
       result.alert = true;
     }
     return result;
+  }
+
+  /** True when a global daily running total is at or past the alert line.
+   * The router uses it after charging a shortfall (a call that cost more
+   * than its reservation), which moves the total without a new reservation. */
+  globalDayAlertReached(totalMicros: number): boolean {
+    return totalMicros >= SPEND_CAPS.globalDailyAlertMicros;
+  }
+
+  /**
+   * Claims today's global spend alert. Resolves true for exactly one caller
+   * per UTC day across every process sharing the store (add is atomic per
+   * key), false for everyone after. Wrap the founder notifier with it so a
+   * run past the alert line sends one message a day, not one per call.
+   */
+  async claimGlobalDayAlert(): Promise<boolean> {
+    const total = await this.store.add(`caps:alert:global:${dayStamp(this.now())}`, 1);
+    return total === 1;
   }
 }

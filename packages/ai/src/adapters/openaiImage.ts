@@ -6,16 +6,38 @@
  * VERIFY AT FIRST LIVE CALL: current image model availability and the
  * response encoding (b64_json versus url, response_format support per model)
  * against https://platform.openai.com/docs. The build plan notes gpt-image-1
- * shuts down October 23, 2026. Unit tests cover construction and supports()
- * only.
+ * shuts down October 23, 2026.
+ *
+ * A moderation refusal (HTTP 400 with error code moderation_blocked, or the
+ * older content_policy_violation) is a non retryable ProviderError with code
+ * content_blocked, and a success reply with no image data is non retryable
+ * with code empty_output. Neither is metered, since the injected price is
+ * per returned image. The moderation error shape was checked against the
+ * image generation guide on 2026-09-28.
  */
 
 import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
-import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import type { ProviderErrorCode, ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { requestJson, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
+
+/** Error codes OpenAI returns when its moderation declines an image request. */
+const OPENAI_MODERATION_CODES = ["moderation_blocked", "content_policy_violation"];
+
+/** Maps a moderation refusal response to content_blocked. */
+export function classifyOpenaiImageError(status: number, bodyText: string): ProviderErrorCode | undefined {
+  if (status !== 400) return undefined;
+  let code: unknown;
+  try {
+    code = (JSON.parse(bodyText) as { error?: { code?: unknown } }).error?.code;
+  } catch {
+    code = undefined;
+  }
+  if (typeof code === "string" && OPENAI_MODERATION_CODES.includes(code)) return "content_blocked";
+  return OPENAI_MODERATION_CODES.some((c) => bodyText.includes(`"${c}"`)) ? "content_blocked" : undefined;
+}
 
 export interface OpenaiImageConfig extends AdapterCommonConfig {
   /** Model ID from seed data, e.g. the fallback image model row. */
@@ -50,9 +72,11 @@ export class OpenaiImageProvider implements CostAwareProvider {
   private readonly tasks: string[];
   private readonly model: string;
   private readonly priceTable: { perImageMicros: number };
+  readonly minTimeoutMs: number | undefined;
 
   constructor(config: OpenaiImageConfig) {
     this.name = config.name;
+    this.minTimeoutMs = config.minTimeoutMs;
     this.tasks = config.tasks;
     this.apiKey = resolveApiKey(config.name, config.apiKey, OPENAI_API_KEY_ENV);
     this.baseUrl = config.baseUrl ?? "https://api.openai.com";
@@ -93,11 +117,16 @@ export class OpenaiImageProvider implements CostAwareProvider {
         body: JSON.stringify(body),
         signal: signalOf(req),
       },
+      classifyOpenaiImageError,
     );
 
-    const images = (data.data ?? []).map((item) => ({ dataBase64: item.b64_json, url: item.url }));
+    const images = (data.data ?? [])
+      .filter((item) => Boolean(item.b64_json) || Boolean(item.url))
+      .map((item) => ({ dataBase64: item.b64_json, url: item.url }));
     if (images.length === 0) {
-      throw new ProviderError("OpenAI response contained no images", this.name, req.task, true);
+      throw new ProviderError("OpenAI response contained no images", this.name, req.task, false, undefined, {
+        code: "empty_output",
+      });
     }
 
     const output: OpenaiImageOutput = { images, raw: data };

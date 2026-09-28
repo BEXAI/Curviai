@@ -82,7 +82,48 @@ describe("SpendCaps", () => {
 
     const blocked = await caps.checkAndReserveGlobalDay(1);
     expect(blocked.allowed).toBe(false);
-    expect(blocked.alert).toBe(true);
+    // A blocked reservation spent nothing: it never alerts (Update.md 5.7).
+    expect(blocked.alert).toBeUndefined();
+  });
+
+  it("never alerts on a blocked global reservation, even far past the alert line", async () => {
+    const { caps, store } = setup();
+    await store.add("caps:global:2026-09-27", 120_000_000);
+    const blocked = await caps.checkAndReserveGlobalDay(40_000_000);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.totalMicros).toBe(120_000_000);
+    expect(blocked.alert).toBeUndefined();
+
+    const allowed = await caps.checkAndReserveGlobalDay(1_000_000);
+    expect(allowed.allowed).toBe(true);
+    expect(allowed.alert).toBe(true);
+  });
+
+  it("reports the alert line for totals moved outside a reservation", () => {
+    const { caps } = setup();
+    expect(caps.globalDayAlertReached(SPEND_CAPS.globalDailyAlertMicros - 1)).toBe(false);
+    expect(caps.globalDayAlertReached(SPEND_CAPS.globalDailyAlertMicros)).toBe(true);
+  });
+
+  it("lets exactly one caller claim the global spend alert per day", async () => {
+    const { caps, state } = setup();
+    const claims = await Promise.all([
+      caps.claimGlobalDayAlert(),
+      caps.claimGlobalDayAlert(),
+      caps.claimGlobalDayAlert(),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect(await caps.claimGlobalDayAlert()).toBe(false);
+
+    state.date = new Date("2026-09-28T10:00:00Z");
+    expect(await caps.claimGlobalDayAlert()).toBe(true);
+    expect(await caps.claimGlobalDayAlert()).toBe(false);
+  });
+
+  it("keeps the alert claim apart from the global spend counter", async () => {
+    const { caps, store } = setup();
+    await caps.claimGlobalDayAlert();
+    expect(await store.get("caps:global:2026-09-27")).toBe(0);
   });
 
   it("rolls back when concurrent reservations overshoot", async () => {

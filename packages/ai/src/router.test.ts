@@ -3,9 +3,24 @@ import { InMemoryBreakerStore } from "./breaker";
 import { InMemoryCapStore, SpendCaps, type CapStore } from "./caps";
 import { InMemoryCostMeter } from "./meter";
 import { ProviderRegistry } from "./registry";
-import { backoffDelayMs, callWithFailover, DEFAULT_RETRY_OPTIONS, ProviderTimeoutError } from "./router";
+import {
+  backoffDelayMs,
+  callWithFailover,
+  DEFAULT_RETRY_OPTIONS,
+  DEFAULT_TIMEOUT_MS,
+  effectiveTimeoutMs,
+  ProviderTimeoutError,
+} from "./router";
 import { MockProvider } from "./testing";
-import { AllProvidersFailedError, BreakerOpenError, ProviderError, type ProviderRequest } from "./types";
+import {
+  AllProvidersFailedError,
+  BreakerOpenError,
+  CapStoreUnavailableError,
+  hasProviderErrorCode,
+  ProviderError,
+  type CostMeterEntry,
+  type ProviderRequest,
+} from "./types";
 
 const TASK = "generate_image";
 
@@ -452,5 +467,568 @@ describe("callWithFailover", () => {
       AllProvidersFailedError,
     );
     expect(down.invocations).toBe(9);
+  });
+});
+
+const DAY = "2026-09-28";
+const GLOBAL_KEY = `caps:global:${DAY}`;
+const fixedClock = () => new Date(`${DAY}T12:00:00Z`);
+
+function capsOn(store: CapStore = new InMemoryCapStore()) {
+  return new SpendCaps(store, fixedClock);
+}
+
+function internalErrors() {
+  const seen: Array<{ context: string; err: unknown }> = [];
+  return { seen, onInternalError: (err: unknown, context: string) => seen.push({ context, err }) };
+}
+
+describe("billed failures: a timeout after a paid create never pays again (Update.md 5.1)", () => {
+  it("does not retry a timeout after a billed async create, meters it and keeps it against the caps", async () => {
+    const store = new InMemoryCapStore();
+    const spendCaps = capsOn(store);
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 60_000, reportBilledMicros: 60_000, hangTimes: Infinity });
+    const p2 = new MockProvider({ name: "p2", estimateMicros: 50_000, output: "two", costMicros: 50_000 });
+    const h = harness([p1, p2]);
+
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      timeoutMs: 10,
+      caps: [
+        { spendCaps, capKind: "pack" },
+        { spendCaps, capKind: "global_day" },
+      ],
+    });
+
+    expect(result.provider).toBe("p2");
+    // One paid create on p1, never a second one.
+    expect(p1.invocations).toBe(1);
+    expect(h.sleeps).toEqual([]);
+    const [failed, succeeded] = h.meter.entries;
+    expect(failed.provider).toBe("p1");
+    expect(failed.ok).toBe(false);
+    expect(failed.costMicros).toBe(60_000);
+    expect(failed.errorCode).toBe("timeout");
+    expect(succeeded.costMicros).toBe(50_000);
+    expect(h.meter.totalForJob("j1")).toBe(110_000);
+    // The billed spend stays on the caps instead of being released.
+    expect(await store.get("caps:pack:j1")).toBe(110_000);
+    expect(await store.get(GLOBAL_KEY)).toBe(110_000);
+  });
+
+  it("reports the billed timeout as a non retryable ProviderTimeoutError", async () => {
+    const p1 = new MockProvider({ name: "p1", reportBilledMicros: 60_000, hangTimes: Infinity });
+    const h = harness([p1]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      timeoutMs: 10,
+    }).catch((e: AllProvidersFailedError) => e);
+
+    expect(err).toBeInstanceOf(AllProvidersFailedError);
+    const inner = (err as AllProvidersFailedError).errors[0];
+    expect(inner).toBeInstanceOf(ProviderTimeoutError);
+    expect(inner.retryable).toBe(false);
+    expect(inner.billedCostMicros).toBe(60_000);
+    expect(inner.message).toContain("not retrying");
+    expect(p1.invocations).toBe(1);
+  });
+
+  it("does not retry a network error that follows a billed create", async () => {
+    const p1 = new MockProvider({ name: "p1", reportBilledMicros: 40_000, failTimes: Infinity });
+    const h = harness([p1]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), { sleep: h.sleep }).catch(
+      (e: AllProvidersFailedError) => e,
+    );
+
+    const inner = (err as AllProvidersFailedError).errors[0];
+    expect(inner.retryable).toBe(false);
+    expect(inner.billedCostMicros).toBe(40_000);
+    expect(p1.invocations).toBe(1);
+    expect(h.meter.entries).toHaveLength(1);
+    expect(h.meter.entries[0].costMicros).toBe(40_000);
+  });
+
+  it("still counts billed stalls toward the breaker so a struggling provider stops being paid", async () => {
+    const p1 = new MockProvider({ name: "p1", reportBilledMicros: 60_000, hangTimes: Infinity });
+    const p2 = new MockProvider({ name: "p2", output: "two" });
+    const h = harness([p1, p2]);
+    const opts = { sleep: h.sleep, timeoutMs: 5 };
+
+    for (let i = 0; i < 5; i++) {
+      await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), opts);
+    }
+    expect(p1.invocations).toBe(5);
+    const sixth = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), opts);
+    expect(sixth.provider).toBe("p2");
+    // The breaker opened: the sixth call paid nothing to p1.
+    expect(p1.invocations).toBe(5);
+  });
+
+  it("an unbilled timeout stays retryable", async () => {
+    const p1 = new MockProvider({ name: "p1", hangTimes: 1, output: "late" });
+    const h = harness([p1]);
+
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      timeoutMs: 10,
+    });
+    expect(result.attempts).toBe(2);
+    expect(h.meter.entries[0].costMicros).toBe(0);
+  });
+
+  it("raises the per attempt timeout to the provider's minTimeoutMs", async () => {
+    const slow = new MockProvider({ name: "p1", latencyMs: 40, minTimeoutMs: 2_000, output: "done" });
+    const h = harness([slow]);
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req({ timeoutMs: 5 }), {
+      sleep: h.sleep,
+    });
+    expect(result.output).toBe("done");
+    expect(result.attempts).toBe(1);
+
+    // Without the floor the same provider times out at the requested 5 ms.
+    const unfloored = new MockProvider({ name: "p1", latencyMs: 40, output: "done" });
+    const u = harness([unfloored]);
+    const err = await callWithFailover(u.registry, u.routing, u.meter, u.store, req({ timeoutMs: 5 }), {
+      sleep: u.sleep,
+      retry: { retries: 0 },
+    }).catch((e: AllProvidersFailedError) => e);
+    expect((err as AllProvidersFailedError).errors[0]).toBeInstanceOf(ProviderTimeoutError);
+  });
+
+  it("effectiveTimeoutMs only ever raises the requested timeout", () => {
+    const floored = new MockProvider({ name: "p1", minTimeoutMs: 150_000 });
+    const plain = new MockProvider({ name: "p2" });
+    expect(effectiveTimeoutMs(floored, DEFAULT_TIMEOUT_MS)).toBe(150_000);
+    expect(effectiveTimeoutMs(floored, 200_000)).toBe(200_000);
+    expect(effectiveTimeoutMs(plain, DEFAULT_TIMEOUT_MS)).toBe(DEFAULT_TIMEOUT_MS);
+  });
+});
+
+describe("content blocks and empty replies (Update.md 5.4)", () => {
+  const blocked = (billed = 0, retryable = false) =>
+    new MockProvider({
+      name: "p1",
+      estimateMicros: 1_000,
+      failTimes: Infinity,
+      failWith: () =>
+        new ProviderError("declined", "p1", TASK, retryable, undefined, {
+          code: "content_blocked",
+          billedCostMicros: billed,
+        }),
+    });
+
+  it("never retries a content block, never touches the shared breaker, and fails over", async () => {
+    // retryable true on purpose: even a mislabeled block must not burn retries.
+    const p1 = blocked(0, true);
+    const p2 = new MockProvider({ name: "p2", output: "two" });
+    const h = harness([p1, p2]);
+
+    for (let i = 0; i < 7; i++) {
+      const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), { sleep: h.sleep });
+      expect(result.provider).toBe("p2");
+    }
+    expect(p1.invocations).toBe(7);
+    expect(h.sleeps).toEqual([]);
+    expect(await h.store.get("breaker:p1:failures")).toBeNull();
+    expect(await h.store.get("breaker:p1:open")).toBeNull();
+    const p1Entries = h.meter.entries.filter((e) => e.provider === "p1");
+    expect(p1Entries).toHaveLength(7);
+    expect(p1Entries.every((e) => !e.ok && e.errorCode === "content_blocked")).toBe(true);
+  });
+
+  it("meters a billed block and keeps it against the caps", async () => {
+    const store = new InMemoryCapStore();
+    const spendCaps = capsOn(store);
+    const h = harness([blocked(1_234)]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      caps: { spendCaps, capKind: "pack" },
+    }).catch((e: unknown) => e);
+
+    expect(hasProviderErrorCode(err, "content_blocked")).toBe(true);
+    expect(h.meter.entries).toHaveLength(1);
+    expect(h.meter.entries[0].costMicros).toBe(1_234);
+    expect(h.meter.totalForJob("j1")).toBe(1_234);
+    // Reserved 1_000, billed 1_234: the shortfall is charged, nothing released.
+    expect(await store.get("caps:pack:j1")).toBe(1_234);
+  });
+
+  it("does not retry an empty reply or count it toward the breaker", async () => {
+    const p1 = new MockProvider({
+      name: "p1",
+      failTimes: Infinity,
+      failWith: () => new ProviderError("no image", "p1", TASK, false, undefined, { code: "empty_output" }),
+    });
+    const h = harness([p1]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), { sleep: h.sleep }).catch(
+      (e: unknown) => e,
+    );
+    expect(hasProviderErrorCode(err, "empty_output")).toBe(true);
+    expect(hasProviderErrorCode(err, "content_blocked")).toBe(false);
+    expect(p1.invocations).toBe(1);
+    expect(await h.store.get("breaker:p1:failures")).toBeNull();
+  });
+});
+
+describe("estimate and reserve errors stay inside the failover chain (Update.md 5.5)", () => {
+  it("fails over when a provider's estimate throws", async () => {
+    const store = new InMemoryCapStore();
+    const spendCaps = capsOn(store);
+    const p1 = new MockProvider({
+      name: "p1",
+      estimate: () => {
+        throw new Error("no price table for model x");
+      },
+    });
+    const p2 = new MockProvider({ name: "p2", estimateMicros: 100, output: "two", costMicros: 80 });
+    const h = harness([p1, p2]);
+
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      caps: { spendCaps, capKind: "pack" },
+    });
+    expect(result.provider).toBe("p2");
+    expect(p1.invocations).toBe(0);
+    expect(await store.get("caps:pack:j1")).toBe(80);
+
+    const solo = harness([p1]);
+    const err = await callWithFailover(solo.registry, solo.routing, solo.meter, solo.store, req(), {
+      sleep: solo.sleep,
+      maxCostMicros: 1_000,
+    }).catch((e: AllProvidersFailedError) => e);
+    const inner = (err as AllProvidersFailedError).errors[0];
+    expect(inner.code).toBe("estimate_failed");
+    expect(inner.message).toContain("no price table");
+  });
+
+  it("refuses an estimate that is not a finite, non negative number", async () => {
+    for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+      const p1 = new MockProvider({ name: "p1", estimate: () => bad });
+      const h = harness([p1]);
+      const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+        sleep: h.sleep,
+        maxCostMicros: 1_000,
+      }).catch((e: AllProvidersFailedError) => e);
+      expect((err as AllProvidersFailedError).errors[0].code).toBe("estimate_failed");
+      expect(p1.invocations).toBe(0);
+    }
+  });
+
+  it("a reserve error on a later layer releases the layers already held and fails over", async () => {
+    const backing = new InMemoryCapStore();
+    let globalFailures = 1;
+    const flaky: CapStore = {
+      get: (key) => backing.get(key),
+      add: async (key, delta) => {
+        if (key === GLOBAL_KEY && globalFailures > 0) {
+          globalFailures -= 1;
+          throw new Error("connection reset");
+        }
+        return backing.add(key, delta);
+      },
+    };
+    const spendCaps = capsOn(flaky);
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 100, output: "one", costMicros: 100 });
+    const p2 = new MockProvider({ name: "p2", estimateMicros: 100, output: "two", costMicros: 80 });
+    const h = harness([p1, p2]);
+
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      caps: [
+        { spendCaps, capKind: "pack" },
+        { spendCaps, capKind: "global_day" },
+      ],
+    });
+
+    expect(result.provider).toBe("p2");
+    expect(p1.invocations).toBe(0);
+    // p1's pack layer was released when its global layer threw; only p2's
+    // actual spend remains on either counter.
+    expect(await backing.get("caps:pack:j1")).toBe(80);
+    expect(await backing.get(GLOBAL_KEY)).toBe(80);
+  });
+
+  it("fails closed with CapStoreUnavailableError when the cap store is down", async () => {
+    const down: CapStore = {
+      get: async () => {
+        throw new Error("database unavailable");
+      },
+      add: async () => {
+        throw new Error("database unavailable");
+      },
+    };
+    const spendCaps = capsOn(down);
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 100 });
+    const p2 = new MockProvider({ name: "p2", estimateMicros: 100 });
+    const h = harness([p1, p2]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      caps: { spendCaps, capKind: "global_day" },
+    }).catch((e: AllProvidersFailedError) => e);
+
+    expect(err).toBeInstanceOf(AllProvidersFailedError);
+    const errors = (err as AllProvidersFailedError).errors;
+    expect(errors).toHaveLength(2);
+    expect(errors.every((e) => e instanceof CapStoreUnavailableError)).toBe(true);
+    expect(errors[0].code).toBe("cap_unavailable");
+    // Callers that route cap blocks to needs review keep matching it.
+    expect(errors[0].message.startsWith("Spend cap blocked")).toBe(true);
+    expect(errors[0].message).toContain("database unavailable");
+    expect(p1.invocations + p2.invocations).toBe(0);
+  });
+
+  it("fails closed when a caps layer lacks its identifier", async () => {
+    const spendCaps = capsOn();
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 100 });
+    const h = harness([p1]);
+
+    const err = await callWithFailover(h.registry, h.routing, h.meter, h.store, req({ jobId: undefined }), {
+      sleep: h.sleep,
+      caps: { spendCaps, capKind: "pack" },
+    }).catch((e: AllProvidersFailedError) => e);
+    expect((err as AllProvidersFailedError).errors[0]).toBeInstanceOf(CapStoreUnavailableError);
+    expect(p1.invocations).toBe(0);
+  });
+});
+
+describe("success bookkeeping never retries or double releases (Update.md 5.6)", () => {
+  it("a release that throws during reconcile leaves totals non negative and pays once", async () => {
+    const backing = new InMemoryCapStore();
+    let throwOnce = true;
+    const flaky: CapStore = {
+      get: (key) => backing.get(key),
+      add: async (key, delta) => {
+        if (key === "caps:pack:j1" && delta < 0 && throwOnce) {
+          throwOnce = false;
+          throw new Error("write timeout");
+        }
+        return backing.add(key, delta);
+      },
+    };
+    const spendCaps = capsOn(flaky);
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 100, output: "one", costMicros: 60 });
+    const h = harness([p1]);
+    const internal = internalErrors();
+
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      onInternalError: internal.onInternalError,
+      caps: [
+        { spendCaps, capKind: "pack" },
+        { spendCaps, capKind: "global_day" },
+      ],
+    });
+
+    expect(result.output).toBe("one");
+    expect(p1.invocations).toBe(1);
+    // The failed release keeps the pack at its reservation (never below
+    // zero, never released twice); the global layer still reconciled.
+    expect(await backing.get("caps:pack:j1")).toBe(100);
+    expect(await backing.get(GLOBAL_KEY)).toBe(60);
+    expect(internal.seen.map((s) => s.context)).toEqual(["release caps:pack:j1"]);
+  });
+
+  it("a meter that throws after a paid success still invokes the provider once", async () => {
+    const store = new InMemoryCapStore();
+    const spendCaps = capsOn(store);
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 100, output: "one", costMicros: 60 });
+    const h = harness([p1]);
+    const brokenMeter = {
+      record: (_entry: CostMeterEntry) => {
+        throw new Error("meter table missing");
+      },
+    };
+    const internal = internalErrors();
+
+    const result = await callWithFailover(h.registry, h.routing, brokenMeter, h.store, req(), {
+      sleep: h.sleep,
+      onInternalError: internal.onInternalError,
+      caps: { spendCaps, capKind: "pack" },
+    });
+
+    expect(result.output).toBe("one");
+    expect(result.attempts).toBe(1);
+    expect(p1.invocations).toBe(1);
+    // Reconciled to the actual cost, not released in full.
+    expect(await store.get("caps:pack:j1")).toBe(60);
+    expect(internal.seen.map((s) => s.context)).toEqual(["meter.record success"]);
+  });
+
+  it("a breaker store that throws on success does not retry the paid call", async () => {
+    const p1 = new MockProvider({ name: "p1", output: "one", costMicros: 60 });
+    const h = harness([p1]);
+    const flakyBreaker = {
+      get: (key: string) => h.store.get(key),
+      incr: (key: string, ttl: number) => h.store.incr(key, ttl),
+      set: async () => {
+        throw new Error("redis down");
+      },
+    };
+    const internal = internalErrors();
+
+    const result = await callWithFailover(h.registry, h.routing, h.meter, flakyBreaker, req(), {
+      sleep: h.sleep,
+      onInternalError: internal.onInternalError,
+    });
+    expect(result.output).toBe("one");
+    expect(p1.invocations).toBe(1);
+    expect(internal.seen.map((s) => s.context)).toEqual(["breaker.recordSuccess"]);
+  });
+
+  it("a meter that throws on a failed attempt does not abort the failover", async () => {
+    const p1 = new MockProvider({
+      name: "p1",
+      failTimes: Infinity,
+      failWith: () => new ProviderError("bad input", "p1", TASK, false),
+    });
+    const p2 = new MockProvider({ name: "p2", output: "two" });
+    const h = harness([p1, p2]);
+    let calls = 0;
+    const flakyMeter = {
+      record: () => {
+        calls += 1;
+        if (calls === 1) throw new Error("meter write failed");
+      },
+    };
+
+    const result = await callWithFailover(h.registry, h.routing, flakyMeter, h.store, req(), {
+      sleep: h.sleep,
+      onInternalError: () => {},
+    });
+    expect(result.provider).toBe("p2");
+  });
+});
+
+describe("spend alert hook (Update.md 5.7)", () => {
+  async function run(opts: {
+    preload?: Record<string, number>;
+    estimate: number;
+    cost: number;
+    layers?: Array<"global_day" | "pack">;
+    onCapAlert?: (total: number) => void | Promise<void>;
+    onInternalError?: (err: unknown, context: string) => void;
+  }) {
+    const store = new InMemoryCapStore();
+    for (const [key, micros] of Object.entries(opts.preload ?? {})) {
+      await store.add(key, micros);
+    }
+    const spendCaps = capsOn(store);
+    // An LLM call: the alert covers every provider kind, not only images.
+    const p1 = new MockProvider({
+      name: "p1",
+      kind: "llm",
+      estimateMicros: opts.estimate,
+      output: "ok",
+      costMicros: opts.cost,
+    });
+    const h = harness([p1]);
+    const alerts: number[] = [];
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      caps: (opts.layers ?? ["global_day"]).map((capKind) => ({ spendCaps, capKind })),
+      onCapAlert: opts.onCapAlert ?? ((total) => void alerts.push(total)),
+      onInternalError: opts.onInternalError,
+    }).catch((e: unknown) => e);
+    return { store, alerts, result, p1 };
+  }
+
+  it("calls onCapAlert with the global total when an allowed reservation reaches the alert line", async () => {
+    const { alerts, result } = await run({ preload: { [GLOBAL_KEY]: 49_990_000 }, estimate: 20_000, cost: 20_000 });
+    expect((result as { output: unknown }).output).toBe("ok");
+    expect(alerts).toEqual([50_010_000]);
+  });
+
+  it("stays quiet below the alert line", async () => {
+    const { alerts } = await run({ preload: { [GLOBAL_KEY]: 10_000_000 }, estimate: 20_000, cost: 20_000 });
+    expect(alerts).toEqual([]);
+  });
+
+  it("does not alert when the global reservation is blocked at the hard stop", async () => {
+    const { alerts, result, p1 } = await run({
+      preload: { [GLOBAL_KEY]: 150_000_000 },
+      estimate: 20_000,
+      cost: 20_000,
+    });
+    expect(result).toBeInstanceOf(AllProvidersFailedError);
+    expect(p1.invocations).toBe(0);
+    expect(alerts).toEqual([]);
+  });
+
+  it("does not alert when another layer blocks the call", async () => {
+    const { alerts, result, store } = await run({
+      preload: { [GLOBAL_KEY]: 60_000_000, "caps:pack:j1": 8_000_000 },
+      estimate: 20_000,
+      cost: 20_000,
+      layers: ["global_day", "pack"],
+    });
+    expect(result).toBeInstanceOf(AllProvidersFailedError);
+    expect(alerts).toEqual([]);
+    // The global layer was released when the pack layer blocked.
+    expect(await store.get(GLOBAL_KEY)).toBe(60_000_000);
+  });
+
+  it("alerts when charging a shortfall moves the total past the line", async () => {
+    const { alerts, store } = await run({ preload: { [GLOBAL_KEY]: 49_990_000 }, estimate: 1_000, cost: 20_000 });
+    expect(await store.get(GLOBAL_KEY)).toBe(50_010_000);
+    expect(alerts).toEqual([50_010_000]);
+  });
+
+  it("alerts once per call, not again for the shortfall", async () => {
+    const { alerts } = await run({ preload: { [GLOBAL_KEY]: 55_000_000 }, estimate: 1_000, cost: 20_000 });
+    expect(alerts).toEqual([55_001_000]);
+  });
+
+  it("a throwing or rejecting notifier never breaks the call", async () => {
+    const internal = internalErrors();
+    const thrown = await run({
+      preload: { [GLOBAL_KEY]: 55_000_000 },
+      estimate: 1_000,
+      cost: 1_000,
+      onCapAlert: () => {
+        throw new Error("email down");
+      },
+      onInternalError: internal.onInternalError,
+    });
+    expect((thrown.result as { output: unknown }).output).toBe("ok");
+
+    const rejected = await run({
+      preload: { [GLOBAL_KEY]: 55_000_000 },
+      estimate: 1_000,
+      cost: 1_000,
+      onCapAlert: async () => {
+        throw new Error("email rejected");
+      },
+      onInternalError: internal.onInternalError,
+    });
+    expect((rejected.result as { output: unknown }).output).toBe("ok");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(internal.seen.map((s) => s.context)).toEqual(["onCapAlert", "onCapAlert"]);
+  });
+
+  it("dedupes to one founder notice a day with claimGlobalDayAlert", async () => {
+    const store = new InMemoryCapStore();
+    await store.add(GLOBAL_KEY, 55_000_000);
+    const spendCaps = capsOn(store);
+    const p1 = new MockProvider({ name: "p1", estimateMicros: 1_000, output: "ok", costMicros: 1_000 });
+    const h = harness([p1]);
+    const notices: number[] = [];
+    const onCapAlert = async (total: number) => {
+      if (await spendCaps.claimGlobalDayAlert()) notices.push(total);
+    };
+
+    for (let i = 0; i < 4; i++) {
+      await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+        sleep: h.sleep,
+        caps: { spendCaps, capKind: "global_day" },
+        onCapAlert,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notices).toEqual([55_001_000]);
   });
 });

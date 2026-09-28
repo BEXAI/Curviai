@@ -5,18 +5,92 @@
  * times the injected price table; the model ID and prices are constructor
  * parameters, never literals here.
  *
+ * A reply with stop_reason "refusal" (the safety system declined) or with
+ * no text or tool_use block is a non retryable ProviderError that carries
+ * the tokens billed for it, so the router meters the spend and a blocked
+ * prompt never burns retries or trips the shared breaker.
+ *
  * VERIFY AT FIRST LIVE CALL: request and response field names against
  * https://docs.claude.com (messages create shape, usage token fields,
- * current anthropic-version value). This adapter is unit tested only for
- * construction and supports().
+ * current anthropic-version value). The image token rule and the refusal
+ * stop reason were checked against the vision and stop reason docs on
+ * 2026-09-28.
  */
 
 import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
-import { requestJson, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
+import {
+  base64Bytes,
+  imageDimensions,
+  requestJson,
+  resolveApiKey,
+  signalOf,
+  type AdapterCommonConfig,
+  type FetchLike,
+} from "./shared";
 
 export const ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY";
+
+/**
+ * Image input limits for cost estimation. Claude sees an image as 28 by 28
+ * pixel patches, one visual token each, after downscaling it to fit the
+ * model's long edge and visual token limits. The defaults are the high
+ * resolution tier (Claude 4.7 and later): 2576 px and 4784 tokens. Standard
+ * tier models (1568 px, 1568 tokens) cost less for the same image, so the
+ * defaults are an upper bound for every model.
+ */
+export interface AnthropicImageTokenLimits {
+  patchPx: number;
+  maxLongEdgePx: number;
+  maxTokens: number;
+}
+
+export const ANTHROPIC_IMAGE_TOKEN_LIMITS: AnthropicImageTokenLimits = {
+  patchPx: 28,
+  maxLongEdgePx: 2576,
+  maxTokens: 4784,
+};
+
+/** Visual tokens for an image of width by height pixels: downscaled to the
+ * long edge limit keeping its aspect ratio, one token per patch (partial
+ * patches count), capped at the per image token limit. */
+export function anthropicImageTokens(
+  width: number,
+  height: number,
+  limits: AnthropicImageTokenLimits = ANTHROPIC_IMAGE_TOKEN_LIMITS,
+): number {
+  if (!(width > 0) || !(height > 0)) return limits.maxTokens;
+  const scale = Math.min(1, limits.maxLongEdgePx / Math.max(width, height));
+  const w = Math.ceil(width * scale);
+  const h = Math.ceil(height * scale);
+  const tokens = Math.ceil(w / limits.patchPx) * Math.ceil(h / limits.patchPx);
+  return Math.min(tokens, limits.maxTokens);
+}
+
+interface ImageBlockLike {
+  type: "image";
+  source?: { type?: string; data?: unknown };
+}
+
+function isImageBlock(value: unknown): value is ImageBlockLike {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { type?: unknown }).type === "image" &&
+    typeof (value as { source?: unknown }).source === "object"
+  );
+}
+
+/** Visual tokens for one image content block. Base64 sources are sized from
+ * their header; URL or file sources, and anything unreadable, take the per
+ * image maximum. */
+function imageBlockTokens(block: ImageBlockLike, limits: AnthropicImageTokenLimits): number {
+  const data = block.source?.type === "base64" ? block.source.data : undefined;
+  if (typeof data !== "string" || data.length === 0) return limits.maxTokens;
+  const size = imageDimensions(base64Bytes(data));
+  return size ? anthropicImageTokens(size.width, size.height, limits) : limits.maxTokens;
+}
 
 export interface AnthropicPriceTable {
   /** USD micros per million input tokens. */
@@ -35,6 +109,8 @@ export interface AnthropicLLMConfig extends AdapterCommonConfig {
   /** API version header value. Override when Anthropic publishes a new one. */
   anthropicVersion?: string;
   defaultMaxTokens?: number;
+  /** Image limits for the cost estimate; defaults to the high resolution tier. */
+  imageTokenLimits?: AnthropicImageTokenLimits;
 }
 
 export interface AnthropicLLMInput {
@@ -78,6 +154,8 @@ export class AnthropicLLMProvider implements CostAwareProvider {
   private readonly priceTables: Record<string, AnthropicPriceTable>;
   private readonly anthropicVersion: string;
   private readonly defaultMaxTokens: number;
+  private readonly imageTokenLimits: AnthropicImageTokenLimits;
+  readonly minTimeoutMs: number | undefined;
 
   constructor(config: AnthropicLLMConfig) {
     this.name = config.name;
@@ -90,6 +168,8 @@ export class AnthropicLLMProvider implements CostAwareProvider {
     this.priceTables = config.priceTables ?? {};
     this.anthropicVersion = config.anthropicVersion ?? "2023-06-01";
     this.defaultMaxTokens = config.defaultMaxTokens ?? 4096;
+    this.imageTokenLimits = config.imageTokenLimits ?? ANTHROPIC_IMAGE_TOKEN_LIMITS;
+    this.minTimeoutMs = config.minTimeoutMs;
   }
 
   supports(task: string): boolean {
@@ -117,27 +197,47 @@ export class AnthropicLLMProvider implements CostAwareProvider {
   }
 
   /**
-   * Conservative upper bound on the metered cost. Input tokens are estimated
-   * from the JSON size of the system prompt, messages and tools at one token
-   * per three characters, which overestimates real tokenizers on typical
-   * text. Output tokens are taken at the full max_tokens budget of the
-   * request (input.maxTokens or the adapter default), the hard ceiling the
-   * API enforces. Both sides are priced with the injected per million token
-   * rates, matching how invoke computes the actual cost.
+   * Conservative upper bound on the metered cost. Text input tokens are
+   * estimated from the JSON size of the system prompt, messages and tools at
+   * one token per three characters, which overestimates real tokenizers on
+   * typical text. Image blocks (anywhere in the messages, including tool
+   * results) are left out of that character count, since their base64 data
+   * is not tokenized as text, and priced as visual tokens from their pixel
+   * size instead (see anthropicImageTokens). Output tokens are taken at the
+   * full max_tokens budget of the request (input.maxTokens or the adapter
+   * default), the hard ceiling the API enforces. Both sides are priced with
+   * the injected per million token rates, matching how invoke computes the
+   * actual cost.
    */
   estimateCostMicros(req: ProviderRequest): number {
     const input = req.input as unknown as AnthropicLLMInput;
     const { prices } = this.resolveModel(input, req.task);
-    const promptChars = JSON.stringify({
-      system: input.system ?? "",
-      messages: input.messages ?? [],
-      tools: input.tools ?? [],
-    }).length;
-    const inputTokens = Math.ceil(promptChars / 3);
+    const inputTokens = this.estimateInputTokens(input);
     const outputTokens = input.maxTokens ?? this.defaultMaxTokens;
     return Math.ceil(
       (inputTokens * prices.inputMicrosPerMTok + outputTokens * prices.outputMicrosPerMTok) / 1_000_000,
     );
+  }
+
+  /** Upper bound on the request's input tokens: text at one token per three
+   * characters plus visual tokens for every image block. */
+  estimateInputTokens(input: AnthropicLLMInput): number {
+    let imageTokens = 0;
+    const promptChars = JSON.stringify(
+      {
+        system: input.system ?? "",
+        messages: input.messages ?? [],
+        tools: input.tools ?? [],
+      },
+      (_key, value: unknown) => {
+        if (isImageBlock(value)) {
+          imageTokens += imageBlockTokens(value, this.imageTokenLimits);
+          return { type: "image" };
+        }
+        return value;
+      },
+    ).length;
+    return Math.ceil(promptChars / 3) + imageTokens;
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
@@ -169,8 +269,26 @@ export class AnthropicLLMProvider implements CostAwareProvider {
     const toolBlock = blocks.find((b) => b.type === "tool_use");
     const inputTokens = data.usage?.input_tokens ?? 0;
     const outputTokens = data.usage?.output_tokens ?? 0;
+    const costMicros = Math.ceil(
+      (inputTokens * prices.inputMicrosPerMTok + outputTokens * prices.outputMicrosPerMTok) / 1_000_000,
+    );
+    // Both failures below were billed for their tokens, and retrying the
+    // same prompt on the same provider would only pay for the same answer.
+    if (data.stop_reason === "refusal") {
+      throw new ProviderError("Anthropic declined the request (stop_reason refusal)", this.name, req.task, false, undefined, {
+        code: "content_blocked",
+        billedCostMicros: costMicros,
+      });
+    }
     if (!textBlock && !toolBlock) {
-      throw new ProviderError("Anthropic response had no text or tool_use block", this.name, req.task, true);
+      throw new ProviderError(
+        `Anthropic response had no text or tool_use block (stop_reason ${data.stop_reason ?? "none"})`,
+        this.name,
+        req.task,
+        false,
+        undefined,
+        { code: "empty_output", billedCostMicros: costMicros },
+      );
     }
 
     const output: AnthropicLLMOutput = {
@@ -180,9 +298,6 @@ export class AnthropicLLMProvider implements CostAwareProvider {
       usage: { inputTokens, outputTokens },
       raw: data,
     };
-    const costMicros = Math.ceil(
-      (inputTokens * prices.inputMicrosPerMTok + outputTokens * prices.outputMicrosPerMTok) / 1_000_000,
-    );
     return { output: output as TOut, costMicros };
   }
 }
