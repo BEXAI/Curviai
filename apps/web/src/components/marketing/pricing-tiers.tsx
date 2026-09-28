@@ -3,26 +3,38 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, cn } from "@curvi/ui";
-import { creditCosts, tierByKey, topUps } from "@curvi/pipeline/seed";
+import { creditCosts, topUps } from "@curvi/pipeline/seed";
+import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { trackBillingEvent } from "@/lib/billing/analytics";
 import { billingCheckoutHref, signupHref } from "@/lib/billing/intent";
-import { COMING_SOON_LABEL, comingSoonFeatures, includedFeatures } from "@/lib/billing/plan-features";
+import { comingSoonFeatures, includedFeatures } from "@/lib/billing/plan-features";
 import {
   annualSavingsUsd,
   formatCredits,
   formatUsd,
-  maxAnnualSavingsPct,
   paidTiers,
   priceForCadence,
   tierDisplayName,
   type BillingCadence,
   type PaidTierKey,
 } from "@/lib/billing/plans";
-import { packsPerMonth, stillPackCredits } from "@/lib/billing/pricing-copy";
+import {
+  annualSavingsPercentRange,
+  FEATURES,
+  formatCredits as creditCost,
+  freeCredits,
+  freeCreditsReach,
+  packsForCredits,
+  topUpMonths,
+  typicalPackCredits,
+  type Availability,
+} from "@/lib/marketing-facts";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-// Prices, credit amounts and savings come from the seed (CLAUDE.md rule 2);
-// only the marketing wording lives here and in lib/billing/plan-features.
+// Prices, credit amounts and savings come from the seed (CLAUDE.md rule 2),
+// and pack sizes, savings and feature availability come from the same
+// helpers the rest of the site uses (lib/marketing-facts), so /pricing never
+// disagrees with the home page, help or the app. Only wording lives here.
 const TIER_BLURBS: Record<PaidTierKey, string> = {
   starter: "For one store getting its catalog compliant.",
   growth: "For brands refreshing listings every month.",
@@ -30,47 +42,32 @@ const TIER_BLURBS: Record<PaidTierKey, string> = {
   agency: "For agencies running client stores.",
 };
 
-const freeTier = tierByKey("free");
-
-function creditsLabel(cost: number): string {
-  return cost === 1 ? "1 credit" : `${cost} credits`;
-}
-
-const creditTable: { asset: string; cost: string; comingSoon?: boolean }[] = [
-  { asset: "Deterministic asset: white main, cutout, resize or sweep", cost: creditsLabel(creditCosts.deterministic) },
-  { asset: "One generative still at up to 2K", cost: creditsLabel(creditCosts.generativeStill) },
-  { asset: "A 4K or Pro model still", cost: creditsLabel(creditCosts.pro4kStill), comingSoon: true },
-  { asset: "A templated video", cost: creditsLabel(creditCosts.templatedVideo), comingSoon: true },
+const creditTable: { asset: string; cost: string; status: Availability }[] = [
+  {
+    asset: "Deterministic asset: white main, cutout, resize or sweep",
+    cost: creditCost(creditCosts.deterministic),
+    status: FEATURES.whiteMainImage.status,
+  },
+  {
+    asset: "One generative still at up to 2K",
+    cost: creditCost(creditCosts.generativeStill),
+    status: FEATURES.lifestyleScenes.status,
+  },
+  // No pack renders 4K or Pro model stills yet, and no feature flag covers them.
+  { asset: "A 4K or Pro model still", cost: creditCost(creditCosts.pro4kStill), status: "coming_soon" },
+  { asset: "A templated video", cost: creditCost(creditCosts.templatedVideo), status: FEATURES.video.status },
   {
     asset: "Generative video, Lite",
-    cost: `${creditsLabel(creditCosts.generativeVideoPerSecondLite)} per second`,
-    comingSoon: true,
+    cost: `${creditCost(creditCosts.generativeVideoPerSecondLite)} per second`,
+    status: FEATURES.video.status,
   },
   {
     asset: "Generative video, premium",
-    cost: `${creditsLabel(creditCosts.generativeVideoPerSecondPremium)} per second`,
-    comingSoon: true,
+    cost: `${creditCost(creditCosts.generativeVideoPerSecondPremium)} per second`,
+    status: FEATURES.video.status,
   },
-  { asset: "A UGC avatar ad", cost: creditsLabel(creditCosts.ugcAvatarAd), comingSoon: true },
+  { asset: "A UGC avatar ad", cost: creditCost(creditCosts.ugcAvatarAd), status: FEATURES.ugcAds.status },
 ];
-
-function freePacksLabel(credits: number, packCredits: number): string {
-  const packs = Math.floor(credits / packCredits);
-  if (packs < 1) {
-    return "Enough to try a few still images with a compliance report.";
-  }
-  return packs === 1
-    ? "That covers about 1 product pack with a compliance report."
-    : `That covers about ${packs} product packs with a compliance report.`;
-}
-
-function ComingSoonChip() {
-  return (
-    <span className="ml-2 inline-flex items-center rounded-full bg-ink-100 px-2 py-0.5 text-xs font-medium text-ink-600">
-      {COMING_SOON_LABEL}
-    </span>
-  );
-}
 
 function CheckIcon() {
   return (
@@ -111,7 +108,6 @@ export function PricingTiers() {
   const [cadence, setCadence] = useState<BillingCadence>("monthly");
   const signedIn = useSignedIn();
   const annual = cadence === "annual";
-  const packCredits = stillPackCredits();
 
   function ctaHref(tier: PaidTierKey): string {
     return signedIn
@@ -139,7 +135,7 @@ export function PricingTiers() {
           />
         </button>
         <span className={cn("text-sm font-medium", annual ? "text-ink-900" : "text-ink-400")} data-testid="annual-savings">
-          Annual, save up to {maxAnnualSavingsPct()} percent
+          Annual, save up to {annualSavingsPercentRange().max} percent
         </span>
       </div>
 
@@ -172,8 +168,8 @@ export function PricingTiers() {
                   {formatCredits(seedTier.creditsPerMonth)} per month
                   {annual ? `, all ${price.creditsPerInvoice.toLocaleString("en-US")} added up front` : ""}
                 </p>
-                <p className="mt-1 text-xs text-ink-500">
-                  About {packsPerMonth(seedTier.creditsPerMonth).toLocaleString("en-US")} product packs a month
+                <p className="mt-1 text-xs text-ink-500" data-testid={`packs-${key}`}>
+                  About {packsForCredits(seedTier.creditsPerMonth).toLocaleString("en-US")} listing packs a month
                 </p>
                 <ul className="mt-4 space-y-2">
                   {included.map((item) => (
@@ -185,7 +181,7 @@ export function PricingTiers() {
                 </ul>
                 {comingSoon.length > 0 ? (
                   <div className="mt-4 flex-1">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">{COMING_SOON_LABEL}</p>
+                    <ComingSoonBadge />
                     <ul className="mt-2 space-y-1" data-testid={`coming-soon-${key}`}>
                       {comingSoon.map((item) => (
                         <li key={item} className="text-sm text-ink-400">
@@ -214,8 +210,8 @@ export function PricingTiers() {
       <div className="mx-auto mt-8 flex max-w-4xl flex-col items-start justify-between gap-4 rounded-xl border border-ink-100 p-6 sm:flex-row sm:items-center">
         <div>
           <p className="text-sm font-semibold text-ink-900">Free</p>
-          <p className="mt-1 text-sm text-ink-600">
-            {formatCredits(freeTier.creditsOnce)} once, no card needed. {freePacksLabel(freeTier.creditsOnce, packCredits)}
+          <p className="mt-1 text-sm text-ink-600" data-testid="free-credits">
+            {formatCredits(freeCredits())} once, no card needed, {freeCreditsReach()}.
           </p>
         </div>
         <Link
@@ -248,7 +244,7 @@ export function PricingTiers() {
                   <tr key={row.asset} className="border-t border-ink-100">
                     <td className="px-4 py-3 text-ink-700">
                       {row.asset}
-                      {row.comingSoon ? <ComingSoonChip /> : null}
+                      {row.status === "coming_soon" ? <ComingSoonBadge className="ml-2" /> : null}
                     </td>
                     <td className="px-4 py-3 font-medium text-ink-900">{row.cost}</td>
                   </tr>
@@ -256,16 +252,17 @@ export function PricingTiers() {
               </tbody>
             </table>
           </div>
-          <p className="mt-3 text-sm text-ink-500">
-            A product pack of still images sized for Amazon and Shopify uses about {creditsLabel(packCredits)}.
+          <p className="mt-3 text-sm text-ink-500" data-testid="pricing-pack-size">
+            A typical listing pack of still images uses about {typicalPackCredits()} credits. You are only charged for
+            files that pass their checks.
           </p>
         </div>
         <div>
-          <h2 className="text-xl font-semibold text-ink-950">Top ups and rollover</h2>
-          <ul className="mt-4 space-y-3 text-sm text-ink-700">
+          <h2 className="text-xl font-semibold text-ink-950">Top ups and unused credits</h2>
+          <ul className="mt-4 space-y-3 text-sm text-ink-700" data-testid="credit-terms">
             <li className="rounded-lg border border-ink-100 p-4">
-              {topUps.map((t) => `${formatCredits(t.credits)} for ${formatUsd(t.usd)}.`).join(" ")} Top up credits last{" "}
-              {topUps[0]?.expiresMonths ?? 12} months and work on any plan, including Free.{" "}
+              {topUps.map((t) => `${formatCredits(t.credits)} for ${formatUsd(t.usd)}.`).join(" ")} Top up credits
+              stay usable for {topUpMonths()} months and work on any plan, including Free.{" "}
               <Link
                 href={signedIn ? "/app/billing#top-ups" : signupHref({ source: "pricing" })}
                 className="font-medium text-accent-700 underline underline-offset-2 hover:text-accent-800"
@@ -274,7 +271,7 @@ export function PricingTiers() {
               </Link>
             </li>
             <li className="rounded-lg border border-ink-100 p-4">
-              Unused subscription credits roll over for one cycle, capped at one month of your allowance.
+              Credits you do not use stay in your balance from one billing period to the next.
             </li>
             <li className="rounded-lg border border-ink-100 p-4">
               Annual plans add the whole year of credits when the annual invoice is paid.

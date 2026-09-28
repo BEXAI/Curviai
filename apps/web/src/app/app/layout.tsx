@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { AppNav } from "@/components/app/app-nav";
+import { PastDueBanner } from "@/components/app/billing-actions";
 import { Wordmark } from "@/components/marketing/site-header";
+import { loadPastDueNotice } from "@/lib/billing/account";
 import { isDbMode } from "@/lib/services";
 import { getSessionUser } from "@/lib/supabase/server";
 
@@ -14,6 +16,7 @@ export const metadata: Metadata = {
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const demo = !isDbMode();
   const user = demo ? null : await getSessionUser();
+  const pastDue = user ? await loadPastDueNotice(user.id) : null;
   return (
     <div className="min-h-screen bg-ink-50">
       <header className="border-b border-ink-100 bg-white">
@@ -49,6 +52,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </p>
         </div>
       ) : null}
+      {pastDue ? <PastDueBanner message={pastDue} /> : null}
       <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
     </div>
   );

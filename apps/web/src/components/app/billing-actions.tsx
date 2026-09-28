@@ -2,22 +2,23 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, cn } from "@curvi/ui";
+import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { trackBillingEvent } from "@/lib/billing/analytics";
 import type { CheckoutSource, CheckoutStatus } from "@/lib/billing/intent";
-import { COMING_SOON_LABEL, comingSoonFeatures, includedFeatures } from "@/lib/billing/plan-features";
+import { comingSoonFeatures, includedFeatures } from "@/lib/billing/plan-features";
 import {
   annualSavingsUsd,
   formatCredits,
   formatUsd,
-  maxAnnualSavingsPct,
   paidTiers,
   priceForCadence,
   tierDisplayName,
   type BillingCadence,
   type PaidTierKey,
 } from "@/lib/billing/plans";
+import { annualSavingsPercentRange } from "@/lib/marketing-facts";
 
 type CheckoutBody =
   | { kind: "tier"; tier: string; cadence: BillingCadence; source?: CheckoutSource }
@@ -212,7 +213,7 @@ export function CadenceToggle({
         />
       </button>
       <span className={cn("text-sm font-medium", annual ? "text-ink-900" : "text-ink-400")}>
-        Annual, save up to {maxAnnualSavingsPct()} percent
+        Annual, save up to {annualSavingsPercentRange().max} percent
       </span>
     </div>
   );
@@ -230,7 +231,7 @@ export function PlanFeatureList({ tier }: { tier: PaidTierKey }) {
       </ul>
       {comingSoon.length > 0 ? (
         <div className="mt-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">{COMING_SOON_LABEL}</p>
+          <ComingSoonBadge />
           <ul className="mt-1 space-y-1 text-sm text-ink-400">
             {comingSoon.map((item) => (
               <li key={item}>{item}</li>
@@ -414,5 +415,28 @@ export function CadenceSwitchLink({ href, label }: { href: string; label: string
     <Link href={href} className="text-sm font-medium text-accent-700 underline underline-offset-2 hover:text-accent-800">
       {label}
     </Link>
+  );
+}
+
+/**
+ * The past due notice every app page shows while a renewal payment is
+ * failing (money-dunning). /app/billing shows its own fuller notice with the
+ * Update card button, so this one stays out of the way there.
+ */
+export function PastDueBanner({ message }: { message: string }) {
+  const pathname = usePathname();
+  if (pathname?.startsWith("/app/billing")) {
+    return null;
+  }
+  return (
+    <div className="border-b border-red-200 bg-red-50" role="alert" data-testid="app-past-due-banner">
+      <p className="mx-auto flex max-w-6xl flex-wrap items-baseline gap-x-2 gap-y-1 px-6 py-2 text-sm text-red-900">
+        <span className="font-semibold">Your last payment did not go through.</span>
+        <span className="text-red-800">{message}</span>
+        <Link href="/app/billing" className="font-medium underline underline-offset-2 hover:text-red-950">
+          Open Billing
+        </Link>
+      </p>
+    </div>
   );
 }

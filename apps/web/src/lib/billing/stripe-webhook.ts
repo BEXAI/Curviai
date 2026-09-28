@@ -14,20 +14,35 @@
  * - Subscription credits are granted only on invoice.paid. A monthly invoice
  *   grants one month of the tier allowance; an annual invoice grants the full
  *   year (Phase 10 decision 2).
- * - A plan change grants only the difference between the new and the old
- *   allowance for the time the proration covers, never a second full period.
+ * - A plan change can never create credits. Each proration line counts only
+ *   for the share of the billing period it covers, for monthly and annual
+ *   prices alike, so an upgrade grants the new minus the old allowance for
+ *   the time left and a downgrade takes the same amount back. The downgrade
+ *   debit is taken in full, even below a zero balance: the debt blocks new
+ *   packs until a top up or a renewal covers it. Upgrade, spend, downgrade
+ *   therefore nets nothing beyond the time actually paid for on the bigger
+ *   plan.
  * - Top ups are granted only once Checkout reports the payment as paid,
  *   including delayed methods through async_payment_succeeded (Update.md 1.4).
- * - A refund or dispute claws back the credits that payment granted, in
- *   proportion to the amount reversed, never taking the balance below zero
- *   (Phase 10 decision 3). A shortfall left by a low balance is collected by
- *   the next reversal event for the same payment, if one arrives.
+ * - A refund, or dispute funds being withdrawn, claws back the credits that
+ *   payment granted, in proportion to the amount reversed, never taking the
+ *   balance below zero (Phase 10 decision 3). A shortfall left by a low
+ *   balance is collected by the next reversal event for the same payment, if
+ *   one arrives. Inquiries take nothing. A won dispute gives back exactly what
+ *   its clawback took, once, keyed on the dispute id.
+ *
+ * Subscription sync: Stripe does not deliver events in order. Every
+ * customer.subscription.* event reads the subscription's current state from
+ * Stripe (under a per subscription lock in the database store) instead of
+ * trusting the payload, and no status ever moves out of canceled or
+ * incomplete_expired, or back to incomplete.
  */
 
 import Stripe from "stripe";
 import type { TierKey } from "@curvi/pipeline/seed";
 import { allowanceCredits, type BillingCadence } from "./plans";
 import type { PriceMapping, PriceTable } from "./price-table";
+import { acceptsSubscriptionStatus } from "./subscription-status";
 
 export interface GrantPaymentRef {
   invoiceId?: string | null;
@@ -47,14 +62,33 @@ export interface CreditGrant {
   detail?: Record<string, unknown>;
 }
 
-export interface SubscriptionUpdate {
-  workspaceId: string | null;
-  stripeCustomerId: string | null;
-  externalId: string;
+/** The part of a subscription the workspace cares about. */
+export interface SubscriptionState {
   tier: TierKey | null;
   status: string;
   periodEnd: string | null;
 }
+
+export interface SubscriptionUpdate extends SubscriptionState {
+  workspaceId: string | null;
+  stripeCustomerId: string | null;
+  externalId: string;
+  /**
+   * Reads the subscription's current state from the provider. The store
+   * calls it while it holds the lock for this subscription, so reads and
+   * writes happen in the same order and the last write always carries the
+   * newest state, whatever order the events arrived in. null means the
+   * provider no longer knows the subscription; the event's own state is used.
+   */
+  refresh?: () => Promise<SubscriptionState | null>;
+}
+
+export type SubscriptionSyncOutcome =
+  | { status: "applied"; subscriptionStatus: string }
+  /** An older state arrived after a newer one and was ignored. */
+  | { status: "stale"; kept: string; incoming: string }
+  /** Acknowledged without a workspace (Shopify only). */
+  | { status: "unrouted" };
 
 export interface CreditClawback {
   reason: "refund" | "dispute";
@@ -62,6 +96,9 @@ export interface CreditClawback {
   paymentIntentId: string | null;
   /** Cumulative share of the original payment now reversed, 0 to 1. */
   share: number;
+  /** Set for a dispute: once the dispute is won and its credits restored,
+   * a late clawback for it is skipped. */
+  disputeId?: string | null;
   /** Finds the invoice a payment intent paid, used when no grant matches the
    * payment intent directly (subscription invoices). */
   resolveInvoiceId?: () => Promise<string | null>;
@@ -70,7 +107,15 @@ export interface CreditClawback {
 export type ClawbackOutcome =
   | { status: "applied"; workspaceId: string; targeted: number; clawedBack: number }
   | { status: "duplicate" }
+  /** The dispute was already won and restored; nothing is taken. */
+  | { status: "skipped" }
   | { status: "no_grant" };
+
+export type RestoreOutcome =
+  | { status: "applied"; workspaceId: string; restored: number }
+  | { status: "duplicate" }
+  /** No clawback took anything for this dispute. */
+  | { status: "nothing_to_restore" };
 
 /** Credits handed back when a plan change returns money for unused time on
  * a bigger plan (a downgrade, or annual to monthly). */
@@ -82,7 +127,9 @@ export interface CreditDebit {
   detail?: Record<string, unknown>;
 }
 
-export type DebitOutcome = { status: "applied"; debited: number } | { status: "duplicate" };
+export type DebitOutcome =
+  | { status: "applied"; debited: number; balanceAfter: number }
+  | { status: "duplicate" };
 
 export type BillingNoteKind = "payment_failed" | "payment_action_required" | "async_payment_failed";
 
@@ -96,13 +143,17 @@ export interface BillingNote {
 export interface BillingStore {
   /** Writes the grant unless key was already processed. Returns true when written. */
   recordGrantOnce(key: string, grant: CreditGrant): Promise<boolean>;
-  upsertSubscription(update: SubscriptionUpdate): Promise<void>;
+  upsertSubscription(update: SubscriptionUpdate): Promise<SubscriptionSyncOutcome>;
   /** Stores the Stripe customer id on the workspace, so the customer portal
    * and customer-id-only events resolve without a backfill. */
   linkCustomer(workspaceId: string, stripeCustomerId: string): Promise<void>;
-  /** Reverses the credits a refunded or disputed payment granted, once per event. */
-  clawbackOnce(eventId: string, clawback: CreditClawback): Promise<ClawbackOutcome>;
-  /** Takes back plan change credits once per key, never below a zero balance. */
+  /** Reverses the credits a refunded or disputed payment granted, once per
+   * key (the event id for refunds, dispute:<id> for disputes). */
+  clawbackOnce(key: string, clawback: CreditClawback): Promise<ClawbackOutcome>;
+  /** Gives back what a won dispute's clawback took, once per dispute. */
+  restoreDisputeOnce(disputeId: string): Promise<RestoreOutcome>;
+  /** Takes back plan change credits once per key, in full, even below a
+   * zero balance. */
   debitOnce(key: string, debit: CreditDebit): Promise<DebitOutcome>;
   /** Records a billing signal such as a failed renewal, once per event. */
   noteOnce(eventId: string, note: BillingNote): Promise<void>;
@@ -128,17 +179,37 @@ export function roundCredits(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/** Rounds down to one decimal place, so a grant never exceeds what was paid. */
+export function floorCredits(value: number): number {
+  return Math.floor(value * 10 + 1e-9) / 10;
+}
+
+/** Rounds up to one decimal place, so a debit never falls short. */
+export function ceilCredits(value: number): number {
+  return Math.ceil(value * 10 - 1e-9) / 10;
+}
+
+/** The clawback key for a dispute, shared by its clawback and its restore. */
+export function disputeKey(disputeId: string): string {
+  return `dispute:${disputeId}`;
+}
+
 interface StoredGrant {
   key: string;
   grant: CreditGrant;
   workspaceId: string | null;
 }
 
+type StoredSubscription = Omit<SubscriptionUpdate, "refresh">;
+
 export class InMemoryBillingStore implements BillingStore {
   readonly grants: Array<{ eventId: string; grant: CreditGrant }> = [];
-  readonly subscriptions = new Map<string, SubscriptionUpdate>();
+  readonly subscriptions = new Map<string, StoredSubscription>();
   readonly customerLinks = new Map<string, string>();
   readonly clawbacks: Array<{ eventId: string; workspaceId: string; grantKey: string; targeted: number; clawedBack: number }> = [];
+  readonly restores: Array<{ disputeId: string; workspaceId: string; grantKey: string; restored: number }> = [];
+  /** Credits spent on packs, the in memory stand in for reserve and charge. */
+  readonly spends: Array<{ workspaceId: string; credits: number }> = [];
   readonly notes: Array<{ eventId: string; note: BillingNote }> = [];
   private readonly processed = new Set<string>();
 
@@ -168,7 +239,8 @@ export class InMemoryBillingStore implements BillingStore {
     }));
   }
 
-  /** Granted minus clawed back credits, the in memory stand in for the ledger. */
+  /** Granted minus clawed back, debited and spent credits plus restores, the
+   * in memory stand in for the ledger. */
   balance(workspaceId: string): number {
     const granted = this.stored()
       .filter((entry) => entry.workspaceId === workspaceId)
@@ -176,7 +248,22 @@ export class InMemoryBillingStore implements BillingStore {
     const clawed = this.clawbacks
       .filter((entry) => entry.workspaceId === workspaceId)
       .reduce((sum, entry) => sum + entry.clawedBack, 0);
-    return roundCredits(granted - clawed);
+    const restored = this.restores
+      .filter((entry) => entry.workspaceId === workspaceId)
+      .reduce((sum, entry) => sum + entry.restored, 0);
+    const spent = this.spends
+      .filter((entry) => entry.workspaceId === workspaceId)
+      .reduce((sum, entry) => sum + entry.credits, 0);
+    return roundCredits(granted - clawed + restored - spent);
+  }
+
+  /** Spends credits the way a pack does: refused when the balance is short. */
+  spend(workspaceId: string, credits: number): boolean {
+    if (credits <= 0 || this.balance(workspaceId) < credits) {
+      return false;
+    }
+    this.spends.push({ workspaceId, credits });
+    return true;
   }
 
   async recordGrantOnce(key: string, grant: CreditGrant): Promise<boolean> {
@@ -194,18 +281,45 @@ export class InMemoryBillingStore implements BillingStore {
     return true;
   }
 
-  async upsertSubscription(update: SubscriptionUpdate): Promise<void> {
-    this.subscriptions.set(update.externalId, update);
+  async upsertSubscription(update: SubscriptionUpdate): Promise<SubscriptionSyncOutcome> {
+    const { refresh, ...payload } = update;
+    const incoming: SubscriptionState = (refresh ? await refresh() : null) ?? payload;
+    const current = this.subscriptions.get(update.externalId);
+    if (current && !acceptsSubscriptionStatus(current.status, incoming.status)) {
+      return { status: "stale", kept: current.status, incoming: incoming.status };
+    }
+    this.subscriptions.set(update.externalId, {
+      ...payload,
+      tier: incoming.tier ?? current?.tier ?? null,
+      status: incoming.status,
+      periodEnd: incoming.periodEnd ?? current?.periodEnd ?? null,
+    });
+    return { status: "applied", subscriptionStatus: incoming.status };
   }
 
   async linkCustomer(workspaceId: string, stripeCustomerId: string): Promise<void> {
     this.customerLinks.set(workspaceId, stripeCustomerId);
   }
 
-  async clawbackOnce(eventId: string, clawback: CreditClawback): Promise<ClawbackOutcome> {
-    const key = `clawback:${eventId}`;
-    if (this.processed.has(key)) {
+  /** Taken back from a grant and not given back yet. */
+  private netClawedBack(grantKey: string): number {
+    const clawed = this.clawbacks
+      .filter((entry) => entry.grantKey === grantKey)
+      .reduce((sum, entry) => sum + entry.clawedBack, 0);
+    const restored = this.restores
+      .filter((entry) => entry.grantKey === grantKey)
+      .reduce((sum, entry) => sum + entry.restored, 0);
+    return roundCredits(clawed - restored);
+  }
+
+  async clawbackOnce(key: string, clawback: CreditClawback): Promise<ClawbackOutcome> {
+    const claim = `clawback:${key}`;
+    if (this.processed.has(claim)) {
       return { status: "duplicate" };
+    }
+    if (clawback.disputeId && this.processed.has(`restore:${disputeKey(clawback.disputeId)}`)) {
+      this.processed.add(claim);
+      return { status: "skipped" };
     }
     let target = clawback.paymentIntentId
       ? this.stored().find((entry) => entry.grant.payment?.paymentIntentId === clawback.paymentIntentId)
@@ -219,16 +333,32 @@ export class InMemoryBillingStore implements BillingStore {
     if (!target?.workspaceId) {
       return { status: "no_grant" };
     }
-    this.processed.add(key);
+    this.processed.add(claim);
     // Like the database store, what earlier reversals actually took back
     // counts as prior, so a later event can collect an earlier shortfall.
-    const prior = this.clawbacks
-      .filter((entry) => entry.grantKey === target.key)
-      .reduce((sum, entry) => sum + entry.clawedBack, 0);
+    const prior = this.netClawedBack(target.key);
     const targeted = Math.max(0, roundCredits(target.grant.credits * clampShare(clawback.share) - prior));
     const clawedBack = Math.min(targeted, Math.max(0, this.balance(target.workspaceId)));
-    this.clawbacks.push({ eventId, workspaceId: target.workspaceId, grantKey: target.key, targeted, clawedBack });
+    this.clawbacks.push({ eventId: key, workspaceId: target.workspaceId, grantKey: target.key, targeted, clawedBack });
     return { status: "applied", workspaceId: target.workspaceId, targeted, clawedBack };
+  }
+
+  async restoreDisputeOnce(disputeId: string): Promise<RestoreOutcome> {
+    const claim = `restore:${disputeKey(disputeId)}`;
+    if (this.processed.has(claim)) {
+      return { status: "duplicate" };
+    }
+    this.processed.add(claim);
+    const clawed = this.clawbacks.find((entry) => entry.eventId === disputeKey(disputeId));
+    if (!clawed || clawed.clawedBack <= 0) {
+      return { status: "nothing_to_restore" };
+    }
+    const restored = roundCredits(Math.min(clawed.clawedBack, Math.max(0, this.netClawedBack(clawed.grantKey))));
+    if (restored <= 0) {
+      return { status: "nothing_to_restore" };
+    }
+    this.restores.push({ disputeId, workspaceId: clawed.workspaceId, grantKey: clawed.grantKey, restored });
+    return { status: "applied", workspaceId: clawed.workspaceId, restored };
   }
 
   async debitOnce(key: string, debit: CreditDebit): Promise<DebitOutcome> {
@@ -243,9 +373,9 @@ export class InMemoryBillingStore implements BillingStore {
       return { status: "duplicate" };
     }
     this.processed.add(key);
-    const debited = Math.min(debit.credits, Math.max(0, this.balance(workspaceId)));
-    this.clawbacks.push({ eventId: key, workspaceId, grantKey: `debit:${key}`, targeted: debit.credits, clawedBack: debited });
-    return { status: "applied", debited };
+    // The full difference, even below zero: Stripe returned the money in full.
+    this.clawbacks.push({ eventId: key, workspaceId, grantKey: `debit:${key}`, targeted: debit.credits, clawedBack: debit.credits });
+    return { status: "applied", debited: debit.credits, balanceAfter: this.balance(workspaceId) };
   }
 
   async noteOnce(eventId: string, note: BillingNote): Promise<void> {
@@ -289,12 +419,17 @@ export const HANDLED_STRIPE_EVENTS = [
   "customer.subscription.updated",
   "customer.subscription.deleted",
   "charge.refunded",
-  "charge.dispute.created",
+  "charge.dispute.funds_withdrawn",
+  "charge.dispute.funds_reinstated",
+  "charge.dispute.closed",
 ] as const;
 
 /** Read only Stripe lookups, injected so tests run without the network. */
 export interface StripeLookup {
   invoiceIdForPaymentIntent(paymentIntentId: string): Promise<string | null>;
+  /** The subscription as Stripe holds it now, or null when Stripe no longer
+   * knows it. Throws on a network or API failure so Stripe retries. */
+  retrieveSubscription?(subscriptionId: string): Promise<Stripe.Subscription | null>;
 }
 
 export interface StripeProcessDeps {
@@ -362,21 +497,46 @@ function invoiceLines(invoice: Stripe.Invoice): InvoiceLineView[] {
   });
 }
 
-const DAY_SECONDS = 24 * 60 * 60;
-const MONTH_DAYS = 365 / 12;
+/**
+ * Start of the billing period that ends at `endSeconds`: one calendar month
+ * (or year) earlier, on the same day clamped to the end of a shorter month.
+ * For a period whose own end was clamped (an anchor on the 31st ending on
+ * February 28) this start is a little early, which makes the period look
+ * longer and the share smaller; both sides of a plan change use the same
+ * period, so that can only ever grant less, never more.
+ */
+export function billingPeriodStart(endSeconds: number, cadence: BillingCadence): number {
+  const end = new Date(endSeconds * 1000);
+  const year = end.getUTCFullYear();
+  const month = end.getUTCMonth() - (cadence === "annual" ? 12 : 1);
+  // Date.UTC normalizes negative months into the previous year; day 0 of the
+  // next month is the last day of this one.
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const day = Math.min(end.getUTCDate(), lastDay);
+  return (
+    Date.UTC(year, month, day, end.getUTCHours(), end.getUTCMinutes(), end.getUTCSeconds(), end.getUTCMilliseconds()) /
+    1000
+  );
+}
 
-/** Whole months of allowance a line's service period stands for. A monthly
- * price covers one month; an annual price covers the months left in its
- * period, so a mid year change prorates the yearly allowance. */
-function monthsCovered(line: InvoiceLineView, cadence: BillingCadence): number {
-  if (cadence === "monthly") {
+/**
+ * Share of a full billing period a proration line covers, 0 to 1. A
+ * proration line runs from the moment of the change to the end of the
+ * current period, so this is the time left, for monthly and annual prices
+ * alike. Stripe always sends a period; without one the line counts in full.
+ */
+export function prorationShare(
+  line: { periodStart: number | null; periodEnd: number | null },
+  cadence: BillingCadence,
+): number {
+  if (line.periodStart === null || line.periodEnd === null || line.periodEnd <= line.periodStart) {
     return 1;
   }
-  if (line.periodStart === null || line.periodEnd === null || line.periodEnd <= line.periodStart) {
-    return 12;
+  const full = line.periodEnd - billingPeriodStart(line.periodEnd, cadence);
+  if (full <= 0) {
+    return 1;
   }
-  const months = Math.round((line.periodEnd - line.periodStart) / DAY_SECONDS / MONTH_DAYS);
-  return Math.min(12, Math.max(1, months));
+  return clampShare((line.periodEnd - line.periodStart) / full);
 }
 
 type TierMapping = Extract<PriceMapping, { kind: "tier" }>;
@@ -397,24 +557,30 @@ export interface InvoiceGrantPlan {
   billingReason: string | null;
   /** A full period allowance from a create or cycle invoice. */
   base: number;
-  /** Allowance for the new side of a plan change. */
+  /** Allowance for the new side of a plan change, for the time it covers. */
   changeNew: number;
-  /** Allowance already granted for the old side of a plan change. */
+  /** Allowance already granted for the old side of a plan change, for the
+   * time it covers. */
   changeOld: number;
 }
 
 const PERIOD_REASONS = new Set(["subscription_create", "subscription_cycle"]);
 
+/** Two decimals, for the audit breakdown only. */
+function auditCredits(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 /**
  * Works out what a paid subscription invoice grants.
  * - subscription_create and subscription_cycle: one full period of the
  *   subscription line's tier (12 months up front for an annual price).
- * - Plan change lines (prorations, and the new price line of an interval
- *   change on a subscription_update invoice): the new allowance for the time
- *   covered minus the old allowance for the same time. An upgrade grants the
- *   difference once. A downgrade, where Stripe credits the unused money back,
- *   takes the matching credits back (never below a zero balance), so credits
- *   always follow the money.
+ * - A non proration line on a subscription_update invoice (an interval
+ *   change starts a new full period): that full period's allowance.
+ * - Proration lines: the line's tier allowance times the share of the
+ *   billing period the line covers. Positive lines add, credit lines
+ *   subtract. The net is rounded down when it grants and up when it takes
+ *   back, so rounding never creates credits.
  * - Any other billing reason grants nothing.
  */
 export function planInvoiceGrant(invoice: Stripe.Invoice, table: PriceTable): InvoiceGrantPlan {
@@ -448,7 +614,8 @@ export function planInvoiceGrant(invoice: Stripe.Invoice, table: PriceTable): In
       }
       continue;
     }
-    const credits = mapping.creditsPerMonth * monthsCovered(line, mapping.cadence);
+    const credits =
+      allowanceCredits(mapping.creditsPerMonth, mapping.cadence) * prorationShare(line, mapping.cadence);
     if (line.amount > 0) {
       changeNew += credits;
       tier ??= mapping.tier;
@@ -458,16 +625,16 @@ export function planInvoiceGrant(invoice: Stripe.Invoice, table: PriceTable): In
     }
   }
 
-  const net = roundCredits(base + changeNew - changeOld);
+  const net = base + changeNew - changeOld;
   return {
-    credits: Math.max(0, net),
-    debit: Math.max(0, -net),
+    credits: net > 0 ? floorCredits(net) : 0,
+    debit: net < 0 ? ceilCredits(-net) : 0,
     tier,
     cadence,
     billingReason,
     base,
-    changeNew,
-    changeOld,
+    changeNew: auditCredits(changeNew),
+    changeOld: auditCredits(changeOld),
   };
 }
 
@@ -516,14 +683,14 @@ async function grantTopUp(
 }
 
 async function clawback(
-  eventId: string,
+  key: string,
   input: Omit<CreditClawback, "resolveInvoiceId">,
   store: BillingStore,
   deps: StripeProcessDeps,
 ): Promise<StripeProcessResult> {
   const paymentIntentId = input.paymentIntentId;
   const lookup = deps.lookup;
-  const outcome = await store.clawbackOnce(eventId, {
+  const outcome = await store.clawbackOnce(key, {
     ...input,
     resolveInvoiceId:
       paymentIntentId && lookup ? () => lookup.invoiceIdForPaymentIntent(paymentIntentId) : undefined,
@@ -534,9 +701,31 @@ async function clawback(
       return { handled: true, action: `${action}_clawed_back`, credits: outcome.clawedBack };
     case "duplicate":
       return { handled: true, action: `${action}_clawed_back`, duplicate: true };
+    case "skipped":
+      return { handled: true, action: "dispute_already_won" };
     default:
       return { handled: true, action: `${action}_no_grant` };
   }
+}
+
+/** The subscription state a Stripe subscription object stands for. */
+function subscriptionState(
+  subscription: Stripe.Subscription,
+  table: PriceTable,
+  deleted: boolean,
+): SubscriptionState {
+  const item = subscription.items?.data?.[0];
+  const mapping = tierMapping(table, item?.price?.id ?? null);
+  return {
+    tier: mapping ? mapping.tier : null,
+    status: deleted ? "canceled" : subscription.status,
+    periodEnd: item?.current_period_end ? new Date(item.current_period_end * 1000).toISOString() : null,
+  };
+}
+
+/** Inquiries (warning_*) never move money, so they never move credits. */
+function isInquiry(status: string): boolean {
+  return status.startsWith("warning_");
 }
 
 export async function processStripeEvent(
@@ -638,21 +827,26 @@ export async function processStripeEvent(
     case "customer.subscription.updated":
     case "customer.subscription.deleted": {
       const subscription = event.data.object;
-      const item = subscription.items?.data?.[0];
-      const priceId = item?.price?.id ?? null;
-      const mapping = tierMapping(table, priceId);
-      const periodEnd = item?.current_period_end
-        ? new Date(item.current_period_end * 1000).toISOString()
-        : null;
-      await store.upsertSubscription({
+      const deleted = event.type === "customer.subscription.deleted";
+      const retrieve = deps.lookup?.retrieveSubscription?.bind(deps.lookup);
+      const outcome = await store.upsertSubscription({
         workspaceId: metadataValue(subscription.metadata, "workspaceId"),
         stripeCustomerId: idOf(subscription.customer),
         externalId: subscription.id,
-        tier: mapping ? mapping.tier : null,
-        status: event.type === "customer.subscription.deleted" ? "canceled" : subscription.status,
-        periodEnd,
+        ...subscriptionState(subscription, table, deleted),
+        // The payload may be older than a state already stored, so the
+        // store reads Stripe's current state under its lock.
+        refresh: retrieve
+          ? async () => {
+              const current = await retrieve(subscription.id);
+              return current ? subscriptionState(current, table, deleted) : null;
+            }
+          : undefined,
       });
-      return { handled: true, action: "subscription_synced" };
+      return {
+        handled: true,
+        action: outcome.status === "stale" ? "subscription_stale_ignored" : "subscription_synced",
+      };
     }
 
     case "charge.refunded": {
@@ -666,19 +860,46 @@ export async function processStripeEvent(
       );
     }
 
-    case "charge.dispute.created": {
+    case "charge.dispute.funds_withdrawn": {
       const dispute = event.data.object;
+      const status = typeof dispute.status === "string" ? dispute.status : "";
+      if (isInquiry(status) || !dispute.id) {
+        return { handled: true, action: "dispute_inquiry_ignored" };
+      }
+      // Keyed on the dispute, so a second withdrawal for the same dispute
+      // (a fee, a corrected amount) never takes credits twice.
       return clawback(
-        event.id,
+        disputeKey(dispute.id),
         {
           reason: "dispute",
           chargeId: idOf(dispute.charge),
           paymentIntentId: idOf(dispute.payment_intent),
           share: 1,
+          disputeId: dispute.id,
         },
         store,
         deps,
       );
+    }
+
+    case "charge.dispute.funds_reinstated":
+    case "charge.dispute.closed": {
+      const dispute = event.data.object;
+      // funds_reinstated also fires when a dispute on a partly refunded
+      // payment is lost (Stripe gives back the refunded part), so only a
+      // won dispute gives credits back.
+      if (dispute.status !== "won" || !dispute.id) {
+        return { handled: true, action: "dispute_closed_noted" };
+      }
+      const outcome = await store.restoreDisputeOnce(dispute.id);
+      switch (outcome.status) {
+        case "applied":
+          return { handled: true, action: "dispute_won_credits_restored", credits: outcome.restored };
+        case "duplicate":
+          return { handled: true, action: "dispute_won_credits_restored", duplicate: true };
+        default:
+          return { handled: true, action: "dispute_won_nothing_to_restore" };
+      }
     }
 
     default:

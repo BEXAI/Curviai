@@ -7,7 +7,9 @@
 import { and, eq, events } from "@curvi/db";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
-import { isOpenSubscription, keepsPaidPlan } from "./subscription-status";
+import { canManageBilling } from "./access";
+import { tierDisplayName } from "./plans";
+import { isOpenSubscription, keepsPaidPlan, needsCardUpdate, pastDueMessage } from "./subscription-status";
 
 export interface SubscriptionView {
   externalId: string | null;
@@ -54,6 +56,36 @@ export async function loadBillingAccount(workspaceId: string): Promise<BillingAc
         }
       : null,
   };
+}
+
+/**
+ * The past due notice for the app header, or null when the signed in user's
+ * workspace has no failing renewal. Reads the same workspace the app pages
+ * resolve (the user's membership) without provisioning or settling holds, so
+ * it stays cheap on every page. A failed read shows no banner rather than
+ * breaking the page.
+ */
+export async function loadPastDueNotice(userId: string): Promise<string | null> {
+  if (!isDbMode()) {
+    return null;
+  }
+  try {
+    const membership = await getDb().query.members.findFirst({
+      where: (t, { eq }) => eq(t.userId, userId),
+    });
+    if (!membership) {
+      return null;
+    }
+    const { subscription } = await loadBillingAccount(membership.workspaceId);
+    if (!subscription || !needsCardUpdate(subscription.status)) {
+      return null;
+    }
+    const plan = tierDisplayName(subscription.tier ?? "paid");
+    return pastDueMessage(subscription.status, plan, canManageBilling(membership.role));
+  } catch (error) {
+    console.error(JSON.stringify({ msg: "billing: past due check failed", error: String(error) }));
+    return null;
+  }
 }
 
 const CHECKOUT_SESSION_ID = /^cs_[A-Za-z0-9_]{1,250}$/;
