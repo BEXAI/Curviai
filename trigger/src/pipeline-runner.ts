@@ -782,10 +782,21 @@ export async function visionBlocks(
   workspaceId: string,
   limit = 3,
 ): Promise<unknown[]> {
+  return (await visionPhotos(deps, images, workspaceId, limit)).map((photo) => photo.block);
+}
+
+/** visionBlocks with the media id each block shows, in the order sent, so
+ * a per image verdict (intake's screenshot flag) maps back to its photo. */
+async function visionPhotos(
+  deps: Pick<PipelineDeps, "loadMedia">,
+  images: GeneratePackInput["images"],
+  workspaceId: string,
+  limit = 3,
+): Promise<Array<{ mediaId: string; block: unknown }>> {
   if (!deps.loadMedia) {
     return [];
   }
-  const blocks: unknown[] = [];
+  const photos: Array<{ mediaId: string; block: unknown }> = [];
   const owned = images.filter((image) => isWorkspaceObjectKey(workspaceId, image.mediaId));
   if (owned.length < images.length) {
     console.warn(`[runner] skipped ${images.length - owned.length} photo keys outside workspace ${workspaceId}`);
@@ -799,12 +810,47 @@ export async function visionBlocks(
     // per image size limit. Fall back to the original if decoding fails.
     const normalized = await encodeVisionJpeg(bytes).catch(() => bytes);
     const mediaType = normalized === bytes ? sniffImageMime(bytes) : "image/jpeg";
-    blocks.push({
-      type: "image",
-      source: { type: "base64", media_type: mediaType, data: normalized.toString("base64") },
+    photos.push({
+      mediaId: image.mediaId,
+      block: {
+        type: "image",
+        source: { type: "base64", media_type: mediaType, data: normalized.toString("base64") },
+      },
     });
   }
-  return blocks;
+  return photos;
+}
+
+/** Job error when intake judged every photo in the pack a screenshot or
+ * screen capture (docs/phases/PHASE_12.md A5). Credits held for the pack are
+ * released by the failure path; the web app maps it to seller copy. */
+export const SCREENSHOT_UPLOAD_MESSAGE =
+  "Every photo in this pack looks like a screenshot, not a photo of the product, so nothing was charged.";
+
+/**
+ * Media ids intake flagged as screenshots. Intake answers one entry per
+ * image it was shown, in order: the vision photos when any loaded, else the
+ * pack's image list. When the entry count does not match, which photo an
+ * entry means is unknown, so none is dropped here; the pack still fails when
+ * every entry is a screenshot.
+ */
+export function screenshotMediaIds(intake: IntakeResult, judged: readonly string[], jobId: string): Set<string> {
+  const flagged = new Set<string>();
+  if (!intake.images.some((image) => image.screenshot === true)) {
+    return flagged;
+  }
+  if (intake.images.length !== judged.length) {
+    console.warn(
+      `[runner] job ${jobId} intake returned ${intake.images.length} verdicts for ${judged.length} photos; screenshot flags are not mapped to photos`,
+    );
+    return flagged;
+  }
+  intake.images.forEach((image, i) => {
+    if (image.screenshot === true) {
+      flagged.add(judged[i]);
+    }
+  });
+  return flagged;
 }
 
 interface LlmCall<T> {
@@ -2163,7 +2209,8 @@ export async function runGeneratePack(
     // Intake and analyze, with the uploaded photos as vision input when a
     // media loader is wired.
     await advance(transition(state, "start_analysis"));
-    const photos = await visionBlocks(deps, input.images, input.workspaceId);
+    const shown = await visionPhotos(deps, input.images, input.workspaceId);
+    const photos = shown.map((photo) => photo.block);
     const intake = await bookedLlm(
       llmJson<IntakeResult>(
         deps.ai,
@@ -2178,8 +2225,26 @@ export async function runGeneratePack(
     if (!intake.value) {
       throw new Error("Intake response failed schema validation");
     }
-    if (!intake.value.images.some((img) => img.sellableProduct)) {
+    // Screenshots (docs/phases/PHASE_12.md A5): a screen capture is never
+    // the product, so a photo intake flags is left out of analysis, planning
+    // and every shot. A pack of nothing but screenshots stops here, before
+    // any spend past the intake call.
+    const cameraVerdicts = intake.value.images.filter((img) => img.screenshot !== true);
+    if (cameraVerdicts.length === 0) {
+      throw new Error(SCREENSHOT_UPLOAD_MESSAGE);
+    }
+    if (!cameraVerdicts.some((img) => img.sellableProduct)) {
       throw new Error("Intake found no sellable product in the uploaded images");
+    }
+    const judged = shown.length > 0 ? shown.map((photo) => photo.mediaId) : input.images.map((image) => image.mediaId);
+    const screenshots = screenshotMediaIds(intake.value, judged, input.jobId);
+    const images = input.images.filter((image) => !screenshots.has(image.mediaId));
+    const cameraPhotos = shown.filter((photo) => !screenshots.has(photo.mediaId)).map((photo) => photo.block);
+    if (images.length === 0) {
+      throw new Error(SCREENSHOT_UPLOAD_MESSAGE);
+    }
+    if (screenshots.size > 0) {
+      console.warn(`[runner] job ${input.jobId} left out ${screenshots.size} photo(s) intake judged screenshots`);
     }
     // Moderation gate on the intake flags (plan 4.5.2): flagged uploads never
     // reach generation. Credits release through the failure path.
@@ -2193,9 +2258,9 @@ export async function runGeneratePack(
         deps.ai,
         recipeFor(recipes, "analyze"),
         ProductProfile,
-        { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
+        { images, userDescription: wrapUserDescription(input.userDescription) },
         { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
-        photos,
+        cameraPhotos,
         ProductProfile,
       ),
     );
@@ -2210,7 +2275,7 @@ export async function runGeneratePack(
     // analyzer saw, so the planner plans it from that exact photo.
     const profile = withSellerAngles(
       analysis.value,
-      input.images.map((image) => image.angle),
+      images.map((image) => image.angle),
     );
     await store.saveProfile?.(input.jobId, profile);
 
@@ -2225,10 +2290,10 @@ export async function runGeneratePack(
     const conceptExcluded = mode === "concept" ? input.channels.filter((c) => isMarketplaceChannel(c)) : [];
     const effectiveChannels = input.channels.filter((c) => !conceptExcluded.includes(c));
     // The photo the seller marked as the front leads; otherwise the first.
-    const primaryMediaId = (input.images.find((image) => image.angle === "front") ?? input.images[0])?.mediaId;
+    const primaryMediaId = (images.find((image) => image.angle === "front") ?? images[0])?.mediaId;
     const excludeMethods = [...new Set(deps.excludeShotMethods ?? [])];
     const sellerCopy = sellerCopyOf(input);
-    const angleMedia = mediaIdsByAngle(input.images);
+    const angleMedia = mediaIdsByAngle(images);
     // The LLM planner sees whether the seller supplied box contents and
     // comparison facts, never the text itself: seller text only ever reaches
     // an image through withSellerCopy below, exactly as typed.
@@ -2277,7 +2342,7 @@ export async function runGeneratePack(
     }
     const check = validateLlmShotList(planned.raw, {
       budget: input.creditBudget,
-      mediaIds: input.images.map((image) => image.mediaId),
+      mediaIds: images.map((image) => image.mediaId),
       channels: effectiveChannels,
       mode,
       requireAmazonMain: profile.imageQuality.usableForMain && profile.photographedAngles.includes("front"),

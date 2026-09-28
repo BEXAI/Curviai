@@ -46,6 +46,25 @@ describe("strictToolSchema", () => {
     });
   }
 
+  it("sends the intake screenshot verdict as an optional boolean", () => {
+    const out = strictToolSchema(IntakeResult) as {
+      properties: { images: { items: { properties: Record<string, unknown>; required: string[] } } };
+    };
+    const item = out.properties.images.items;
+    expect(item.properties.screenshot).toEqual({ type: "boolean" });
+    // Optional, so answers from intake version 1 and older mocks still parse.
+    expect(item.required).not.toContain("screenshot");
+    expect(item.required).toContain("sellableProduct");
+    const base = {
+      sellableProduct: true,
+      distinctProducts: 1,
+      sharpEnough: true,
+      flags: { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false },
+    };
+    expect(IntakeResult.safeParse({ images: [base] }).success).toBe(true);
+    expect(IntakeResult.parse({ images: [{ ...base, screenshot: true }] }).images[0].screenshot).toBe(true);
+  });
+
   it("keeps property names that match keywords and keeps enums", () => {
     const out = strictToolSchema(
       z.object({ pattern: z.string().regex(/^a/), kind: z.enum(["a", "b"]), tags: z.array(z.string()).min(3).max(5) }),
