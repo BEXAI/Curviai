@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import {
   InMemoryBreakerStore,
+  InMemoryCapStore,
   InMemoryCostMeter,
+  ProviderError,
   ProviderRegistry,
+  SpendCaps,
   callWithFailover,
   type Provider,
   type ProviderRequest,
@@ -447,23 +450,54 @@ describe("compositeShot harmonize aspect ratio (Update.md 2.14)", () => {
     expect(err.got).toEqual({ width: 569, height: 320 });
     // The plate and the rejected harmonize were both paid for.
     expect(err.costMicros).toBe(2000);
+    // A ProviderError the router meters at that cost, never an outage.
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.billedCostMicros).toBe(2000);
+    expect(err.transient).toBe(false);
+  });
+
+  it("carries the rejected output's cost as billed spend from the guard", async () => {
+    const guarded = withHarmonizeAspectGuard(new ShapeMockProvider("wide", sixteenByNine));
+    const png = await sharp({ create: { width: 320, height: 320, channels: 4, background: { r: 1, g: 2, b: 3, alpha: 1 } } })
+      .png()
+      .toBuffer();
+    const err = (await guarded
+      .invoke({ task: "harmonize", input: { prompt: "p", png, width: 320, height: 320 } })
+      .catch((e: unknown) => e)) as HarmonizeAspectError;
+    expect(err).toBeInstanceOf(HarmonizeAspectError);
+    expect(err.costMicros).toBe(800);
+    expect(err.billedCostMicros).toBe(800);
+    expect(err.transient).toBe(false);
+    expect(err.retryable).toBe(false);
+    expect(err.cause).toBeUndefined();
   });
 
   it("fails over to the next provider when a guarded provider returns 16:9 for a 1:1 canvas", async () => {
     const wide = new ShapeMockProvider("wide", sixteenByNine);
     const good = new ShapeMockProvider("good");
+    // Cost capped calls need an estimate; each call reserves 1000 up front.
+    wide.estimateCostMicros = () => 1000;
+    good.estimateCostMicros = () => 1000;
     const registry = new ProviderRegistry();
     registry.register(withHarmonizeAspectGuard(wide));
     registry.register(withHarmonizeAspectGuard(good));
     const routing = { scene_plate: ["wide", "good"], harmonize: ["wide", "good"] };
     const meter = new InMemoryCostMeter();
     const breakerStore = new InMemoryBreakerStore();
+    const capStore = new InMemoryCapStore();
+    const spendCaps = new SpendCaps(capStore, () => new Date("2026-09-28T12:00:00Z"));
+    const jobId = "job-aspect";
     const routed: Provider = {
       name: "chain",
       kind: "image",
       supports: (task) => task in routing,
       invoke: async <TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> => {
-        const res = await callWithFailover<TIn, TOut>(registry, routing, meter, breakerStore, req);
+        const res = await callWithFailover<TIn, TOut>(registry, routing, meter, breakerStore, req, {
+          caps: [
+            { spendCaps, capKind: "pack", jobId },
+            { spendCaps, capKind: "global_day" },
+          ],
+        });
         return { output: res.output, costMicros: res.costMicros };
       },
     };
@@ -477,8 +511,16 @@ describe("compositeShot harmonize aspect ratio (Update.md 2.14)", () => {
     expect(failed).toHaveLength(1);
     expect(failed[0]).toMatchObject({ provider: "wide", task: "harmonize" });
     expect(failed[0].error).toMatch(/569x320 does not match the 320x320/);
+    // The rejected output was paid for, so it is metered at its cost (rule 4).
+    expect(failed[0].costMicros).toBe(800);
     // A shape mismatch is not an outage, so it never counts toward the breaker.
     expect(Number((await breakerStore.get("breaker:wide:failures")) ?? "0")).toBe(0);
+    // The spend caps keep it too: the plate (1200), the rejected harmonize
+    // (800) and the accepted harmonize (800).
+    const metered = meter.entries.reduce((sum, e) => sum + e.costMicros, 0);
+    expect(metered).toBe(2800);
+    expect(await capStore.get(`caps:pack:${jobId}`)).toBe(2800);
+    expect(await capStore.get("caps:global:2026-09-28")).toBe(2800);
 
     expect(result.finalRaw.width).toBe(320);
     const fidelity = await fidelityReport(result.productReference, result.finalRaw, result.canvasMask, {

@@ -101,21 +101,25 @@
     {
       "id": "etsy.listing",
       "verified": false,
+      "source": "maxCount: help.etsy.com How to Create a Listing (up to 20 photos), checked 2026-09-28; other fields pending",
       "width": 2000,
       "height": 2000,
       "formats": ["jpg", "png"],
       "maxBytes": 10000000,
-      "textAllowed": true
+      "textAllowed": true,
+      "maxCount": 20
     },
     {
       "id": "ebay.listing",
       "verified": false,
+      "source": "maxCount, size, bytes and no added text: ebay.com help Adding pictures to your listings and Picture policy, checked 2026-09-28",
       "width": 1600,
       "height": 1600,
       "minLongSide": 500,
       "formats": ["jpg", "png"],
       "maxBytes": 12000000,
-      "textAllowed": false
+      "textAllowed": false,
+      "maxCount": 24
     },
     {
       "id": "walmart.main",
@@ -129,12 +133,14 @@
     {
       "id": "tiktokshop.main",
       "verified": false,
+      "source": "maxCount and no added text: seller-us.tiktok.com Product Listing Policy, checked 2026-09-28; the policy asks for a pure white main image",
       "width": 1200,
       "height": 1200,
       "formats": ["jpg", "png"],
       "maxBytes": 5000000,
       "background": { "type": "white_preferred" },
-      "textAllowed": false
+      "textAllowed": false,
+      "maxCount": 9
     },
     {
       "id": "meta.feed_1x1",

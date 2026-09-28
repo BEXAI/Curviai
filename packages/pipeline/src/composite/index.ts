@@ -356,6 +356,14 @@ export const HARMONIZE_TASK_NAME = "harmonize";
  * output is stretched back to the canvas, which keeps it in register. The
  * nearest distinct ratio classes (4:5 and 3:4) differ by 6.25 percent, so a
  * 4 percent tolerance accepts snapping and rejects a different framing.
+ *
+ * Unverified (CLAUDE.md rule 7, open as of 2026-09-28): the per ratio pixel
+ * sizes that gemini-3.1-flash-image and BFL Kontext return are not published
+ * on the pages checked, so this value rests on the ratio classes alone. Wide
+ * canvases are the risk: shopify.hero_banner is 2.4:1, and a 21:9 answer is
+ * about 1.8 percent off at 1584x672 but 4.8 percent off at 1536x672. Measure
+ * both providers' outputs for 1:1 and 2.4:1 canvases, record them in
+ * docs/verification.md, and only then change this number.
  */
 export const HARMONIZE_ASPECT_TOLERANCE = 0.04;
 
@@ -371,8 +379,18 @@ export function aspectDrift(width: number, height: number, targetW: number, targ
  * A harmonize output came back in a different shape than the canvas. Not
  * retryable: the same provider answers the same draft with the same shape,
  * so the router moves straight to the next provider in the chain instead of
- * paying for repeats, and the breaker is not tripped for an answer that was
- * not an outage. costMicros is what the rejected output already cost.
+ * paying for repeats. Not transient: the breaker is not tripped for an
+ * answer that was not an outage. costMicros is what the rejected output
+ * already cost; it also travels as the ProviderError's billedCostMicros, so
+ * when the guard throws inside the provider chain the router meters the
+ * rejected attempt at that cost and keeps it against the spend caps (CLAUDE.md
+ * rule 4) instead of releasing the reservation.
+ *
+ * compositeShot's own check throws the same error after the chain returned,
+ * with costMicros set to the whole shot's spend (plate plus harmonize) so the
+ * caller can book it. Any router that ran those steps already metered them,
+ * so callers book that error as shot cost and never rethrow it from inside
+ * another router call.
  */
 export class HarmonizeAspectError extends ProviderError {
   constructor(
@@ -386,6 +404,8 @@ export class HarmonizeAspectError extends ProviderError {
       provider,
       HARMONIZE_TASK_NAME,
       false,
+      undefined,
+      { billedCostMicros: costMicros, transient: false },
     );
     this.name = "HarmonizeAspectError";
   }

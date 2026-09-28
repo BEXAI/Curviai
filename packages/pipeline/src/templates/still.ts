@@ -1,7 +1,8 @@
 /**
  * Still template renderer for method "template" shots: infographic,
- * dimensions, the A+ banner and the social crops. Everything here is
- * deterministic. The product is only scaled and placed with its own alpha,
+ * dimensions, the A+ banner and the social crops (the Meta feed and story
+ * sizes, and the 2:3 Pinterest pin). Everything here is deterministic. The
+ * product is only scaled and placed with its own alpha,
  * never recolored or regenerated (CLAUDE.md rule 3). Colors and copy always
  * come from the caller (seed stillStyle and the shot plan); the only numbers
  * in this file are layout proportions.
@@ -23,7 +24,8 @@ export type TemplateStillType =
   | "aplus_banner"
   | "social_1x1"
   | "social_4x5"
-  | "social_9x16";
+  | "social_9x16"
+  | "social_2x3";
 
 export const TEMPLATE_STILL_TYPES: ReadonlySet<string> = new Set<TemplateStillType>([
   "infographic",
@@ -32,6 +34,7 @@ export const TEMPLATE_STILL_TYPES: ReadonlySet<string> = new Set<TemplateStillTy
   "social_1x1",
   "social_4x5",
   "social_9x16",
+  "social_2x3",
 ]);
 
 /**
