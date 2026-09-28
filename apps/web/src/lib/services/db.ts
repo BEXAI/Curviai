@@ -24,13 +24,15 @@ import {
   lt,
   notInArray,
 } from "@curvi/db";
-import { tierByKey, tiers, type TierKey } from "@curvi/pipeline/seed";
+import { presets, tierByKey, tiers, type TierKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isR2Configured, optionalEnv } from "@/lib/env";
 import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
 import { buildGeneratePackInput } from "@/lib/jobs/payload";
 import { estimatePackCredits } from "@/lib/pack-estimate";
+import { isWorkspaceObjectKey } from "@/lib/object-keys";
 import { isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
+import { brandKitInputSchema, brandKitIssueNotice } from "@/lib/validation/brand-kit";
 import type {
   BrandKitView,
   CreateJobInput,
@@ -394,8 +396,9 @@ export class DbService implements Services {
       await Promise.all(
         variantRows.map(async (variant) => {
           const shotId = shotIdByAssetId.get(variant.assetId);
-          // One thumbnail per shot is enough; the first variant wins.
-          if (!shotId || urlByShotId.has(shotId)) {
+          // One thumbnail per shot is enough; the first variant wins. Only
+          // this workspace's keys are signed (Update.md 4.1).
+          if (!shotId || urlByShotId.has(shotId) || !isWorkspaceObjectKey(workspaceId, variant.r2Key)) {
             return;
           }
           try {
@@ -495,11 +498,17 @@ export class DbService implements Services {
         })),
       );
     }
-    const media = await this.db.query.sourceMedia.findMany({
-      where: (t, { and, eq }) => and(eq(t.productId, product.id), eq(t.workspaceId, workspaceId)),
-      orderBy: (t, { desc }) => [desc(t.createdAt)],
-      limit: 6,
-    });
+    // Update.md 4.1: the worker loads every media key with owner R2
+    // credentials, so only keys in this workspace's source prefix are read,
+    // including rows written before migration 0011 closed member writes.
+    const media = (
+      await this.db.query.sourceMedia.findMany({
+        where: (t, { and, eq, like }) =>
+          and(eq(t.productId, product.id), eq(t.workspaceId, workspaceId), like(t.r2Key, `ws/${workspaceId}/src/%`)),
+        orderBy: (t, { desc }) => [desc(t.createdAt)],
+        limit: 6,
+      })
+    ).filter((m) => isWorkspaceSourceKey(workspaceId, m.r2Key));
     // Plan 2.7: Listing Mode requires at least one real photo. Angles that
     // were not photographed are skipped by the planner, never invented.
     if (input.mode === "listing" && !media.some((m) => m.kind !== "video")) {
@@ -670,6 +679,10 @@ export class DbService implements Services {
     const canSign = isR2Configured();
     const files: JobFileView[] = [];
     for (const variant of variantRows) {
+      // Only this workspace's keys are signed (Update.md 4.1).
+      if (!isWorkspaceObjectKey(workspaceId, variant.r2Key)) {
+        continue;
+      }
       files.push({
         name: variant.filename,
         channel: variant.channelSpecId.split(".")[0],
@@ -706,14 +719,18 @@ export class DbService implements Services {
     const row = await this.db.query.brandKits.findFirst({
       where: (t, { eq }) => eq(t.workspaceId, workspaceId),
     });
+    // Update.md 4.2: only a key inside this workspace's source prefix is ever
+    // presigned or handed back to the form, whatever the row holds.
+    const logoKey = row?.logoR2Key && isWorkspaceSourceKey(workspaceId, row.logoR2Key) ? row.logoR2Key : null;
     let logoUrl: string | null = null;
-    if (row?.logoR2Key && isR2Configured()) {
+    if (logoKey && isR2Configured()) {
       try {
-        logoUrl = await presignObjectGet(row.logoR2Key);
+        logoUrl = await presignObjectGet(logoKey);
       } catch {
         logoUrl = null;
       }
     }
+    const stylePreset = row?.stylePreset && Object.hasOwn(presets, row.stylePreset) ? row.stylePreset : "minimal_studio";
     return {
       name: row?.name ?? "Default",
       colors: row?.colors ?? [],
@@ -721,45 +738,52 @@ export class DbService implements Services {
         heading: row?.fonts?.heading ?? "",
         body: row?.fonts?.body ?? "",
       },
-      stylePreset: row?.stylePreset ?? "minimal_studio",
-      hasLogo: Boolean(row?.logoR2Key || row?.logoAssetId),
+      stylePreset,
+      hasLogo: Boolean(logoKey || row?.logoAssetId),
       logoUrl,
-      logoKey: row?.logoR2Key ?? null,
+      logoKey,
     };
   }
 
+  /** Update.md 4.2: owner, admin and editor only; the kit is re validated
+   * here because this is the trust boundary; a logo key must sit in this
+   * workspace's source prefix; both insert and update run over the owner
+   * connection, since migration 0011 leaves members no FOR ALL policy. */
   async saveBrandKit(workspaceId: string, kit: BrandKitView): Promise<SaveResult> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return { ok: false, notice: "Only owners, admins and editors can change the brand kit." };
+    }
+    const parsed = brandKitInputSchema.safeParse(kit);
+    if (!parsed.success) {
+      return { ok: false, notice: brandKitIssueNotice(parsed.error) };
+    }
+    const input = parsed.data;
+    if (input.logoKey && !isWorkspaceSourceKey(workspaceId, input.logoKey)) {
+      return { ok: false, notice: "That logo upload does not belong to this workspace. Upload it again." };
+    }
     const existing = await this.db.query.brandKits.findFirst({
       where: (t, { eq }) => eq(t.workspaceId, workspaceId),
     });
+    // No new logo keeps the current one, but never a key that fails the
+    // prefix check (a legacy row), which the 0011 constraint would reject.
+    const keptLogo =
+      existing?.logoR2Key && isWorkspaceSourceKey(workspaceId, existing.logoR2Key) ? existing.logoR2Key : null;
+    const values = {
+      name: input.name,
+      colors: input.colors,
+      fonts: { heading: input.fonts.heading, body: input.fonts.body },
+      stylePreset: input.stylePreset,
+      logoR2Key: input.logoKey ?? keptLogo,
+      updatedAt: new Date(),
+    };
     if (!existing) {
-      await this.db.insert(brandKits).values({
-        workspaceId,
-        name: kit.name,
-        colors: kit.colors,
-        fonts: { heading: kit.fonts.heading, body: kit.fonts.body },
-        stylePreset: kit.stylePreset,
-        logoR2Key: kit.logoKey ?? null,
-      });
-      return { ok: true, notice: "Brand kit saved." };
-    }
-    const supabase = await this.deps.getSupabase();
-    if (!supabase) {
-      return { ok: false, notice: "Supabase is not configured, so the brand kit was not updated." };
-    }
-    const { error } = await supabase
-      .from("brand_kits")
-      .update({
-        name: kit.name,
-        colors: kit.colors,
-        fonts: { heading: kit.fonts.heading, body: kit.fonts.body },
-        style_preset: kit.stylePreset,
-        logo_r2_key: kit.logoKey ?? existing.logoR2Key ?? null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", existing.id);
-    if (error) {
-      return { ok: false, notice: "Saving failed. Check that your role allows editing the brand kit." };
+      await this.db.insert(brandKits).values({ workspaceId, ...values });
+    } else {
+      await this.db
+        .update(brandKits)
+        .set(values)
+        .where(and(eq(brandKits.id, existing.id), eq(brandKits.workspaceId, workspaceId)));
     }
     return { ok: true, notice: "Brand kit saved." };
   }

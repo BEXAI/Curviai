@@ -1,7 +1,26 @@
 import path from "node:path";
 import type { NextConfig } from "next";
 
+/**
+ * Baseline security headers on every response (plan 4.5). HSTS for a year
+ * across subdomains (browsers ignore it over plain http, so local dev is
+ * unaffected); no MIME sniffing; no framing, which blocks clickjacking of the
+ * billing and brand pages; referrers trimmed to the origin cross site; and the
+ * powerful browser features the app never uses turned off. A Content Security
+ * Policy is deliberately not enforced in this batch.
+ */
+const securityHeaders = [
+  { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()" },
+];
+
 const nextConfig: NextConfig = {
+  async headers() {
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
   outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
   transpilePackages: ["@curvi/ui", "@curvi/specs", "@curvi/db", "@curvi/pipeline", "@curvi/ai", "@curvi/trigger"],
   serverExternalPackages: ["sharp", "exiftool-vendored", "archiver", "postgres", "@trigger.dev/sdk"],

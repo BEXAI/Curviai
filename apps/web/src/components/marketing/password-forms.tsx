@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "@curvi/ui";
+import { AUTH_NETWORK_ERROR, isNetworkAuthError, runAuthCall, trackAuthError } from "@/lib/auth-call";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type Status = "idle" | "busy" | "sent" | "error";
@@ -24,10 +25,11 @@ export function ForgotPasswordForm() {
     setStatus("busy");
     setMessage(null);
     const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent("/reset-password")}`;
-    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
-    if (error) {
+    const result = await runAuthCall(() => supabase.auth.resetPasswordForEmail(email, { redirectTo }));
+    if (!result.ok) {
       setStatus("error");
-      setMessage(error.message);
+      setMessage(result.message);
+      trackAuthError("forgot_password", result.kind);
       return;
     }
     setStatus("sent");
@@ -57,7 +59,12 @@ export function ForgotPasswordForm() {
             {status === "busy" ? "Sending" : "Send reset link"}
           </Button>
           {message ? (
-            <p className={"text-sm " + (status === "error" ? "text-red-600" : "text-emerald-700")}>{message}</p>
+            <p
+              role={status === "error" ? "alert" : "status"}
+              className={"text-sm " + (status === "error" ? "text-red-600" : "text-emerald-700")}
+            >
+              {message}
+            </p>
           ) : null}
         </form>
         <p className="mt-4 text-sm text-ink-500">
@@ -83,23 +90,47 @@ export function ResetPasswordForm() {
       setStatus("signedout");
       return;
     }
-    supabase.auth.getUser().then(({ data }) => {
-      setStatus(data.user ? "idle" : "signedout");
-    });
+    let active = true;
+    supabase.auth
+      .getUser()
+      .then(({ data, error }) => {
+        if (!active) {
+          return;
+        }
+        if (!data.user && isNetworkAuthError(error)) {
+          // Unreachable, not signed out: keep the form so they can retry.
+          setStatus("error");
+          setMessage(AUTH_NETWORK_ERROR);
+          return;
+        }
+        setStatus(data.user ? "idle" : "signedout");
+      })
+      .catch(() => {
+        if (active) {
+          setStatus("error");
+          setMessage(AUTH_NETWORK_ERROR);
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const supabase = createSupabaseBrowserClient();
     if (!supabase) {
+      setStatus("error");
+      setMessage("Password reset is not available right now. Please try again later.");
       return;
     }
     setStatus("busy");
     setMessage(null);
-    const { error } = await supabase.auth.updateUser({ password });
-    if (error) {
+    const result = await runAuthCall(() => supabase.auth.updateUser({ password }));
+    if (!result.ok) {
       setStatus("error");
-      setMessage(error.message);
+      setMessage(result.message);
+      trackAuthError("reset_password", result.kind);
       return;
     }
     setStatus("sent");
@@ -151,7 +182,12 @@ export function ResetPasswordForm() {
             {status === "busy" ? "Saving" : "Save new password"}
           </Button>
           {message ? (
-            <p className={"text-sm " + (status === "error" ? "text-red-600" : "text-emerald-700")}>{message}</p>
+            <p
+              role={status === "error" ? "alert" : "status"}
+              className={"text-sm " + (status === "error" ? "text-red-600" : "text-emerald-700")}
+            >
+              {message}
+            </p>
           ) : null}
         </form>
       </CardContent>

@@ -12,6 +12,8 @@ import { isR2Configured } from "@/lib/env";
 import { getObjectBytes } from "@/lib/r2";
 import { getServices, isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
+import { isWorkspaceObjectKey } from "@/lib/object-keys";
+import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   const { id } = await params;
+  // A non uuid id can never match a job; answer 404 before Postgres raises
+  // 22P02 (Update.md 4.7).
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "This job does not exist in your workspace." }, { status: 404 });
+  }
   if (!isDbMode() || !isR2Configured()) {
     return NextResponse.json({ error: "Pack downloads need the full setup." }, { status: 404 });
   }
@@ -34,17 +41,26 @@ export async function GET(
   }
 
   const db = getDb();
-  const assetRows = await db.query.assets.findMany({ where: (t, { eq }) => eq(t.jobId, id) });
+  const assetRows = await db.query.assets.findMany({
+    where: (t, { and, eq }) => and(eq(t.jobId, id), eq(t.workspaceId, workspace.id)),
+  });
   if (assetRows.length === 0) {
     return NextResponse.json({ error: "This job has no stored files yet." }, { status: 404 });
   }
-  const variants = await db.query.assetVariants.findMany({
-    where: (t, { inArray }) =>
-      inArray(
-        t.assetId,
-        assetRows.map((a) => a.id),
-      ),
-  });
+  // Only this workspace's rows and keys are ever fetched with owner R2
+  // credentials (Update.md 4.1), including rows written before migration 0011.
+  const variants = (
+    await db.query.assetVariants.findMany({
+      where: (t, { and, eq, inArray }) =>
+        and(
+          eq(t.workspaceId, workspace.id),
+          inArray(
+            t.assetId,
+            assetRows.map((a) => a.id),
+          ),
+        ),
+    })
+  ).filter((variant) => isWorkspaceObjectKey(workspace.id, variant.r2Key));
   if (variants.length === 0) {
     return NextResponse.json({ error: "This job has no stored files yet." }, { status: 404 });
   }

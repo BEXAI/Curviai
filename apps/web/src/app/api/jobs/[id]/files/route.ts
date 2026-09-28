@@ -7,6 +7,7 @@
 
 import { NextResponse } from "next/server";
 import { getServices } from "@/lib/services";
+import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const { id } = await params;
+  // A non uuid id can never match a job; answer 404 before Postgres raises
+  // 22P02 (Update.md 4.7).
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "This job does not exist in your workspace." }, { status: 404 });
+  }
   const services = getServices();
   const workspace = await services.getCurrentWorkspace();
   if (!workspace) {
