@@ -187,7 +187,7 @@ User-facing copy passes rule 9 today; keep it that way in every fix above.
 6. **Type safety:** turn on `noUncheckedIndexedAccess` for app code first (apps/web/src/lib/services, trigger/src). About 25 sites, including unguarded `const [inserted] = ... .returning()` in db.ts and `specId` in trigger/src/runtime.ts:146. Pixel loops in packages/pipeline can opt out per file.
 7. **Type-check the root files:** add a root `tsconfig.json` covering `e2e/` and `playwright.config.ts` so `pnpm typecheck` checks them.
 8. **Smaller items:** deterministic/whiten.ts:323 returns a JPEG still over `maxBytes` without flagging it, and packages/pipeline/src/raw.ts:31 ignores EXIF rotation (only eval uses these today).
-9. **iCloud:** the repo lives on an iCloud synced Desktop, which keeps creating `name 2.ext` duplicates in `.next`, `test-results` and even `.git`. Move the working copy off iCloud, or exclude the folder from sync.
+9. **iCloud: done 2026-09-28.** The working copy moved from the iCloud synced Desktop to `~/Developer/Curviai`, which iCloud does not sync, so the `name 2.ext` duplicates and evicted (dataless) files stop. The move was a fresh clone with a clean dependency install, verified by typecheck, lint and the full unit suite.
 
 ## Before moving pack jobs to Trigger.dev cloud
 
