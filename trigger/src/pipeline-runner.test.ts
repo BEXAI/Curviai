@@ -22,7 +22,9 @@ import {
 } from "@curvi/pipeline";
 import { creditCosts } from "@curvi/pipeline/seed";
 import { isMarketplaceSpec } from "@curvi/specs";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   activeRecipe,
   creditsForShot,
@@ -403,7 +405,8 @@ describe("runGeneratePack happy path", () => {
     const deps = makeDeps({
       ai: makeAi({ plan: new MockProvider({ name: "mock-plan", tasks: [planKey], output: llmPlan }) }),
     });
-    const summary = await runGeneratePack(baseInput, deps);
+    // Only amazon.main is picked, so the one shot covers every picked spec.
+    const summary = await runGeneratePack({ ...baseInput, channels: ["amazon.main"] }, deps);
     expect(summary.state).toBe("done");
     expect(summary.plannerSource).toBe("llm");
     expect(summary.plannedShots).toBe(1);
@@ -688,8 +691,11 @@ describe("every selected channel gets its files (2.11)", () => {
 
     const socialTypes = ["social_1x1", "social_4x5", "social_9x16"];
     const planned = planShots(demoProfile, { ...basePlanOptions, channels: input.channels });
-    // The planner still proposes them; the runner drops them before any spend.
-    expect(planned.shots.filter((s) => socialTypes.includes(s.type))).toHaveLength(3);
+    // The planner selects by spec too, so it never plans them at all.
+    expect(planned.shots.filter((s) => socialTypes.includes(s.type))).toHaveLength(0);
+    expect(planned.skipped).toEqual(
+      expect.arrayContaining(socialTypes.map((type) => ({ type, reason: "channel not selected" }))),
+    );
     expect(deps.store.assets.some((a) => socialTypes.includes(a.shotType))).toBe(false);
     expect(summary.skipped).toEqual(
       expect.arrayContaining(socialTypes.map((type) => expect.objectContaining({ type, reason: "channel not selected" }))),
@@ -701,7 +707,7 @@ describe("every selected channel gets its files (2.11)", () => {
     expect(files.every((f) => f.channel === "amazon")).toBe(true);
   });
 
-  it("adds a white front shot for Google's main slot when there is no Amazon main image", async () => {
+  it("plans a white front shot for Google's main slot when there is no Amazon main image", async () => {
     const input: GeneratePackInput = { ...baseInput, channels: ["google"] };
     const deps = makeDeps();
     const summary = await runGeneratePack(input, deps);
@@ -709,8 +715,57 @@ describe("every selected channel gets its files (2.11)", () => {
     const files = await reportOf(summary);
     const mains = files.filter((f) => f.specId === "google.merchant.main");
     expect(mains).toHaveLength(1);
-    expect(mains[0].ref).toBe("s00_google_main");
+    // The planner's own white front image fills it, so the runner adds none.
+    const front = fittedPlan(input).shots.find((s) => s.priority === 1) as Shot;
+    expect(front).toMatchObject({ type: "alt_angle_white", channels: ["google.merchant.main"] });
+    expect(mains[0].ref).toBe(front.id);
+    expect(files.some((f) => f.ref === "s00_google_main")).toBe(false);
     expect(files.every((f) => f.channel === "google")).toBe(true);
+  });
+
+  it("still fills Google's main slot for a plan that has no white main image", () => {
+    const secondary: Shot = {
+      id: "g1",
+      type: "cutout_png",
+      sourceMediaId: "m1",
+      method: "deterministic",
+      channels: ["google.merchant.lifestyle"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 2,
+    };
+    const fitted = fitShotsToChannels(
+      { shots: [secondary], skipped: [] },
+      { channels: ["google"], mode: "listing", budget: 10, profile: demoProfile, primaryMediaId: "m1" },
+    );
+    expect(fitted.shots.map((s) => [s.id, s.channels])).toEqual([
+      ["s00_google_main", ["google.merchant.main"]],
+      ["g1", ["google.merchant.lifestyle"]],
+    ]);
+  });
+
+  it("charges the white front image once when Etsy and Google are picked together", async () => {
+    const input: GeneratePackInput = { ...baseInput, channels: ["etsy.listing", "google"], creditBudget: 30 };
+    const deps = makeDeps();
+    const summary = await runGeneratePack(input, deps);
+    expect(summary.state).toBe("done");
+    const plan = fittedPlan(input);
+    const fronts = plan.shots.filter((s) => s.priority === 1);
+    expect(fronts).toHaveLength(1);
+    expect(fronts[0]).toMatchObject({
+      type: "alt_angle_white",
+      scene: "front angle on white",
+      channels: ["etsy.listing", "google.merchant.main"],
+    });
+    expect(plan.shots.some((s) => s.id === "s00_google_main")).toBe(false);
+    const files = await reportOf(summary);
+    expect(files.filter((f) => f.specId === "google.merchant.main").map((f) => f.ref)).toEqual([fronts[0].id]);
+    expect(files.filter((f) => f.ref === fronts[0].id).map((f) => f.specId).sort()).toEqual([
+      "etsy.listing",
+      "google.merchant.main",
+    ]);
+    const frontCharges = deps.store.ledger.filter((e) => e.reason === "charge" && e.ref === fronts[0].id);
+    expect(frontCharges).toEqual([expect.objectContaining({ credits: creditCosts.deterministic })]);
   });
 
   it("keeps shot ids unique after fitting", () => {
@@ -912,6 +967,9 @@ class ScriptedStore extends InMemoryJobStore {
   readonly events: string[] = [];
   readonly sweeps: string[] = [];
   heartbeats = 0;
+  /** Heartbeats since the job moved to packaging, or -1 before that. */
+  private packagingHeartbeats = -1;
+  private settled = false;
 
   constructor(
     private readonly script: {
@@ -920,6 +978,10 @@ class ScriptedStore extends InMemoryJobStore {
       breakFailurePath?: boolean;
       jobStopped?: boolean;
       failDoneOnce?: boolean;
+      /** The web app settles the job (its inline run cap fires) after this
+       * many heartbeats once the job reached packaging; from then on the job
+       * is terminal, as the db store reports. */
+      settleAfterPackagingHeartbeats?: number;
     } = {},
   ) {
     super();
@@ -934,8 +996,11 @@ class ScriptedStore extends InMemoryJobStore {
       throw new Error("connection reset");
     }
     this.events.push(`state:${state}`);
-    if (state === this.script.refuseState) {
+    if (state === this.script.refuseState || this.settled) {
       return false;
+    }
+    if (state === "packaging") {
+      this.packagingHeartbeats = 0;
     }
     await super.setJobState(jobId, state, meta);
     return true;
@@ -959,7 +1024,16 @@ class ScriptedStore extends InMemoryJobStore {
 
   async heartbeat(): Promise<boolean> {
     this.heartbeats += 1;
-    return !this.script.jobStopped;
+    const limit = this.script.settleAfterPackagingHeartbeats;
+    if (limit !== undefined && this.packagingHeartbeats >= 0 && !this.settled) {
+      if (this.packagingHeartbeats >= limit) {
+        this.settled = true;
+        this.events.push("settled");
+      } else {
+        this.packagingHeartbeats += 1;
+      }
+    }
+    return !this.script.jobStopped && !this.settled;
   }
 
   async releaseAllHeld(jobId: string): Promise<void> {
@@ -1306,7 +1380,10 @@ describe("LLM plan validation against what can ship (1.7, 2.10, 2.12)", () => {
     };
     const plan = new MockProvider({ name: "mock-plan", tasks: [planKey], output: llmPlan });
     const deps = makeDeps({ ai: makeAi({ plan }), excludeShotMethods: ["video_generate", "avatar"] });
-    const summary = await runGeneratePack({ ...baseInput, tier: "growth", channels: ["amazon"], creditBudget: 2 }, deps);
+    const summary = await runGeneratePack(
+      { ...baseInput, tier: "growth", channels: ["amazon.main", "video.social_9x16"], creditBudget: 2 },
+      deps,
+    );
     expect(summary.state).toBe("done");
     expect(summary.plannerSource).toBe("llm");
     expect(summary.plannedShots).toBe(1);
@@ -1416,6 +1493,195 @@ describe("marketplace listing channels (2.11 regression)", () => {
     expect(files.every((f) => f.pass)).toBe(true);
     expect(summary.chargedCredits).toBe(creditCosts.deterministic + creditCosts.generativeStill);
     expect(deps.store.ledger.filter((e) => e.reason === "charge").map((e) => e.ref).sort()).toEqual(["e1", "e2"]);
+  });
+});
+
+describe("deterministic packs for the newer channels (2.11 regression)", () => {
+  /** Runs a pack on the deterministic planner (the default plan mock returns
+   * no shot list) and checks what shipped and what was charged. */
+  async function deterministicPack(channels: string[], creditBudget: number) {
+    const input: GeneratePackInput = { ...baseInput, channels, creditBudget };
+    const deps = makeDeps();
+    const summary = await runGeneratePack(input, deps);
+    const files = summary.pack ? await packReport(summary) : [];
+    return { input, deps, summary, files, plan: fittedPlan(input) };
+  }
+
+  /** Every charge is for a shot with a file in the pack, once, at its seed price. */
+  function expectChargesForDeliveredRefs(
+    run: Awaited<ReturnType<typeof deterministicPack>>,
+  ): void {
+    const delivered = new Set(run.files.map((f) => f.ref));
+    const charges = run.deps.store.ledger.filter((e) => e.reason === "charge");
+    expect(charges.length).toBeGreaterThan(0);
+    expect(new Set(charges.map((c) => c.ref)).size).toBe(charges.length);
+    expect([...charges.map((c) => c.ref)].sort()).toEqual([...delivered].sort());
+    const priced = new Map(run.plan.shots.map((s) => [s.id, s.credits]));
+    for (const charge of charges) {
+      expect(charge.credits, charge.ref).toBe(priced.get(charge.ref as string));
+    }
+    expect(run.summary.chargedCredits).toBe(charges.reduce((sum, c) => sum + c.credits, 0));
+    expect(run.summary.chargedCredits + run.summary.releasedCredits).toBe(run.summary.reservedCredits);
+  }
+
+  it("delivers, packs and charges an Etsy only pack from the deterministic planner", async () => {
+    const run = await deterministicPack(["etsy.listing"], 10);
+    expect(run.summary.state).toBe("done");
+    expect(run.summary.plannerSource).toBe("deterministic");
+    expect(run.summary.pack?.channels).toEqual(["etsy"]);
+    expect(run.files.length).toBeGreaterThan(1);
+    expect(run.files.every((f) => f.specId === "etsy.listing" && f.pass)).toBe(true);
+    // The white front image leads the listing, and every planned shot shipped.
+    expect(run.plan.shots[0]).toMatchObject({ type: "alt_angle_white", priority: 1, channels: ["etsy.listing"] });
+    expect(new Set(run.files.map((f) => f.ref))).toEqual(new Set(run.plan.shots.map((s) => s.id)));
+    expectChargesForDeliveredRefs(run);
+  });
+
+  it("delivers, packs and charges a Pinterest only pack from the deterministic planner", async () => {
+    const run = await deterministicPack(["pinterest.pin"], 1);
+    expect(run.summary.state).toBe("done");
+    expect(run.summary.plannerSource).toBe("deterministic");
+    expect(run.summary.pack?.channels).toEqual(["pinterest"]);
+    expect(run.files.map((f) => [f.specId, f.pass])).toEqual([["pinterest.pin", true]]);
+    expect(run.plan.shots.map((s) => s.type)).toEqual(["social_2x3"]);
+    expectChargesForDeliveredRefs(run);
+    expect(run.summary.chargedCredits).toBe(creditCosts.deterministic);
+  });
+
+  it("never aims a shot at an unpicked spec, at any budget", () => {
+    const channels = ["amazon.main", "etsy.listing"];
+    for (const budget of [0.5, 1, 2, 4, 8, 20]) {
+      const plan = fittedPlan({ ...baseInput, channels, creditBudget: budget });
+      expect(plan.shots.reduce((sum, s) => sum + s.credits, 0)).toBeLessThanOrEqual(budget);
+      for (const shot of plan.shots) {
+        expect(shot.channels.every((c) => channels.includes(c)), `${budget}: ${shot.id} ${shot.channels.join()}`).toBe(true);
+      }
+      // A shot that would ship is never trimmed as not selected.
+      expect(plan.skipped.filter((s) => s.reason === "channel not selected").map((s) => s.type)).not.toContain(
+        "alt_angle_white",
+      );
+    }
+  });
+});
+
+describe("the LLM plan must cover every picked spec the planner delivers (2.11)", () => {
+  const main: Shot = {
+    id: "s1",
+    type: "amazon_main",
+    sourceMediaId: "m1",
+    method: "deterministic",
+    channels: ["amazon.main"],
+    stylePreset: "none",
+    credits: creditCosts.deterministic,
+    priority: 1,
+  };
+  const rules: LlmPlanRules = {
+    budget: 20,
+    mediaIds: ["m1"],
+    channels: ["amazon.main", "walmart.main"],
+    mode: "listing",
+    requireAmazonMain: true,
+  };
+
+  it("rejects a plan that leaves a required spec without a shot", () => {
+    const plan = { shots: [main], skipped: [] };
+    expect(validateLlmShotList(plan, rules).ok).toBe(true);
+    const check = validateLlmShotList(plan, { ...rules, requiredSpecs: ["amazon.main", "walmart.main"] });
+    expect(check).toEqual({ ok: false, reason: "the plan has no shot for walmart.main" });
+    const covered = validateLlmShotList(
+      { shots: [{ ...main, channels: ["amazon.main", "walmart.main"] }], skipped: [] },
+      { ...rules, requiredSpecs: ["amazon.main", "walmart.main"] },
+    );
+    expect(covered.ok).toBe(true);
+  });
+
+  it("falls back to the deterministic plan when an Amazon and Walmart plan omits Walmart", async () => {
+    const input: GeneratePackInput = { ...baseInput, channels: ["amazon.main", "walmart.main"], creditBudget: 10 };
+    const llmPlan = { shots: [main], skipped: [] };
+    const deps = makeDeps({
+      ai: makeAi({ plan: new MockProvider({ name: "mock-plan", tasks: [planKey], output: llmPlan }) }),
+    });
+    const summary = await runGeneratePack(input, deps);
+    expect(summary.state).toBe("done");
+    expect(summary.plannerSource).toBe("deterministic");
+    expect(summary.planRejection).toBe("the plan has no shot for walmart.main");
+    const plan = fittedPlan(input);
+    expect(summary.plannedShots).toBe(plan.shots.length);
+    // The Amazon main image also leads Walmart; the other angles go there too.
+    const whiteMain = plan.shots.find((s) => s.type === "amazon_main") as Shot;
+    expect(whiteMain.channels).toEqual(["amazon.main", "walmart.main"]);
+    const walmartShots = plan.shots.filter((s) => s.channels.includes("walmart.main"));
+    expect(walmartShots.length).toBeGreaterThan(1);
+    // Walmart gets its files, and nothing ships to a spec nobody picked.
+    const files = await packReport(summary);
+    expect(files.filter((f) => f.specId === "walmart.main").map((f) => f.ref).sort()).toEqual(
+      walmartShots.map((s) => s.id).sort(),
+    );
+    expect(files.every((f) => ["amazon.main", "walmart.main"].includes(f.specId) && f.pass)).toBe(true);
+    expect(summary.pack?.channels.sort()).toEqual(["amazon", "walmart"]);
+    // The shared main image is charged once.
+    const charges = deps.store.ledger.filter((e) => e.reason === "charge");
+    expect(charges.map((c) => c.ref).sort()).toEqual(plan.shots.map((s) => s.id).sort());
+  });
+
+  it("uses an LLM plan that covers Amazon and Walmart", async () => {
+    const input: GeneratePackInput = { ...baseInput, channels: ["amazon.main", "walmart.main"], creditBudget: 10 };
+    const covered = { shots: [{ ...main, channels: ["amazon.main", "walmart.main"] }], skipped: [] };
+    const deps = makeDeps({
+      ai: makeAi({ plan: new MockProvider({ name: "mock-plan", tasks: [planKey], output: covered }) }),
+    });
+    const summary = await runGeneratePack(input, deps);
+    expect(summary.plannerSource).toBe("llm");
+    expect(summary.planRejection).toBeUndefined();
+  });
+});
+
+describe("a pack the web app settled never delivers (inline run cap)", () => {
+  async function outDirEntries(dir: string): Promise<string[]> {
+    return readdir(dir);
+  }
+
+  async function cappedRun(settleAfterPackagingHeartbeats: number) {
+    const store = new ScriptedStore({ settleAfterPackagingHeartbeats });
+    const packOutDir = await mkdtemp(path.join(tmpdir(), "curvi-capped-"));
+    const summary = await runGeneratePack(baseInput, makeDeps({ store, packOutDir }));
+    return { store, summary, packOutDir };
+  }
+
+  function expectNothingDelivered(run: Awaited<ReturnType<typeof cappedRun>>): void {
+    expect(run.summary.state).toBe("failed");
+    expect(run.summary.error).toContain("already finished or failed elsewhere");
+    expect(run.summary.pack).toBeNull();
+    expect(run.store.events).not.toContain("savePack");
+    expect(run.store.packs).toHaveLength(0);
+    expect(run.store.ledger.filter((e) => e.reason === "charge")).toHaveLength(0);
+    expect(run.summary.chargedCredits).toBe(0);
+    expect(run.store.events.indexOf("settled")).toBeGreaterThan(run.store.events.indexOf("state:packaging"));
+    // The settle already returned the hold: the run writes no exact release
+    // that the ledger would refuse, only the idempotent sweep.
+    expect(run.store.ledger.filter((e) => e.reason === "release")).toHaveLength(0);
+    expect(run.store.sweeps).toEqual([baseInput.jobId]);
+  }
+
+  it("stops before packaging when the cap fires right after qc_done", async () => {
+    const run = await cappedRun(0);
+    expectNothingDelivered(run);
+    // Nothing was even built.
+    expect(await outDirEntries(run.packOutDir)).toEqual([]);
+  });
+
+  it("stops before saving when the cap fires while the pack is being built", async () => {
+    const run = await cappedRun(1);
+    expectNothingDelivered(run);
+    // The pack was built, then the check before savePack stopped it.
+    expect((await outDirEntries(run.packOutDir)).length).toBeGreaterThan(0);
+  });
+
+  it("delivers and charges as usual when the job stays live", async () => {
+    const run = await cappedRun(10);
+    expect(run.summary.state).toBe("done");
+    expect(run.store.events).toContain("savePack");
+    expect(run.store.ledger.filter((e) => e.reason === "charge").length).toBeGreaterThan(0);
   });
 });
 

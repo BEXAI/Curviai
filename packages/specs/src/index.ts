@@ -94,6 +94,39 @@ export function isMarketplaceSpec(id: string): boolean {
   return /^(amazon|shopify|google|etsy|ebay|walmart|tiktokshop)\./.test(id);
 }
 
+/**
+ * The one selection rule every part of a pack follows (Update.md 2.11): the
+ * planner, the runner's channel fitting and the web estimate and hold all
+ * ask this. A spec id selects only itself, so a seller who ticked
+ * meta.feed_1x1 gets no 4x5 or story crop, and amazon.main alone gets no A+
+ * banner; a bare family ("amazon") or a group prefix ("amazon.aplus")
+ * selects every spec under it. A spec the registry does not know is never
+ * selected.
+ */
+export function isSpecSelected(channels: readonly string[], specId: string): boolean {
+  if (!hasSpec(specId)) {
+    return false;
+  }
+  return channels.some((c) => c === specId || (!hasSpec(c) && specId.startsWith(`${c}.`)));
+}
+
+/** The registry specs a channel selection picks, in registry order. */
+export function selectedSpecIds(channels: readonly string[]): string[] {
+  return listSpecs()
+    .map((spec) => spec.id)
+    .filter((id) => isSpecSelected(channels, id));
+}
+
+/**
+ * True when a selected channel string, a spec id or a family or group
+ * prefix, is marketplace bound: every spec it selects is a marketplace spec.
+ * Concept packs leave these out before planning (plan 2.7).
+ */
+export function isMarketplaceChannel(channel: string): boolean {
+  const picked = selectedSpecIds([channel]);
+  return picked.length > 0 && picked.every((id) => isMarketplaceSpec(id));
+}
+
 export interface FilenameVars {
   sku?: string;
   seoSlug?: string;

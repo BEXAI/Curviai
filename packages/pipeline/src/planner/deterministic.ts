@@ -6,12 +6,21 @@
  *
  * Channel routing reads each spec's rules from the registry (CLAUDE.md rule
  * 2): a shot only targets a selected spec whose background, text and
- * transparency rules its image can meet. Etsy, eBay, Walmart and TikTok Shop
- * get deterministic and template images only (a white front image first,
- * then white angles and whatever else the spec allows); Pinterest gets a 2:3
- * pin crop.
+ * transparency rules its image can meet. Selection is by channel spec, with
+ * the same isSpecSelected rule the runner and the web estimate use: no shot
+ * ever targets a spec the seller did not pick. Etsy, eBay, Walmart and TikTok
+ * Shop get deterministic and template images only (a white front image
+ * first, then white angles and whatever else the spec allows); Pinterest gets
+ * a 2:3 pin crop; Google's main slot takes the same white front image.
  */
-import { channelFileLimit, getSpec, hasSpec, type ChannelSpec } from "@curvi/specs";
+import {
+  channelFileLimit,
+  getSpec,
+  hasSpec,
+  isSpecSelected,
+  listSpecs,
+  type ChannelSpec,
+} from "@curvi/specs";
 import { creditCosts, isEntitled, type TierKey } from "../seed/credits";
 import { ProductProfile, Shot, ShotList, type ShotMethod } from "../schemas";
 
@@ -91,11 +100,13 @@ const GALLERY_SLOTS: readonly GallerySlot[] = [
   { family: "tiktokshop", specId: "tiktokshop.main", generated: false, leadsWithWhiteFront: true },
 ];
 
-/** When no listing family is selected, gallery shots keep this legacy target;
- * the runner then drops them as not selected before any spend. */
-const NO_GALLERY_FALLBACK = "shopify.product";
-
 const PINTEREST_PIN_SPEC = "pinterest.pin";
+const AMAZON_MAIN_SPEC = "amazon.main";
+const AMAZON_APLUS_SPEC = "amazon.aplus.basic_header";
+const SHOPIFY_HERO_SPEC = "shopify.hero_banner";
+const SHOPIFY_PRODUCT_SPEC = "shopify.product";
+/** Google's main slot takes the white front image, like amazon.main. */
+const GOOGLE_MAIN_SPEC = "google.merchant.main";
 
 /** Channel family of a spec id or family string: "etsy.listing" is "etsy". */
 function familyOf(channel: string): string {
@@ -142,8 +153,13 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   const primaryMedia = opts.primaryMediaId ?? "source_1";
   const mediaFor = (angle: string): string =>
     opts.mediaIdsByAngle?.[angle] ?? primaryMedia;
-  const selected = (family: string): boolean =>
-    opts.channels.some((c) => c === family || c.startsWith(`${family}.`));
+  /** The one selection rule (Update.md 2.11), shared with the runner and the estimate. */
+  const specSelected = (specId: string): boolean => isSpecSelected(opts.channels, specId);
+  /** True when the seller picked any spec of this family. Family specific
+   * shots (A+ banners, the Shopify hero, the pin) are only considered then,
+   * so a pack for other channels does not list them as left out. */
+  const familyPicked = (family: string): boolean =>
+    listSpecs().some((spec) => familyOf(spec.id) === family && specSelected(spec.id));
   const undeliverable = new Set<ShotMethod>(opts.undeliverableMethods ?? []);
 
   const shots: Shot[] = [];
@@ -154,29 +170,42 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   const skip = (type: string, method: ShotMethod, reason: string): void => {
     skipped.push({ type, reason: undeliverable.has(method) ? UNDELIVERABLE_METHOD_REASON : reason });
   };
-  /** Plans a shot, or skips it when its method cannot ship or no selected spec takes it. */
-  const plan = (shot: Omit<Shot, "id">): void => {
+  /**
+   * Plans a shot on the specs the seller picked, or skips it: when its method
+   * cannot ship, when the seller picked none of its specs ("channel not
+   * selected"), or when the shot has no spec at all (`noChannelReason`).
+   */
+  const plan = (shot: Omit<Shot, "id">, noChannelReason: string = NO_COMPATIBLE_CHANNEL_REASON): void => {
     if (undeliverable.has(shot.method)) {
       skipped.push({ type: shot.type, reason: UNDELIVERABLE_METHOD_REASON });
       return;
     }
     if (shot.channels.length === 0) {
-      skipped.push({ type: shot.type, reason: NO_COMPATIBLE_CHANNEL_REASON });
+      skipped.push({ type: shot.type, reason: noChannelReason });
       return;
     }
-    shots.push({ id: nextId(shot.type), ...shot });
+    const channels = [...new Set(shot.channels.filter(specSelected))];
+    if (channels.length === 0) {
+      skipped.push({ type: shot.type, reason: CHANNEL_NOT_SELECTED_REASON });
+      return;
+    }
+    shots.push({ id: nextId(shot.type), ...shot, channels });
   };
 
-  const gallery = GALLERY_SLOTS.filter((slot) => selected(slot.family) && hasSpec(slot.specId));
+  const gallery = GALLERY_SLOTS.filter((slot) => specSelected(slot.specId));
   /** Selected listing specs that take this kind of image. */
-  const galleryFor = (kind: PlannedImageKind): string[] => {
-    if (gallery.length === 0) {
-      return [NO_GALLERY_FALLBACK];
-    }
-    return gallery
+  const galleryFor = (kind: PlannedImageKind): string[] =>
+    gallery
       .filter((slot) => (kind !== "generated" || slot.generated) && specAcceptsImage(getSpec(slot.specId), kind))
       .map((slot) => slot.specId);
-  };
+  /** Plans a listing gallery shot. With no listing spec picked it is not
+   * selected; with some picked that refuse this kind of image, no channel
+   * takes it. */
+  const planGallery = (shot: Omit<Shot, "id" | "channels">, kind: PlannedImageKind): void =>
+    plan(
+      { ...shot, channels: galleryFor(kind) },
+      gallery.length === 0 ? CHANNEL_NOT_SELECTED_REASON : NO_COMPATIBLE_CHANNEL_REASON,
+    );
 
   const angles = profile.photographedAngles;
   const reflective = profile.surface.reflective || profile.surface.transparent;
@@ -185,21 +214,25 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   // Rule 4: footwear main image is a single shoe angled left.
   const footwear = profile.category === "footwear";
   const frontUsable = angles.includes("front") && profile.imageQuality.usableForMain;
-  // Marketplaces whose first listing image is the white front image.
-  const whiteFrontLeads = gallery
-    .filter((slot) => slot.leadsWithWhiteFront && specAcceptsImage(getSpec(slot.specId), "white"))
-    .map((slot) => slot.specId);
+  // Marketplaces whose first listing image is the white front image, and
+  // Google's main slot, which takes the same image. One shot serves them
+  // all and is charged once.
+  const whiteFrontLeads = [
+    ...gallery.filter((slot) => slot.leadsWithWhiteFront).map((slot) => slot.specId),
+    ...(specSelected(GOOGLE_MAIN_SPEC) ? [GOOGLE_MAIN_SPEC] : []),
+  ].filter((specId) => specAcceptsImage(getSpec(specId), "white"));
 
-  // Rule 1: always amazon_main when Amazon is selected, from the sharpest
-  // front photo, method deterministic. The same white front image leads the
-  // other selected marketplaces' listings, and is charged once.
-  if (selected("amazon")) {
+  // Rule 1: always amazon_main when amazon.main is selected, from the
+  // sharpest front photo, method deterministic. The same white front image
+  // leads the other selected marketplaces' listings and fills Google's main
+  // slot, and is charged once.
+  if (specSelected(AMAZON_MAIN_SPEC)) {
     if (frontUsable) {
       plan({
         type: "amazon_main",
         sourceMediaId: mediaFor("front"),
         method: "deterministic",
-        channels: ["amazon.main", ...whiteFrontLeads],
+        channels: [AMAZON_MAIN_SPEC, ...whiteFrontLeads],
         stylePreset: "none",
         ...(footwear ? { scene: "single shoe angled left" } : {}),
         credits: creditCosts.deterministic,
@@ -230,63 +263,73 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     if (angle === "front") {
       continue;
     }
-    plan({
-      type: "alt_angle_white",
-      sourceMediaId: mediaFor(angle),
-      method: "deterministic",
-      channels: galleryFor("white"),
-      stylePreset: "none",
-      scene: `${angle} angle on white`,
-      credits: creditCosts.deterministic,
-      priority: 2,
-    });
+    planGallery(
+      {
+        type: "alt_angle_white",
+        sourceMediaId: mediaFor(angle),
+        method: "deterministic",
+        stylePreset: "none",
+        scene: `${angle} angle on white`,
+        credits: creditCosts.deterministic,
+        priority: 2,
+      },
+      "white",
+    );
   }
   // Rule 2: never plan an angle that was not photographed.
   for (const missing of profile.missingAnglesNeeded) {
     skip(`alt_angle_white:${missing}`, "deterministic", "needs photo");
   }
 
-  plan({
-    type: "cutout_png",
-    sourceMediaId: mediaFor("front"),
-    method: "deterministic",
-    channels: galleryFor("transparent"),
-    stylePreset: "none",
-    credits: creditCosts.deterministic,
-    priority: 2,
-  });
-  plan({
-    type: "sweep_gray",
-    sourceMediaId: mediaFor("front"),
-    method: "deterministic",
-    channels: galleryFor("colored"),
-    stylePreset: "minimal_studio",
-    credits: creditCosts.deterministic,
-    priority: 3,
-  });
-  plan({
-    type: "sweep_brand",
-    sourceMediaId: mediaFor("front"),
-    method: "deterministic",
-    channels: galleryFor("colored"),
-    stylePreset: "minimal_studio",
-    credits: creditCosts.deterministic,
-    priority: 3,
-  });
+  planGallery(
+    {
+      type: "cutout_png",
+      sourceMediaId: mediaFor("front"),
+      method: "deterministic",
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 2,
+    },
+    "transparent",
+  );
+  planGallery(
+    {
+      type: "sweep_gray",
+      sourceMediaId: mediaFor("front"),
+      method: "deterministic",
+      stylePreset: "minimal_studio",
+      credits: creditCosts.deterministic,
+      priority: 3,
+    },
+    "colored",
+  );
+  planGallery(
+    {
+      type: "sweep_brand",
+      sourceMediaId: mediaFor("front"),
+      method: "deterministic",
+      stylePreset: "minimal_studio",
+      credits: creditCosts.deterministic,
+      priority: 3,
+    },
+    "colored",
+  );
 
   // 2 to 4 lifestyle scenes matched to useContexts.
   const lifestyleScenes = lifestyleScenesFor(profile);
   for (const scene of lifestyleScenes) {
-    plan({
-      type: "lifestyle",
-      sourceMediaId: mediaFor("front"),
-      method: "composite_generate",
-      channels: galleryFor("generated"),
-      stylePreset: basePreset,
-      scene,
-      credits: creditCosts.generativeStill,
-      priority: 4,
-    });
+    planGallery(
+      {
+        type: "lifestyle",
+        sourceMediaId: mediaFor("front"),
+        method: "composite_generate",
+        stylePreset: basePreset,
+        scene,
+        credits: creditCosts.generativeStill,
+        priority: 4,
+      },
+      "generated",
+    );
   }
 
   // Infographic with 3 to 5 callouts from benefits.
@@ -296,16 +339,18 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     callouts.push("ports and connectivity");
   }
   if (callouts.length > 0) {
-    plan({
-      type: "infographic",
-      sourceMediaId: mediaFor("front"),
-      method: "template",
-      channels: galleryFor("text"),
-      stylePreset: "none",
-      callouts: callouts.slice(0, 5),
-      credits: creditCosts.deterministic,
-      priority: 4,
-    });
+    planGallery(
+      {
+        type: "infographic",
+        sourceMediaId: mediaFor("front"),
+        method: "template",
+        stylePreset: "none",
+        callouts: callouts.slice(0, 5),
+        credits: creditCosts.deterministic,
+        priority: 4,
+      },
+      "text",
+    );
   } else {
     skip("infographic", "template", "no benefits to call out");
   }
@@ -314,18 +359,20 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   // Only a measurement the seller gave or the packaging shows is printed; a
   // model guess never ships as a fact on a charged image.
   if (profile.dimensions && profile.dimensions.source !== "unknown") {
-    plan({
-      type: "dimensions",
-      sourceMediaId: mediaFor("front"),
-      method: "template",
-      channels: galleryFor("text"),
-      stylePreset: "none",
-      // The template draws this label beside the product and trims it at a
-      // word boundary; a label that cannot fit goes to needs review.
-      callouts: [profile.dimensions.value],
-      credits: creditCosts.deterministic,
-      priority: 5,
-    });
+    planGallery(
+      {
+        type: "dimensions",
+        sourceMediaId: mediaFor("front"),
+        method: "template",
+        stylePreset: "none",
+        // The template draws this label beside the product and trims it at a
+        // word boundary; a label that cannot fit goes to needs review.
+        callouts: [profile.dimensions.value],
+        credits: creditCosts.deterministic,
+        priority: 5,
+      },
+      "text",
+    );
   } else {
     skip(
       "dimensions",
@@ -335,52 +382,56 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   }
 
   if (opts.hasBoxContents) {
-    plan({
-      type: "in_the_box",
-      sourceMediaId: mediaFor("packaging"),
-      method: "template",
-      channels: galleryFor("text"),
-      stylePreset: "none",
-      credits: creditCosts.deterministic,
-      priority: 5,
-    });
+    planGallery(
+      {
+        type: "in_the_box",
+        sourceMediaId: mediaFor("packaging"),
+        method: "template",
+        stylePreset: "none",
+        credits: creditCosts.deterministic,
+        priority: 5,
+      },
+      "text",
+    );
   } else {
     skip("in_the_box", "template", "seller did not list contents");
   }
 
   if (opts.hasComparisonFacts) {
-    plan({
-      type: "comparison",
-      sourceMediaId: mediaFor("front"),
-      method: "template",
-      channels: galleryFor("text"),
-      stylePreset: "none",
-      credits: creditCosts.deterministic,
-      priority: 6,
-    });
+    planGallery(
+      {
+        type: "comparison",
+        sourceMediaId: mediaFor("front"),
+        method: "template",
+        stylePreset: "none",
+        credits: creditCosts.deterministic,
+        priority: 6,
+      },
+      "text",
+    );
   } else {
     skip("comparison", "template", "seller did not supply comparison facts");
   }
 
-  if (selected("amazon")) {
+  if (familyPicked("amazon")) {
     for (let i = 0; i < 2; i++) {
       plan({
         type: "aplus_banner",
         sourceMediaId: mediaFor("front"),
         method: "template",
-        channels: ["amazon.aplus.basic_header"],
+        channels: [AMAZON_APLUS_SPEC],
         stylePreset: basePreset,
         credits: creditCosts.deterministic,
         priority: 6,
       });
     }
   }
-  if (selected("shopify")) {
+  if (familyPicked("shopify")) {
     plan({
       type: "shopify_hero",
       sourceMediaId: mediaFor("front"),
       method: "composite_generate",
-      channels: ["shopify.hero_banner"],
+      channels: [SHOPIFY_HERO_SPEC],
       stylePreset: basePreset,
       credits: creditCosts.generativeStill,
       priority: 6,
@@ -389,7 +440,7 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
       type: "collection_thumb",
       sourceMediaId: mediaFor("front"),
       method: "deterministic",
-      channels: ["shopify.product"],
+      channels: [SHOPIFY_PRODUCT_SPEC],
       stylePreset: "none",
       credits: creditCosts.deterministic,
       priority: 6,
@@ -408,7 +459,7 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     });
   }
   // Pinterest: one 2:3 pin, the social crop template at the pin size.
-  if (selected("pinterest") && hasSpec(PINTEREST_PIN_SPEC)) {
+  if (familyPicked("pinterest") && hasSpec(PINTEREST_PIN_SPEC)) {
     plan({
       type: "social_2x3",
       sourceMediaId: mediaFor("front"),
@@ -478,13 +529,9 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   }
 
   // Channel file limits (amazon.secondary takes 8, amazon.main takes 1) and
-  // rule 6, the credit budget. A shot that targets no selected family (the
-  // planner still proposes social crops and video for every pack; the runner
-  // drops them) is trimmed first, so it never costs a shot that ships.
-  const families = new Set(opts.channels.map(familyOf));
-  const kept = fitLimitsAndBudget(shots, opts.creditBudget, skipped, (shot) =>
-    shot.channels.some((c) => families.has(familyOf(c))),
-  );
+  // rule 6, the credit budget, which keeps a file for every picked spec it
+  // can afford (trimToBudget).
+  const kept = fitLimitsAndBudget(shots, opts.creditBudget, skipped, specSelected);
 
   // Schema cap: at most 40 shots.
   while (kept.length > 40) {
@@ -507,7 +554,7 @@ function fitLimitsAndBudget(
   candidates: readonly Shot[],
   budget: number,
   skipped: ShotList["skipped"],
-  targetsSelected: (shot: Shot) => boolean,
+  isSelected: (specId: string) => boolean,
 ): Shot[] {
   const trimmedRecords: ShotList["skipped"] = [];
   let pool = [...candidates];
@@ -515,7 +562,7 @@ function fitLimitsAndBudget(
     const limitRecords: ShotList["skipped"] = [];
     const capped = capShotsPerChannel(pool, limitRecords);
     const trimRecords: ShotList["skipped"] = [];
-    const kept = trimToBudget(capped, budget, trimRecords, targetsSelected);
+    const kept = trimToBudget(capped, budget, trimRecords, isSelected);
     if (kept.length === capped.length) {
       skipped.push(...trimmedRecords, ...limitRecords);
       return kept;
@@ -645,28 +692,61 @@ export function capShotsPerChannel(
 }
 
 /**
- * Drops shots until the total fits the budget. Shots that target no selected
- * family go first (recorded as CHANNEL_NOT_SELECTED_REASON, since they would
- * never ship); then the lowest priority (largest number) and, among ties,
- * the most expensive, so a single drop frees the most budget. Among full
- * ties the later shot in plan order goes first, so the seller's first use
- * contexts keep their scenes.
+ * Rule 6 with channel coverage (Update.md 2.11): drops shots until the total
+ * fits the budget, without leaving a picked spec empty while a file for it
+ * fits. First one shot per picked spec is protected, best priority first
+ * (lower number wins, then the cheaper shot, then plan order), as long as
+ * the protected shots fit the budget together; a spec whose only shots do
+ * not fit goes without. Then shots are dropped in this order: shots that
+ * target no selected spec (recorded as CHANNEL_NOT_SELECTED_REASON, since
+ * they would never ship), then unprotected shots, lowest priority (the
+ * largest number) first and, among ties, the most expensive, so a single
+ * drop frees the most budget; among full ties the later shot in plan order
+ * goes first, so the seller's first use contexts keep their scenes. Without
+ * the protection a product photographed from many angles spends the reserved
+ * budget on extra gallery images and leaves a picked social crop with no
+ * file. The planner and the runner share this trim. Returns the kept shots
+ * in plan order.
  */
-function trimToBudget(
-  shots: Shot[],
+export function trimToBudget(
+  shots: readonly Shot[],
   budget: number,
   skipped: ShotList["skipped"],
-  targetsSelected: (shot: Shot) => boolean,
+  isSelected: (specId: string) => boolean = () => true,
 ): Shot[] {
+  const targetsSelected = (shot: Shot): boolean => shot.channels.some(isSelected);
+  const total = (list: readonly Shot[]): number => list.reduce((sum, s) => sum + s.credits, 0);
   const kept = [...shots];
-  const total = (): number => kept.reduce((sum, s) => sum + s.credits, 0);
-  const rank = (shot: Shot): number => (targetsSelected(shot) ? 0 : 1);
-  while (kept.length > 0 && total() > budget) {
+  if (total(kept) <= budget) {
+    return kept;
+  }
+
+  const protectedShots = new Set<Shot>();
+  const covered = new Set<string>();
+  let protectedCredits = 0;
+  const byValue = shots
+    .map((shot, index) => ({ shot, index }))
+    .sort((a, b) => a.shot.priority - b.shot.priority || a.shot.credits - b.shot.credits || a.index - b.index);
+  for (const { shot } of byValue) {
+    const opensSpec = shot.channels.some((c) => isSelected(c) && !covered.has(c));
+    if (opensSpec && protectedCredits + shot.credits <= budget) {
+      protectedShots.add(shot);
+      protectedCredits += shot.credits;
+      for (const c of shot.channels) {
+        if (isSelected(c)) covered.add(c);
+      }
+    }
+  }
+
+  // The lower rank is dropped first: not selected, then unprotected, then
+  // protected (never reached, since the protected shots fit the budget).
+  const rank = (shot: Shot): number => (!targetsSelected(shot) ? 0 : protectedShots.has(shot) ? 2 : 1);
+  while (kept.length > 0 && total(kept) > budget) {
     let dropIdx = 0;
     for (let i = 1; i < kept.length; i++) {
       const a = kept[i];
       const b = kept[dropIdx];
-      const byRank = rank(a) - rank(b);
+      const byRank = rank(b) - rank(a);
       const byPriority = a.priority - b.priority;
       if (byRank > 0 || (byRank === 0 && (byPriority > 0 || (byPriority === 0 && a.credits >= b.credits)))) {
         dropIdx = i;

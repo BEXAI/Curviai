@@ -6,9 +6,12 @@ import {
   filenameFor,
   getSpec,
   hasSpec,
+  isMarketplaceChannel,
   isMarketplaceSpec,
+  isSpecSelected,
   listSpecs,
   loadRegistry,
+  selectedSpecIds,
 } from "./index.js";
 
 describe("channel spec registry", () => {
@@ -193,5 +196,48 @@ describe("channel spec registry", () => {
     expect(isMarketplaceSpec("walmart.main")).toBe(true);
     expect(isMarketplaceSpec("meta.feed_1x1")).toBe(false);
     expect(isMarketplaceSpec("pinterest.pin")).toBe(false);
+  });
+});
+
+describe("isSpecSelected, the one channel selection rule (Update.md 2.11)", () => {
+  it("selects a spec id only by itself", () => {
+    const picked = ["amazon.main", "meta.feed_1x1"];
+    expect(isSpecSelected(picked, "amazon.main")).toBe(true);
+    expect(isSpecSelected(picked, "meta.feed_1x1")).toBe(true);
+    expect(isSpecSelected(picked, "amazon.secondary")).toBe(false);
+    expect(isSpecSelected(picked, "amazon.aplus.basic_header")).toBe(false);
+    expect(isSpecSelected(picked, "meta.feed_4x5")).toBe(false);
+  });
+
+  it("selects every spec under a bare family or a group prefix", () => {
+    expect(selectedSpecIds(["meta"])).toEqual(["meta.feed_1x1", "meta.feed_4x5", "meta.story_9x16"]);
+    expect(selectedSpecIds(["amazon.aplus"])).toEqual(["amazon.aplus.basic_header", "amazon.aplus.premium_full"]);
+    // A partial name is not a prefix of whole segments, so it selects nothing.
+    expect(isSpecSelected(["amazon.ma"], "amazon.main")).toBe(false);
+    expect(isSpecSelected(["amaz"], "amazon.main")).toBe(false);
+  });
+
+  it("never selects a spec the registry does not know", () => {
+    expect(isSpecSelected(["myspace"], "myspace.main")).toBe(false);
+    expect(isSpecSelected(["myspace.main"], "myspace.main")).toBe(false);
+    expect(selectedSpecIds([])).toEqual([]);
+  });
+
+  it("lists the picked specs in registry order", () => {
+    const order = listSpecs().map((spec) => spec.id);
+    const picked = selectedSpecIds(["pinterest.pin", "etsy", "amazon.main"]);
+    expect(picked).toEqual(["amazon.main", "etsy.listing", "pinterest.pin"]);
+    expect([...picked].sort((a, b) => order.indexOf(a) - order.indexOf(b))).toEqual(picked);
+  });
+
+  it("classifies selected channel strings as marketplace bound", () => {
+    expect(isMarketplaceChannel("amazon")).toBe(true);
+    expect(isMarketplaceChannel("amazon.main")).toBe(true);
+    expect(isMarketplaceChannel("amazon.aplus")).toBe(true);
+    expect(isMarketplaceChannel("walmart")).toBe(true);
+    expect(isMarketplaceChannel("meta")).toBe(false);
+    expect(isMarketplaceChannel("meta.feed_1x1")).toBe(false);
+    expect(isMarketplaceChannel("pinterest.pin")).toBe(false);
+    expect(isMarketplaceChannel("myspace")).toBe(false);
   });
 });
