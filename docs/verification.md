@@ -93,7 +93,7 @@ Live pack safety (2026-09-28, Update.md 2.1, 5.2, 1.6, 3.1), done because produc
   - Template shots through packages/pipeline/src/templates/still.ts (bundled Inter): infographic, dimensions, A+ banners, social 1x1, 4x5 and 9x16.
   - A live pack end to end test passes all 16 planned still shots.
   - Still open: in_the_box and comparison, because the app does not collect box contents or comparison facts. Video and avatar shots also remain open.
-  - A Trigger.dev cloud deploy must ship the font file (set CURVI_TEMPLATE_FONT_FILE or add it to the build); the web inline runner resolves it from node_modules.
+  - A Trigger.dev cloud deploy must ship the font file (set CURVI_TEMPLATE_FONT_FILE or add it to the build); the web inline runner resolves it from node_modules. Any Trigger.dev cloud deploy now needs the v4 upgrade first: v3 no longer runs on Trigger.dev Cloud (rechecked 2026-09-28, see "Phase 10 batch 1" below).
 
 - OCR engine and embedding similarity (DINOv2 or CLIP) implementations behind the existing pluggable QC interfaces; semanticChecks is still not invoked from the runner.
 - c2pa-node manifest signing once a signing certificate exists.
@@ -101,7 +101,7 @@ Live pack safety (2026-09-28, Update.md 2.1, 5.2, 1.6, 3.1), done because produc
 - Square video channel spec (video.social_1x1) for 1x1 template renders.
 - Half open probe state for the circuit breaker; Upstash backed breaker and cap stores; DB backed cost meter (cogs_micros still not written to the database).
 - Badge pixel overlay for social exports and the Concept render corner label (flags are tracked, pixels not composited yet).
-- Founder email or SMS for the $50 spend alert (onSpendAlert currently logs a console warning).
+- Founder SMS for the $50 spend alert. Email is done in Phase 10 batch 1 (trigger/src/spend-alerts.ts sends through Resend when RESEND_API_KEY and FOUNDER_ALERT_EMAIL are set, and only logs otherwise).
 - Write workspaces.stripe_customer_id back from checkout.session.completed so the customer portal works without backfill.
 - Live provider wiring (trigger/src/live-runtime.ts, merged from the deploy branch on 2026-09-28) uses the model and price seeds in packages/pipeline/src/seed/models.ts. Adapters still carry VERIFY AT FIRST LIVE CALL notes; recheck model IDs, prices and response shapes against official provider docs on first key setup. Runtime recipe reads still come from the in code seed, not the recipes table, so trafficPct splits stay inert.
 - The composite pipeline's scene plate and harmonize calls still invoke providers directly instead of through callWithFailover; wrap them before real image providers land.
@@ -143,3 +143,91 @@ Marketing metadata lives in apps/web/src/lib/seo.ts (titles, descriptions, canon
 | Next.js 15.5.26 behavior | A page that sets openGraph drops the root opengraph-image, so pageMetadata sets the image explicitly; dynamic params arrive percent encoded; child robots metadata replaces the parent's | installed next source under apps/web/node_modules/next/dist |
 
 Honesty rules applied: SoftwareApplication offers list paid plans only when STRIPE_SECRET_KEY is set, and FAQPage markup includes only answers that describe shipped features (see the structured flags in the home page and help page).
+
+## Phase 10 batch 1: external facts (recorded 2026-09-28)
+
+CLAUDE.md rule 7 record for every external API shape, price or setting the batch 1 code and docs rely on (docs/phases/PHASE_10.md). The packages that wrote the code could not edit this file, so their checks were collected here by the docs fix pass on 2026-09-28.
+
+How each row was checked (the "Checked by" column):
+
+- **Implementer**: checked on 2026-09-28 by the batch 1 package that wrote the code, against the source named, as reported in its hand off. Recorded as reported, not refetched here.
+- **Reviewer**: also confirmed on 2026-09-28 by the independent batch 1 reviewer.
+- **Rechecked**: refetched in this docs pass on 2026-09-28 because two sources disagreed.
+- **Installed package**: confirmed in this docs pass on 2026-09-28 against the source or type definitions of the package version in pnpm-lock.yaml.
+
+### Stripe (package P2 billing)
+
+| Fact the code relies on | Where | Source | Checked by |
+|---|---|---|---|
+| API version pinned to `2025-08-27.basil`. The installed SDK, stripe 18.5.0, declares the same `ApiVersion`, so the SDK types match the objects Stripe sends. Register the webhook endpoint on this version too (docs/STRIPE_SETUP.md section 3). | apps/web/src/lib/billing/stripe.ts | stripe/cjs/apiVersion.js in stripe 18.5.0 | Installed package |
+| Basil invoice shapes read by the webhook: line `pricing.price_details.price`, line `parent.subscription_item_details.proration` (and `parent.invoice_item_details`), line `period.start` and `period.end`, invoice `parent.type = "subscription_details"` with `parent.subscription_details`, and `current_period_end` on the subscription item rather than the subscription. | apps/web/src/lib/billing/stripe-webhook.ts | stripe 18.5.0 types (InvoiceLineItems.d.ts, Invoices.d.ts, SubscriptionItems.d.ts); docs/STRIPE_SETUP.md section 3 | Installed package, Implementer |
+| `invoicePayments.list({ payment: { type: "payment_intent", payment_intent } })` finds the invoice a refunded or disputed payment paid. | apps/web/src/lib/billing/stripe.ts | stripe 18.5.0 types (InvoicePaymentsResource.d.ts) | Installed package |
+| Checkout terms consent: `consent_collection.terms_of_service = "required"` plus `custom_text.terms_of_service_acceptance`. Session creation fails unless a terms of service URL is set in Dashboard, Settings, Public details. | apps/web/src/lib/billing/checkout.ts | docs.stripe.com/payments/checkout/custom-components (as recorded in docs/STRIPE_SETUP.md) | Implementer |
+| Stripe Tax in Checkout: `automatic_tax.enabled`, `billing_address_collection = "required"`, `tax_id_collection.enabled`, and `customer_update: { address: "auto", name: "auto" }` for an existing customer. Off unless `STRIPE_TAX_ENABLED=1`. | apps/web/src/lib/billing/checkout.ts | docs.stripe.com/tax/checkout/page | Implementer |
+| Portal deep link for plan changes: `flow_data.type = "subscription_update_confirm"` with `subscription` and `items: [{ id, price, quantity }]`, `after_completion` redirect; fallback flow `subscription_update`, then the portal home. | apps/web/src/lib/billing/checkout.ts | docs.stripe.com/customer-management/portal-deep-links; flow types present in stripe 18.5.0 types | Implementer, Installed package |
+| Portal configuration: a downgrade can be scheduled for period end only between prices of the same product. With one product per tier, every portal downgrade applies immediately. | docs/STRIPE_SETUP.md section 5 | docs.stripe.com/customer-management/configure-portal and the billing_portal configuration API reference | Implementer, Reviewer |
+| Smart Retries recommended policy (8 tries within 2 weeks), Checkout discounts, Stripe Billing pricing. | docs/STRIPE_SETUP.md sections 4 and 6 | docs.stripe.com/billing/revenue-recovery/smart-retries, docs.stripe.com/payments/checkout/discounts, stripe.com/billing/pricing | Implementer (discovery sweep) |
+
+### Rate limits, auth and analytics clients (package P3 security)
+
+| Fact the code relies on | Where | Source | Checked by |
+|---|---|---|---|
+| @upstash/redis 1.39.0: `new Redis({ url, token, retry: { retries, backoff }, signal })`, where `signal` is an AbortSignal or a function returning one, and `redis.eval(script, keys, args)` returning `Promise<TData>`. The implementer also found EVAL listed as supported in the Upstash REST docs (page URL not recorded). | apps/web/src/lib/rate-limit.ts | @upstash/redis 1.39.0 type definitions | Implementer, Installed package |
+| Upstash env names `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (the names the SDK reads). The getting started page did not show where the console lists the REST values. | docs/LAUNCH_CHECKLIST.md step 11 | upstash.com/docs/redis/overall/getstarted | Implementer (P7) |
+| @supabase/auth-js 2.117.2 (through supabase-js 2.117.2) throws `AuthRetryableFetchError` with status 0 when no response arrives, and also for HTTP 500 to 504 and 520 to 530. The comment in auth-call.ts names only 502, 503 and 504; the check matches the error name, so every one of these shows the network message. | apps/web/src/lib/auth-call.ts | node_modules/@supabase/auth-js/dist/main/lib/fetch.js | Installed package |
+| `supabase.auth.signUp({ options: { data } })` stores `data` as user metadata. The signed in user can rewrite it through `updateUser({ data })` with the public anon key, so `terms_accepted_at` there is not a trustworthy acceptance record. | apps/web/src/components/marketing/auth-form.tsx | supabase-js | Reviewer |
+| posthog-js 1.434.16 exposes `posthog.__loaded` (boolean) and `posthog.capture(event, props)`. | apps/web/src/lib/track.ts, apps/web/src/lib/auth-call.ts | posthog-js 1.434.16 dist/module.d.ts | Installed package |
+
+### Email (packages P4 credits and P7 platform)
+
+| Fact the code or checklist relies on | Where | Source | Checked by |
+|---|---|---|---|
+| Resend send API: `POST https://api.resend.com/emails`, header `Authorization: Bearer <RESEND_API_KEY>`, JSON body `{ from, to (string or string array), subject, text }`, success response `{ id }`. The default alert sender `Curvi Alerts <alerts@curvi.ai>` only works once that domain is verified in Resend. | trigger/src/spend-alerts.ts, trigger/src/digest.ts | resend.com/docs (the implementer recorded the site, not the page) | Implementer (P4) |
+| Resend sending domain: a subdomain is recommended; MX and SPF TXT on `send.<subdomain>`, DKIM TXT on `resend._domainkey.<subdomain>`; DMARC on the organizational domain. | docs/LAUNCH_CHECKLIST.md step 2 | resend.com/docs/dashboard/domains/introduction, resend.com/docs/dashboard/domains/cloudflare, resend.com/docs/dashboard/domains/dmarc | Implementer (P7) |
+| Supabase Auth without custom SMTP sends only to pre-authorized addresses (the project team), at 2 messages per hour, with no delivery SLA. With custom SMTP the email rate limit starts at 30 messages per hour and can be raised. | docs/LAUNCH_CHECKLIST.md step 3 | supabase.com/docs/guides/auth/auth-smtp | Implementer (P7) |
+| Resend SMTP for Supabase: host `smtp.resend.com`, port 465, username `resend`, password a Resend API key. | docs/LAUNCH_CHECKLIST.md step 3 | resend.com/docs/send-with-supabase-smtp | Implementer (P7) |
+| Cloudflare Email Routing for hello@ and dmarc@ adds its own MX, SPF and DKIM at the root. | docs/LAUNCH_CHECKLIST.md step 4 | developers.cloudflare.com/email-routing/get-started/enable-email-routing/ | Implementer (P7) |
+
+### AI providers (packages P6b AI layer and P6c runner)
+
+| Fact the code relies on | Where | Source | Checked by |
+|---|---|---|---|
+| Claude image tokens: `ceil(w/28) x ceil(h/28)` visual tokens after downscaling to fit the long edge and token limits. High resolution tier (Claude 4.7 and later): 2576 px long edge, 4784 tokens per image. Standard tier: 1568 px, 1568 tokens. The cost estimate uses the high resolution limits for every model as an upper bound. | packages/ai/src/adapters/anthropicLLM.ts (ANTHROPIC_IMAGE_TOKEN_LIMITS) | https://platform.claude.com/docs/en/build-with-claude/vision | Implementer, Reviewer |
+| Claude `stop_reason: "refusal"` (safety decline, HTTP 200): a non retryable error that still meters the billed tokens. | packages/ai/src/adapters/anthropicLLM.ts | platform.claude.com stop reason docs; also listed, with `stop_details`, in the Claude API reference bundled with Claude Code | Implementer |
+| Gemini `promptFeedback.blockReason` values: BLOCK_REASON_UNSPECIFIED, SAFETY, OTHER, BLOCKLIST, PROHIBITED_CONTENT, IMAGE_SAFETY. Any value other than unspecified is treated as `content_blocked`. | packages/ai/src/adapters/geminiImage.ts | https://ai.google.dev/api/generate-content; Generative Language API v1beta discovery document (https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta), revision 20260927 | Implementer; enum list confirmed in this pass against the saved copy of that revision |
+| Gemini `candidates[].finishReason` values treated as a safety or policy block: SAFETY, RECITATION, SPII, PROHIBITED_CONTENT, BLOCKLIST, IMAGE_SAFETY, IMAGE_PROHIBITED_CONTENT, IMAGE_OTHER, IMAGE_RECITATION. Other values (for example OTHER and NO_IMAGE) give `empty_output`. Neither is metered, since the price is per returned image. | packages/ai/src/adapters/geminiImage.ts | same as the row above | Implementer, Reviewer (IMAGE_OTHER wording); enum list confirmed in this pass against the saved discovery document |
+| Gemini `generationConfig.imageConfig.aspectRatio`: supported values 1:1, 1:4, 4:1, 1:8, 8:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9; without it the model picks a shape from the reference images. The code sends only the ten common ratios (GEMINI_ASPECT_RATIOS), nearest to the canvas by log ratio; 1:4 to 8:1 are model specific. The field returns an error on models that do not support it. `imageConfig.imageSize` accepts 512, 1K, 2K and 4K (default 1K). | packages/ai/src/adapters/geminiImage.ts, trigger/src/live-runtime.ts | Generative Language API v1beta discovery document, revision 20260927, schema ImageConfig | Implementer (P6c); ratio and size lists confirmed in this pass against the saved discovery document |
+| OpenAI image moderation refusal: HTTP 400 with `error.code` `moderation_blocked` (the older `content_policy_violation` is matched too) maps to `content_blocked`; not metered. | packages/ai/src/adapters/openaiImage.ts | https://developers.openai.com/api/docs/guides/image-generation | Implementer |
+| BFL job statuses: Ready, Pending, Error, Content Moderated, Request Moderated, Task not found. Content Moderated and Request Moderated map to `content_blocked`; Error and Task not found fail the attempt. The result URL (`result.sample`) expires after 10 minutes, so the adapter downloads it at once. | packages/ai/src/adapters/bflFlux.ts | https://docs.bfl.ai/api_integration/integration_guidelines | Implementer |
+
+### Hosting, deploys and background jobs (package P7 platform)
+
+| Fact the code, render.yaml or checklist relies on | Where | Source | Checked by |
+|---|---|---|---|
+| Blueprint field `autoDeployTrigger: checksPass` replaces the deprecated `autoDeploy: true`; the dashboard setting is Auto-Deploy, "After CI Checks Pass". Render reads the GitHub checks of the commit: success, neutral and skipped pass; any failure, or zero checks found, means no deploy. | render.yaml, docs/LAUNCH_CHECKLIST.md step 5 | render.com/docs/deploys (Automatic deploys), render.com/docs/blueprint-spec | Implementer |
+| Health checks (`healthCheckPath`): each check times out after 5 s; Render stops routing to an instance after 15 s of failures and restarts it after 60 s; a deploy whose new instance never passes within 15 minutes is canceled and the old version keeps serving. | render.yaml, apps/web/src/lib/service-health.ts, docs/LAUNCH_CHECKLIST.md step 8 | render.com/docs/health-checks | Implementer, Reviewer (15 s and 60 s) |
+| Graceful shutdown: Render sends SIGTERM to the old instance 60 s after the new one is live. `maxShutdownDelaySeconds` (SIGTERM to SIGKILL) accepts 1 to 300, default 30, and is set in render.yaml or through the API (`PATCH https://api.render.com/v1/services/{id}` with `{"serviceDetails":{"maxShutdownDelaySeconds":300}}`), not in the dashboard. | render.yaml, apps/web/src/lib/jobs/inline-runner.ts, docs/LAUNCH_CHECKLIST.md step 8 | render.com/docs/deploys (Graceful shutdown), render.com/docs/blueprint-spec, api-docs.render.com/reference/update-service | Implementer |
+| Free instances spin down after 15 idle minutes, run on 0.1 CPU and 512 MB, and Render says not to use them in production. Plan IDs since August 2026: `0.5c-512mb` (Starter), `1c-2g` (Standard), `2c-4g` (Pro); older names still work. | render.yaml, docs/LAUNCH_CHECKLIST.md step 9 | render.com/docs/free, render.com/docs/compute-plans | Implementer |
+| Supabase migrations should use the direct connection (port 5432). The transaction pooler (6543) does not support prepared statements. The direct host is IPv6 only without the IPv4 add on; from IPv4 only networks use the session pooler (5432). | docs/LAUNCH_CHECKLIST.md step 6 | supabase.com/docs/guides/database/connecting-to-postgres | Implementer |
+| Trigger.dev v3 is shut down on Trigger.dev Cloud: "v3 triggers and deploys no longer run." Self hosted 4.5.0 is the last version that runs v3. The code pins @trigger.dev/sdk 3.x, so `TRIGGER_SECRET_KEY` must stay unset on Render until the v4 upgrade, and the scheduled tasks do not run in production. | apps/web/src/lib/jobs/enqueue.ts, docs/LAUNCH_CHECKLIST.md step 14 | https://trigger.dev/docs/migrating-from-v3, https://trigger.dev/docs/upgrade-to-v4 | Implementer; Rechecked (earlier entries in this file and Update.md still assumed a v3 cloud deploy was possible; the migrating-from-v3 page confirms the shutdown) |
+| Sentry Next.js setup through `npx @sentry/wizard@latest -i nextjs`; the SDK is not installed, so `SENTRY_DSN` does nothing yet. | docs/LAUNCH_CHECKLIST.md step 13 | docs.sentry.io/platforms/javascript/guides/nextjs/ | Implementer |
+
+### Still unverified (batch 1)
+
+1. **Harmonize output sizes behind the aspect tolerance.** `HARMONIZE_ASPECT_TOLERANCE = 0.04` (packages/pipeline/src/composite/index.ts) is the implementer's own figure. Neither the Gemini API reference nor the image generation guide lists output pixel sizes per aspect ratio (the guide at ai.google.dev/gemini-api/docs/image-generation was rechecked on 2026-09-28: it lists the ratios and the 512, 1K, 2K and 4K sizes, but no per ratio pixel table), and no BFL output size table was checked. The outcome depends on those sizes. Example: shopify.hero_banner is 2400x1000 (2.4:1) and its nearest Gemini ratio is 21:9. An output of 1584x672 drifts 1.8 percent and passes; 1536x672 drifts 4.8 percent and the shot fails. To close: at the first live key, run a harmonize call for a 1:1 and a 2.4:1 canvas on each image provider in the chain (the Gemini and BFL models in the seed), record width x height here with the date, and set the tolerance from those figures.
+2. **Client IP header on Render behind Cloudflare.** `clientIp()` in apps/web/src/lib/rate-limit.ts trusts `cf-connecting-ip`, then `true-client-ip`, then `x-real-ip`, then the first `X-Forwarded-For` entry, and its comment says a Cloudflare edge overwrites any value the client sent. Cloudflare's HTTP headers reference (developers.cloudflare.com/fundamentals/reference/http-headers/, rechecked 2026-09-28) says CF-Connecting-IP carries the IP of the client connecting to Cloudflare; that True-Client-IP is the same value under another name, available only on the Enterprise plan through the "Add True-Client-IP header" Managed Transform; and that Cloudflare appends to an existing X-Forwarded-For rather than replacing it, so its first entry can be whatever the client sent. The page does not say whether Cloudflare replaces a CF-Connecting-IP value sent by the client. Nothing checked says what Render's own edge sets or strips, or whether curvi.ai traffic passes through a Cloudflare proxy before Render. Until this is tested, treat the per IP limit as spoofable; the per user limits still hold. To close: from outside, send requests with forged `cf-connecting-ip`, `true-client-ip`, `x-real-ip` and `x-forwarded-for` headers to a production route that logs the request headers it receives, record which values arrive, and make `clientIp()` trust only headers the edge sets.
+3. **Whether BFL and fal charge for moderated or failed jobs.** Neither documents it. The adapters treat any failure after a successful create or submit as billed at the per image price (an upper bound for the spend caps). Confirm at the first live call.
+4. **Stripe dispute lifecycle.** The P2 review proposes returning clawed back credits on `charge.dispute.closed` with status `won` or on `charge.dispute.funds_reinstated`, and skipping inquiries (statuses starting with `warning_`). None of these event names or statuses was checked against Stripe docs in batch 1; check them before building that handler.
+5. **Redis script atomicity.** The Upstash limiter relies on EVAL running its INCR plus PEXPIRE script atomically. That is standard Redis scripting behavior but was not checked against a source in batch 1.
+6. **`RENDER_GIT_COMMIT`.** /api/health reports it as `commit`, on the assumption that Render sets it at runtime. Not checked in batch 1; the first batch 1 deploy confirms it when `commit` is not null.
+7. **Adapter request shapes.** The VERIFY AT FIRST LIVE CALL items listed under "Unverified adapter endpoint shapes" above are still open (anthropic-version value and field set, Gemini request casing, BFL create path, OpenAI response encoding, Photoroom multipart contract, fal queue fields).
+
+### Production spot checks to record after the batch 1 deploy
+
+Record each with its date here once done (order in docs/phases/PHASE_10.md, Before deploy):
+
+- 0011: the four `*_r2_key_workspace_prefix` constraints exist (NOT VALID), and the audit query run before the migration returned no rows, or the rows it returned were fixed.
+- 0012 plus `pnpm db:seed`: `platform_settings` has `free_signup_credits`, and a new confirmed signup outside the Supabase team gets exactly one `signup_grants` row and one signup grant in the ledger.
+- 0013: the unique index `source_media_workspace_r2_key_uq` exists.
+- `/api/health` on the new deploy returns 200 with `"schema":"current"` and a non null `commit`.
+- The Update.md Wave 0 gate (docs/LAUNCH_CHECKLIST.md step 16, full version).
