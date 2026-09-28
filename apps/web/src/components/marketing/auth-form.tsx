@@ -129,8 +129,11 @@ export function AuthForm({ mode }: AuthFormProps) {
               password,
               options: {
                 emailRedirectTo: callback,
-                // Clickwrap record: the signup button sits above the Terms
-                // and Privacy notice, so submitting is the acceptance.
+                // Clickwrap: the signup button sits above the Terms and
+                // Privacy notice, so submitting is the acceptance. The user
+                // can edit this metadata, so it is a hint only; the record
+                // that counts is the server's terms_acceptances row
+                // (lib/trust/terms.ts).
                 data: {
                   terms_accepted_at: new Date().toISOString(),
                   ...(source ? { signup_source: source } : {}),

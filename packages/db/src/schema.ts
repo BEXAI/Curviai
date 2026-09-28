@@ -150,6 +150,8 @@ export const sourceMedia = pgTable(
     // One row per uploaded object (Update.md 6.3): a retried pack submit
     // inserts with ON CONFLICT DO NOTHING instead of duplicating the photo.
     uniqueIndex("source_media_workspace_r2_key_uq").on(t.workspaceId, t.r2Key),
+    // The 30 day source purge (migration 0015) scans by age.
+    index("source_media_created_at_idx").on(t.createdAt),
   ],
 );
 
@@ -502,6 +504,37 @@ export const churnScores = pgTable("churn_scores", {
   computedAt: timestamp("computed_at", { withTimezone: true }),
 });
 
+/** How a terms acceptance reached the server: the signup confirmation link
+ * (auth callback), or the first signed in visit to /app for an account that
+ * has no record yet. */
+export type TermsAcceptanceSource = "signup_callback" | "first_app_visit";
+
+/**
+ * Server side record that a user accepted a version of the terms of service
+ * (migration 0015). Written only by the web app's owner connection, with the
+ * server's clock and the request's IP, so it replaces trusting the
+ * terms_accepted_at value the browser puts in editable user metadata. One row
+ * per user and version. Members read their own rows; nobody writes through
+ * the anon or authenticated roles.
+ */
+export const termsAcceptances = pgTable(
+  "terms_acceptances",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").notNull(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    version: text("version").notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull().defaultNow(),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+    source: text("source").$type<TermsAcceptanceSource>().notNull(),
+  },
+  (t) => [
+    uniqueIndex("terms_acceptances_user_version_uq").on(t.userId, t.version),
+    index("terms_acceptances_workspace_id_idx").on(t.workspaceId),
+  ],
+);
+
 // Inferred row types.
 export type Workspace = typeof workspaces.$inferSelect;
 export type NewWorkspace = typeof workspaces.$inferInsert;
@@ -547,3 +580,5 @@ export type SignupGrant = typeof signupGrants.$inferSelect;
 export type NewSignupGrant = typeof signupGrants.$inferInsert;
 export type ChurnScore = typeof churnScores.$inferSelect;
 export type NewChurnScore = typeof churnScores.$inferInsert;
+export type TermsAcceptance = typeof termsAcceptances.$inferSelect;
+export type NewTermsAcceptance = typeof termsAcceptances.$inferInsert;

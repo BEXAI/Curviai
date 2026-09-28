@@ -310,3 +310,61 @@ UPSTASH_REDIS_REST_TOKEN=
 `render.yaml` lists the same names. `CURVI_INLINE_PACK_CONCURRENCY` carries the value `1`; the others are `sync: false`, which Render reads only when a Blueprint first creates a service (it prompts for the values then) and ignores for a service that already exists, like the hand made Curviai service. So render.yaml documents them, and the dashboard is where they are set.
 
 **Sources:** https://render.com/docs/blueprint-spec, https://render.com/docs/configure-environment-variables (checked 2026-09-28).
+
+## Batch 2 trust: account deletion, data export, source purge, upload ingest, terms record
+
+Written 2026-09-28 for branch b2/trust (docs/phases/PHASE_11.md). The code is in `apps/web/src/lib/trust/` and `packages/pipeline/src/ingest/`.
+
+### Apply migration 0015_trust
+
+**Who:** founder, with the same process as step 6 (Supabase SQL editor, direct connection, founder approval).
+
+**Do:** run `packages/db/migrations/0015_trust.sql`. It creates `terms_acceptances` (RLS on, members read their own rows, no write policy) and the `source_media_created_at_idx` index the purge uses. It changes no existing rows.
+
+**Verify:** `select relrowsecurity from pg_class where relname = 'terms_acceptances'` returns true; after the deploy, sign in and check that one row for your user appears in `terms_acceptances` with your IP.
+
+### Schedule the 30 day source purge
+
+What it does: once a day, `POST /api/cron/purge-source-media` deletes source uploads (and their masks) older than 30 days whose product had no pack in the last 30 days, never while a pack for that product is running and never a photo a share link shows as its "before" image. It also deletes orphan uploads under `ws/{id}/src/` older than 30 days that no row and no brand kit logo points at. Delivered pack files are not touched. Each run handles at most 500 source rows and lists at most 5000 objects for the orphan sweep; the next run carries on. The settings page tells sellers about this retention.
+
+**Who:** founder.
+
+**Do:**
+
+1. Generate a long random secret (for example `openssl rand -hex 32`) and set it as `CRON_SECRET` on the Curviai web service in Render (Save only; it applies with the next deploy).
+2. After the deploy, run a dry run by hand and read the report: `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" "https://curvi.ai/api/cron/purge-source-media?dryRun=1"`. `rowsMatched` and `orphansDeleted` show what a real run would delete.
+3. Create a Render Cron Job service with the schedule `30 3 * * *` (Render cron schedules run in UTC, so this is 03:30 UTC daily), any small instance, the same `CRON_SECRET` value, and the command `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/cron/purge-source-media`. Render charges a minimum of $1 per month for each cron job service. Any other scheduler that can send that request daily works too (the route also accepts the secret in an `x-cron-secret` header).
+
+**Verify:** the cron job's first run exits 0, and the Render web logs show `[purge] source media purge finished` with the report. Without `CRON_SECRET` the route answers 503 and does nothing; with a wrong secret it answers 403.
+
+**Sources:** https://render.com/docs/cronjobs (checked 2026-09-28).
+
+### Let account deletion remove the sign in
+
+Account deletion (Settings, Your data) deletes the workspace rows and every object under `ws/{workspace_id}/` in R2, then signs the user out. Removing the Supabase auth user needs the service role key. Without it the data is still gone, the user is sent to `/account-deleted?signin=pending`, and the server log names the auth user to remove by hand in the Supabase dashboard (Authentication, Users).
+
+**Who:** founder.
+
+**Do:** copy the `service_role` key from the Supabase dashboard (the project's API keys settings) into `SUPABASE_SERVICE_ROLE_KEY` on the Render web service only. Never in the repo, never in a `NEXT_PUBLIC_` variable, never in Trigger.dev.
+
+**Verify:** make a throwaway account, delete it from Settings, and check that it disappears from Supabase Authentication, Users, and that you land on `/account-deleted` without the "by hand" line.
+
+Deletion is refused while a pack is running, while a Stripe subscription is still open (the seller cancels in Billing first) and when the workspace has other members (ownership moves by email for now). The `signup_grants` row is kept on purpose so a new signup with the same email gets no second free grant.
+
+**Sources:** https://supabase.com/docs/reference/javascript/auth-admin-deleteuser (checked 2026-09-28).
+
+### Environment variables added in batch 2 trust
+
+| Name | Read by | Unset means | Meaning and when to set it |
+|---|---|---|---|
+| `CRON_SECRET` | Cron routes (`apps/web/src/lib/trust/cron-secret.ts`) | Cron routes answer 503 and do nothing | Shared secret the scheduler sends as `Authorization: Bearer` or `x-cron-secret`. A secret: Render only. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Account deletion (`apps/web/src/lib/trust/auth-admin.ts`) | Deleted accounts keep their sign in until removed by hand | Supabase service role key, used only to delete the auth user of a deleted account. A secret: Render web service only. |
+
+Lines for `.env.example`:
+
+```
+# Shared secret for cron routes (Authorization: Bearer or x-cron-secret). Unset: cron routes answer 503.
+CRON_SECRET=
+# Supabase service role key, server only, used to remove the sign in of a deleted account.
+SUPABASE_SERVICE_ROLE_KEY=
+```

@@ -7,6 +7,7 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./ingest": "./src/ingest/index.ts",
     "./planner": "./src/planner/deterministic.ts",
     "./reveal": "./src/reveal/side-by-side.ts",
     "./schemas": "./src/schemas.ts",

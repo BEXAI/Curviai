@@ -474,6 +474,8 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
         if (isOutOfCreditsRefusal(response.status, data.reason, estimate.total)) {
           setOutOfCredits(outOfCreditsCopy(paywall, estimate.total));
         } else {
+          // An invalid_upload refusal means the server removed the file, so
+          // the message asks the seller to remove it and pick another.
           setSubmitError(data.error ?? "The pack could not be started. Try again in a moment.");
         }
         setSubmitting(false);

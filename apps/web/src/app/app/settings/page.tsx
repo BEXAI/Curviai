@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Badge, Card, CardContent, CardHeader, CardTitle } from "@curvi/ui";
+import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
+import { DeleteAccountForm } from "@/components/app/delete-account-form";
 import { WorkspaceNameForm } from "@/components/app/workspace-name-form";
 import { getServices } from "@/lib/services";
 import { getSessionUser } from "@/lib/supabase/server";
@@ -100,6 +101,44 @@ export default async function SettingsPage() {
               </li>
             ))}
           </ul>
+        </CardContent>
+      </Card>
+
+      <Card data-testid="your-data">
+        <CardHeader>
+          <CardTitle>Your data</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-ink-900">Download your data</p>
+            <p className="text-sm text-ink-500">
+              One file with your products, photos, packs, file links, brand kit and credit history. The links in it
+              work for 24 hours.
+            </p>
+            {workspace.role === "owner" || workspace.role === "admin" ? (
+              <a
+                href="/api/account/export"
+                download
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+                data-testid="export-data"
+              >
+                Download my data
+              </a>
+            ) : (
+              <p className="text-xs text-ink-400">Ask a workspace owner to download the data.</p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-ink-900">How long we keep your uploads</p>
+            <p className="text-sm text-ink-500">
+              We delete original photos and videos once they are 30 days old and no pack from the last 30 days used
+              them. Finished pack files stay in your account.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-ink-900">Delete account</p>
+            <DeleteAccountForm disabledReason={user ? null : "Demo mode has no account to delete."} />
+          </div>
         </CardContent>
       </Card>
     </div>

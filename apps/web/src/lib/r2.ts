@@ -18,7 +18,7 @@ export function sourceUploadKey(workspaceId: string): string {
   return `ws/${workspaceId}/src/${randomUUID()}`;
 }
 
-function r2Client(): S3Client {
+export function r2Client(): S3Client {
   const accountId = requireEnv("R2_ACCOUNT_ID");
   return new S3Client({
     region: "auto",
@@ -95,7 +95,7 @@ export function isWorkspaceKey(workspaceId: string, key: string): boolean {
   return isWorkspaceObjectKey(workspaceId, key);
 }
 
-function privateBucket(): string {
+export function privateBucket(): string {
   return optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
 }
 

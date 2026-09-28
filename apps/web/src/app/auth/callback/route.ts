@@ -1,6 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { postAuthDestination, postAuthParamsFrom, type AuthErrorCode } from "@/lib/safe-next";
+import { isDbMode } from "@/lib/services";
+import { getDb } from "@/lib/services/db";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { recordTermsAcceptanceSafely } from "@/lib/trust/terms";
 
 /**
  * Supabase auth code exchange. Email confirmation, password recovery and
@@ -9,6 +12,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
  * billing checkout for a plan picked on the pricing page. The destination
  * always goes through safeNextPath (Update.md 4.3), so it never leaves the
  * site. Errors go back to /login as a fixed code, never as provider text.
+ * The signup confirmation is also where the server first records the user's
+ * terms acceptance, with its own clock and the request IP (lib/trust/terms.ts).
  */
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);
@@ -29,13 +34,18 @@ export async function GET(request: NextRequest) {
     return toLogin("unavailable");
   }
   if (code) {
+    let userId: string | null = null;
     try {
-      const { error } = await supabase.auth.exchangeCodeForSession(code);
+      const { data, error } = await supabase.auth.exchangeCodeForSession(code);
       if (error) {
         return toLogin("link_invalid");
       }
+      userId = data?.user?.id ?? null;
     } catch {
       return toLogin("unavailable");
+    }
+    if (userId && isDbMode()) {
+      await recordTermsAcceptanceSafely(getDb(), { userId, source: "signup_callback", headers: request.headers });
     }
   }
   return NextResponse.redirect(new URL(next, url.origin));

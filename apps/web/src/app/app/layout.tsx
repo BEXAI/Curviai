@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { AppNav } from "@/components/app/app-nav";
@@ -9,7 +10,9 @@ import { Wordmark } from "@/components/marketing/site-header";
 import { loadPastDueNotice } from "@/lib/billing/account";
 import { lowBalanceThreshold } from "@/lib/billing/paywall";
 import { getServices, isDbMode } from "@/lib/services";
+import { getDb } from "@/lib/services/db";
 import { getSessionUser } from "@/lib/supabase/server";
+import { recordTermsAcceptanceSafely } from "@/lib/trust/terms";
 
 export const metadata: Metadata = {
   title: { template: "%s | Curvi", default: "App | Curvi" },
@@ -33,6 +36,11 @@ async function loadHeaderBalance(signedIn: boolean): Promise<number | null> {
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const demo = !isDbMode();
   const user = demo ? null : await getSessionUser();
+  if (user) {
+    // The server side terms record, when the signup callback did not write
+    // one (lib/trust/terms.ts). Best effort; never blocks the page.
+    await recordTermsAcceptanceSafely(getDb(), { userId: user.id, source: "first_app_visit", headers: await headers() });
+  }
   const [pastDue, creditBalance] = await Promise.all([
     user ? loadPastDueNotice(user.id) : null,
     loadHeaderBalance(demo || Boolean(user)),
