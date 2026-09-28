@@ -1738,7 +1738,8 @@ export function trimShotsToBudget(shots: readonly Shot[], budget: number, skippe
 /** Plan options as the runner sends them: PlanOptions plus the shot methods
  * no live provider delivers yet, so the planner (and the LLM planner, which
  * sees these options) leaves them out before it trims to the budget. */
-export type RunnerPlanOptions = PlanOptions & { undeliverableMethods?: Array<Shot["method"]> };
+/** The planner options the runner passes; PlanOptions carries undeliverableMethods itself. */
+export type RunnerPlanOptions = PlanOptions;
 
 /**
  * The deterministic planner's plan for a pack. planShots proposes every shot
