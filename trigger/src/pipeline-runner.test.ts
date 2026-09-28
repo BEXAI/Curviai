@@ -35,6 +35,7 @@ import {
   PLAN_FAILED_MESSAGE,
   runGeneratePack,
   runShot,
+  SCREENSHOT_UPLOAD_MESSAGE,
   serializeShotOutcome,
   SHOT_CHANNEL_FULL,
   SHOT_CONTENT_BLOCKED,
@@ -583,6 +584,120 @@ describe("runGeneratePack hard failures", () => {
     expect(summary.error).toContain("counterfeit");
     expect(summary.plannedShots).toBe(0);
     expect(summary.releasedCredits).toBe(baseInput.creditBudget);
+  });
+});
+
+describe("intake screenshot flag (PHASE_12 A5)", () => {
+  const cleanFlags = { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false };
+  const screenshotVerdict = { sellableProduct: false, distinctProducts: 1, sharpEnough: true, screenshot: true, flags: cleanFlags };
+  const photoVerdict = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, screenshot: false, flags: cleanFlags };
+
+  class PlanRecordingStore extends InMemoryJobStore {
+    readonly plans: Shot[][] = [];
+    async savePlan(plan: { shots: Shot[] }): Promise<void> {
+      this.plans.push(plan.shots);
+    }
+  }
+
+  it("fails a pack of only screenshots after intake, before any other call, and charges nothing", async () => {
+    const intake = new MockProvider({
+      name: "mock-intake",
+      tasks: [intakeKey],
+      // A model that contradicts itself (sellable but a screenshot) is still refused.
+      output: { images: [screenshotVerdict, { ...screenshotVerdict, sellableProduct: true }] },
+    });
+    const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+    const plan = new MockProvider({ name: "mock-plan", tasks: [planKey], output: { notAShotList: true } });
+    const generator = { generate: vi.fn() } as unknown as ShotGenerator;
+    const deps = makeDeps({ ai: makeAi({ intake, analyze, plan }), generator });
+    const summary = await runGeneratePack(
+      { ...baseInput, images: [{ mediaId: "m1" }, { mediaId: "m2" }] },
+      deps,
+    );
+
+    expect(summary.state).toBe("failed");
+    expect(summary.error).toBe(SCREENSHOT_UPLOAD_MESSAGE);
+    expect(SCREENSHOT_UPLOAD_MESSAGE).toContain("screenshot");
+    expect(intake.calls).toHaveLength(1);
+    expect(analyze.calls).toHaveLength(0);
+    expect(plan.calls).toHaveLength(0);
+    expect(generator.generate).not.toHaveBeenCalled();
+    expect(summary.plannedShots).toBe(0);
+    expect(summary.chargedCredits).toBe(0);
+    expect(summary.releasedCredits).toBe(baseInput.creditBudget);
+    expect(deps.store.ledger.some((e) => e.reason === "charge")).toBe(false);
+    expect(deps.store.states.at(-1)).toMatchObject({ state: "failed", meta: { error: SCREENSHOT_UPLOAD_MESSAGE } });
+  });
+
+  it("drops the screenshot from a mixed pack so the real photo is the source of every shot", async () => {
+    const png = await encodePng(solidCanvas(8, 8, 200, 200, 200));
+    const screenshotKey = "ws/ws1/src/screen.png";
+    const photoKey = "ws/ws1/src/photo.jpg";
+    const intake = new MockProvider({
+      name: "mock-intake",
+      tasks: [intakeKey],
+      output: { images: [screenshotVerdict, photoVerdict] },
+    });
+    const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+    const sources: string[] = [];
+    const demo = new DemoShotGenerator();
+    const generator: ShotGenerator = {
+      generate: async (args) => {
+        sources.push(args.shot.sourceMediaId);
+        return demo.generate(args);
+      },
+    };
+    const store = new PlanRecordingStore();
+    const deps = makeDeps({ ai: makeAi({ intake, analyze }), generator, store, loadMedia: async () => png });
+    const summary = await runGeneratePack(
+      {
+        ...baseInput,
+        // The seller even marked the screenshot as the front.
+        images: [
+          { mediaId: screenshotKey, angle: "front" },
+          { mediaId: photoKey, angle: "back" },
+        ],
+      },
+      deps,
+    );
+
+    expect(summary.state).toBe("done");
+    expect(summary.chargedCredits).toBeGreaterThan(0);
+    // Intake saw both photos; analysis only the camera photo.
+    const blocks = (provider: MockProvider) =>
+      ((provider.calls[0].input as LlmTaskInput).messages[0].content as Array<{ type: string; text?: string }>);
+    expect(blocks(intake).filter((b) => b.type === "image")).toHaveLength(2);
+    const analyzeBlocks = blocks(analyze);
+    expect(analyzeBlocks.filter((b) => b.type === "image")).toHaveLength(1);
+    const analyzeText = analyzeBlocks.find((b) => b.type === "text")?.text ?? "";
+    expect(analyzeText).toContain(photoKey);
+    expect(analyzeText).not.toContain(screenshotKey);
+    // Every planned and generated shot comes from the camera photo.
+    expect(store.plans).toHaveLength(1);
+    expect(store.plans[0].length).toBeGreaterThan(0);
+    expect(store.plans[0].every((shot) => shot.sourceMediaId === photoKey)).toBe(true);
+    expect(sources.length).toBeGreaterThan(0);
+    expect(sources.every((source) => source === photoKey)).toBe(true);
+  });
+
+  it("keeps every photo when intake's verdicts cannot be matched to the photos", async () => {
+    const intake = new MockProvider({
+      name: "mock-intake",
+      tasks: [intakeKey],
+      output: { images: [screenshotVerdict, photoVerdict, photoVerdict] },
+    });
+    const store = new PlanRecordingStore();
+    const summary = await runGeneratePack(
+      { ...baseInput, images: [{ mediaId: "m1" }, { mediaId: "m2" }] },
+      makeDeps({ ai: makeAi({ intake }), store }),
+    );
+    expect(summary.state).toBe("done");
+    expect(store.plans[0].every((shot) => shot.sourceMediaId === "m1")).toBe(true);
+  });
+
+  it("still runs on intake answers without a screenshot field (intake version 1)", async () => {
+    const summary = await runGeneratePack(baseInput, makeDeps());
+    expect(summary.state).toBe("done");
   });
 });
 

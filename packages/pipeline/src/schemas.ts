@@ -55,6 +55,11 @@ export const IntakeImageResult = z.object({
     )
     .optional(),
   sharpEnough: z.boolean(),
+  /** True when the image is a screenshot or screen capture (an app, web
+   * page, chat or phone screen, including a photo of a screen) rather than
+   * a camera photo of the product. Optional so answers from intake recipe
+   * version 1, which never asked, still parse. */
+  screenshot: z.boolean().optional(),
   flags: z.object({
     nudity: z.boolean(),
     weapons: z.boolean(),
