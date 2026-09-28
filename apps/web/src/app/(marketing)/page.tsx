@@ -18,6 +18,7 @@ import {
   type HomeFeatureKey,
 } from "@/components/marketing/home-copy";
 import { UploadBox } from "@/components/marketing/upload-box";
+import { Wordmark } from "@/components/marketing/site-header";
 import { isStripeConfigured } from "@/lib/env";
 import { freeCredits, packsForCredits, paidTiers, tierDisplayName, typicalPackCredits } from "@/lib/marketing-facts";
 import {
@@ -105,6 +106,7 @@ export default function HomePage() {
         />
         <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-6 pb-20 pt-16 lg:grid-cols-2 lg:pt-24">
         <div className="animate-fade-in-up">
+          <Wordmark className="mb-8 block h-14 sm:h-16" />
           <p className="mb-5 font-mono text-xs font-semibold uppercase tracking-wider text-accent-400">
             {homeHero.eyebrow}
           </p>
@@ -259,6 +261,7 @@ export default function HomePage() {
           className="pointer-events-none absolute inset-0 bg-[radial-gradient(48rem_24rem_at_50%_120%,rgb(253_127_17/0.14),transparent)]"
         />
         <div className="relative mx-auto max-w-3xl px-6 py-16 text-center">
+          <Wordmark className="mx-auto mb-6 block h-12" />
           <h2 className="font-display text-3xl font-bold uppercase tracking-tight text-white">{homeClosing.title}</h2>
           <p className="mx-auto mt-3 max-w-xl text-ink-300">{homeClosing.body}</p>
           <div className="mt-8">
