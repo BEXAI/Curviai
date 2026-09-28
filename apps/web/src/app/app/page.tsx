@@ -1,7 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
+import { LowBalanceNudge } from "@/components/app/paywall";
 import { StatusChip } from "@/components/app/status-chip";
+import { canManageBilling } from "@/lib/billing/access";
+import { lowBalanceCopy } from "@/lib/billing/paywall";
+import { isStripeConfigured } from "@/lib/env";
 import {
   freeCredits,
   joinList,
@@ -42,6 +46,12 @@ export default async function DashboardPage() {
     services.listRecentJobs(workspace.id, 8),
   ]);
   const firstSession = jobs.length === 0;
+  const nudge = lowBalanceCopy({
+    plan: workspace.plan,
+    creditBalance: workspace.creditBalance,
+    stripeLive: isStripeConfigured(),
+    canBill: canManageBilling(workspace.role),
+  });
 
   return (
     <div className="space-y-8">
@@ -57,6 +67,8 @@ export default async function DashboardPage() {
           New pack
         </Link>
       </div>
+
+      <LowBalanceNudge copy={nudge} moment="dashboard" />
 
       <div className="grid gap-6 md:grid-cols-3">
         <Card data-testid="credit-balance">

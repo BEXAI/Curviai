@@ -3,9 +3,11 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { AppNav } from "@/components/app/app-nav";
 import { PastDueBanner } from "@/components/app/billing-actions";
+import { HeaderCreditBalance } from "@/components/app/paywall";
 import { Wordmark } from "@/components/marketing/site-header";
 import { loadPastDueNotice } from "@/lib/billing/account";
-import { isDbMode } from "@/lib/services";
+import { lowBalanceThreshold } from "@/lib/billing/paywall";
+import { getServices, isDbMode } from "@/lib/services";
 import { getSessionUser } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
@@ -13,10 +15,27 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+/** The header balance. Best effort: a failed read hides the balance and the
+ * page still loads, since every page reads the workspace again itself. */
+async function loadHeaderBalance(signedIn: boolean): Promise<number | null> {
+  if (!signedIn) {
+    return null;
+  }
+  try {
+    return (await getServices().getCurrentWorkspace())?.creditBalance ?? null;
+  } catch (error) {
+    console.error(JSON.stringify({ msg: "app header: balance read failed", error: String(error) }));
+    return null;
+  }
+}
+
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const demo = !isDbMode();
   const user = demo ? null : await getSessionUser();
-  const pastDue = user ? await loadPastDueNotice(user.id) : null;
+  const [pastDue, creditBalance] = await Promise.all([
+    user ? loadPastDueNotice(user.id) : null,
+    loadHeaderBalance(demo || Boolean(user)),
+  ]);
   return (
     <div className="min-h-screen bg-ink-50">
       <header className="border-b border-ink-100 bg-white">
@@ -26,6 +45,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </Link>
           <div className="flex flex-wrap items-center gap-4">
             <AppNav />
+            {creditBalance !== null ? (
+              <HeaderCreditBalance creditBalance={creditBalance} lowThreshold={lowBalanceThreshold()} />
+            ) : null}
             {user ? (
               <div className="flex items-center gap-3 border-l border-ink-100 pl-4">
                 <span className="hidden max-w-48 truncate text-xs text-ink-500 sm:block" title={user.email ?? ""}>

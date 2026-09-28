@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import { NewPackForm } from "@/components/app/new-pack-form";
+import { LowBalanceNudge } from "@/components/app/paywall";
+import { canManageBilling } from "@/lib/billing/access";
+import { lowBalanceCopy, type PaywallContext } from "@/lib/billing/paywall";
 import { tierKeyOf } from "@/lib/entitlements";
+import { isStripeConfigured } from "@/lib/env";
 import { getServices } from "@/lib/services";
 import { newPackChannelOptions } from "./channel-options";
 
@@ -29,6 +33,13 @@ export default async function NewPackPage({
   // Channels whose feature is not live, or not in this plan, are shown but
   // cannot be picked, matching what createJob accepts.
   const channels = newPackChannelOptions(tier);
+  const paywall: PaywallContext = {
+    plan: workspace.plan,
+    creditBalance: workspace.creditBalance,
+    stripeLive: isStripeConfigured(),
+    canBill: canManageBilling(workspace.role),
+  };
+  const nudge = lowBalanceCopy(paywall);
 
   return (
     <div>
@@ -36,12 +47,18 @@ export default async function NewPackPage({
       <p className="mt-1 text-sm text-ink-500">
         One photo in. A compliant pack out. Pick channels and watch it render live.
       </p>
+      {nudge ? (
+        <div className="mt-6">
+          <LowBalanceNudge copy={nudge} moment="new_pack" />
+        </div>
+      ) : null}
       <div className="mt-8">
         <NewPackForm
           products={products.map((p) => ({ id: p.id, title: p.title, mode: p.mode }))}
           channels={channels}
           tier={tier}
           creditBalance={workspace.creditBalance}
+          paywall={paywall}
           initialProductId={requestedProduct}
         />
       </div>

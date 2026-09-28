@@ -69,3 +69,29 @@ describe("dashboard credit card", () => {
     expect(creditCard(await renderDashboard(-2.5))).toContain("2.5 credits below zero");
   });
 });
+
+describe("dashboard low balance nudge", () => {
+  it("nudges a balance under one pack, and stays quiet otherwise", async () => {
+    const low = await renderDashboard(2);
+    expect(low).toContain('data-testid="low-balance-nudge"');
+    expect(low).toContain("You are running low on credits");
+    // No Stripe keys in tests: early access copy, and no checkout link.
+    expect(low).toContain("Credits are limited during early access");
+    expect(low).not.toContain("checkout=");
+    expect(await renderDashboard(0)).toContain("You are out of credits");
+    expect(await renderDashboard(40)).not.toContain('data-testid="low-balance-nudge"');
+    // A balance below zero keeps its own explanation instead.
+    expect(await renderDashboard(-12)).not.toContain('data-testid="low-balance-nudge"');
+  });
+
+  it("offers the next plan up from the seed when Stripe is on", async () => {
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_paywall");
+    try {
+      const html = await renderDashboard(2);
+      expect(html).toContain("Upgrade to Growth");
+      expect(html).toContain("/app/billing?checkout=growth&amp;cadence=monthly");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, Card, CardContent, Input, Label, Select, Textarea, cn } from "@curvi/ui";
 import type { TierKey } from "@curvi/pipeline/seed";
+import { OutOfCreditsDialog } from "@/components/app/paywall";
 import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
+import { outOfCreditsCopy, type PaywallContext, type PaywallCopy } from "@/lib/billing/paywall";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { estimatePackCredits, type EstimateMode } from "@/lib/pack-estimate";
 import { intentFor, type SubmitIntent } from "@/lib/submit-intent";
@@ -41,6 +43,8 @@ interface NewPackFormProps {
   channels: ChannelOption[];
   tier: TierKey;
   creditBalance: number;
+  /** Plan, Stripe and role facts for the out of credits dialog. */
+  paywall: PaywallContext;
   /** Product to preselect, e.g. from "New pack for this product". Anything
    * not in `products` is ignored. */
   initialProductId?: string | null;
@@ -71,6 +75,24 @@ export function creditBalanceLine(creditBalance: number): string {
   return `You have ${creditBalance.toLocaleString("en-US")} credits. Only assets that pass QC are charged.`;
 }
 
+/**
+ * Whether a refused submit is the balance falling short of a pack that plans
+ * billable shots: the moment for the out of credits dialog instead of an
+ * error line. createJob answers "plans no billable shots" with the same
+ * reason, so an estimate of zero keeps the plain message.
+ */
+export function isOutOfCreditsRefusal(status: number, reason: string | undefined, estimate: number): boolean {
+  return status === 402 && reason === "insufficient_credits" && estimate > 0;
+}
+
+/** The pack summary warning when the estimate is more than the balance. */
+export function estimateOverBalanceLine(estimate: number, creditBalance: number): string | null {
+  if (estimate <= 0 || creditBalance < 0 || estimate <= creditBalance) {
+    return null;
+  }
+  return `This pack needs about ${estimate.toLocaleString("en-US")} credits, more than you have. Pick fewer channels or add credits.`;
+}
+
 export function channelLabel(id: string): string {
   const pretty = id.replaceAll(".", " ").replaceAll("_", " ");
   return pretty.charAt(0).toUpperCase() + pretty.slice(1);
@@ -88,7 +110,7 @@ async function sha256Hex(file: File): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export function NewPackForm({ products, channels, tier, creditBalance, initialProductId }: NewPackFormProps) {
+export function NewPackForm({ products, channels, tier, creditBalance, paywall, initialProductId }: NewPackFormProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   // One Idempotency-Key per submission intent (Update.md 6.1): a retry of the
@@ -113,6 +135,7 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
   const [mode, setMode] = useState<EstimateMode>("listing");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [outOfCredits, setOutOfCredits] = useState<PaywallCopy | null>(null);
 
   // Channels that can be picked first; coming soon and upgrade ones after.
   const ordered = [...channels].sort((a, b) => Number(!isPickable(a)) - Number(!isPickable(b)));
@@ -284,7 +307,11 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
           // fresh job instead of replaying this refusal.
           intentRef.current = null;
         }
-        setSubmitError(data.error ?? "The pack could not be started. Try again in a moment.");
+        if (isOutOfCreditsRefusal(response.status, data.reason, estimate.total)) {
+          setOutOfCredits(outOfCreditsCopy(paywall, estimate.total));
+        } else {
+          setSubmitError(data.error ?? "The pack could not be started. Try again in a moment.");
+        }
         setSubmitting(false);
         return;
       }
@@ -295,8 +322,10 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
       });
       intentRef.current = null;
       // Stay in the submitting state until the job page takes over, so a
-      // second click cannot start a second pack.
+      // second click cannot start a second pack. The refresh after the push
+      // rerenders the shared app layout, so the header balance shows the hold.
       router.push(`/app/jobs/${data.job.id}`);
+      router.refresh();
     } catch {
       // The same intent keeps its key, so trying again replays this request
       // if the server already started the pack.
@@ -305,6 +334,7 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
     }
   }
 
+  const overBalance = estimateOverBalanceLine(estimate.total, creditBalance);
   const buttonLabel = uploading ? "Uploading photo" : submitting ? "Starting" : "Create pack";
 
   return (
@@ -537,6 +567,11 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
               >
                 {creditBalanceLine(creditBalance)}
               </p>
+              {overBalance ? (
+                <p className="mt-1 text-xs text-amber-700" data-testid="estimate-over-balance">
+                  {overBalance}
+                </p>
+              ) : null}
             </div>
             <Button
               variant="secondary"
@@ -557,6 +592,7 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
           </CardContent>
         </Card>
       </div>
+      <OutOfCreditsDialog copy={outOfCredits} onClose={() => setOutOfCredits(null)} />
     </div>
   );
 }
