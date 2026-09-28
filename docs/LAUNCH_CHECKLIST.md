@@ -402,3 +402,11 @@ Line for `.env.example`:
 # Shared secret for /api/cron/* (Authorization: Bearer or x-cron-secret). Unset: those routes answer 503.
 CRON_SECRET=
 ```
+
+## Batch 2 retention (b2/retention)
+
+No new environment variables. What the founder does outside the repo:
+
+1. **Apply migration 0018 (`cancel_flows`) to production** in the Supabase SQL editor, in journal order with the other batch 2 migrations, before the code that writes the table goes live. It creates the table, enables row level security and adds one read policy for owners, admins and editors. Until it is applied, the billing page still loads, but the cancel flow records nothing, so the reasons are lost and a pause or discount can be taken more than once (Stripe still refuses a second pause or cancellation on the same subscription).
+2. **Stripe (only once step 10 is done).** Nothing to create by hand: the first subscriber who takes the discount creates the coupon `curvi_save_30pct_3mo` (30 percent off, repeating for 3 months, from `retentionOffers` in packages/pipeline/src/seed/retention.ts). If the terms in the seed change, a new coupon id is made; delete the old coupon in the Dashboard if it should no longer be offered. The downgrade offer needs the smaller plan's price id env var (`STRIPE_PRICE_<TIER>_<CADENCE>`, already listed for checkout). Cancellation now happens in the app, so consider turning off "Cancel subscriptions" in the Customer Portal configuration so every cancellation passes through the save offers (docs/STRIPE_SETUP.md, portal settings). In test mode, run each offer once: pause (the subscription shows "collection paused" until the resume date), downgrade (the next invoice is at the smaller price), discount (the subscription shows the coupon), and cancel (the subscription shows "cancels on" the period end), then check the webhook synced the plan.
+3. **Brand fonts on Trigger.dev Cloud (step 14).** Template text now reads one of five bundled TTFs (Inter, Montserrat, Playfair Display, Lora, Roboto Slab) from the `@expo-google-fonts/*` packages. The web inline runner finds them in node_modules. A Trigger.dev Cloud build must ship these packages too (keep them external, or add the TTF files to the build); a brand font that cannot be found falls back to Inter, and only a missing Inter sends text templates to needs review, as before.

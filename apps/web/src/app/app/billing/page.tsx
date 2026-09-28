@@ -11,6 +11,7 @@ import {
   RequestPlanButton,
   type PlanActionMode,
 } from "@/components/app/billing-actions";
+import { CancelFlow } from "@/components/app/cancel-flow";
 import { isStripeConfigured } from "@/lib/env";
 import { canManageBilling } from "@/lib/billing/access";
 import {
@@ -19,6 +20,8 @@ import {
   loadBillingAccount,
   type SubscriptionView,
 } from "@/lib/billing/account";
+import { cancelTier } from "@/lib/billing/cancel-service";
+import { loadCancelState } from "@/lib/billing/cancel-store";
 import { billingCheckoutHref, parseCheckoutIntent, parseCheckoutStatus, type CheckoutIntent } from "@/lib/billing/intent";
 import {
   annualSavingsUsd,
@@ -79,6 +82,8 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   const pastDue = needsCardUpdate(subscription?.status);
   const subscribedPlanName = subscription?.tier ? tierDisplayName(subscription.tier) : planName;
   const mode: PlanActionMode = !canBill ? "none" : stripeLive ? "checkout" : "request";
+  const cancelPlan = canBill ? cancelTier(workspace, account) : null;
+  const cancelState = cancelPlan ? await loadCancelState(workspace.id) : null;
   const status = parseCheckoutStatus(params.status);
   const intent = parseCheckoutIntent({ checkout: params.checkout, cadence: params.cadence });
   const returnKind = first(params.kind);
@@ -218,6 +223,28 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
           ))}
         </div>
       </section>
+
+      {cancelPlan ? (
+        <section id="cancel-plan" data-testid="cancel-section">
+          <h2 className="text-lg font-semibold text-ink-950">Cancel plan</h2>
+          {cancelState?.pending ? (
+            <p className="mt-1 text-sm text-ink-600" data-testid="cancel-pending">
+              {cancelState.pending.outcome === "canceled"
+                ? `Your ${tierDisplayName(cancelPlan)} plan is set to end on ${formatDate(cancelState.pending.effectiveAt)}. Open the customer portal to renew it.`
+                : `Billing is paused until ${formatDate(cancelState.pending.effectiveAt)}. Your plan and credits stay as they are.`}
+            </p>
+          ) : (
+            <>
+              <p className="mt-1 text-sm text-ink-500">
+                You can cancel any time. Your plan stays active until the end of the period you paid for.
+              </p>
+              <div className="mt-4">
+                <CancelFlow planName={tierDisplayName(cancelPlan)} />
+              </div>
+            </>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -266,7 +293,7 @@ function CurrentPlanCard({
         ) : null}
         {canManage ? (
           <div className="mt-4">
-            <p className="mb-2 text-sm text-ink-500">Update cards, download invoices or cancel in the customer portal.</p>
+            <p className="mb-2 text-sm text-ink-500">Update cards and download invoices in the customer portal.</p>
             <PortalButton />
           </div>
         ) : null}

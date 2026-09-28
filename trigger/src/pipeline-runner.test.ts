@@ -355,6 +355,42 @@ describe("LLM plan fallback", () => {
   });
 });
 
+describe("runGeneratePack brand kit style", () => {
+  class RecordingGenerator implements ShotGenerator {
+    private readonly demo = new DemoShotGenerator();
+    readonly calls: ShotGenerateArgs[] = [];
+    async generate(args: ShotGenerateArgs): Promise<ShotGeneration> {
+      this.calls.push(args);
+      return this.demo.generate(args);
+    }
+  }
+
+  it("applies the kit's style preset to planned shots and passes fonts and logo to every generation", async () => {
+    const generator = new RecordingGenerator();
+    const deps = makeDeps({ generator });
+    const brand = {
+      fonts: { heading: "playfair_display", body: "lora" },
+      logoKey: "ws/ws1/src/logo.png",
+      stylePreset: "luxury_marble",
+    };
+    const summary = await runGeneratePack({ ...baseInput, brand }, deps);
+    expect(summary.state).toBe("done");
+    expect(generator.calls.length).toBeGreaterThan(0);
+    for (const call of generator.calls) {
+      expect(call.brand).toEqual(brand);
+      expect(["none", "luxury_marble"]).toContain(call.shot.stylePreset);
+    }
+    expect(generator.calls.some((call) => call.shot.stylePreset === "luxury_marble")).toBe(true);
+  });
+
+  it("keeps the planner's presets without a kit preset", async () => {
+    const generator = new RecordingGenerator();
+    await runGeneratePack(baseInput, makeDeps({ generator }));
+    expect(generator.calls.every((call) => call.brand === undefined)).toBe(true);
+    expect(generator.calls.some((call) => call.shot.stylePreset === "luxury_marble")).toBe(false);
+  });
+});
+
 describe("runGeneratePack happy path", () => {
   it("charges exactly the credits of the passing assets and releases the rest", async () => {
     const deps = makeDeps();

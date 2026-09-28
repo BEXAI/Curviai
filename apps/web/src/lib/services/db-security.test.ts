@@ -181,15 +181,20 @@ describe("DbService.saveBrandKit (Update.md 4.2)", () => {
     expect(row.name).toBe("Old kit");
   });
 
-  it("returns an own workspace logo key and normalizes an unknown preset", async () => {
+  it("returns an own workspace logo key and normalizes an unknown preset and legacy fonts", async () => {
     await db
       .update(brandKits)
-      .set({ logoR2Key: `ws/${ws}/src/logo.png`, stylePreset: "retired_preset" })
+      .set({
+        logoR2Key: `ws/${ws}/src/logo.png`,
+        stylePreset: "retired_preset",
+        fonts: { heading: "Playfair Display", body: "Some Font We Do Not Ship" },
+      })
       .where(eq(brandKits.workspaceId, ws));
     const view = await service().getBrandKit(ws);
     expect(view.logoKey).toBe(`ws/${ws}/src/logo.png`);
     expect(view.hasLogo).toBe(true);
-    expect(view.stylePreset).toBe("minimal_studio");
+    expect(view.stylePreset).toBe("auto");
+    expect(view.fonts).toEqual({ heading: "playfair_display", body: "" });
   });
 });
 

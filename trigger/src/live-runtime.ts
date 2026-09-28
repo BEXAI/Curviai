@@ -639,6 +639,7 @@ type CapsHooks = CapsHook[] | undefined;
 export class LiveShotGenerator implements ShotGenerator {
   private readonly products = new Map<string, Promise<ProductLoad>>();
   private readonly productCostClaimed = new Set<string>();
+  private readonly logos = new Map<string, Promise<Buffer | null>>();
 
   constructor(private readonly opts: LiveShotGeneratorOptions) {}
 
@@ -866,6 +867,29 @@ export class LiveShotGenerator implements ShotGenerator {
     return loaded.product;
   }
 
+  /**
+   * The brand logo's bytes, loaded once per workspace and key, or null when
+   * the kit has none, the key sits outside the workspace, or it cannot be
+   * read. A logo is optional styling, so a failed read never fails a shot.
+   */
+  private logoFor(args: ShotGenerateArgs): Promise<Buffer | null> {
+    const key = args.brand?.logoKey;
+    const { loadMedia } = this.opts;
+    if (!key || !loadMedia || !isWorkspaceObjectKey(args.workspaceId, key)) {
+      return Promise.resolve(null);
+    }
+    const cacheKey = `${args.workspaceId}:${key}`;
+    let pending = this.logos.get(cacheKey);
+    if (!pending) {
+      pending = loadMedia(key).catch((err: unknown) => {
+        console.warn(`[live] job ${args.jobId} brand logo could not be loaded`, err);
+        return null;
+      });
+      this.logos.set(cacheKey, pending);
+    }
+    return pending;
+  }
+
   /** Scene prompt and product fill for a composite, all from seed data. */
   private compositeTemplate(
     shot: ShotGenerateArgs["shot"],
@@ -961,6 +985,8 @@ export class LiveShotGenerator implements ShotGenerator {
                   stillStyle.defaultBackgroundHex,
                 textHex: stillStyle.textHex,
                 accentHex: stillStyle.accentHex,
+                fonts: args.brand?.fonts,
+                logo: await this.logoFor(args),
               });
         const erosion = still.fidelityErosion ?? (await stillErosionFromMasks(product.mask, still.mask));
         return {

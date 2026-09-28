@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildGeneratePackInput, seoSlugFor } from "./payload";
+import { brandStyleFor, buildGeneratePackInput, seoSlugFor } from "./payload";
 
 describe("seoSlugFor", () => {
   it("slugifies titles into lowercase hyphenated names", () => {
@@ -112,6 +112,53 @@ describe("buildGeneratePackInput brand colors", () => {
 
   it("sends an empty list without a brand kit", () => {
     expect(buildGeneratePackInput({ ...base, brandColors: null }).brandColors).toEqual([]);
+  });
+});
+
+describe("buildGeneratePackInput brand style", () => {
+  const WS = "0b7a4d1e-5c3f-4a2b-9e8d-7c6b5a4f3e2d";
+  const base = {
+    jobId: "job1",
+    workspaceId: WS,
+    tier: "starter" as const,
+    channels: ["amazon.main"],
+    mode: "listing" as const,
+    creditBudget: 5,
+    product: { id: "p1", title: "Mug", mode: "listing" as const, amazonSku: null },
+    media: [{ r2Key: "m1", kind: "image" as const }],
+  };
+
+  it("passes catalog fonts, an own workspace logo key and a seeded preset", () => {
+    const input = buildGeneratePackInput({
+      ...base,
+      brandKit: {
+        fonts: { heading: "playfair_display", body: "lora" },
+        logoKey: `ws/${WS}/src/logo.png`,
+        stylePreset: "luxury_marble",
+      },
+    });
+    expect(input.brand).toEqual({
+      fonts: { heading: "playfair_display", body: "lora" },
+      logoKey: `ws/${WS}/src/logo.png`,
+      stylePreset: "luxury_marble",
+    });
+  });
+
+  it("drops unknown fonts, foreign logo keys and the automatic preset", () => {
+    const style = brandStyleFor(WS, {
+      fonts: { heading: "Comic Sans", body: "" },
+      logoKey: "ws/00000000-0000-4000-8000-000000000000/src/logo.png",
+      stylePreset: "auto",
+    });
+    expect(style).toBeNull();
+    expect(brandStyleFor(WS, { fonts: null, logoKey: `ws/${WS}/src/../x.png`, stylePreset: null })).toBeNull();
+    expect(buildGeneratePackInput({ ...base, brandKit: null }).brand).toBeUndefined();
+  });
+
+  it("keeps the parts that are valid", () => {
+    expect(brandStyleFor(WS, { fonts: { heading: "", body: "montserrat" }, logoKey: null, stylePreset: "auto" })).toEqual({
+      fonts: { heading: null, body: "montserrat" },
+    });
   });
 });
 

@@ -182,7 +182,7 @@ export const FEATURES = {
   },
   brandKitExtras: {
     label: "Brand kit fonts, logo and scene styles in packs",
-    status: "coming_soon",
+    status: "live",
     mentions: /\bfonts?\b|\blogo\b|scene styles?/i,
   },
   agencyWorkspaces: {

@@ -34,6 +34,7 @@ export function createFakeServices(role: WorkspaceRole | null = "owner"): Servic
     addShotPhoto: vi.fn(async () => ({ outcome: "rejected" as const, reason: "not_found" as const, message: "Not found." })),
     listJobFiles: vi.fn(async () => null),
     getJobFileDownload: vi.fn(async () => null),
+    getComplianceReport: vi.fn(async () => null),
     createProduct: vi.fn(async (_ws, input) => ({
       id: TEST_PRODUCT_ID,
       title: input.title,

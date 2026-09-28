@@ -25,20 +25,27 @@ import {
 } from "@curvi/db";
 import type { Shot } from "@curvi/pipeline/schemas";
 import type { PackFollowUpInput, PackFollowUpReason } from "@curvi/trigger/follow-up";
-import { presets, tierByKey } from "@curvi/pipeline/seed";
+import { AUTO_STYLE_PRESET, presets, tierByKey } from "@curvi/pipeline/seed";
 import { isAngleRole, printableSellerLines, type AngleRole } from "@curvi/pipeline/seller-inputs";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  buildComplianceReportView,
+  REPORT_NOT_READY,
+  REPORT_NOT_STORED,
+  unavailableComplianceReport,
+  type ComplianceReportView,
+} from "@/lib/compliance-report";
 import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { publicJobError } from "@/lib/job-copy";
 import { enqueueGeneratePack, enqueuePackFollowUp, settleJob } from "@/lib/jobs/enqueue";
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
-import { buildGeneratePackInput, seoSlugFor } from "@/lib/jobs/payload";
+import { buildGeneratePackInput, seoSlugFor, type PayloadBrandKit } from "@/lib/jobs/payload";
 import { pickSourcePhoto } from "@/lib/makeover";
 import { estimatePackCredits } from "@/lib/pack-estimate";
-import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
-import { brandKitInputSchema, brandKitIssueNotice } from "@/lib/validation/brand-kit";
+import { getObjectBytes, isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
+import { brandKitInputSchema, brandKitIssueNotice, normalizeFontChoice } from "@/lib/validation/brand-kit";
 import { isUuid } from "@/lib/validation/ids";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import { ingestUpload, type IngestOutcome } from "@/lib/trust/ingest";
@@ -1353,12 +1360,14 @@ export class DbService implements Services {
     }
     const { product, jobId, insertedMediaIds } = created;
 
-    // Brand colors are optional styling: a failed lookup must never fail a
+    // The brand kit is optional styling: a failed lookup must never fail a
     // job that already holds its credit reservation.
     let brandColors: string[] = [];
+    let brandKit: PayloadBrandKit | null = null;
     try {
       const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
       brandColors = Array.isArray(kit?.colors) ? kit.colors.filter((c): c is string => typeof c === "string") : [];
+      brandKit = kit ? { fonts: kit.fonts ?? null, logoKey: kit.logoR2Key, stylePreset: kit.stylePreset } : null;
     } catch (err) {
       console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
     }
@@ -1384,6 +1393,7 @@ export class DbService implements Services {
           media,
           userDescription: input.userDescription,
           brandColors,
+          brandKit,
         }),
       );
     } catch (err) {
@@ -1648,6 +1658,49 @@ export class DbService implements Services {
     return { url: await presignDownload(file.r2Key, file.filename), filename: file.filename };
   }
 
+  /** Reads the pack's stored compliance-report.json (the pack level report
+   * row, inside this workspace's prefix) and returns the readable view. */
+  async getComplianceReport(workspaceId: string, jobId: string): Promise<ComplianceReportView | null> {
+    if (!isUuid(jobId)) {
+      return null;
+    }
+    const job = await this.db.query.generationJobs.findFirst({
+      where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!job) {
+      return null;
+    }
+    const product = await this.db.query.products.findFirst({
+      where: (t, { and, eq }) => and(eq(t.id, job.productId), eq(t.workspaceId, workspaceId)),
+    });
+    const meta = { jobId: job.id, productTitle: product?.title ?? "Untitled product" };
+    if (!servesFiles(job)) {
+      return unavailableComplianceReport(meta, REPORT_NOT_READY);
+    }
+    const reports = await this.db.query.packFiles.findMany({
+      where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId), eq(t.kind, "report")),
+    });
+    const row =
+      reports.find((r) => r.channel === null && isWorkspaceKey(workspaceId, r.r2Key)) ??
+      reports.find((r) => isWorkspaceKey(workspaceId, r.r2Key));
+    if (!row || !isR2Configured()) {
+      return unavailableComplianceReport(meta, REPORT_NOT_STORED);
+    }
+    const bytes = await getObjectBytes(row.r2Key);
+    let raw: unknown = null;
+    try {
+      raw = bytes ? JSON.parse(bytes.toString("utf8")) : null;
+    } catch {
+      raw = null;
+    }
+    const view = raw === null ? null : buildComplianceReportView(raw, meta);
+    if (!view) {
+      console.error(`[jobs] compliance report for job ${job.id} is missing or unreadable at ${row.r2Key}`);
+      return unavailableComplianceReport(meta, REPORT_NOT_STORED);
+    }
+    return view;
+  }
+
   async getBrandKit(workspaceId: string): Promise<BrandKitView> {
     const row = await this.db.query.brandKits.findFirst({
       where: (t, { eq }) => eq(t.workspaceId, workspaceId),
@@ -1663,13 +1716,18 @@ export class DbService implements Services {
         logoUrl = null;
       }
     }
-    const stylePreset = row?.stylePreset && Object.hasOwn(presets, row.stylePreset) ? row.stylePreset : "minimal_studio";
+    // A kit saved before "auto" existed keeps its preset; anything unknown
+    // reads as auto, which lets the planner pick from the product.
+    const stylePreset =
+      row?.stylePreset && Object.hasOwn(presets, row.stylePreset) ? row.stylePreset : AUTO_STYLE_PRESET;
     return {
       name: row?.name ?? "Default",
       colors: row?.colors ?? [],
+      // Kits saved before the font list held free text; a name that matches
+      // a catalog font reads as that font, anything else as the default.
       fonts: {
-        heading: row?.fonts?.heading ?? "",
-        body: row?.fonts?.body ?? "",
+        heading: normalizeFontChoice(row?.fonts?.heading) ?? "",
+        body: normalizeFontChoice(row?.fonts?.body) ?? "",
       },
       stylePreset,
       hasLogo: Boolean(logoKey || row?.logoAssetId),

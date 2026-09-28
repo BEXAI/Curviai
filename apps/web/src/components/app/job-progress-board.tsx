@@ -9,6 +9,7 @@ import {
   RetryShotButton,
   type PackActionResult,
 } from "@/components/app/pack-actions";
+import { ComplianceReportPanel } from "@/components/app/compliance-report-panel";
 import { PackDownloads } from "@/components/app/pack-downloads";
 import { PackReveal } from "@/components/app/pack-reveal";
 import { StatusChip } from "@/components/app/status-chip";
@@ -491,6 +492,7 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
       ) : null}
 
       {job.status === "done" || job.followUpRunning ? <PackDownloads jobId={job.id} /> : null}
+      {job.status === "done" ? <ComplianceReportPanel jobId={job.id} /> : null}
     </div>
   );
 }

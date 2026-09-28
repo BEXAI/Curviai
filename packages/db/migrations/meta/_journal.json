@@ -127,6 +127,13 @@
       "when": 1790700700000,
       "tag": "0017_platform_runtime",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790700800000,
+      "tag": "0018_cancel_flows",
+      "breakpoints": true
     }
   ]
 }

@@ -149,6 +149,19 @@ describe("/app/billing", () => {
     expect(text).not.toContain("-350");
   });
 
+  it("offers Cancel plan on a paid plan to members who can bill, and never on Free or to client seats", async () => {
+    const saved = { ...page.workspace };
+    try {
+      expect(await renderBilling()).toContain("Cancel plan");
+      page.workspace = { ...saved, role: "client" };
+      expect(await renderBilling()).not.toContain("Cancel plan");
+      page.workspace = { ...saved, plan: "free" };
+      expect(await renderBilling()).not.toContain("Cancel plan");
+    } finally {
+      page.workspace = saved;
+    }
+  });
+
   it("shows the past due notice with the plan name", async () => {
     vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_render");
     page.account = {

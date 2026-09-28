@@ -5,15 +5,22 @@ import { Button, Card, CardContent, Input, Label, Select, cn } from "@curvi/ui";
 import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import type { BrandKitView, SaveResult } from "@/lib/services/types";
 
+interface SelectOption {
+  value: string;
+  label: string;
+}
+
 interface BrandKitFormProps {
   initial: BrandKitView;
-  presetKeys: string[];
+  presetOptions: SelectOption[];
+  /** Template fonts from the seed catalog; the empty value is the default. */
+  fontOptions: SelectOption[];
   save: (kit: BrandKitView) => Promise<SaveResult>;
 }
 
 const HEX_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 
-export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
+export function BrandKitForm({ initial, presetOptions, fontOptions, save }: BrandKitFormProps) {
   const [kit, setKit] = useState<BrandKitView>(initial);
   const [result, setResult] = useState<SaveResult | null>(null);
   const [pending, startTransition] = useTransition();
@@ -111,21 +118,33 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <Label htmlFor="font-heading">Heading font</Label>
-            <Input
+            <Select
               id="font-heading"
               value={kit.fonts.heading}
               onChange={(event) => setKit({ ...kit, fonts: { ...kit.fonts, heading: event.target.value } })}
               className="mt-1"
-            />
+            >
+              {fontOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
           </div>
           <div>
             <Label htmlFor="font-body">Body font</Label>
-            <Input
+            <Select
               id="font-body"
               value={kit.fonts.body}
               onChange={(event) => setKit({ ...kit, fonts: { ...kit.fonts, body: event.target.value } })}
               className="mt-1"
-            />
+            >
+              {fontOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
           </div>
           <p className="text-xs text-ink-400 sm:col-span-2">{brandKitCopy.fontsHint}</p>
         </div>
@@ -185,9 +204,9 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
             onChange={(event) => setKit({ ...kit, stylePreset: event.target.value })}
             className="mt-1 max-w-sm"
           >
-            {presetKeys.map((key) => (
-              <option key={key} value={key}>
-                {key.replaceAll("_", " ")}
+            {presetOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
               </option>
             ))}
           </Select>
