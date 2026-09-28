@@ -102,7 +102,7 @@ test("a retry after a lost response reuses the Idempotency-Key and opens the sam
   await page.goto("/app/new");
   const create = page.getByTestId("create-pack");
   await create.click();
-  await expect(page.getByRole("alert")).toContainText("could not be started");
+  await expect(page.getByRole("alert").filter({ hasText: "could not be started" })).toBeVisible();
   await create.click();
   await page.waitForURL(/\/app\/jobs\//, { timeout: 15000 });
 
