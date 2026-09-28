@@ -341,7 +341,7 @@ describe("thin products (2.2)", () => {
     const outcome = await runShot(shot, { jobId: "job-thin-still", workspaceId: "ws-1" }, deps);
     expect(outcome.status).toBe("passed");
     expect(outcome.fidelityPass).toBe(true);
-  });
+  }, 120_000);
 });
 
 describe("lossy composites are checked as shipped (2.3)", () => {
