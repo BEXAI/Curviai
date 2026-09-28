@@ -37,4 +37,36 @@ Migration numbers are pre-assigned so parallel packages cannot collide: 0011 (P3
 
 - Each package: its own tests, `pnpm typecheck` and `pnpm lint` pass in its worktree; rule 3 tests stay green; every new table or policy has an RLS test.
 - After merge: `pnpm lint && pnpm typecheck && pnpm test && pnpm e2e`, then the reviewer agent on RLS, cost caps and billing.
-- Before deploy (founder): apply 0011 to 0013 to production, then push.
+- Before deploy (founder): the ordered steps in "Before deploy" below.
+
+## Before deploy
+
+Order for the founder, after the batch 1 fix pass is merged into `full-stack-update` and passes `pnpm lint && pnpm typecheck && pnpm test && pnpm e2e`. docs/LAUNCH_CHECKLIST.md steps 5 to 8 give the details and how to verify each step; where the two differ, this order wins (the checklist does not yet list `pnpm db:seed`). Main auto deploys, so nothing below may run out of order. External facts behind these steps are recorded in docs/verification.md, "Phase 10 batch 1".
+
+1. **Render deploys only after CI passes.** Render dashboard, the Curviai service, Settings, Auto-Deploy: After CI Checks Pass (checklist step 5).
+2. **Set environment variables in Render** (Environment tab) before touching the database, so the first batch 1 build starts with them and the gap between the migrations and the push stays short. Saving may redeploy the version live today; that is harmless, since it does not read these variables. The service was created in the dashboard, so render.yaml values are not applied by themselves.
+   - Add `CURVI_INLINE_PACK_CONCURRENCY` = `1` (new). Raise it only with a larger plan (checklist step 9).
+   - Add `FOUNDER_ALERT_EMAIL` = the founder's inbox (new). With `RESEND_API_KEY` set, the $50 provider spend alert and the daily hard stop notice are emailed there; without both they only reach the logs.
+   - Add `FOUNDER_ALERT_FROM` (new, optional) = a sender on a domain verified in Resend. The default, `Curvi Alerts <alerts@curvi.ai>`, works only once curvi.ai is verified in Resend (checklist step 2).
+   - Keep `TRIGGER_SECRET_KEY` unset. Trigger.dev Cloud no longer runs v3, which the code still uses, so with the key set every pack fails to queue.
+   - Keep `CURVI_SHUTDOWN_GRACE_MS` unset until step 8 shows `maxShutdownDelaySeconds` at 300; then `240000` is optional.
+   - Keep `STRIPE_TAX_ENABLED` unset (new, optional) until Stripe Tax registrations exist (docs/STRIPE_SETUP.md section 7).
+   - Keep `CURVI_ALLOW_DEMO_GENERATION` unset in production.
+   - Optional: `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` for rate limits shared across instances (checklist step 11); without them each instance counts on its own.
+   - Also set any variable the fix pass added to `.env.example`. `RENDER_GIT_COMMIT` is set by Render, not by hand.
+3. **Check production and take a backup.** Production must be at 0010: `select id, created_at from drizzle.__drizzle_migrations order by created_at desc limit 1;` returns the `when` of `0010_spend_cap_counters` in `packages/db/migrations/meta/_journal.json`. Make sure a restorable backup from today exists in Supabase, because 0013 deletes duplicate `source_media` rows. See how many duplicate groups 0013 will collapse: `select workspace_id, r2_key, count(*) from source_media group by 1, 2 having count(*) > 1;`
+4. **Audit object keys for 0011.** 0011 adds workspace prefix checks as NOT VALID, so old rows never fail the migration, but any later update of a row that breaks the rule is refused. List those rows first and fix or remove them:
+
+   ```sql
+   select 'source_media' as t, id, workspace_id, r2_key from source_media where not starts_with(r2_key, 'ws/' || workspace_id::text || '/')
+   union all select 'asset_variants', id, workspace_id, r2_key from asset_variants where not starts_with(r2_key, 'ws/' || workspace_id::text || '/')
+   union all select 'pack_files', id, workspace_id, r2_key from pack_files where not starts_with(r2_key, 'ws/' || workspace_id::text || '/')
+   union all select 'brand_kits', id, workspace_id, logo_r2_key from brand_kits where logo_r2_key is not null and not starts_with(logo_r2_key, 'ws/' || workspace_id::text || '/');
+   ```
+
+   Validating the four `*_r2_key_workspace_prefix` constraints (`ALTER TABLE ... VALIDATE CONSTRAINT`) is optional and waits until this query returns no rows.
+5. **Apply 0011, 0012 and 0013.** From a checkout of the merged `full-stack-update` (the migration files as they stand after the fix pass), over the direct connection, run `pnpm db:migrate` (checklist step 6). It applies exactly 0011, 0012 and 0013, in order.
+6. **Run `pnpm db:seed` right away,** with the same `DATABASE_URL` and the same checkout. It writes `free_signup_credits` into `platform_settings` from the seed, upserts channel specs and recipes, and pays any confirmed signup still waiting for its grant. Until it runs, 0012 has no amount to grant, so newly confirmed signups get no free credits; the seed run pays them when it settles pending grants. The output ends with "Settled N pending signup grants."
+7. **Push main.** Merge `full-stack-update` into main right after steps 5 and 6; keep that gap short. The code live today inserts `source_media` without the conflict clause, so once 0013 is applied, resubmitting an already registered upload fails until batch 1 is live. Then watch CI and the Render deploy (checklist step 7). `curl -s https://curvi.ai/api/health` must return 200 with `"schema":"current"`.
+8. **Only then set the health check path.** Render, Settings, Health Checks: `/api/health`, then `maxShutdownDelaySeconds` 300 through the Render API (checklist step 8). Only the batch 1 code has `/api/health`; set against the code live today, the path returns 404 and Render restarts the instance every minute. For the same reason, do not create or sync a Render Blueprint from render.yaml before this step, since render.yaml already carries `healthCheckPath: /api/health`.
+9. **Record the spot checks** listed in docs/verification.md, "Production spot checks to record after the batch 1 deploy", with the date.
