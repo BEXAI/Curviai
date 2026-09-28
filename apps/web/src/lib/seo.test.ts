@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { tiers } from "@curvi/pipeline/seed";
 import robots from "@/app/robots";
 import { categories } from "@/components/marketing/categories";
-import { imageSpecs, specDisplayName } from "@/components/marketing/spec-slug";
+import { imageSpecs, specDisplayName, specSlug } from "@/components/marketing/spec-slug";
 import { buildLlmsTxt } from "./llms";
+import { comingSoonFileNames, joinList, specAvailability, unqualifiedClaims } from "./marketing-facts";
 import {
   DESCRIPTION_MAX,
   OG_IMAGE,
@@ -70,11 +71,30 @@ describe("pageMetadata", () => {
 describe("programmatic SEO pages", () => {
   it("fits every channel page title and description", () => {
     for (const spec of imageSpecs()) {
-      const seo = channelPageSeo(specDisplayName(spec.id));
-      expect(renderedTitle(seo.title).length, seo.title).toBeLessThanOrEqual(TITLE_MAX);
-      expect(seo.description.length, seo.description).toBeLessThanOrEqual(DESCRIPTION_MAX);
-      expect(seo.description).not.toMatch(FORBIDDEN_COPY);
+      for (const status of ["live", "coming_soon"] as const) {
+        const seo = channelPageSeo(specDisplayName(spec.id), status);
+        expect(renderedTitle(seo.title).length, seo.title).toBeLessThanOrEqual(TITLE_MAX);
+        expect(seo.description.length, seo.description).toBeLessThanOrEqual(DESCRIPTION_MAX);
+        expect(seo.description).toMatch(/[.!?]$/);
+        expect(seo.description).not.toMatch(FORBIDDEN_COPY);
+      }
     }
+  });
+
+  it("promises channel files in snippets only for specs a pack makes", () => {
+    for (const spec of imageSpecs()) {
+      const status = specAvailability(spec.id);
+      const seo = channelPageSeo(specDisplayName(spec.id), status);
+      expect(seo.description).not.toMatch(/passes them the first time/);
+      expect(unqualifiedClaims(seo.description), spec.id).toEqual([]);
+      if (status === "live") {
+        expect(seo.description, spec.id).toContain("how Curvi builds and measures files");
+      } else {
+        expect(seo.description, spec.id).toMatch(/coming soon/);
+      }
+    }
+    expect(channelPageSeo("Walmart main image", "coming_soon").description).toContain("coming soon");
+    expect(channelPageSeo("Walmart main image", "live").description).not.toContain("coming soon");
   });
 
   it("fits every category page title and description", () => {
@@ -163,6 +183,26 @@ describe("llms.txt", () => {
     for (const spec of imageSpecs()) {
       expect(text).toContain(`${specDisplayName(spec.id)} requirements`);
     }
+  });
+
+  it("marks requirement pages for files Curvi does not make yet", () => {
+    for (const spec of imageSpecs()) {
+      const line = text.split("\n").find((entry) => entry.includes(`/channels/${specSlug(spec.id)}/image-requirements`));
+      expect(line, spec.id).toBeDefined();
+      if (specAvailability(spec.id) === "live") {
+        expect(line, spec.id).not.toContain("coming soon");
+      } else {
+        expect(line, spec.id).toContain("Curvi files for it are coming soon");
+      }
+    }
+  });
+
+  it("lists coming soon files only when some are on the way", () => {
+    const soon = comingSoonFileNames();
+    if (soon.length > 0) {
+      expect(text).toContain(`- ${joinList(soon)}`);
+    }
+    expect(text).not.toMatch(/^- Files for\s*$/m);
   });
 
   it("follows the copy rules outside markdown list markers", () => {

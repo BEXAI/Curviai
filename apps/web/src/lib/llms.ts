@@ -3,10 +3,11 @@ import { categories } from "@/components/marketing/categories";
 import { imageSpecs, specDisplayName, specSlug } from "@/components/marketing/spec-slug";
 import { isStripeConfigured, siteUrl } from "@/lib/env";
 import {
-  comingSoonChannelNames,
   comingSoonFeatures,
+  comingSoonFileNames,
   joinList,
   packsForCredits,
+  specAvailability,
   tierDisplayName,
   typicalPackCredits,
 } from "@/lib/marketing-facts";
@@ -40,7 +41,7 @@ export function buildLlmsTxt(): string {
     "Coming soon, not available on any plan yet:",
     "",
     ...comingSoonFeatures().map((feature) => `- ${feature.label}`),
-    `- Files for ${joinList(comingSoonChannelNames())}`,
+    ...(comingSoonFileNames().length > 0 ? [`- ${joinList(comingSoonFileNames())}`] : []),
     "",
     "Pricing:",
     "",
@@ -70,7 +71,9 @@ export function buildLlmsTxt(): string {
     "",
     ...imageSpecs().map(
       (spec) =>
-        `- [${specDisplayName(spec.id)} requirements](${url(`/channels/${specSlug(spec.id)}/image-requirements`)})`,
+        `- [${specDisplayName(spec.id)} requirements](${url(`/channels/${specSlug(spec.id)}/image-requirements`)})${
+          specAvailability(spec.id) === "live" ? "" : ": the rules only, Curvi files for it are coming soon"
+        }`,
     ),
     "",
     "## AI product photos by category",

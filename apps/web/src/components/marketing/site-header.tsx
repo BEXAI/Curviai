@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { buttonVariants, cn } from "@curvi/ui";
-import { MobileMenu } from "./mobile-menu";
+import { cn } from "@curvi/ui";
+import { HeaderActions } from "./header-actions";
 
 const navLinks = [
   { href: "/pricing", label: "Pricing" },
@@ -41,15 +41,7 @@ export function SiteHeader() {
             </Link>
           ))}
         </nav>
-        <div className="flex items-center gap-3">
-          <Link href="/login" className="hidden text-sm font-medium text-ink-300 transition-colors hover:text-white sm:block">
-            Log in
-          </Link>
-          <Link href="/signup" className={buttonVariants({ variant: "secondary" })}>
-            Get started
-          </Link>
-          <MobileMenu links={[...navLinks, { href: "/login", label: "Log in" }]} />
-        </div>
+        <HeaderActions links={navLinks} />
       </div>
     </header>
   );

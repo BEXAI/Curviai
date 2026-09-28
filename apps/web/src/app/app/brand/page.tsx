@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { presets } from "@curvi/pipeline/seed";
 import { BrandKitForm } from "@/components/app/brand-kit-form";
+import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import { getServices } from "@/lib/services";
 import { saveBrandKitAction } from "./actions";
 
@@ -22,8 +23,8 @@ export default async function BrandPage() {
   return (
     <div className="max-w-3xl">
       <h1 className="text-2xl font-bold tracking-tight text-ink-950">Brand kit</h1>
-      <p className="mt-1 text-sm text-ink-500">
-        Colors, fonts and a style preset keep every pack consistent. Sweeps use your first brand color.
+      <p data-testid="brand-kit-intro" className="mt-1 text-sm text-ink-500">
+        {brandKitCopy.intro}
       </p>
       <div className="mt-8">
         <BrandKitForm initial={kit} presetKeys={Object.keys(presets)} save={saveBrandKitAction} />

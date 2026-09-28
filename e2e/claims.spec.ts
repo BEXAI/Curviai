@@ -50,3 +50,42 @@ test("dashboard never promises a product URL import", async ({ page }) => {
   await expect(page.locator("body")).not.toContainText("product URL");
   await expect(page.getByTestId("credit-balance")).not.toContainText("40 to 60");
 });
+
+test("channel pages label files Curvi does not make yet", async ({ page }) => {
+  // amazon.aplus.premium_full has no planner support, so its page keeps the
+  // rules but says the files are coming soon.
+  await page.goto("/channels/amazon-aplus-premium-full/image-requirements");
+  await expect(page.getByTestId("coming-soon").first()).toBeVisible();
+  await expect(page.getByTestId("channel-intro")).toContainText("coming soon");
+  await expect(page.getByTestId("channel-cta")).toContainText("coming soon");
+  await expect(page.locator("body")).not.toContainText("Curvi builds");
+  await expect(page.locator("body")).not.toContainText("passes them the first time");
+});
+
+test("channel pages for files a pack makes carry no coming soon label", async ({ page }) => {
+  await page.goto("/channels/amazon-main/image-requirements");
+  await expect(page.getByTestId("coming-soon")).toHaveCount(0);
+  await expect(page.getByTestId("channel-intro")).toContainText("Curvi builds");
+  await expect(page.getByTestId("channel-cta")).toContainText("Built to this spec");
+});
+
+test("free tool pages never sell video", async ({ page }) => {
+  for (const path of ["/tools/main-image-checker", "/tools/white-background-fixer", "/tools/marketplace-resizer"]) {
+    await page.goto(path);
+    await expect(page.getByTestId("tool-pack-cta")).toBeVisible();
+    await expect(page.getByTestId("tool-pack-cta")).not.toContainText(/video/i);
+  }
+});
+
+test("signup states the free grant and promises no share page", async ({ page }) => {
+  await page.goto("/signup");
+  await expect(page.getByTestId("signup-lead")).toContainText(/Start free with \d+ credits/);
+  await expect(page.locator("body")).not.toContainText("share page");
+});
+
+test("brand kit page says only brand colors reach packs today", async ({ page }) => {
+  await page.goto("/app/brand");
+  await expect(page.getByTestId("brand-kit-intro")).toContainText("brand color");
+  await expect(page.getByTestId("brand-kit-intro")).toContainText("coming soon");
+  await expect(page.locator("body")).not.toContainText("Sets the default look");
+});

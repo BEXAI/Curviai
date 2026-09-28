@@ -1,11 +1,13 @@
 import { creditCosts } from "@curvi/pipeline/seed";
 import {
-  comingSoonChannelNames,
+  comingSoonFilesSentence,
   formatCredits,
   freeCredits,
   freeCreditsReach,
   joinList,
   liveChannelNames,
+  liveChannelShortList,
+  liveFilesPhrase,
   typicalPackCredits,
   type Availability,
 } from "@/lib/marketing-facts";
@@ -19,7 +21,7 @@ import {
 
 export const homeHero = {
   eyebrow: "Built for marketplace sellers",
-  lead: `Studio product photos for ${joinList(liveChannelNames())}, from one photo, without changing your product.`,
+  lead: `Studio product photos for ${liveChannelShortList()}, from one photo, without changing your product.`,
   proof:
     "Every file is measured against the channel rules before you download it. We keep your real product pixels, so labels never warp.",
   sliderCaption: "Illustration, not a customer photo. Drag the divider: the product stays, the background changes.",
@@ -72,13 +74,13 @@ export const homeFeatures: HomeFeature[] = [
   {
     key: "channels",
     title: "Channel ready files",
-    body: `Files for ${joinList(liveChannelNames())}, each at the right size for its channel. ${joinList(comingSoonChannelNames())} are coming soon.`,
+    body: `Files for ${joinList(liveChannelNames())}, each at the right size for its channel. ${comingSoonFilesSentence()}`.trim(),
     status: "live",
   },
   {
     key: "brandKit",
     title: "Brand kit",
-    body: "Save your brand colors once and packs use them for brand color backgrounds. Your fonts, logo and scene styles in packs are coming soon.",
+    body: "Save your brand colors once and packs use your first one for the brand color background. Your fonts, logo and scene styles in packs are coming soon.",
     status: "live",
   },
   {
@@ -118,7 +120,7 @@ export const homeFaqs: HomeFaq[] = [
   },
   {
     q: "Which channels are covered?",
-    a: `Amazon main and secondary images plus A plus banners, Shopify product images and hero banners, Google Merchant lifestyle images, and Meta feed and story crops. ${joinList([...comingSoonChannelNames(), "video formats"])} are coming soon.`,
+    a: `You pick the channels for each pack. Curvi makes ${liveFilesPhrase()}. ${comingSoonFilesSentence(["video formats"])}`,
   },
   {
     q: "How do credits work?",

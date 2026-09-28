@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { cn } from "@curvi/ui";
 import { EmailCapture } from "./email-capture";
+import { toolPackCta } from "./tool-copy";
 
 const tools = [
   { href: "/tools/main-image-checker", label: "Main Image Checker" },
@@ -40,12 +41,9 @@ export function ToolPageShell({
       <h1 className="mt-8 text-4xl font-bold tracking-tight text-ink-950">{title}</h1>
       <p className="mt-4 max-w-2xl text-lg text-ink-600">{description}</p>
       <div className="mt-10">{children}</div>
-      <div className="mt-16 rounded-xl border border-ink-100 bg-ink-50 p-8 text-center">
-        <h2 className="text-xl font-semibold text-ink-950">Want the whole pack, not just one fix?</h2>
-        <p className="mx-auto mt-2 max-w-lg text-sm text-ink-600">
-          Curvi turns one photo into a compliant main image, lifestyle scenes, channel crops and video,
-          with your product pixels untouched. Leave your email to start free.
-        </p>
+      <div data-testid="tool-pack-cta" className="mt-16 rounded-xl border border-ink-100 bg-ink-50 p-8 text-center">
+        <h2 className="text-xl font-semibold text-ink-950">{toolPackCta.title}</h2>
+        <p className="mx-auto mt-2 max-w-lg text-sm text-ink-600">{toolPackCta.body}</p>
         <div className="mt-6">
           <EmailCapture />
         </div>

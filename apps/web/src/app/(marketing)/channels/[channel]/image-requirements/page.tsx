@@ -4,7 +4,10 @@ import { notFound } from "next/navigation";
 import type { ChannelSpec } from "@curvi/specs";
 import { buttonVariants } from "@curvi/ui";
 import { JsonLd } from "@/components/json-ld";
+import { channelPageCopy } from "@/components/marketing/channel-copy";
+import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { imageSpecs, specDisplayName, specForSlug, specSlug } from "@/components/marketing/spec-slug";
+import { specAvailability } from "@/lib/marketing-facts";
 import { breadcrumbJsonLd, channelPageSeo, jsonLdGraph, pageMetadata } from "@/lib/seo";
 
 export const dynamicParams = false;
@@ -24,7 +27,7 @@ export async function generateMetadata({
     return { title: "Image requirements" };
   }
   return pageMetadata({
-    ...channelPageSeo(specDisplayName(spec.id)),
+    ...channelPageSeo(specDisplayName(spec.id), specAvailability(spec.id)),
     path: `/channels/${specSlug(spec.id)}/image-requirements`,
   });
 }
@@ -59,7 +62,11 @@ function backgroundText(spec: ChannelSpec): string {
 function ruleRows(spec: ChannelSpec): { rule: string; value: string }[] {
   const rows: { rule: string; value: string }[] = [];
   if (spec.width && spec.height) {
-    rows.push({ rule: "Recommended size", value: `${spec.width} by ${spec.height} px` });
+    // An exactSize spec accepts only this size (see dimensionBounds in @curvi/specs).
+    rows.push({
+      rule: spec.exactSize ? "Exact size" : "Recommended size",
+      value: `${spec.width} by ${spec.height} px`,
+    });
   }
   if (spec.minWidth || spec.minHeight) {
     rows.push({
@@ -161,7 +168,7 @@ function plainExplanation(spec: ChannelSpec): string[] {
   }
   if (spec.textAllowed === false) {
     paragraphs.push(
-      `No text, watermarks or badges on this image. Promotional text belongs in secondary images or ad creative, never on the ${name.toLowerCase()}.`,
+      `No text, watermarks or badges on this image. Promotional text belongs in secondary images or ad creative, never on the ${name}.`,
     );
   }
   if (paragraphs.length === 0) {
@@ -184,6 +191,8 @@ export default async function ChannelRequirementsPage({
   }
   const name = specDisplayName(spec.id);
   const rows = ruleRows(spec);
+  const copy = channelPageCopy(spec);
+  const comingSoon = copy.status === "coming_soon";
   const others = imageSpecs().filter((s) => s.id !== spec.id).slice(0, 6);
 
   return (
@@ -196,14 +205,13 @@ export default async function ChannelRequirementsPage({
           ]),
         ])}
       />
-      <p className="text-sm font-medium text-accent-600">Channel requirements</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-sm font-medium text-accent-600">Channel requirements</p>
+        {comingSoon ? <ComingSoonBadge /> : null}
+      </div>
       <h1 className="mt-2 text-4xl font-bold tracking-tight text-ink-950">{name} requirements</h1>
-      <p className="mt-4 max-w-2xl text-lg text-ink-600">
-        The rules below are what Curvi measures every {name.toLowerCase()} against before it leaves the
-        pipeline.{" "}
-        {spec.verified
-          ? "This spec is tracked against official documentation."
-          : "This spec is compiled from public guidance and is pending verification against official documentation."}
+      <p data-testid="channel-intro" className="mt-4 max-w-2xl text-lg text-ink-600">
+        {copy.intro}
       </p>
 
       <div className="mt-8 overflow-x-auto rounded-xl border border-ink-100">
@@ -232,25 +240,35 @@ export default async function ChannelRequirementsPage({
         ))}
       </div>
 
-      <div className="mt-10 rounded-xl border border-ink-100 bg-ink-50 p-8 text-center">
-        <h2 className="text-xl font-semibold text-ink-950">Pass this spec the first time</h2>
-        <p className="mx-auto mt-2 max-w-lg text-sm text-ink-600">
-          Curvi builds a {name.toLowerCase()} that meets every rule above, measures the output pixels
-          and attaches the report, all from one photo of your product.
-        </p>
+      <div data-testid="channel-cta" className="mt-10 rounded-xl border border-ink-100 bg-ink-50 p-8 text-center">
+        <h2 className="text-xl font-semibold text-ink-950">{copy.ctaTitle}</h2>
+        <p className="mx-auto mt-2 max-w-lg text-sm text-ink-600">{copy.ctaBody}</p>
         <div className="mt-5 flex flex-wrap justify-center gap-3">
-          <Link
-            href="/signup"
-            className={buttonVariants({ variant: "secondary", size: "lg" })}
-          >
-            Start free
-          </Link>
-          <Link
-            href="/tools/main-image-checker"
-            className={buttonVariants({ variant: "outline", size: "lg" })}
-          >
-            Check your current image free
-          </Link>
+          {comingSoon ? (
+            <>
+              <Link
+                href="/tools/main-image-checker"
+                className={buttonVariants({ variant: "secondary", size: "lg" })}
+              >
+                Check your current image free
+              </Link>
+              <Link href="/signup" className={buttonVariants({ variant: "outline", size: "lg" })}>
+                Start free
+              </Link>
+            </>
+          ) : (
+            <>
+              <Link href="/signup" className={buttonVariants({ variant: "secondary", size: "lg" })}>
+                Start free
+              </Link>
+              <Link
+                href="/tools/main-image-checker"
+                className={buttonVariants({ variant: "outline", size: "lg" })}
+              >
+                Check your current image free
+              </Link>
+            </>
+          )}
         </div>
       </div>
 
@@ -263,6 +281,12 @@ export default async function ChannelRequirementsPage({
               className="inline-block rounded-full border border-ink-200 px-3 py-1 text-sm text-ink-600 hover:bg-ink-50"
             >
               {specDisplayName(other.id)}
+              {specAvailability(other.id) === "coming_soon" ? (
+                <>
+                  {" "}
+                  <span className="text-xs text-amber-700">coming soon</span>
+                </>
+              ) : null}
             </Link>
           </li>
         ))}

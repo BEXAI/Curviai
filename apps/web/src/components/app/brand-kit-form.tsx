@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { Button, Card, CardContent, Input, Label, Select, cn } from "@curvi/ui";
+import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import type { BrandKitView, SaveResult } from "@/lib/services/types";
 
 interface BrandKitFormProps {
@@ -102,7 +103,9 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
           </div>
           {invalidColors.length > 0 ? (
             <p className="mt-2 text-xs text-amber-700">Colors must look like #1D2433. Others are skipped on save.</p>
-          ) : null}
+          ) : (
+            <p className="mt-2 text-xs text-ink-400">{brandKitCopy.colorsHint}</p>
+          )}
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -124,6 +127,7 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
               className="mt-1"
             />
           </div>
+          <p className="text-xs text-ink-400 sm:col-span-2">{brandKitCopy.fontsHint}</p>
         </div>
 
         <div>
@@ -167,7 +171,7 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
               {logoState.phase === "error" ? (
                 <p className="mt-2 text-xs text-red-600">{logoState.message}</p>
               ) : (
-                <p className="mt-2 text-xs text-ink-400">PNG, JPG or WebP. Save the kit to apply.</p>
+                <p className="mt-2 text-xs text-ink-400">{brandKitCopy.logoHint}</p>
               )}
             </div>
           </div>
@@ -187,7 +191,7 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
               </option>
             ))}
           </Select>
-          <p className="mt-1 text-xs text-ink-400">Sets the default look for lifestyle scenes.</p>
+          <p className="mt-1 text-xs text-ink-400">{brandKitCopy.presetHint}</p>
         </div>
 
         <div>

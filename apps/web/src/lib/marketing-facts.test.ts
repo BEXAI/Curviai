@@ -1,28 +1,50 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { planShots, type ProductProfile } from "@curvi/pipeline";
-import { creditCosts, rolloverPolicy, tierByKey, tiers, topUps } from "@curvi/pipeline/seed";
-import { getSpec, listSpecs } from "@curvi/specs";
+import { planShots, TEMPLATE_STILL_TYPES, type ProductProfile, type Shot } from "@curvi/pipeline";
+import {
+  creditCosts,
+  isShotMethodDeliverable,
+  rolloverPolicy,
+  tierByKey,
+  tiers,
+  topUps,
+  type TierKey,
+} from "@curvi/pipeline/seed";
+import { getSpec } from "@curvi/specs";
+import { fitShotsToChannels, shotTargetSpecs } from "@curvi/trigger/runner";
+// The worker's live shot types are not a package export; the generator
+// rejects any other deterministic type, so the drift test reads the same set.
+import { DETERMINISTIC_LIVE_TYPES } from "../../../../trigger/src/live-deterministic";
 import { estimatePackCredits } from "./pack-estimate";
 import {
   CHANNEL_FAMILIES,
+  CHANNEL_SPECS,
   FEATURES,
   TYPICAL_PACK_CHANNELS,
   amazonMainRules,
   annualSavingsPercentRange,
   annualSavingsPhrase,
+  channelName,
   comingSoonChannelNames,
+  comingSoonFileNames,
+  comingSoonFilesSentence,
   familyOf,
   formatCredits,
   freeCredits,
   freeCreditsReach,
+  isSpecLive,
   joinList,
   liveChannelNames,
+  liveChannelShortList,
+  liveFilesPhrase,
   packsForCredits,
   paidTiers,
-  registryImageFamilies,
+  registryImageSpecIds,
   rolloverSentence,
+  specAvailability,
+  specFilesName,
+  specFilesNameFor,
   tierDisplayName,
   topUpMonths,
   typicalPackCredits,
@@ -133,6 +155,10 @@ describe("amazon main rules", () => {
   });
 });
 
+/**
+ * A product photographed from three angles with no confirmed measurements,
+ * the product the pack estimate is built around (see lib/pack-estimate.ts).
+ */
 function profile(): ProductProfile {
   return {
     productCount: 1,
@@ -143,7 +169,7 @@ function profile(): ProductProfile {
     formFactor: "mug",
     materials: ["ceramic"],
     dominantColors: [{ name: "cream", hex: "#F2E8D8", coveragePct: 70 }],
-    dimensions: { value: "10 x 10 x 12 cm", source: "user" },
+    dimensions: { value: "10 x 10 x 12 cm", source: "unknown" },
     preserveText: [],
     preserveLogos: [],
     surface: { reflective: false, transparent: false, textured: false },
@@ -151,36 +177,117 @@ function profile(): ProductProfile {
     benefits: ["keeps coffee hot", "easy grip handle"],
     targetBuyer: "home coffee drinkers",
     useContexts: ["morning kitchen counter", "office desk"],
-    photographedAngles: ["front", "45", "back", "top"],
+    photographedAngles: ["front", "45", "back"],
     missingAnglesNeeded: [],
     complianceFlags: ["none"],
     imageQuality: { usableForMain: true, issues: [] },
   };
 }
 
+const COMPOSITE_METHODS = new Set<Shot["method"]>(["composite_generate", "edit_generate"]);
+
+/** True when the live generator renders this shot (live-runtime generateLive). */
+function liveGeneratorMakes(shot: Shot): boolean {
+  switch (shot.method) {
+    case "deterministic":
+      return DETERMINISTIC_LIVE_TYPES.has(shot.type);
+    case "template":
+      return TEMPLATE_STILL_TYPES.has(shot.type);
+    default:
+      return COMPOSITE_METHODS.has(shot.method);
+  }
+}
+
+/**
+ * The channel specs a Listing Mode pack ships files for, the way the worker
+ * builds it: the deterministic planner (the fallback every LLM plan must
+ * beat), the runner's channel fitting, the production exclusion of methods
+ * that are not live, and one file per spec a surviving shot targets.
+ * The budget defaults to the credits the server reserves for the selection.
+ */
+function deliveredSpecs(channels: string[], tier: TierKey, budget?: number): Set<string> {
+  const creditBudget = budget ?? estimatePackCredits(channels, "listing", tier).total;
+  const primaryMediaId = "media_front";
+  const plan = planShots(profile(), { channels, tier, creditBudget, primaryMediaId });
+  const fitted = fitShotsToChannels(plan, {
+    channels,
+    mode: "listing",
+    budget: creditBudget,
+    profile: profile(),
+    primaryMediaId,
+  });
+  const made = fitted.shots.filter((shot) => isShotMethodDeliverable(shot.method) && liveGeneratorMakes(shot));
+  return new Set(made.flatMap((shot) => shotTargetSpecs(shot)));
+}
+
 describe("channel availability", () => {
-  it("covers every image channel family in the spec registry", () => {
-    expect([...registryImageFamilies()].sort()).toEqual(CHANNEL_FAMILIES.map((channel) => channel.family).sort());
+  const imageSpecIds = registryImageSpecIds();
+
+  it("lists every image spec in the registry once", () => {
+    const listed = CHANNEL_SPECS.map((spec) => spec.specId);
+    expect(new Set(listed).size).toBe(listed.length);
+    expect([...listed].sort()).toEqual([...imageSpecIds].sort());
   });
 
-  it("matches what the pack planner delivers", () => {
-    // Select every channel in the registry on the richest tier; a channel
-    // family is live only if the deterministic planner makes files for it.
-    const list = planShots(profile(), {
-      channels: listSpecs().map((spec) => spec.id),
-      tier: "agency",
-      creditBudget: 10_000,
+  it("names every channel family in the registry", () => {
+    const families = new Set(imageSpecIds.map(familyOf));
+    expect([...families].sort()).toEqual(CHANNEL_FAMILIES.map((channel) => channel.family).sort());
+    for (const family of families) {
+      expect(channelName(family), family).not.toBe(family);
+    }
+  });
+
+  it("treats a spec it does not list as coming soon", () => {
+    expect(specAvailability("newmarket.main")).toBe("coming_soon");
+    expect(isSpecLive("amazon.main")).toBe(true);
+  });
+
+  const liveSpecIds = CHANNEL_SPECS.filter((entry) => entry.status === "live").map((entry) => entry.specId);
+
+  for (const tier of tiers.map((t) => t.key)) {
+    it(`marks a spec live only when a pack on the ${tier} plan that picks just that spec gets its file`, () => {
+      const missing = liveSpecIds.filter((specId) => !deliveredSpecs([specId], tier).has(specId));
+      expect(missing, "marked live in CHANNEL_SPECS but a pack that picks them gets no file").toEqual([]);
     });
-    const planned = new Set(list.shots.flatMap((shot) => shot.channels.map(familyOf)));
-    for (const channel of CHANNEL_FAMILIES) {
-      if (channel.status === "live") {
-        expect(planned.has(channel.family), `${channel.name} is marked live but no shot targets it`).toBe(true);
-      } else {
-        expect(
-          planned.has(channel.family),
-          `${channel.name} now gets files; mark it live in CHANNEL_FAMILIES`,
-        ).toBe(false);
+  }
+
+  it("delivers every live spec when every channel is picked together", () => {
+    const delivered = deliveredSpecs([...imageSpecIds], "free");
+    const missing = liveSpecIds.filter((specId) => !delivered.has(specId));
+    expect(missing, "marked live in CHANNEL_SPECS but a full pack gets no file").toEqual([]);
+  });
+
+  it("delivers every spec the new pack form preselects", () => {
+    const delivered = deliveredSpecs([...TYPICAL_PACK_CHANNELS], "free");
+    for (const specId of TYPICAL_PACK_CHANNELS) {
+      expect(delivered.has(specId), specId).toBe(true);
+      expect(isSpecLive(specId), specId).toBe(true);
+    }
+  });
+
+  it("keeps a spec coming soon only while no pack gets its file", () => {
+    // The richest plan with room to spare: any file at all means it ships.
+    const all = deliveredSpecs([...imageSpecIds], "agency", 10_000);
+    const shipping = CHANNEL_SPECS.filter((entry) => entry.status === "coming_soon")
+      .map((entry) => entry.specId)
+      .filter((specId) => all.has(specId) || deliveredSpecs([specId], "agency", 10_000).has(specId));
+    expect(shipping, "these now get files; mark them live in CHANNEL_SPECS").toEqual([]);
+  });
+
+  it("gives every coming soon spec in a live channel its own pattern to police", () => {
+    for (const spec of CHANNEL_SPECS.filter((entry) => entry.status === "coming_soon")) {
+      const family = CHANNEL_FAMILIES.find((channel) => channel.family === familyOf(spec.specId));
+      if (family?.status === "live") {
+        expect(spec.mentions, spec.specId).toBeInstanceOf(RegExp);
+        expect(spec.mentions?.test(specFilesName(spec)), spec.specId).toBe(true);
       }
+    }
+  });
+
+  it("derives channel status from its specs", () => {
+    for (const channel of CHANNEL_FAMILIES) {
+      const live = CHANNEL_SPECS.some((spec) => familyOf(spec.specId) === channel.family && spec.status === "live");
+      expect(channel.status, channel.family).toBe(live ? "live" : "coming_soon");
     }
   });
 
@@ -189,6 +296,43 @@ describe("channel availability", () => {
     const soon = comingSoonChannelNames();
     expect(live.length).toBeGreaterThan(0);
     expect(live.filter((name) => soon.includes(name))).toEqual([]);
+  });
+
+  it("names live files by channel and coming soon files in full", () => {
+    const phrase = liveFilesPhrase();
+    for (const channel of CHANNEL_FAMILIES.filter((entry) => entry.status === "live")) {
+      expect(phrase, channel.name).toContain(channel.name);
+    }
+    expect(unqualifiedClaims(`Curvi makes ${phrase}.`)).toEqual([]);
+    const soon = comingSoonFileNames();
+    expect(soon).toEqual(
+      CHANNEL_SPECS.filter((spec) => spec.status === "coming_soon").map((spec) => specFilesName(spec)),
+    );
+    const sentence = comingSoonFilesSentence(["video formats"]);
+    expect(sentence).toMatch(/are coming soon\.$/);
+    expect(sentence).toContain("video formats");
+    expect(unqualifiedClaims(sentence)).toEqual([]);
+  });
+
+  it("writes nothing when no files are on the way", () => {
+    if (comingSoonFileNames().length === 0) {
+      expect(comingSoonFilesSentence()).toBe("");
+    } else {
+      expect(comingSoonFilesSentence()).toContain(joinList(comingSoonFileNames()));
+    }
+  });
+
+  it("shortens long channel lists for headlines", () => {
+    const names = liveChannelNames();
+    const short = liveChannelShortList(2);
+    expect(short).toContain(names[0]);
+    expect(short).toBe(names.length > 2 ? `${names[0]}, ${names[1]} and more` : joinList(names));
+    expect(liveChannelShortList(names.length)).toBe(joinList(names));
+  });
+
+  it("names files for a spec id", () => {
+    expect(specFilesNameFor("amazon.main")).toBe("Amazon main images");
+    expect(specFilesNameFor("newmarket.main")).toBeUndefined();
   });
 });
 
@@ -208,6 +352,18 @@ describe("unqualifiedClaims", () => {
     }
     for (const name of liveChannelNames()) {
       expect(unqualifiedClaims(`Sized for ${name}.`), name).toEqual([]);
+    }
+  });
+
+  it("flags channel files that are not made yet, even in a live channel", () => {
+    for (const spec of CHANNEL_SPECS) {
+      const claim = `Curvi makes ${specFilesName(spec)}.`;
+      if (spec.status === "coming_soon") {
+        expect(unqualifiedClaims(claim), spec.specId).toHaveLength(1);
+        expect(unqualifiedClaims(`${specFilesName(spec)} are coming soon.`), spec.specId).toEqual([]);
+      } else {
+        expect(unqualifiedClaims(claim), spec.specId).toEqual([]);
+      }
     }
   });
 

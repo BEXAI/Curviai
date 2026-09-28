@@ -1,4 +1,4 @@
-import { amazonMainRules, joinList, liveChannelNames } from "@/lib/marketing-facts";
+import { amazonMainRules, isSpecLive, joinList, liveChannelNames } from "@/lib/marketing-facts";
 
 export interface CategoryPage {
   slug: string;
@@ -15,6 +15,9 @@ export interface CategoryPage {
 
 const amazonFillMin = amazonMainRules().fillMinPercent;
 const liveChannels = joinList(liveChannelNames());
+// Pack items that name a channel follow its availability flag, so a flag
+// flip moves the item between packContents and comingSoon.
+const tiktokShopLive = isSpecLive("tiktokshop.main");
 
 export const categories: CategoryPage[] = [
   {
@@ -117,7 +120,7 @@ export const categories: CategoryPage[] = [
     name: "Home and kitchen",
     headline: "Home goods staged in rooms that sell the lifestyle",
     intro:
-      `Home and kitchen products need context to sell, but the product itself must stay honest. Curvi places your real product photo into styled interior scenes, generates the compliant white main image, and sizes everything for ${liveChannels}.`,
+      `Home and kitchen products need context to sell, but the product itself must stay honest. Curvi places your real product photo into styled interior scenes, generates the compliant white main image, and sizes each file for the channels you pick: ${liveChannels}.`,
     painPoints: [
       "Staging a real room for one product shot is slow and expensive",
       "Scale is hard to judge without a scene around the product",
@@ -146,8 +149,9 @@ export const categories: CategoryPage[] = [
       "Pure white main image for Amazon",
       "Home scenes matched to how your product is used, such as a living room floor",
       "Bright social crops for Meta",
+      ...(tiktokShopLive ? ["A main image sized for TikTok Shop"] : []),
     ],
-    comingSoon: ["A short playful templated video", "Crops for TikTok Shop"],
+    comingSoon: ["A short playful templated video", ...(tiktokShopLive ? [] : ["Crops for TikTok Shop"])],
     proofLine: "Feeding guides and safety text remain pixel identical to your upload.",
   },
   {
