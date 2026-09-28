@@ -2,6 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
 import { StatusChip } from "@/components/app/status-chip";
+import {
+  freeCredits,
+  joinList,
+  liveChannelNames,
+  tierDisplayName,
+  typicalPackCredits,
+} from "@/lib/marketing-facts";
 import { getServices } from "@/lib/services";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -15,8 +22,8 @@ export default async function DashboardPage() {
       <div className="mx-auto max-w-md py-16 text-center">
         <h1 className="text-2xl font-bold text-ink-950">Sign in to open your workspace</h1>
         <p className="mt-3 text-ink-600">
-          Log in and your workspace loads here. New accounts get a workspace and 15 free credits the moment
-          they confirm their email.
+          Log in and your workspace loads here. New accounts get a workspace and {freeCredits()} free credits
+          the moment they confirm their email.
         </p>
         <Link href="/login?next=/app" className={buttonVariants({ variant: "secondary", className: "mt-6" })}>
           Log in
@@ -56,7 +63,8 @@ export default async function DashboardPage() {
               {workspace.creditBalance.toLocaleString("en-US")}
             </p>
             <p className="mt-1 text-sm text-ink-500">
-              On the {workspace.plan} plan. A default pack uses about 40 to 60 credits.
+              On the {tierDisplayName(workspace.plan)} plan. A default listing pack of still images uses about{" "}
+              {typicalPackCredits()} credits.
             </p>
             <Link href="/app/billing" className="mt-3 inline-block text-sm font-medium text-accent-600 hover:text-accent-700">
               Manage billing
@@ -70,7 +78,7 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent>
             {firstSession ? (
-              <p className="text-sm text-ink-500">No packs yet. Your first one takes about two minutes.</p>
+              <p className="text-sm text-ink-500">No packs yet. Your first one takes a few minutes.</p>
             ) : (
               <ul className="divide-y divide-ink-100">
                 {jobs.map((job) => (
@@ -95,10 +103,10 @@ export default async function DashboardPage() {
       {firstSession ? (
         <Card data-testid="first-session" className="border-accent-200 bg-accent-50">
           <CardContent className="p-8 text-center">
-            <h2 className="text-xl font-semibold text-ink-950">Get your first pack in two minutes</h2>
+            <h2 className="text-xl font-semibold text-ink-950">Get your first pack</h2>
             <p className="mx-auto mt-2 max-w-xl text-sm text-ink-600">
-              Upload one product photo or paste a product URL. You get a compliant main image, lifestyle shots and
-              a compliance report on every file, sized for every channel you pick.
+              Upload one product photo. You get a compliant main image, lifestyle shots and a compliance report
+              on every file, sized for {joinList(liveChannelNames())}.
             </p>
             <ol className="mx-auto mt-4 max-w-md space-y-1 text-left text-sm text-ink-700">
               <li>1. Add one photo of your product.</li>

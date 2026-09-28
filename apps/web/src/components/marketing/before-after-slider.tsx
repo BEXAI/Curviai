@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { cn } from "@curvi/ui";
+import { ILLUSTRATION_LABEL, isIllustrationSrc } from "./demo-images";
 
 export interface BeforeAfterSliderProps {
   beforeSrc: string;
@@ -14,7 +15,9 @@ export interface BeforeAfterSliderProps {
 /**
  * Draggable before and after comparison. Server render shows both images
  * split at 50 percent, so the component still reads as stacked images when
- * JavaScript is unavailable.
+ * JavaScript is unavailable. Images drawn in code, not produced by Curvi,
+ * always carry an Illustration label, so a drawing is never passed off as a
+ * real output.
  */
 export function BeforeAfterSlider({
   beforeSrc,
@@ -23,6 +26,8 @@ export function BeforeAfterSlider({
   afterLabel = "After",
   className,
 }: BeforeAfterSliderProps) {
+  const illustration = isIllustrationSrc(beforeSrc) || isIllustrationSrc(afterSrc);
+  const describe = (label: string) => (illustration ? `${ILLUSTRATION_LABEL}, ${label.toLowerCase()}` : label);
   const [percent, setPercent] = useState(50);
   const containerRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
@@ -67,11 +72,11 @@ export function BeforeAfterSlider({
         onPointerUp={stopDragging}
         onPointerCancel={stopDragging}
       >
-        <img src={afterSrc} alt={afterLabel} className="absolute inset-0 h-full w-full object-cover" draggable={false} />
+        <img src={afterSrc} alt={describe(afterLabel)} className="absolute inset-0 h-full w-full object-cover" draggable={false} />
         <div className="absolute inset-0" style={{ clipPath: `inset(0 ${100 - percent}% 0 0)` }}>
           <img
             src={beforeSrc}
-            alt={beforeLabel}
+            alt={describe(beforeLabel)}
             className="absolute inset-0 h-full w-full object-cover"
             draggable={false}
           />
@@ -93,6 +98,14 @@ export function BeforeAfterSlider({
         <span className="absolute right-3 top-3 rounded-full bg-white/90 px-2.5 py-0.5 text-xs font-medium text-ink-900 shadow-sm">
           {afterLabel}
         </span>
+        {illustration ? (
+          <span
+            data-testid="illustration-label"
+            className="absolute bottom-3 left-3 rounded-full bg-ink-900/80 px-2.5 py-0.5 text-xs font-medium text-white"
+          >
+            {ILLUSTRATION_LABEL}
+          </span>
+        ) : null}
       </div>
       <label className="mt-3 block">
         <span className="sr-only">Compare before and after</span>

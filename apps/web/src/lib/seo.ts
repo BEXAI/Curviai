@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { tiers, type TierDefinition } from "@curvi/pipeline/seed";
 import { isStripeConfigured, siteUrl } from "@/lib/env";
+import { amazonMainRules, joinList, liveChannelNames } from "@/lib/marketing-facts";
 
 /**
  * Search, answer engine and generative engine metadata for the marketing
@@ -37,14 +38,22 @@ export const SITE_KEYWORDS = [
   "e-commerce product image optimization",
 ];
 
-/** Features that work in the product today. Keep this list honest. */
+const amazonMain = amazonMainRules();
+
+/**
+ * Features that work in the product today. Keep this list honest: numbers
+ * come from the spec registry and channels from the availability list in
+ * lib/marketing-facts, and a test fails if an item names something that is
+ * coming soon.
+ */
 export const SITE_FEATURES = [
-  "Pure white Amazon main images measured against the 85 percent fill rule",
+  `Pure white Amazon main images measured against the ${amazonMain.fillMinPercent} to ${amazonMain.fillMaxPercent} percent fill rule`,
   "AI lifestyle scenes built around the real product photo",
   "Product pixels never regenerated, so labels and logos never warp",
-  "Channel sized exports for Amazon, Shopify, Google Merchant, Walmart, Etsy, eBay, TikTok Shop, Meta and Pinterest",
+  `Channel sized image files for ${joinList(liveChannelNames())}`,
   "A compliance report that checks background, fill and resolution for every file",
-  "Brand kit colors applied across the pack",
+  "Brand kit colors used for brand color backgrounds in the pack",
+  "Free browser tools: an Amazon main image checker, a white background fixer and a marketplace image resizer",
 ];
 
 /** The social card rendered by app/opengraph-image.tsx. */

@@ -1,25 +1,24 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Button, cn } from "@curvi/ui";
+import { buttonVariants, cn } from "@curvi/ui";
 
 /**
- * Above the fold upload box. It does not process anything on the marketing
- * page. Choosing a file routes to signup, where the real pipeline lives. The
- * free tools do run real checks in the browser.
+ * Above the fold call to action. Nothing is uploaded or processed from the
+ * marketing page yet, and the copy says so: a dropped photo only opens the
+ * signup page, and the seller adds the photo in the app. The free tools do
+ * run real checks in the browser, so the box points to them for an instant
+ * result.
  */
-export function UploadBox() {
+export function UploadBox({ freeCredits }: { freeCredits: number }) {
   const router = useRouter();
-  const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
-
-  function goToSignup() {
-    router.push("/signup");
-  }
 
   return (
     <div
+      data-testid="hero-upload-box"
       className={cn(
         "rounded-xl border-2 border-dashed p-6 text-center transition-colors",
         dragOver ? "border-accent-500 bg-accent-500/10" : "border-white/15 bg-white/5",
@@ -30,27 +29,31 @@ export function UploadBox() {
       }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(event) => {
+        // Stop the browser from opening the file, then start signup. The
+        // file itself is not kept.
         event.preventDefault();
         setDragOver(false);
-        goToSignup();
+        router.push("/signup");
       }}
     >
-      <p className="text-sm font-medium text-white">Drop a product photo to see your pack</p>
-      <p className="mt-1 text-sm text-ink-400">One photo in. A full marketplace pack out.</p>
+      <p className="text-sm font-medium text-white">Turn one product photo into a full pack</p>
+      <p className="mt-1 text-sm text-ink-400">
+        Create a free account with {freeCredits} credits, then upload your photo in the app. Nothing is
+        uploaded from this page.
+      </p>
       <div className="mt-4 flex flex-col items-center justify-center gap-3 sm:flex-row">
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/*"
-          className="sr-only"
-          aria-label="Upload a product photo"
-          onChange={goToSignup}
-        />
-        <Button variant="secondary" size="lg" onClick={() => inputRef.current?.click()}>
-          Upload a photo
-        </Button>
-        <span className="text-xs text-ink-400">Free to try. No card needed.</span>
+        <Link href="/signup" className={buttonVariants({ variant: "secondary", size: "lg" })}>
+          Start free
+        </Link>
+        <span className="text-xs text-ink-400">No card needed.</span>
       </div>
+      <p className="mt-4 text-xs text-ink-400">
+        Want a check right now?{" "}
+        <Link href="/tools/main-image-checker" className="font-medium text-ink-200 underline hover:text-white">
+          Test your main image free
+        </Link>{" "}
+        in your browser, no account needed.
+      </p>
     </div>
   );
 }
