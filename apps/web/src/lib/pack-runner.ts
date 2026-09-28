@@ -135,7 +135,9 @@ export function startPackRun(args: StartPackArgs): void {
     const deps = buildRuntimeDeps();
     const store = new DrizzleJobStore(db, args.workspaceId, args.productId);
     try {
-      await runGeneratePack(args, { ...deps, store });
+      // Video and avatar shots wait for their providers; skipping them here
+      // keeps live packs honest instead of charging for placeholder renders.
+      await runGeneratePack(args, { ...deps, store, excludeShotMethods: ["video_generate", "avatar"] });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       try {

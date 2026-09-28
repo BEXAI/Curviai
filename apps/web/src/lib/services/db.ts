@@ -251,11 +251,31 @@ export class DbService implements Services {
   }
 
   async getJob(workspaceId: string, jobId: string): Promise<JobView | null> {
-    const job = await this.db.query.generationJobs.findFirst({
+    let job = await this.db.query.generationJobs.findFirst({
       where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
     });
     if (!job) {
       return null;
+    }
+    // Reconcile runs orphaned by an instance restart: a job that has not
+    // moved in 15 minutes will never finish, so fail it and free the credits.
+    const TERMINAL = new Set(["done", "failed", "canceled"]);
+    const STALE_MS = 15 * 60 * 1000;
+    if (!TERMINAL.has(job.status) && Date.now() - job.updatedAt.getTime() > STALE_MS) {
+      await this.db
+        .update(generationJobs)
+        .set({
+          status: "failed",
+          error: "The run was interrupted before finishing. Reserved credits were released.",
+          updatedAt: new Date(),
+        })
+        .where(eq(generationJobs.id, job.id));
+      try {
+        await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${job.id}::uuid)`);
+      } catch {
+        // Nothing held, or already released.
+      }
+      job = { ...job, status: "failed", error: "The run was interrupted before finishing. Reserved credits were released." };
     }
     const [product, steps, assetRows] = await Promise.all([
       this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, job.productId) }),
@@ -327,6 +347,7 @@ export class DbService implements Services {
       creditsCharged: job.creditsCharged,
       createdAt: job.createdAt.toISOString(),
       shots,
+      error: job.error ?? null,
     };
   }
 
@@ -456,6 +477,14 @@ export class DbService implements Services {
     const row = await this.db.query.brandKits.findFirst({
       where: (t, { eq }) => eq(t.workspaceId, workspaceId),
     });
+    let logoUrl: string | null = null;
+    if (row?.logoR2Key && isR2Configured()) {
+      try {
+        logoUrl = await presignObjectGet(row.logoR2Key);
+      } catch {
+        logoUrl = null;
+      }
+    }
     return {
       name: row?.name ?? "Default",
       colors: row?.colors ?? [],
@@ -464,7 +493,9 @@ export class DbService implements Services {
         body: row?.fonts?.body ?? "",
       },
       stylePreset: row?.stylePreset ?? "minimal_studio",
-      hasLogo: Boolean(row?.logoAssetId),
+      hasLogo: Boolean(row?.logoR2Key || row?.logoAssetId),
+      logoUrl,
+      logoKey: row?.logoR2Key ?? null,
     };
   }
 
@@ -479,6 +510,7 @@ export class DbService implements Services {
         colors: kit.colors,
         fonts: { heading: kit.fonts.heading, body: kit.fonts.body },
         stylePreset: kit.stylePreset,
+        logoR2Key: kit.logoKey ?? null,
       });
       return { ok: true, notice: "Brand kit saved." };
     }
@@ -493,6 +525,7 @@ export class DbService implements Services {
         colors: kit.colors,
         fonts: { heading: kit.fonts.heading, body: kit.fonts.body },
         style_preset: kit.stylePreset,
+        logo_r2_key: kit.logoKey ?? existing.logoR2Key ?? null,
         updated_at: new Date().toISOString(),
       })
       .eq("id", existing.id);

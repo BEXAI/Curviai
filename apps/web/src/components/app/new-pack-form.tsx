@@ -48,7 +48,6 @@ export function NewPackForm({ products, channels, tier, creditBalance }: NewPack
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [upload, setUpload] = useState<UploadState>({ phase: "idle" });
-  const [productUrl, setProductUrl] = useState("");
   const [productId, setProductId] = useState(products[0]?.id ?? "new");
   const [newProductTitle, setNewProductTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -214,19 +213,6 @@ export function NewPackForm({ products, channels, tier, creditBalance }: NewPack
           </div>
 
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <div>
-              <Label htmlFor="product-url">Or paste a product URL</Label>
-              <Input
-                id="product-url"
-                placeholder="https://yourstore.com/products/..."
-                value={productUrl}
-                onChange={(event) => setProductUrl(event.target.value)}
-                className="mt-1"
-              />
-              <p className="mt-1 text-xs text-ink-400">
-                URL import is coming soon. For now it is noted with your pack.
-              </p>
-            </div>
             <div>
               <Label htmlFor="product-select">Product</Label>
               <Select

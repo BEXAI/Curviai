@@ -16,6 +16,37 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
   const [kit, setKit] = useState<BrandKitView>(initial);
   const [result, setResult] = useState<SaveResult | null>(null);
   const [pending, startTransition] = useTransition();
+  const [logoState, setLogoState] = useState<
+    | { phase: "idle" }
+    | { phase: "uploading" }
+    | { phase: "uploaded"; previewUrl: string }
+    | { phase: "error"; message: string }
+  >({ phase: "idle" });
+
+  async function handleLogoFile(file: File) {
+    setLogoState({ phase: "uploading" });
+    try {
+      const response = await fetch("/api/uploads/sign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "image", contentType: file.type, bytes: file.size }),
+      });
+      const data = (await response.json()) as { url?: string; key?: string; error?: string; notice?: string };
+      if (!response.ok || !data.url || !data.key) {
+        setLogoState({ phase: "error", message: data.error ?? data.notice ?? "The upload could not be signed." });
+        return;
+      }
+      const put = await fetch(data.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+      if (!put.ok) {
+        setLogoState({ phase: "error", message: "The upload failed. Try again." });
+        return;
+      }
+      setKit((current) => ({ ...current, logoKey: data.key, hasLogo: true }));
+      setLogoState({ phase: "uploaded", previewUrl: URL.createObjectURL(file) });
+    } catch {
+      setLogoState({ phase: "error", message: "The upload failed. Check your connection and try again." });
+    }
+  }
 
   function setColor(index: number, value: string) {
     setKit((current) => {
@@ -97,10 +128,48 @@ export function BrandKitForm({ initial, presetKeys, save }: BrandKitFormProps) {
 
         <div>
           <Label>Logo</Label>
-          <div className="mt-2 flex h-24 max-w-sm items-center justify-center rounded-xl border-2 border-dashed border-ink-200 bg-ink-50">
-            <p className="text-xs text-ink-400">
-              {kit.hasLogo ? "Logo on file." : "Logo upload arrives with the asset editor."}
-            </p>
+          <div className="mt-2 flex max-w-sm items-center gap-4">
+            {logoState.phase === "uploaded" ? (
+              <img
+                src={logoState.previewUrl}
+                alt="Brand logo preview"
+                className="h-20 w-20 rounded-xl border border-ink-950/10 bg-white object-contain p-1"
+              />
+            ) : kit.logoUrl ? (
+              <img
+                src={kit.logoUrl}
+                alt="Brand logo"
+                className="h-20 w-20 rounded-xl border border-ink-950/10 bg-white object-contain p-1"
+              />
+            ) : (
+              <div className="flex h-20 w-20 items-center justify-center rounded-xl border-2 border-dashed border-ink-200 bg-ink-50">
+                <span className="text-xs text-ink-400">No logo</span>
+              </div>
+            )}
+            <div>
+              <label className="inline-block cursor-pointer">
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                  className="sr-only"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) {
+                      void handleLogoFile(file);
+                    }
+                    event.target.value = "";
+                  }}
+                />
+                <span className="inline-flex h-9 items-center rounded-lg border border-ink-950/15 bg-white px-3 text-sm font-medium text-ink-900 transition-colors hover:bg-ink-50">
+                  {logoState.phase === "uploading" ? "Uploading" : kit.hasLogo ? "Replace logo" : "Upload logo"}
+                </span>
+              </label>
+              {logoState.phase === "error" ? (
+                <p className="mt-2 text-xs text-red-600">{logoState.message}</p>
+              ) : (
+                <p className="mt-2 text-xs text-ink-400">PNG, JPG, WebP or SVG. Save the kit to apply.</p>
+              )}
+            </div>
           </div>
         </div>
 

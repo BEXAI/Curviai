@@ -185,6 +185,19 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
           <StatusChip status={job.status} testId="job-status" />
         </div>
         <StageStepper status={job.status} />
+        {job.status === "failed" && job.error ? (
+          <p className="max-w-2xl rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {job.error}
+          </p>
+        ) : null}
+        {job.status === "done" && job.shots.some((shot) => shot.imageUrl) ? (
+          <a
+            href={`/api/jobs/${job.id}/pack`}
+            className="inline-flex h-9 items-center rounded-lg bg-ink-900 px-3 text-sm font-medium text-white transition-colors hover:bg-ink-800"
+          >
+            Download pack
+          </a>
+        ) : null}
         <div className="flex items-center gap-3">
           <Progress value={doneCount} max={job.shots.length} className="max-w-md" />
           <p className="whitespace-nowrap font-mono text-xs text-ink-500">
@@ -202,12 +215,21 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
                 <StatusChip status={shot.status} />
               </div>
               {shot.imageUrl ? (
-                // Signed, short lived R2 URL; a plain img avoids next/image domain config.
-                <img
-                  src={shot.imageUrl}
-                  alt={`${shotTitle(shot.shotType)} result`}
-                  className="mt-3 aspect-square w-full rounded-lg border border-ink-950/10 object-cover"
-                />
+                <>
+                  {/* Signed, short lived R2 URL; a plain img avoids next/image domain config. */}
+                  <img
+                    src={shot.imageUrl}
+                    alt={`${shotTitle(shot.shotType)} result`}
+                    className="mt-3 aspect-square w-full rounded-lg border border-ink-950/10 object-cover"
+                  />
+                  <a
+                    href={shot.imageUrl}
+                    download
+                    className="mt-2 inline-block text-xs font-medium text-accent-600 hover:text-accent-700"
+                  >
+                    Download image
+                  </a>
+                </>
               ) : null}
               <p className="mt-1 font-mono text-xs text-ink-400">{shot.providerStage}</p>
               <p className="mt-2 font-mono text-xs text-ink-500">

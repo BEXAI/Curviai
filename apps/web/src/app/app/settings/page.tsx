@@ -74,7 +74,9 @@ export default async function SettingsPage() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-xs text-ink-400">Invites are read only for now.</p>
+          <p className="mt-3 text-xs text-ink-400">
+            Need another seat? Email hello@curvi.ai and we will add your teammate to this workspace.
+          </p>
         </CardContent>
       </Card>
 

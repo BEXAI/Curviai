@@ -15,8 +15,8 @@ const supabaseConfigured = Boolean(
 
 /**
  * Signup and login form. When Supabase is not configured, which is the zero
- * env state of this repo, it renders a launch notice with a waitlist capture
- * that falls back to a mailto link, so the page always works.
+ * env state of this repo, it renders a temporary unavailability notice so
+ * the page always works.
  */
 export function AuthForm({ mode }: AuthFormProps) {
   const [email, setEmail] = useState("");
@@ -43,55 +43,21 @@ export function AuthForm({ mode }: AuthFormProps) {
   }, []);
 
   if (!supabaseConfigured) {
-    const subject = encodeURIComponent("Curvi waitlist");
-    const body = encodeURIComponent(
-      `Please add ${email || "my email"} to the Curvi waitlist.`,
-    );
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Accounts open at launch</CardTitle>
+          <CardTitle>Sign in is temporarily unavailable</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-ink-600">
-            We are onboarding the first customers in small batches. Leave your email and you will get
-            an invite plus founding member pricing while the first 50 spots last.
+            We are doing maintenance on accounts right now. Try again in a few minutes, or email{" "}
+            <a href="mailto:hello@curvi.ai" className="font-medium text-ink-900 underline">
+              hello@curvi.ai
+            </a>{" "}
+            if you need help getting in.
           </p>
-          <form
-            className="flex flex-col gap-2 sm:flex-row"
-            onSubmit={(event) => {
-              event.preventDefault();
-              window.location.href = `mailto:hello@curvi.ai?subject=${subject}&body=${body}`;
-              setStatus("sent");
-            }}
-          >
-            <Label className="sr-only" htmlFor="waitlist-email">
-              Email
-            </Label>
-            <Input
-              id="waitlist-email"
-              type="email"
-              required
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@yourbrand.com"
-              className="flex-1"
-            />
-            <Button type="submit" variant="secondary">
-              Join the waitlist
-            </Button>
-          </form>
-          {status === "sent" ? (
-            <p className="text-sm text-emerald-700">
-              Thanks. If your mail app did not open, email hello@curvi.ai and we will add you.
-            </p>
-          ) : (
-            <p className="text-xs text-ink-400">
-              This opens your mail app addressed to hello@curvi.ai. No tracking, no spam.
-            </p>
-          )}
           <p className="text-sm text-ink-500">
-            While you wait, try the free tools:{" "}
+            In the meantime, the free tools work without an account:{" "}
             <Link href="/tools/main-image-checker" className="font-medium text-ink-900 underline">
               Main Image Checker
             </Link>

@@ -234,6 +234,8 @@ export interface PipelineDeps {
   generator: ShotGenerator;
   /** Loads source media bytes for LLM vision input; metadata only when absent. */
   loadMedia?: (mediaId: string) => Promise<Buffer | null>;
+  /** Shot methods to skip after planning, e.g. video until its provider is wired. */
+  excludeShotMethods?: Array<Shot["method"]>;
   /** Fan out override: the Trigger.dev wrapper points this at the
    * generate-shot subtask. Defaults to Promise.all over runShot. */
   runShots?: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>;
@@ -652,6 +654,16 @@ export async function runGeneratePack(
     } else {
       shotList = planShots(profile, planOptions);
       plannerSource = "deterministic";
+    }
+    if (deps.excludeShotMethods && deps.excludeShotMethods.length > 0) {
+      const excluded = new Set(deps.excludeShotMethods);
+      const kept = shotList.shots.filter((shot) => !excluded.has(shot.method));
+      for (const shot of shotList.shots) {
+        if (excluded.has(shot.method)) {
+          shotList.skipped.push({ type: shot.type, reason: "provider not enabled" });
+        }
+      }
+      shotList = { shots: kept, skipped: shotList.skipped };
     }
     plannedShots = shotList.shots.length;
     skipped = shotList.skipped;

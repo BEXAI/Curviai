@@ -66,3 +66,14 @@ export async function putGeneratedObject(key: string, body: Buffer, contentType:
 export async function presignObjectGet(key: string, expiresIn = 600): Promise<string> {
   return getSignedUrl(r2Client(), new GetObjectCommand({ Bucket: privateBucket(), Key: key }), { expiresIn });
 }
+
+/** Fetches an object's bytes for server side packaging. Null when missing. */
+export async function getObjectBytes(key: string): Promise<Buffer | null> {
+  try {
+    const res = await r2Client().send(new GetObjectCommand({ Bucket: privateBucket(), Key: key }));
+    const bytes = await res.Body?.transformToByteArray();
+    return bytes ? Buffer.from(bytes) : null;
+  } catch {
+    return null;
+  }
+}

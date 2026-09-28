@@ -54,9 +54,17 @@ export function SiteFooter() {
           </div>
           <div>
             <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink-300">Legal</h3>
-            <ul className="mt-3 space-y-2 text-sm text-ink-500">
-              <li>Terms of service, published at launch</li>
-              <li>Privacy policy, published at launch</li>
+            <ul className="mt-3 space-y-2 text-sm">
+              <li>
+                <Link href="/terms" className="text-ink-400 transition-colors hover:text-white">
+                  Terms of service
+                </Link>
+              </li>
+              <li>
+                <Link href="/privacy" className="text-ink-400 transition-colors hover:text-white">
+                  Privacy policy
+                </Link>
+              </li>
               <li>
                 <a href="mailto:hello@curvi.ai" className="text-ink-400 transition-colors hover:text-white">
                   hello@curvi.ai
@@ -66,8 +74,8 @@ export function SiteFooter() {
           </div>
         </div>
         <p className="mt-10 text-xs text-ink-500">
-          Curvi is in early access. Copy on this site describes the product as designed. Channel rules are checked
-          against official documentation and can change. Always confirm current marketplace policies before publishing.
+          Channel rules are checked against official documentation and can change. Always confirm current
+          marketplace policies before publishing.
         </p>
       </div>
     </footer>

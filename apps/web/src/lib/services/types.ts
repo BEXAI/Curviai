@@ -70,6 +70,8 @@ export interface JobView {
   creditsCharged: number;
   createdAt: string;
   shots: JobShotView[];
+  /** Failure detail when status is failed. */
+  error?: string | null;
 }
 
 export interface JobSummary {
@@ -86,6 +88,10 @@ export interface BrandKitView {
   fonts: { heading: string; body: string };
   stylePreset: string;
   hasLogo: boolean;
+  /** Signed preview URL of the stored logo, read side only. */
+  logoUrl?: string | null;
+  /** R2 key of the uploaded logo to persist, write side only. */
+  logoKey?: string | null;
 }
 
 export interface MemberView {
