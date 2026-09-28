@@ -26,7 +26,7 @@ export const ProductProfile = z.object({
 });
 
 export const Shot = z.object({
-  id: z.string(), type: z.enum(["amazon_main","alt_angle_white","cutout_png","sweep_gray","sweep_brand","lifestyle","infographic","dimensions","in_the_box","comparison","aplus_banner","shopify_hero","collection_thumb","social_1x1","social_4x5","social_9x16","video_spin","video_hero_6s","video_lifestyle_15s","video_ugc_hook"]),
+  id: z.string(), type: z.enum(["amazon_main","alt_angle_white","cutout_png","sweep_gray","sweep_brand","lifestyle","infographic","dimensions","in_the_box","comparison","aplus_banner","shopify_hero","collection_thumb","social_1x1","social_4x5","social_9x16","social_2x3","video_spin","video_hero_6s","video_lifestyle_15s","video_ugc_hook"]),
   sourceMediaId: z.string(), method: z.enum(["deterministic","composite_generate","edit_generate","template","video_generate","avatar"]),
   channels: z.array(z.string()), stylePreset: z.string(), scene: z.string().max(400).optional(),
   callouts: z.array(z.string().max(40)).max(5).optional(), credits: z.number(), priority: z.number().int()
@@ -69,6 +69,8 @@ export const IntakeResult = z.object({ images: z.array(IntakeImageResult).min(1)
 export type Hex = z.infer<typeof Hex>;
 export type ProductProfile = z.infer<typeof ProductProfile>;
 export type Shot = z.infer<typeof Shot>;
+/** How a shot is produced, for example "deterministic" or "video_generate". */
+export type ShotMethod = Shot["method"];
 export type ShotList = z.infer<typeof ShotList>;
 export type QCVerdict = z.infer<typeof QCVerdict>;
 export type IntakeImageResult = z.infer<typeof IntakeImageResult>;

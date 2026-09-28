@@ -91,6 +91,7 @@ const cases: { type: TemplateStillType; specId: string; callouts?: string[] }[] 
   { type: "social_1x1", specId: "meta.feed_1x1" },
   { type: "social_4x5", specId: "meta.feed_4x5" },
   { type: "social_9x16", specId: "meta.story_9x16" },
+  { type: "social_2x3", specId: "pinterest.pin" },
 ];
 
 function nearColor(data: Buffer, o: number, c: { r: number; g: number; b: number }, tol: number): boolean {

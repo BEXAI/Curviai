@@ -156,6 +156,38 @@ describe("channel spec registry", () => {
     expect(channelFileLimit(getSpec("amazon.aplus.basic_header"))).toBeNull();
   });
 
+  it("carries the listing photo limits checked on 2026-09-28", () => {
+    // Etsy Help: up to 20 photos. eBay Help: up to 24 pictures. TikTok Shop
+    // US listing policy: up to 9 square images.
+    expect(channelFileLimit(getSpec("etsy.listing"))).toBe(20);
+    expect(channelFileLimit(getSpec("ebay.listing"))).toBe(24);
+    expect(channelFileLimit(getSpec("tiktokshop.main"))).toBe(9);
+    // Walmart's limit is not verified yet, so none is enforced.
+    expect(channelFileLimit(getSpec("walmart.main"))).toBeNull();
+    // Each spec with a checked count says where it came from.
+    for (const id of ["etsy.listing", "ebay.listing", "tiktokshop.main"]) {
+      expect(getSpec(id).source, id).toMatch(/checked 2026-09-28/);
+    }
+  });
+
+  it("keeps the rules the planner reads for the newer marketplaces", () => {
+    // White only listings: the planner sends them white images and nothing else.
+    expect(getSpec("walmart.main").background).toEqual({ type: "solid", rgb: [255, 255, 255] });
+    expect(getSpec("tiktokshop.main").background?.type).toBe("white_preferred");
+    // No added text on eBay, Walmart or TikTok Shop images.
+    for (const id of ["ebay.listing", "walmart.main", "tiktokshop.main"]) {
+      expect(getSpec(id).textAllowed, id).toBe(false);
+    }
+    expect(getSpec("etsy.listing").textAllowed).toBe(true);
+    // The Pinterest pin is an exact 2:3 crop.
+    expect(dimensionBounds(getSpec("pinterest.pin"))).toMatchObject({
+      minWidth: 1000,
+      maxWidth: 1000,
+      minHeight: 1500,
+      maxHeight: 1500,
+    });
+  });
+
   it("classifies marketplace versus social specs", () => {
     expect(isMarketplaceSpec("amazon.main")).toBe(true);
     expect(isMarketplaceSpec("walmart.main")).toBe(true);
