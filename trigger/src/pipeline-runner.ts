@@ -268,6 +268,18 @@ export interface JobStore {
    * No new report row: the pack was delivered by its first run. Returns the
    * shot ids whose files were recorded; only those are charged. */
   saveFollowUpFiles?(files: StoredFollowUpFiles): Promise<string[]>;
+  /** This store bound to one run's key (generation_jobs.run_key): its
+   * heartbeat, state writes, delivery checks and ledger writes then refuse
+   * a job that belongs to another run, so a stale runner of an earlier run
+   * stops even after a follow up moved the job back to generating. Stores
+   * without run keys (in memory, demo) leave it out. */
+  forRun?(runKey: string): JobStore;
+}
+
+/** The store bound to a run's key, when the run has one and the store knows
+ * run keys; the store itself otherwise (a payload queued before run keys). */
+export function storeForRun(store: JobStore, runKey: string | null | undefined): JobStore {
+  return runKey && store.forRun ? store.forRun(runKey) : store;
 }
 
 /** The loose files one pack follow up built, ready to deliver. */
@@ -467,6 +479,9 @@ export interface ShotContext {
   recipes?: JobRecipes;
   /** Workspace brand kit fonts and logo, passed through to the generator. */
   brand?: BrandStyle;
+  /** The run's key (generation_jobs.run_key), so a shot, in process or in a
+   * fan out subtask, checks liveness against its own run. */
+  runKey?: string;
 }
 
 /** IPTC digital source marking per plan 5.7.2: composited scenes carry
@@ -725,6 +740,9 @@ export interface GeneratePackInput {
   socialBadge?: boolean;
   /** Workspace brand kit fonts, logo and style preset. */
   brand?: BrandStyle;
+  /** The key the web app set on generation_jobs.run_key when it queued this
+   * run. Absent on payloads queued before run keys (status checks only). */
+  runKey?: string;
 }
 
 export interface GeneratePackSummary {
@@ -767,6 +785,32 @@ function sniffImageMime(bytes: Buffer): string {
   return "image/jpeg";
 }
 
+/** Photos the product analyzer sees as images. */
+export const ANALYZE_PHOTO_LIMIT = 3;
+
+/** Photos intake sees as images: every photo a pack can carry (the web app's
+ * MAX_PACK_PHOTOS), so its per image screenshot verdict covers each one. */
+export const INTAKE_PHOTO_LIMIT = 6;
+
+/**
+ * The photos intake judges, in the order its per image verdicts come back:
+ * the photos it was shown when any loaded (so the text list lines up with
+ * the images), else the pack's whole list, sent as metadata only.
+ */
+export function intakeImages(
+  images: GeneratePackInput["images"],
+  shown: ReadonlyArray<{ mediaId: string }>,
+): GeneratePackInput["images"] {
+  if (shown.length === 0) {
+    return images;
+  }
+  const byId = new Map(images.map((image) => [image.mediaId, image]));
+  return shown.flatMap((photo) => {
+    const image = byId.get(photo.mediaId);
+    return image ? [image] : [];
+  });
+}
+
 /**
  * Anthropic vision blocks for the uploaded photos, so intake and the product
  * analyzer judge the actual pixels instead of metadata. Empty when the deps
@@ -778,7 +822,7 @@ export async function visionBlocks(
   deps: Pick<PipelineDeps, "loadMedia">,
   images: GeneratePackInput["images"],
   workspaceId: string,
-  limit = 3,
+  limit = ANALYZE_PHOTO_LIMIT,
 ): Promise<unknown[]> {
   return (await visionPhotos(deps, images, workspaceId, limit)).map((photo) => photo.block);
 }
@@ -789,7 +833,7 @@ async function visionPhotos(
   deps: Pick<PipelineDeps, "loadMedia">,
   images: GeneratePackInput["images"],
   workspaceId: string,
-  limit = 3,
+  limit = ANALYZE_PHOTO_LIMIT,
 ): Promise<Array<{ mediaId: string; block: unknown }>> {
   if (!deps.loadMedia) {
     return [];
@@ -951,6 +995,9 @@ async function llmJson<T>(
   };
 
   let result: Awaited<ReturnType<typeof call>>;
+  // Billed spend of a strict request the API refused, kept on the books of
+  // the retry that follows it.
+  let strictFailureMicros = 0;
   try {
     result = await call(Boolean(outputSchema));
   } catch (err) {
@@ -961,6 +1008,7 @@ async function llmJson<T>(
       throw err;
     }
     console.warn(`[runner] ${recipe.key} rejected the strict tool schema, retrying without strict:`, errorText(err));
+    strictFailureMicros = failureSpendMicros(err);
     result = await call(false);
   }
 
@@ -991,7 +1039,7 @@ async function llmJson<T>(
   return {
     value: parsed.success ? (parsed.data as T) : null,
     raw,
-    costMicros: result.costMicros + result.billedFailureMicros,
+    costMicros: result.costMicros + result.billedFailureMicros + strictFailureMicros,
   };
 }
 
@@ -1577,8 +1625,10 @@ export function primarySpecOf(specIds: readonly string[]): string {
 export async function runShot(
   shot: Shot,
   ctx: ShotContext,
-  deps: PipelineDeps,
+  pipelineDeps: PipelineDeps,
 ): Promise<ShotOutcome> {
+  // A fan out subtask builds its own store, so the shot binds its run here.
+  const deps: PipelineDeps = { ...pipelineDeps, store: storeForRun(pipelineDeps.store, ctx.runKey) };
   const targets = shotTargetSpecs(shot);
   const spent: ShotSpend = { micros: 0 };
   const runs: OutputRun[] = [];
@@ -1671,7 +1721,7 @@ export async function recordShotFailure(
   console.error(`[runner] shot ${shot.id} failed outside its QC loop`, err);
   const outcome = shotFailureOutcome(shot, ctx, SHOT_PROVIDER_TROUBLE, errorDetail(err));
   try {
-    await store.saveAsset(toStoredAsset(outcome, ctx, shot));
+    await storeForRun(store, ctx.runKey).saveAsset(toStoredAsset(outcome, ctx, shot));
   } catch (saveErr) {
     console.error(`[runner] could not record failed shot ${shot.id}`, saveErr);
   }
@@ -2121,8 +2171,10 @@ function noShotPassedMessage(outcomes: readonly ShotOutcome[]): string {
 
 export async function runGeneratePack(
   input: GeneratePackInput,
-  deps: PipelineDeps,
+  pipelineDeps: PipelineDeps,
 ): Promise<GeneratePackSummary> {
+  // Every store call of this run, its shots included, checks the run's key.
+  const deps: PipelineDeps = { ...pipelineDeps, store: storeForRun(pipelineDeps.store, input.runKey) };
   const { store, clock } = deps;
   const ledger = new JobLedgerPlan();
   let state: JobState = "queued";
@@ -2207,14 +2259,17 @@ export async function runGeneratePack(
     // Intake and analyze, with the uploaded photos as vision input when a
     // media loader is wired.
     await advance(transition(state, "start_analysis"));
-    const shown = await visionPhotos(deps, input.images, input.workspaceId);
+    // Intake sees every photo, and its text lists exactly the photos it was
+    // shown, so its per image screenshot verdicts map one to one onto them.
+    const shown = await visionPhotos(deps, input.images, input.workspaceId, INTAKE_PHOTO_LIMIT);
     const photos = shown.map((photo) => photo.block);
+    const judgedImages = intakeImages(input.images, shown);
     const intake = await bookedLlm(
       llmJson<IntakeResult>(
         deps.ai,
         recipeFor(recipes, "intake"),
         IntakeResult,
-        { images: input.images, userDescription: wrapUserDescription(input.userDescription) },
+        { images: judgedImages, userDescription: wrapUserDescription(input.userDescription) },
         { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
         photos,
         IntakeResult,
@@ -2234,10 +2289,14 @@ export async function runGeneratePack(
     if (!cameraVerdicts.some((img) => img.sellableProduct)) {
       throw new Error("Intake found no sellable product in the uploaded images");
     }
-    const judged = shown.length > 0 ? shown.map((photo) => photo.mediaId) : input.images.map((image) => image.mediaId);
+    const judged = judgedImages.map((image) => image.mediaId);
     const screenshots = screenshotMediaIds(intake.value, judged, input.jobId);
     const images = input.images.filter((image) => !screenshots.has(image.mediaId));
-    const cameraPhotos = shown.filter((photo) => !screenshots.has(photo.mediaId)).map((photo) => photo.block);
+    // The analyzer keeps its own, smaller image budget.
+    const cameraPhotos = shown
+      .filter((photo) => !screenshots.has(photo.mediaId))
+      .slice(0, ANALYZE_PHOTO_LIMIT)
+      .map((photo) => photo.block);
     if (images.length === 0) {
       throw new Error(SCREENSHOT_UPLOAD_MESSAGE);
     }
@@ -2405,6 +2464,7 @@ export async function runGeneratePack(
       brandColors: input.brandColors,
       recipes,
       ...(input.brand ? { brand: input.brand } : {}),
+      ...(input.runKey ? { runKey: input.runKey } : {}),
     };
     // Pack level spend cap: a shared tracker gates every generation attempt
     // across the parallel fan out, so a runaway pack stops mid flight. The

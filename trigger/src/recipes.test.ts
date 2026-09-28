@@ -22,6 +22,7 @@ import {
   RecipeCatalog,
   recipeFor,
   recipeFromRow,
+  recipesFromVariants,
   recipeVariantsOf,
   seedJobRecipes,
   seedRecipe,
@@ -155,6 +156,28 @@ describe("RecipeCatalog", () => {
       { onError: () => undefined },
     );
     expect(await cold.forJob("a")).toEqual(seedJobRecipes());
+  });
+});
+
+describe("recorded recipe variants (pack follow ups)", () => {
+  it("resolves the versions a job recorded, not a fresh pick", async () => {
+    // Two live variants; the job recorded version 2 whatever its hash picks now.
+    const catalog = new RecipeCatalog(async () => [variant(1, 99), variant(2, 1)]);
+    const recorded = recipeVariantsOf({ plan: variant(2, 1) });
+    for (const jobId of ["a", "b", "c", "job-42"]) {
+      const recipes = await catalog.forVariants(jobId, recorded);
+      expect(recipes.plan?.version).toBe(2);
+      expect(recipes.qc).toEqual(seedRecipe("qc"));
+    }
+  });
+
+  it("falls back to the job's assignment when the recorded version no longer runs", async () => {
+    const catalog = new RecipeCatalog(async () => [variant(3, 100)]);
+    const recorded = { [planKey]: { recipeId: "recipe-2", version: 2, source: "db" as const } };
+    expect((await catalog.forVariants("job-1", recorded)).plan?.version).toBe(3);
+    // A recorded seed version resolves to the compiled seed.
+    const seeded = recipeVariantsOf(seedJobRecipes());
+    expect(recipesFromVariants(seeded, [variant(3, 100)], {})).toEqual(seedJobRecipes());
   });
 });
 

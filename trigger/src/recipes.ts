@@ -51,6 +51,9 @@ export type JobRecipes = Partial<Record<RecipeStage, ResolvedRecipe>>;
 /** Anything that assigns a job its recipes; RecipeCatalog in production. */
 export interface RecipeResolver {
   forJob(jobId: string): Promise<JobRecipes>;
+  /** The recipes a job already ran on, from its recorded recipe_variants,
+   * so a pack follow up judges with the same versions as its first run. */
+  forVariants?(jobId: string, variants: Record<string, JobRecipeVariant>): Promise<JobRecipes>;
 }
 
 /** Registry name of the LLM provider that runs one model. The live wiring
@@ -171,6 +174,36 @@ export function recipeVariantsOf(recipes: JobRecipes): Record<string, JobRecipeV
   return out;
 }
 
+/**
+ * The recipes a job recorded (recipeVariantsOf), resolved again: a db
+ * variant by its recipes row id among the active rows, a seed variant by its
+ * compiled key and version. A stage whose recorded version no longer runs
+ * (deactivated, or a seed version since replaced) takes `assigned`, the
+ * job's assignment from the current rows. Pure, so it is unit tested.
+ */
+export function recipesFromVariants(
+  variants: Readonly<Record<string, JobRecipeVariant>>,
+  rows: readonly ResolvedRecipe[],
+  assigned: JobRecipes,
+): JobRecipes {
+  const out: JobRecipes = {};
+  for (const { stage, key } of seedStages()) {
+    const recorded = variants[key];
+    let recipe: ResolvedRecipe | null = null;
+    if (recorded?.source === "db" && recorded.recipeId) {
+      recipe = rows.find((r) => r.recipeId === recorded.recipeId && r.stage === stage && r.key === key) ?? null;
+    } else if (recorded?.source === "seed") {
+      const row = recipeSeedRows.find((r) => r.stage === stage && r.key === key && r.version === recorded.version);
+      recipe = row ? fromSeed(row) : null;
+    }
+    const chosen = recipe ?? assigned[stage];
+    if (chosen) {
+      out[stage] = chosen;
+    }
+  }
+  return out;
+}
+
 /** Loads the active recipes; throws when the source is unreachable. */
 export type RecipeLoader = () => Promise<ResolvedRecipe[]>;
 
@@ -247,7 +280,15 @@ export class RecipeCatalog implements RecipeResolver {
   }
 
   async forJob(jobId: string): Promise<JobRecipes> {
+    return this.assign(jobId, (await this.current()) ?? []);
+  }
+
+  async forVariants(jobId: string, variants: Record<string, JobRecipeVariant>): Promise<JobRecipes> {
     const rows = (await this.current()) ?? [];
+    return recipesFromVariants(variants, rows, this.assign(jobId, rows));
+  }
+
+  private assign(jobId: string, rows: readonly ResolvedRecipe[]): JobRecipes {
     const out: JobRecipes = {};
     for (const { stage, key } of seedStages()) {
       const variants = rows.filter((r) => r.stage === stage && r.key === key);

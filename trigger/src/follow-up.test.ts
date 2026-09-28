@@ -6,26 +6,32 @@
  * during the follow up stops it with its hold returned.
  */
 
-import { stat } from "node:fs/promises";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, type Db } from "@curvi/db";
 import { assetVariants, assets, creditLedger, generationJobs, packFiles, products, workspaces } from "@curvi/db/schema";
-import { endExiftool, type Shot } from "@curvi/pipeline";
+import { endExiftool, type PackFileReport, type Shot } from "@curvi/pipeline";
 import { DbJobStore } from "./db-store";
 import { ShotUnavailableError } from "./errors";
 import { numberFollowUpFiles, runPackFollowUp, type PackFollowUpInput } from "./follow-up";
 import {
   InMemoryJobStore,
   runGeneratePack,
+  shotFailureOutcome,
   systemClock,
+  type JobLedgerEntry,
+  type ShotContext,
   type ShotGenerator,
   type ShotOutcome,
   type ShotPackAsset,
 } from "./pipeline-runner";
 import type { PackUploader } from "./r2";
+import { seedJobRecipes } from "./recipes";
 import { buildRuntimeDeps } from "./runtime";
+import type { JobState } from "./state";
 
 class FakeUploader implements PackUploader {
   readonly bucket = "test-bucket";
@@ -340,5 +346,128 @@ describe("runPackFollowUp against the ledger", () => {
     expect(await balance()).toBe(before);
     expect((await job()).creditsCharged).toBe(chargedBefore);
     expect((await job()).status).toBe("done");
+  });
+});
+
+describe("runPackFollowUp carries the first run's context (reviewer items 2 and 3)", () => {
+  const shotFor = (id: string, channels: string[] = ["amazon.secondary"]): Shot => ({
+    id,
+    type: "alt_angle_white",
+    sourceMediaId: "m1",
+    method: "deterministic",
+    channels,
+    stylePreset: "none",
+    scene: "back angle on white",
+    credits: 0.5,
+    priority: 2,
+  });
+  const input = (over: Partial<PackFollowUpInput> = {}): PackFollowUpInput => ({
+    kind: "follow_up",
+    runKey: "run-ctx",
+    jobId: "job-ctx",
+    workspaceId: "ws-ctx",
+    reason: "add_angle",
+    shots: [shotFor("s04_alt_angle_white")],
+    creditBudget: 0.5,
+    channels: ["amazon", "meta"],
+    sku: "MUG1",
+    existingFilesBySpec: {},
+    baseCostMicros: 0,
+    ...over,
+  });
+
+  it("returns the hold before the job goes back to done when the follow up fails", async () => {
+    class OrderedStore extends InMemoryJobStore {
+      readonly events: string[] = [];
+      async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<boolean> {
+        this.events.push(`state:${state}`);
+        return super.setJobState(jobId, state, meta);
+      }
+      async appendLedger(entry: JobLedgerEntry): Promise<void> {
+        this.events.push(`ledger:${entry.reason}`);
+        return super.appendLedger(entry);
+      }
+      async releaseAllHeld(): Promise<void> {
+        this.events.push("sweep");
+      }
+      async saveFollowUpFiles(): Promise<string[]> {
+        throw new Error("storage is down");
+      }
+    }
+    const store = new OrderedStore();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const summary = await runPackFollowUp(input(), { ...buildRuntimeDeps(), store });
+    expect(summary.state).toBe("stopped");
+    const done = store.events.indexOf("state:done");
+    expect(done).toBeGreaterThan(-1);
+    expect(store.events.indexOf("ledger:release")).toBeLessThan(done);
+    expect(store.events.indexOf("sweep")).toBeLessThan(done);
+    expect(store.events.indexOf("sweep")).toBeGreaterThan(-1);
+  });
+
+  it("gives its shots the brand kit, the recorded recipe versions and the run key", async () => {
+    const recipes = seedJobRecipes();
+    const forVariants = vi.fn(async () => recipes);
+    const forJob = vi.fn(async () => ({}));
+    const brand = { fonts: { heading: "inter", body: "inter" }, logoKey: "ws/ws-ctx/brand/logo.png", stylePreset: null };
+    const recipeVariants = { qc_judge: { recipeId: "r-qc-2", version: 2, source: "db" as const } };
+    let seen: ShotContext | null = null;
+    const store = new InMemoryJobStore();
+    await runPackFollowUp(input({ brand, recipeVariants }), {
+      ...buildRuntimeDeps(),
+      store,
+      recipes: { forJob, forVariants },
+      runShots: async (shots, ctx) => {
+        seen = ctx;
+        return shots.map((s) => shotFailureOutcome(s, ctx, "test"));
+      },
+    });
+    expect(forVariants).toHaveBeenCalledWith("job-ctx", recipeVariants);
+    expect(forJob).not.toHaveBeenCalled();
+    expect(seen).toMatchObject({ brand, recipes, runKey: "run-ctx", brandColors: undefined });
+  });
+
+  it("runs an added angle's shots under the shot concurrency limit", async () => {
+    const base = buildRuntimeDeps();
+    let running = 0;
+    let most = 0;
+    const generator: ShotGenerator = {
+      generate: async (args) => {
+        running += 1;
+        most = Math.max(most, running);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return await base.generator.generate(args);
+        } finally {
+          running -= 1;
+        }
+      },
+    };
+    const shots = ["s04_a", "s05_b", "s06_c", "s07_d"].map((id) => shotFor(id));
+    const summary = await runPackFollowUp(input({ shots, creditBudget: 2 }), {
+      ...base,
+      store: new InMemoryJobStore(),
+      generator,
+      shotConcurrency: 2,
+    });
+    expect(summary.passed + summary.needsReview).toBe(4);
+    expect(most).toBe(2);
+  });
+
+  it("draws the social badge when the plan asks for it, as a first run does", async () => {
+    const badgeOf = async (socialBadge: boolean): Promise<boolean[]> => {
+      const store = new InMemoryJobStore();
+      const summary = await runPackFollowUp(
+        input({ shots: [shotFor("s04_alt_angle_white", ["meta.feed_1x1"])], socialBadge }),
+        { ...buildRuntimeDeps(), store },
+      );
+      expect(summary.passed).toBe(1);
+      const report = JSON.parse(
+        await readFile(path.join(store.followUps[0].outDir, "compliance-report.json"), "utf8"),
+      ) as { files: PackFileReport[] };
+      return report.files.filter((f) => f.specId === "meta.feed_1x1").map((f) => f.badge);
+    };
+    expect(await badgeOf(true)).toEqual([true]);
+    expect(await badgeOf(false)).toEqual([false]);
   });
 });

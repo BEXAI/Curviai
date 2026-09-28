@@ -500,3 +500,49 @@ describe("isInsufficientCreditsError", () => {
     expect(isInsufficientCreditsError(null)).toBe(false);
   });
 });
+
+describe("DbService.createJob run keys and idempotency keys (0019)", () => {
+  const runKeyOf = (call: number): string | undefined =>
+    (enqueue.fn.mock.calls[call][0] as unknown as { runKey?: string }).runKey;
+
+  it("puts a fresh run key on the job row and in its payload", async () => {
+    const { ws, productId } = await workspaceWith("starter", 100);
+    const first = await service().createJob(ws, jobInput(productId));
+    const second = await service().createJob(ws, jobInput(productId));
+    expect(first.outcome).toBe("created");
+    expect(second.outcome).toBe("created");
+    const rows = await jobsOf(ws);
+    const keyOf = (result: typeof first) =>
+      rows.find((r) => result.outcome === "created" && r.id === result.job.id)?.runKey;
+    expect(runKeyOf(0)).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keyOf(first)).toBe(runKeyOf(0));
+    expect(keyOf(second)).toBe(runKeyOf(1));
+    expect(runKeyOf(1)).not.toBe(runKeyOf(0));
+  });
+
+  it("lets two workspaces send the same Idempotency-Key and replays only within one", async () => {
+    const a = await workspaceWith("starter", 100);
+    const b = await workspaceWith("starter", 100);
+    const input = jobInput(a.productId);
+    const created = await service().createJob(a.ws, input);
+    if (created.outcome !== "created") {
+      throw new Error(`expected a created job, got ${created.outcome}`);
+    }
+
+    // Same key from another workspace: a new pack, not a conflict that
+    // would reveal the key is in use elsewhere.
+    const other = await service().createJob(b.ws, { ...input, productId: b.productId });
+    expect(other.outcome).toBe("created");
+    expect(other.outcome === "created" && other.job.id).not.toBe(created.job.id);
+
+    // The first workspace still replays its own job, and a different body
+    // under the same key there is a conflict naming that job.
+    expect(await service().createJob(a.ws, input)).toMatchObject({ outcome: "replayed", job: { id: created.job.id } });
+    expect(await service().createJob(a.ws, { ...input, channels: ["amazon.main"] })).toEqual({
+      outcome: "conflict",
+      existingJobId: created.job.id,
+    });
+    expect(await jobsOf(a.ws)).toHaveLength(1);
+    expect(await jobsOf(b.ws)).toHaveLength(1);
+  });
+});

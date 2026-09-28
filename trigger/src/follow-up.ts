@@ -22,21 +22,27 @@
  * (CLAUDE.md rule 3).
  */
 
-import { buildPack, type Shot } from "@curvi/pipeline";
+import type { JobRecipeVariant } from "@curvi/db";
+import { badgeEligible, buildPack, type Shot } from "@curvi/pipeline";
 import { channelFileLimit, getSpec, hasSpec } from "@curvi/specs";
 import {
+  allSettledWithLimit,
+  DEFAULT_SHOT_CONCURRENCY,
   JobAbandonedError,
   recordShotFailure,
   runShot,
   selectedFamilies,
   SHOT_CHANNEL_FULL,
   SHOT_NOT_DELIVERED,
+  storeForRun,
+  type BrandStyle,
   type PipelineDeps,
   type ShotContext,
   type ShotOutcome,
   type ShotPackAsset,
   type StoredFollowUpFiles,
 } from "./pipeline-runner";
+import type { JobRecipes } from "./recipes";
 import { JobLedgerPlan, type LedgerAction } from "./state";
 
 export type PackFollowUpReason = "retry" | "add_angle";
@@ -44,7 +50,9 @@ export type PackFollowUpReason = "retry" | "add_angle";
 export interface PackFollowUpInput {
   /** Tells a follow up payload apart from a GeneratePackInput on a shared queue. */
   kind: "follow_up";
-  /** Unique per follow up: its queue key and the prefix of its stored files. */
+  /** Unique per follow up: its queue key, the prefix of its stored files,
+   * and the generation_jobs.run_key the web app set when it queued it, which
+   * every liveness check and ledger write of this run requires. */
   runKey: string;
   jobId: string;
   workspaceId: string;
@@ -59,6 +67,14 @@ export interface PackFollowUpInput {
   sku?: string;
   seoSlug?: string;
   brandColors?: string[];
+  /** Workspace brand kit fonts, logo and style preset, as a first run gets. */
+  brand?: BrandStyle;
+  /** The recipe versions the job's first run was assigned
+   * (generation_jobs.recipe_variants), so the follow up judges its shots
+   * with the same QC recipe. The job's assignment when absent. */
+  recipeVariants?: Record<string, JobRecipeVariant>;
+  /** Draw the "Made with Curvi" badge on social exports, as the first run did. */
+  socialBadge?: boolean;
   /** Files each channel spec already holds in the delivered pack, so new
    * files are numbered after them and no spec passes its image limit. */
   existingFilesBySpec: Record<string, number>;
@@ -123,10 +139,35 @@ export function numberFollowUpFiles(
   return { assets, full };
 }
 
+/**
+ * The recipes the follow up's shots run on: the versions the job recorded,
+ * else the job's assignment, else the seed (undefined). A resolver failure
+ * never stops the follow up.
+ */
+async function followUpRecipes(input: PackFollowUpInput, deps: PipelineDeps): Promise<JobRecipes | undefined> {
+  const resolver = deps.recipes;
+  if (!resolver) {
+    return undefined;
+  }
+  try {
+    const variants = input.recipeVariants;
+    return variants && Object.keys(variants).length > 0 && resolver.forVariants
+      ? await resolver.forVariants(input.jobId, variants)
+      : await resolver.forJob(input.jobId);
+  } catch (err) {
+    console.error(`[follow-up] could not resolve the recipes of job ${input.jobId}; using the seed recipes`, err);
+    return undefined;
+  }
+}
+
 export async function runPackFollowUp(
   input: PackFollowUpInput,
-  deps: PipelineDeps,
+  pipelineDeps: PipelineDeps,
 ): Promise<PackFollowUpSummary> {
+  // Every store call of this follow up, its shots included, checks its run
+  // key, so once a cancel and a newer follow up took the job over, nothing
+  // this run does touches the job or the newer run's hold.
+  const deps: PipelineDeps = { ...pipelineDeps, store: storeForRun(pipelineDeps.store, input.runKey) };
   const { store, clock } = deps;
   const ledger = new JobLedgerPlan();
   let costMicros = 0;
@@ -171,6 +212,7 @@ export async function runPackFollowUp(
 
   try {
     await assertLive();
+    const recipes = await followUpRecipes(input, deps);
     const ctx: ShotContext = {
       jobId: input.jobId,
       workspaceId: input.workspaceId,
@@ -178,12 +220,18 @@ export async function runPackFollowUp(
       seoSlug: input.seoSlug,
       mode: input.mode ?? "listing",
       brandColors: input.brandColors,
+      runKey: input.runKey,
+      ...(recipes ? { recipes } : {}),
+      ...(input.brand ? { brand: input.brand } : {}),
     };
-    // One shot failing never takes its siblings down, as in a first run.
+    // One shot failing never takes its siblings down, as in a first run, and
+    // an added angle's shots share the first run's concurrency limit.
     const runShots =
       deps.runShots ??
       (async (shots: Shot[], c: ShotContext): Promise<ShotOutcome[]> => {
-        const results = await Promise.allSettled(shots.map((s) => runShot(s, c, deps)));
+        const results = await allSettledWithLimit(shots, deps.shotConcurrency ?? DEFAULT_SHOT_CONCURRENCY, (s) =>
+          runShot(s, c, deps),
+        );
         return Promise.all(
           results.map((result, i) =>
             result.status === "fulfilled" ? result.value : recordShotFailure(store, shots[i], c, result.reason),
@@ -205,7 +253,11 @@ export async function runPackFollowUp(
     const passing = outcomes.filter((o) => o.status === "passed");
     if (passing.length > 0) {
       await assertLive();
-      const { assets, full } = numberFollowUpFiles(passing, input.existingFilesBySpec);
+      const numbered = numberFollowUpFiles(passing, input.existingFilesBySpec);
+      const { full } = numbered;
+      const assets = numbered.assets.map((asset) =>
+        input.socialBadge && badgeEligible(asset.specId) ? { ...asset, badge: true } : asset,
+      );
       const families = [...selectedFamilies(input.channels)];
       const built = assets.length > 0 ? await buildPack(assets, families, { outDir: deps.packOutDir, writeFiles: true }) : null;
       const files: StoredFollowUpFiles["files"] = (built?.report.files ?? [])
@@ -276,11 +328,9 @@ export async function runPackFollowUp(
     if (!(err instanceof JobAbandonedError)) {
       console.error(`[follow-up] follow up ${input.runKey} of job ${input.jobId} stopped`, err);
     }
-    try {
-      await backToDone();
-    } catch (stateErr) {
-      console.error(`[follow-up] could not mark job ${input.jobId} done again`, stateErr);
-    }
+    // The hold goes back before the job returns to done: once it is done a
+    // newer follow up can start and reserve against the job, and a sweep
+    // after that would take its hold too. The run key guards this as well.
     try {
       // A job settled elsewhere already had this hold released there.
       if (!(err instanceof JobAbandonedError)) {
@@ -295,6 +345,11 @@ export async function runPackFollowUp(
       await store.releaseAllHeld?.(input.jobId, input.workspaceId);
     } catch (sweepErr) {
       console.error(`[follow-up] release sweep failed for job ${input.jobId}`, sweepErr);
+    }
+    try {
+      await backToDone();
+    } catch (stateErr) {
+      console.error(`[follow-up] could not mark job ${input.jobId} done again`, stateErr);
     }
     return summarize("stopped", message);
   }

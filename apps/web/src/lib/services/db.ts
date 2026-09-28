@@ -25,7 +25,7 @@ import {
 } from "@curvi/db";
 import type { Shot } from "@curvi/pipeline/schemas";
 import type { PackFollowUpInput, PackFollowUpReason } from "@curvi/trigger/follow-up";
-import { AUTO_STYLE_PRESET, presets, tierByKey } from "@curvi/pipeline/seed";
+import { AUTO_STYLE_PRESET, presets, socialBadgeByTier, tierByKey } from "@curvi/pipeline/seed";
 import { isAngleRole, printableSellerLines, type AngleRole } from "@curvi/pipeline/seller-inputs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
@@ -41,7 +41,7 @@ import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { publicJobError } from "@/lib/job-copy";
 import { enqueueGeneratePack, enqueuePackFollowUp, settleJob } from "@/lib/jobs/enqueue";
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
-import { buildGeneratePackInput, seoSlugFor, type PayloadBrandKit } from "@/lib/jobs/payload";
+import { brandStyleFor, buildGeneratePackInput, seoSlugFor, type PayloadBrandKit } from "@/lib/jobs/payload";
 import { pickSourcePhoto } from "@/lib/makeover";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 import { getObjectBytes, isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
@@ -948,8 +948,11 @@ export class DbService implements Services {
    * one request can win, so a double click never runs a shot twice; any
    * extra rows are written (an added photo); reserve_credits holds the shots'
    * seed prices against the job; and a rerun row puts each card back in
-   * progress. A refusal writes nothing. When the queue refuses the follow
-   * up, the hold is returned and the job goes back to done.
+   * progress. A refusal writes nothing. The same transaction gives the job
+   * a fresh run key, which the runner's every check then requires, so a
+   * stale runner of an earlier run can never act on this one (0019). When
+   * the payload cannot be built or the queue refuses the follow up, the hold
+   * is returned and the job goes back to done.
    */
   private async startFollowUp(
     workspaceId: string,
@@ -963,6 +966,7 @@ export class DbService implements Services {
     if (inlineRunnerDraining()) {
       return { outcome: "rejected", reason: "unavailable", message: RESTARTING_MESSAGE };
     }
+    const runKey = crypto.randomUUID();
     let baseCostMicros = 0;
     let rerunIds: string[] = [];
     try {
@@ -970,7 +974,7 @@ export class DbService implements Services {
         await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
         const moved = await tx
           .update(generationJobs)
-          .set({ status: "generating", updatedAt: new Date() })
+          .set({ status: "generating", runKey, updatedAt: new Date() })
           .where(
             and(
               eq(generationJobs.id, job.id),
@@ -1025,40 +1029,23 @@ export class DbService implements Services {
       return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
     }
 
-    const product = await this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, job.productId) });
-    let brandColors: string[] = [];
+    // Everything from here runs under the hold that just committed, so any
+    // failure, building the payload included, returns it (abandonFollowUp).
     try {
-      const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
-      brandColors = Array.isArray(kit?.colors)
-        ? kit.colors.filter((c): c is string => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c)).slice(0, 6)
-        : [];
-    } catch (err) {
-      console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
-    }
-    const payload: PackFollowUpInput = {
-      kind: "follow_up",
-      runKey: crypto.randomUUID(),
-      jobId: job.id,
-      workspaceId,
-      reason,
-      shots,
-      creditBudget: credits,
-      channels: job.channels ?? [],
-      mode: "listing",
-      sku: product?.amazonSku ?? undefined,
-      seoSlug: seoSlugFor(product?.title ?? null),
-      brandColors,
-      existingFilesBySpec: await this.filesBySpec(workspaceId, job.id),
-      baseCostMicros,
-    };
-    try {
+      const payload = await this.followUpPayload(workspaceId, job, {
+        runKey,
+        reason,
+        shots,
+        credits,
+        baseCostMicros,
+      });
       await enqueuePackFollowUp(payload);
     } catch (err) {
       const restarting = err instanceof InlineRunnerClosedError;
       if (!restarting) {
         console.error(`[jobs] could not queue a ${reason} follow up on job ${job.id}`, err);
       }
-      await this.abandonFollowUp(workspaceId, job.id, rerunIds);
+      await this.abandonFollowUp(workspaceId, job.id, rerunIds, runKey);
       return { outcome: "rejected", reason: "unavailable", message: restarting ? RESTARTING_MESSAGE : UNAVAILABLE_MESSAGE };
     }
     const view = await this.getJob(workspaceId, job.id);
@@ -1068,17 +1055,82 @@ export class DbService implements Services {
     return { outcome: "started", job: view, creditsHeld: credits };
   }
 
-  /** Undoes a follow up the queue refused: returns its hold (the first run
-   * settled its own, so all the job holds is this one), puts the job back
-   * to done and drops the rerun rows so the cards read as before. Best
-   * effort; the stale run reconciler is the backstop for the hold. */
-  private async abandonFollowUp(workspaceId: string, jobId: string, rerunIds: string[]): Promise<void> {
+  /** The follow up's worker payload, from the same sources createJob uses:
+   * the product's SKU and title, the brand kit (colors, fonts, logo and
+   * style preset), the plan's social badge and the recipe versions the job's
+   * first run recorded. The brand kit is optional styling, so a failed
+   * lookup falls back to the defaults; anything else throws. */
+  private async followUpPayload(
+    workspaceId: string,
+    job: typeof generationJobs.$inferSelect,
+    run: { runKey: string; reason: PackFollowUpReason; shots: Shot[]; credits: number; baseCostMicros: number },
+  ): Promise<PackFollowUpInput> {
+    const product = await this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, job.productId) });
+    const workspace = await this.db.query.workspaces.findFirst({ where: (t, { eq }) => eq(t.id, workspaceId) });
+    const tier = tierKeyOf(workspace?.plan);
+    let brandColors: string[] = [];
+    let brand: PackFollowUpInput["brand"] | null = null;
     try {
-      await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`);
-      await this.db
-        .update(generationJobs)
-        .set({ status: "done", updatedAt: new Date() })
-        .where(and(eq(generationJobs.id, jobId), eq(generationJobs.status, "generating")));
+      const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
+      brandColors = Array.isArray(kit?.colors)
+        ? kit.colors.filter((c): c is string => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c)).slice(0, 6)
+        : [];
+      brand = kit
+        ? brandStyleFor(workspaceId, { fonts: kit.fonts ?? null, logoKey: kit.logoR2Key, stylePreset: kit.stylePreset })
+        : null;
+    } catch (err) {
+      console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
+    }
+    const recipeVariants = job.recipeVariants && Object.keys(job.recipeVariants).length > 0 ? job.recipeVariants : null;
+    return {
+      kind: "follow_up",
+      runKey: run.runKey,
+      jobId: job.id,
+      workspaceId,
+      reason: run.reason,
+      shots: run.shots,
+      creditBudget: run.credits,
+      channels: job.channels ?? [],
+      mode: "listing",
+      sku: product?.sku || product?.amazonSku || undefined,
+      seoSlug: seoSlugFor(product?.title ?? null),
+      brandColors,
+      ...(brand ? { brand } : {}),
+      ...(recipeVariants ? { recipeVariants } : {}),
+      socialBadge: socialBadgeByTier[tier] ?? false,
+      existingFilesBySpec: await this.filesBySpec(workspaceId, job.id),
+      baseCostMicros: run.baseCostMicros,
+    };
+  }
+
+  /** Undoes a follow up that could not be queued: returns its hold (the
+   * first run settled its own, so all the job holds is this one), puts the
+   * job back to done under a run key no runner holds, and drops the rerun
+   * rows so the cards read as before. The release and the status change
+   * run under the workspace row lock and only while the job still carries
+   * this follow up's run key, so a cancel that settled it first, or a newer
+   * follow up, is never undone. Best effort; the stale run reconciler is
+   * the backstop for the hold. */
+  private async abandonFollowUp(workspaceId: string, jobId: string, rerunIds: string[], runKey: string): Promise<void> {
+    try {
+      await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+        const moved = await tx
+          .update(generationJobs)
+          .set({ status: "done", runKey: sql`gen_random_uuid()::text`, updatedAt: new Date() })
+          .where(
+            and(
+              eq(generationJobs.id, jobId),
+              eq(generationJobs.workspaceId, workspaceId),
+              eq(generationJobs.status, "generating"),
+              eq(generationJobs.runKey, runKey),
+            ),
+          )
+          .returning({ id: generationJobs.id });
+        if (moved.length > 0) {
+          await tx.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`);
+        }
+      });
       if (rerunIds.length > 0) {
         await this.db
           .delete(jobSteps)
@@ -1097,16 +1149,17 @@ export class DbService implements Services {
   /** The replay or conflict answer for a reused Idempotency-Key, or null
    * when the key is new. A replay must match the request body (plan 4.4.1);
    * a "new" product resolved to a real id on the first attempt, so a retry
-   * can only match on the rest. */
+   * can only match on the rest. Keys are unique per workspace (0019), so
+   * only this workspace's jobs are looked at: another workspace using the
+   * same key is neither a conflict nor visible here. */
   private async replayFor(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult | null> {
     const existing = await this.db.query.generationJobs.findFirst({
-      where: (t, { eq }) => eq(t.idempotencyKey, input.idempotencyKey),
+      where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.idempotencyKey, input.idempotencyKey)),
     });
     if (!existing) {
       return null;
     }
     const sameBody =
-      existing.workspaceId === workspaceId &&
       (input.productId === "new" || existing.productId === input.productId) &&
       (existing.mode ?? input.mode) === input.mode &&
       JSON.stringify([...(existing.channels ?? input.channels)].sort()) ===
@@ -1116,10 +1169,6 @@ export class DbService implements Services {
       if (job) {
         return { outcome: "replayed", job };
       }
-    }
-    if (existing.workspaceId !== workspaceId) {
-      // Never leak another workspace's job id.
-      return { outcome: "conflict" };
     }
     return { outcome: "conflict", existingJobId: existing.id };
   }
@@ -1277,6 +1326,9 @@ export class DbService implements Services {
 
     // Product, uploads, job and reservation commit together, so a rejected
     // pack leaves no empty product or orphan uploads behind (Update.md 6.3).
+    // The run key goes on the job row in the same transaction and rides the
+    // payload, so the runner's liveness checks name this run (0019).
+    const runKey = crypto.randomUUID();
     let created: { product: ProductRow; jobId: string; insertedMediaIds: string[] };
     try {
       created = await this.db.transaction(async (tx) => {
@@ -1345,6 +1397,7 @@ export class DbService implements Services {
             idempotencyKey: input.idempotencyKey,
             channels: input.channels,
             mode: input.mode,
+            runKey,
           })
           .returning({ id: generationJobs.id });
         try {
@@ -1395,8 +1448,8 @@ export class DbService implements Services {
     }
 
     try {
-      await enqueueGeneratePack(
-        buildGeneratePackInput({
+      await enqueueGeneratePack({
+        ...buildGeneratePackInput({
           jobId,
           workspaceId,
           tier,
@@ -1417,7 +1470,8 @@ export class DbService implements Services {
           brandColors,
           brandKit,
         }),
-      );
+        runKey,
+      });
     } catch (err) {
       // The reservation must never strand when the queue is unreachable, and
       // a cleanup failure must never hide why the pack did not start.
