@@ -7,18 +7,44 @@
  * response are validated against the configured base origin and known fal
  * hosts before being fetched, so credentials are never forwarded elsewhere.
  *
+ * Billing: a successful queue submit is treated as billed at the per call
+ * price. The adapter reports it to the router right away, so any later
+ * failure (polling error, failed status, deadline, router timeout) is
+ * metered at that price and never retried on this provider, since a retry
+ * would pay for a second generation. This is a deliberate upper bound for
+ * the spend caps until fal's charging of failed requests is verified.
+ *
+ * Timing: polling stops at pollTimeoutMs of wall clock after the submit
+ * (default 300 s, sized for video) or maxPolls, whichever comes first, and
+ * minTimeoutMs tells the router never to abort an attempt before that
+ * window plus a margin.
+ *
  * VERIFY AT FIRST LIVE CALL: queue response field names (request_id,
  * status_url, response_url), status values (IN_QUEUE, IN_PROGRESS,
  * COMPLETED) and per model output shapes against https://docs.fal.ai.
- * Unit tests cover construction and supports() only.
  */
 
 import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
-import { requestJson, resolveApiKey, signalOf, sleepMs, type AdapterCommonConfig, type FetchLike } from "./shared";
+import {
+  ASYNC_JOB_TIMEOUT_MARGIN_MS,
+  billedFailure,
+  reportBilled,
+  requestJson,
+  resolveApiKey,
+  resolvePollBudget,
+  signalOf,
+  sleepMs,
+  type AdapterCommonConfig,
+  type FetchLike,
+  type PollBudget,
+} from "./shared";
 
 export const FAL_API_KEY_ENV = "FAL_KEY";
+
+/** Default polling budget: every second for up to 300 s after the submit. */
+export const FAL_DEFAULT_POLL = { pollIntervalMs: 1_000, pollTimeoutMs: 300_000 } as const;
 
 /** Hosts fal may hand back for polling, besides the configured base origin.
  * Matches the host exactly or any subdomain (dot boundary enforced). */
@@ -35,7 +61,12 @@ export interface FalGatewayConfig extends AdapterCommonConfig {
   kind: ProviderKind;
   priceTable: { perCallMicros: number };
   pollIntervalMs?: number;
+  /** Wall clock polling budget after a successful submit. */
+  pollTimeoutMs?: number;
+  /** Safety cap on polling attempts; defaults to fill pollTimeoutMs. */
   maxPolls?: number;
+  /** Injectable millisecond clock for the polling deadline. */
+  now?: () => number;
 }
 
 /** Input is passed through to the fal model as the request body. */
@@ -59,6 +90,8 @@ interface StatusResponse {
 export class FalGatewayProvider implements CostAwareProvider {
   readonly name: string;
   readonly kind: ProviderKind;
+  /** The router never aborts an attempt before the polling window ends. */
+  readonly minTimeoutMs: number;
 
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -66,8 +99,8 @@ export class FalGatewayProvider implements CostAwareProvider {
   private readonly tasks: string[];
   private readonly modelId: string;
   private readonly priceTable: { perCallMicros: number };
-  private readonly pollIntervalMs: number;
-  private readonly maxPolls: number;
+  private readonly poll: PollBudget;
+  private readonly now: () => number;
 
   constructor(config: FalGatewayConfig) {
     this.name = config.name;
@@ -78,8 +111,9 @@ export class FalGatewayProvider implements CostAwareProvider {
     this.fetchFn = config.fetchFn ?? fetch;
     this.modelId = config.modelId;
     this.priceTable = config.priceTable;
-    this.pollIntervalMs = config.pollIntervalMs ?? 1000;
-    this.maxPolls = config.maxPolls ?? 300;
+    this.poll = resolvePollBudget(config, FAL_DEFAULT_POLL);
+    this.now = config.now ?? Date.now;
+    this.minTimeoutMs = config.minTimeoutMs ?? this.poll.pollTimeoutMs + ASYNC_JOB_TIMEOUT_MARGIN_MS;
   }
 
   supports(task: string): boolean {
@@ -137,21 +171,39 @@ export class FalGatewayProvider implements CostAwareProvider {
       `${this.baseUrl}/${this.modelId}`,
       { method: "POST", headers, body: JSON.stringify(req.input ?? {}), signal },
     );
-    if (!queued.status_url || !queued.response_url) {
-      throw new ProviderError("fal queue response missing status_url or response_url", this.name, req.task, true);
-    }
-    const statusUrl = this.assertAllowedFollowUpUrl(queued.status_url, "status_url", req.task);
-    const responseUrl = this.assertAllowedFollowUpUrl(queued.response_url, "response_url", req.task);
 
-    for (let poll = 0; poll < this.maxPolls; poll++) {
-      await sleepMs(this.pollIntervalMs, signal);
-      const state = await requestJson<StatusResponse>(this.fetchFn, this.name, req.task, statusUrl, {
+    // The request is queued and paid for from here on; a retry would pay again.
+    const billed = this.priceTable.perCallMicros;
+    reportBilled(req, billed);
+    try {
+      return await this.pollUntilDone<TOut>(queued, headers, req.task, signal);
+    } catch (err) {
+      throw billedFailure(err, this.name, req.task, billed);
+    }
+  }
+
+  private async pollUntilDone<TOut>(
+    queued: QueueResponse,
+    headers: Record<string, string>,
+    task: string,
+    signal: AbortSignal | undefined,
+  ): Promise<ProviderResponse<TOut>> {
+    if (!queued.status_url || !queued.response_url) {
+      throw new ProviderError("fal queue response missing status_url or response_url", this.name, task, false);
+    }
+    const statusUrl = this.assertAllowedFollowUpUrl(queued.status_url, "status_url", task);
+    const responseUrl = this.assertAllowedFollowUpUrl(queued.response_url, "response_url", task);
+
+    const deadline = this.now() + this.poll.pollTimeoutMs;
+    for (let poll = 0; poll < this.poll.maxPolls && this.now() < deadline; poll++) {
+      await sleepMs(this.poll.pollIntervalMs, signal);
+      const state = await requestJson<StatusResponse>(this.fetchFn, this.name, task, statusUrl, {
         method: "GET",
         headers,
         signal,
       });
       if (state.status === "COMPLETED") {
-        const result = await requestJson<unknown>(this.fetchFn, this.name, req.task, responseUrl, {
+        const result = await requestJson<unknown>(this.fetchFn, this.name, task, responseUrl, {
           method: "GET",
           headers,
           signal,
@@ -160,9 +212,18 @@ export class FalGatewayProvider implements CostAwareProvider {
         return { output: output as TOut, costMicros: this.priceTable.perCallMicros };
       }
       if (state.status !== undefined && state.status !== "IN_QUEUE" && state.status !== "IN_PROGRESS") {
-        throw new ProviderError(`fal request ended with status ${state.status}`, this.name, req.task, false);
+        throw new ProviderError(`fal request ended with status ${state.status}`, this.name, task, false);
       }
     }
-    throw new ProviderError("fal polling exceeded maxPolls without a result", this.name, req.task, true);
+    // A stalled request says the provider is struggling: it counts toward
+    // the breaker, but is not retried since the request was already paid for.
+    throw new ProviderError(
+      `fal polling ended after ${this.poll.pollTimeoutMs}ms or ${this.poll.maxPolls} polls without a result`,
+      this.name,
+      task,
+      false,
+      undefined,
+      { transient: true },
+    );
   }
 }

@@ -5,10 +5,18 @@
  * in, inline base64 images out. Cost is a flat per output image price from
  * the injected price table.
  *
+ * A reply without images is a non retryable ProviderError: code
+ * content_blocked when promptFeedback.blockReason or a candidate's
+ * finishReason says the safety system declined (retrying the same prompt
+ * would burn paid attempts and trip the shared breaker for every customer),
+ * empty_output otherwise. Nothing is metered for it, since the injected
+ * price is per returned image.
+ *
  * VERIFY AT FIRST LIVE CALL: the generateContent request shape for image
  * output (responseModalities value, inline_data casing) and the response
- * part field names against https://ai.google.dev/api. Unit tests cover
- * construction and supports() only.
+ * part field names against https://ai.google.dev/api. The blockReason and
+ * finishReason values were checked against the generateContent reference
+ * on 2026-09-28.
  */
 
 import type { CostAwareProvider } from "../router";
@@ -17,6 +25,20 @@ import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { requestJson, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const GEMINI_API_KEY_ENV = "GEMINI_API_KEY";
+
+/** Candidate finishReason values that mean the safety or policy system
+ * stopped the output (Gemini API generateContent reference). */
+export const GEMINI_BLOCKING_FINISH_REASONS: ReadonlySet<string> = new Set([
+  "SAFETY",
+  "RECITATION",
+  "SPII",
+  "PROHIBITED_CONTENT",
+  "BLOCKLIST",
+  "IMAGE_SAFETY",
+  "IMAGE_PROHIBITED_CONTENT",
+  "IMAGE_OTHER",
+  "IMAGE_RECITATION",
+]);
 
 export interface GeminiImageConfig extends AdapterCommonConfig {
   /** Model ID from seed data, e.g. the image model row in channel recipes. */
@@ -36,9 +58,35 @@ export interface GeminiImageOutput {
 }
 
 interface GenerateContentResponse {
+  promptFeedback?: { blockReason?: string; blockReasonMessage?: string };
   candidates?: Array<{
     content?: { parts?: Array<{ inlineData?: { mimeType?: string; data?: string } }> };
+    finishReason?: string;
+    finishMessage?: string;
   }>;
+}
+
+/** Why a generateContent reply carried no image, as a non retryable error. */
+function noImageError(data: GenerateContentResponse, provider: string, task: string): ProviderError {
+  const blockReason = data.promptFeedback?.blockReason;
+  if (blockReason && blockReason !== "BLOCK_REASON_UNSPECIFIED") {
+    return new ProviderError(`Gemini blocked the prompt (blockReason ${blockReason})`, provider, task, false, undefined, {
+      code: "content_blocked",
+    });
+  }
+  const finishReasons = (data.candidates ?? [])
+    .map((candidate) => candidate.finishReason)
+    .filter((reason): reason is string => typeof reason === "string");
+  const blocking = finishReasons.find((reason) => GEMINI_BLOCKING_FINISH_REASONS.has(reason));
+  if (blocking) {
+    return new ProviderError(`Gemini declined the image (finishReason ${blocking})`, provider, task, false, undefined, {
+      code: "content_blocked",
+    });
+  }
+  const reasons = finishReasons.length > 0 ? finishReasons.join(", ") : "none";
+  return new ProviderError(`Gemini response contained no images (finishReason ${reasons})`, provider, task, false, undefined, {
+    code: "empty_output",
+  });
 }
 
 export class GeminiImageProvider implements CostAwareProvider {
@@ -51,9 +99,11 @@ export class GeminiImageProvider implements CostAwareProvider {
   private readonly tasks: string[];
   private readonly model: string;
   private readonly priceTable: { perImageMicros: number };
+  readonly minTimeoutMs: number | undefined;
 
   constructor(config: GeminiImageConfig) {
     this.name = config.name;
+    this.minTimeoutMs = config.minTimeoutMs;
     this.tasks = config.tasks;
     this.apiKey = resolveApiKey(config.name, config.apiKey, GEMINI_API_KEY_ENV);
     this.baseUrl = config.baseUrl ?? "https://generativelanguage.googleapis.com";
@@ -110,7 +160,7 @@ export class GeminiImageProvider implements CostAwareProvider {
       }
     }
     if (images.length === 0) {
-      throw new ProviderError("Gemini response contained no images", this.name, req.task, true);
+      throw noImageError(data, this.name, req.task);
     }
 
     const output: GeminiImageOutput = { images, raw: data };

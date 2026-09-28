@@ -41,9 +41,11 @@ export class PhotoroomCutoutProvider implements CostAwareProvider {
   private readonly fetchFn: FetchLike;
   private readonly tasks: string[];
   private readonly priceTable: { perCallMicros: number };
+  readonly minTimeoutMs: number | undefined;
 
   constructor(config: PhotoroomCutoutConfig) {
     this.name = config.name;
+    this.minTimeoutMs = config.minTimeoutMs;
     this.tasks = config.tasks;
     this.apiKey = resolveApiKey(config.name, config.apiKey, PHOTOROOM_API_KEY_ENV);
     this.baseUrl = config.baseUrl ?? "https://sdk.photoroom.com";

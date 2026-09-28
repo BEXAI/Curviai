@@ -47,10 +47,15 @@ export interface CallResult<TOut = unknown> extends ProviderResponse<TOut> {
 export interface CostMeterEntry {
   provider: string;
   task: string;
+  /** Spend of this attempt in USD micros. A failed attempt carries the
+   * amount the provider billed anyway (ProviderError.billedCostMicros),
+   * zero when nothing was billed. */
   costMicros: number;
   latencyMs: number;
   ok: boolean;
   error?: string;
+  /** Machine readable failure class, when the adapter or router set one. */
+  errorCode?: ProviderErrorCode;
   workspaceId?: string;
   jobId?: string;
   stepId?: string;
@@ -105,16 +110,71 @@ export interface RouteOptions {
   allowUnestimatedCost?: boolean;
 }
 
+/**
+ * Machine readable failure classes. Callers branch on these instead of
+ * matching message text.
+ * - content_blocked: the provider's safety system declined the prompt or
+ *   the output. Never retried on the same provider and never counted
+ *   toward the shared circuit breaker, since it says nothing about the
+ *   provider's health.
+ * - empty_output: the provider answered without usable output (no image,
+ *   no text or tool block). Not retried on the same provider.
+ * - timeout: the router's per attempt timeout elapsed.
+ * - estimate_failed: the provider could not estimate its cost, so a cost
+ *   capped call refused it before invoking.
+ * - cap_blocked: a spend cap refused the reservation.
+ * - cap_unavailable: the spend cap reservation could not be made (store
+ *   error or missing identifiers); the call fails closed.
+ */
+export type ProviderErrorCode =
+  | "content_blocked"
+  | "empty_output"
+  | "timeout"
+  | "estimate_failed"
+  | "cap_blocked"
+  | "cap_unavailable";
+
+export interface ProviderErrorDetails {
+  code?: ProviderErrorCode;
+  /**
+   * Provider spend this failed attempt still incurred, in USD micros: for
+   * example an async job that was created (and paid for) before polling
+   * failed, or LLM usage billed on a refusal. The router meters it and keeps
+   * it against the spend caps instead of releasing it.
+   */
+  billedCostMicros?: number;
+  /**
+   * Whether the failure says the provider itself is unhealthy (5xx, 429,
+   * timeout, network, a stalled job). Only transient failures count toward
+   * the shared circuit breaker. Defaults to retryable. A failure can be
+   * transient yet not retryable, for example a timeout after a paid job
+   * create: retrying would pay again, but the breaker should still learn
+   * the provider is struggling so later calls stop paying for it.
+   */
+  transient?: boolean;
+}
+
 export class ProviderError extends Error {
+  readonly code: ProviderErrorCode | undefined;
+  /** See ProviderErrorDetails.billedCostMicros. Zero when nothing was billed. */
+  readonly billedCostMicros: number;
+  /** See ProviderErrorDetails.transient. Never true for content_blocked. */
+  readonly transient: boolean;
+
   constructor(
     message: string,
     readonly provider: string,
     readonly task: string,
     readonly retryable: boolean,
     readonly cause?: unknown,
+    details: ProviderErrorDetails = {},
   ) {
     super(message);
     this.name = "ProviderError";
+    this.code = details.code;
+    this.transient = details.code === "content_blocked" ? false : (details.transient ?? retryable);
+    const billed = details.billedCostMicros ?? 0;
+    this.billedCostMicros = Number.isFinite(billed) && billed > 0 ? Math.ceil(billed) : 0;
   }
 }
 
@@ -133,4 +193,42 @@ export class BreakerOpenError extends ProviderError {
     super(`Circuit breaker open for ${provider}`, provider, task, false);
     this.name = "BreakerOpenError";
   }
+}
+
+/**
+ * The spend cap reservation could not be made: the cap store threw (for
+ * example a database error) or the caps hook lacks an identifier. The router
+ * releases the layers it already held and refuses the provider, so the call
+ * fails closed and never runs uncapped. The message keeps the "Spend cap
+ * blocked" prefix so callers that route cap blocks to needs review treat it
+ * the same way.
+ */
+export class CapStoreUnavailableError extends ProviderError {
+  constructor(provider: string, task: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `Spend cap blocked call: the spend cap reservation could not be made (${detail})`,
+      provider,
+      task,
+      false,
+      cause,
+      { code: "cap_unavailable" },
+    );
+    this.name = "CapStoreUnavailableError";
+  }
+}
+
+/** Every ProviderError inside err: itself, or the chain an
+ * AllProvidersFailedError carries. */
+export function providerErrorsOf(err: unknown): ProviderError[] {
+  if (err instanceof AllProvidersFailedError) return err.errors;
+  if (err instanceof ProviderError) return [err];
+  return [];
+}
+
+/** True when err, or any provider error in a failed chain, carries code.
+ * For example hasProviderErrorCode(err, "content_blocked") tells a caller to
+ * show "the image service declined this scene" instead of a generic failure. */
+export function hasProviderErrorCode(err: unknown, code: ProviderErrorCode): boolean {
+  return providerErrorsOf(err).some((e) => e.code === code);
 }
