@@ -6,6 +6,15 @@ import { useRouter } from "next/navigation";
 import { Button, Card, CardContent, Input, Label, Select, Textarea, cn } from "@curvi/ui";
 import type { TierKey } from "@curvi/pipeline/seed";
 import { OutOfCreditsDialog } from "@/components/app/paywall";
+import {
+  ANGLE_ROLES,
+  MAX_SELLER_LINE_CHARS,
+  MAX_SELLER_LINES,
+  MAX_SKU_CHARS,
+  SKU_PATTERN,
+  sellerLinesFromText,
+  type AngleRole,
+} from "@curvi/pipeline/seller-inputs";
 import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { outOfCreditsCopy, type PaywallContext, type PaywallCopy } from "@/lib/billing/paywall";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
@@ -15,6 +24,7 @@ import { track } from "@/lib/track";
 import { requestPhotoImport } from "@/lib/url-import/client";
 import { IMPORT_TITLE_MAX, sellerNotesFrom, type ImportedImage, type ImportedProduct } from "@/lib/url-import/types";
 import { ProductLinkImport } from "./product-link-import";
+import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 
 export interface ChannelOption {
   id: string;
@@ -39,6 +49,10 @@ export interface ProductOption {
   id: string;
   title: string;
   mode: "listing" | "concept";
+  /** Saved seller inputs, prefilled when the product is picked. */
+  sku?: string | null;
+  boxContents?: string[];
+  comparisonFacts?: string[];
 }
 
 interface NewPackFormProps {
@@ -101,12 +115,61 @@ export function channelLabel(id: string): string {
   return pretty.charAt(0).toUpperCase() + pretty.slice(1);
 }
 
-type UploadState =
-  | { phase: "idle" }
-  | { phase: "uploading"; name: string }
-  | { phase: "uploaded"; name: string; key: string; sha256: string; kind: "image" | "video" }
-  | { phase: "notice"; message: string }
-  | { phase: "error"; message: string };
+/** Plain labels for the photo roles, in ANGLE_ROLES order. */
+export const ANGLE_LABELS: Record<AngleRole, string> = {
+  front: "Front",
+  back: "Back",
+  side: "Side",
+  detail: "Close up detail",
+  in_the_box: "In the box",
+  scale: "Scale, in a hand or next to something",
+};
+
+/** The role a newly added photo starts with: the first one no photo has
+ * yet, so one photo per angle needs no changes, and detail after that. */
+export function nextAngle(taken: readonly AngleRole[]): AngleRole {
+  return ANGLE_ROLES.find((role) => !taken.includes(role)) ?? "detail";
+}
+
+/**
+ * The first problem with the optional details, in plain words, or null when
+ * they can be sent. Mirrors the API's checks so a seller sees the fix here
+ * instead of a refused pack.
+ */
+export function sellerDetailsProblem(sku: string, boxContents: string[], comparisonFacts: string[]): string | null {
+  const trimmedSku = sku.trim();
+  if (trimmedSku.length > MAX_SKU_CHARS) {
+    return `Keep the SKU to ${MAX_SKU_CHARS} characters.`;
+  }
+  if (trimmedSku.length > 0 && !SKU_PATTERN.test(trimmedSku)) {
+    return "Use letters, digits, dots, hyphens or underscores in the SKU.";
+  }
+  for (const [label, lines] of [
+    ["what is in the box", boxContents],
+    ["how it compares", comparisonFacts],
+  ] as const) {
+    if (lines.length > MAX_SELLER_LINES) {
+      return `List at most ${MAX_SELLER_LINES} lines for ${label}.`;
+    }
+    const long = lines.find((line) => line.length > MAX_SELLER_LINE_CHARS);
+    if (long) {
+      return `Keep each line of ${label} to ${MAX_SELLER_LINE_CHARS} characters so it prints whole. This one is too long: ${long}`;
+    }
+  }
+  return null;
+}
+
+interface PhotoItem {
+  /** Local id, stable while the photo is in the form. */
+  id: number;
+  name: string;
+  phase: "uploading" | "uploaded" | "error";
+  kind: "image" | "video";
+  angle: AngleRole;
+  key?: string;
+  sha256?: string;
+  message?: string;
+}
 
 async function sha256Hex(file: File): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
@@ -119,11 +182,12 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
   // One Idempotency-Key per submission intent (Update.md 6.1): a retry of the
   // same contents reuses it, any change to the contents gets a new one.
   const intentRef = useRef<SubmitIntent | null>(null);
-  // Only the most recent upload may update the form, so a slow earlier
-  // upload never replaces a newer photo.
-  const uploadSeq = useRef(0);
+  // Local ids for photos; each upload updates only its own photo, so a slow
+  // upload never touches another one.
+  const photoSeq = useRef(0);
   const [dragOver, setDragOver] = useState(false);
-  const [upload, setUpload] = useState<UploadState>({ phase: "idle" });
+  const [photos, setPhotos] = useState<PhotoItem[]>([]);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   // A new photo is a new product unless the seller picks an existing one
   // and confirms the photo shows it, so photos of two items never mix.
   const [productId, setProductId] = useState(() =>
@@ -132,6 +196,11 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
   const [confirmedAttach, setConfirmedAttach] = useState<string | null>(null);
   const [newProductTitle, setNewProductTitle] = useState("");
   const [description, setDescription] = useState("");
+  // Seller inputs, prefilled from the picked product and saved on it.
+  const initialProduct = products.find((p) => p.id === productId) ?? null;
+  const [sku, setSku] = useState(initialProduct?.sku ?? "");
+  const [boxText, setBoxText] = useState((initialProduct?.boxContents ?? []).join("\n"));
+  const [comparisonText, setComparisonText] = useState((initialProduct?.comparisonFacts ?? []).join("\n"));
   const [selected, setSelected] = useState<string[]>(
     DEFAULT_CHANNELS.filter((id) => channels.some((c) => c.id === id && isPickable(c))),
   );
@@ -145,14 +214,39 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
   const marketplaceChannels = ordered.filter((c) => c.marketplace);
   const socialChannels = ordered.filter((c) => !c.marketplace);
   const effectiveMode: EstimateMode = CONCEPT_MODE_AVAILABLE ? mode : "listing";
+  const boxContents = useMemo(() => sellerLinesFromText(boxText), [boxText]);
+  const comparisonFacts = useMemo(() => sellerLinesFromText(comparisonText), [comparisonText]);
+  const photoAngles = photos.filter((p) => p.kind === "image" && p.phase !== "error").map((p) => p.angle);
+  const anglesKey = photoAngles.join(",");
   const estimate = useMemo(
-    () => estimatePackCredits(selected, effectiveMode, tier),
-    [selected, effectiveMode, tier],
+    () =>
+      estimatePackCredits(selected, effectiveMode, tier, {
+        angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
+        hasBoxContents: boxContents.length > 0,
+        hasComparisonFacts: comparisonFacts.length > 0,
+      }),
+    [selected, effectiveMode, tier, anglesKey, boxContents, comparisonFacts],
   );
+  const detailsProblem = sellerDetailsProblem(sku, boxContents, comparisonFacts);
   const selectedProduct = products.find((p) => p.id === productId) ?? null;
-  const uploading = upload.phase === "uploading";
-  const attachKey = upload.phase === "uploaded" && selectedProduct ? `${upload.key}:${selectedProduct.id}` : null;
+  const uploading = photos.some((p) => p.phase === "uploading");
+  const uploaded = photos.filter((p) => p.phase === "uploaded" && p.key && p.sha256);
+  const attachKey =
+    uploaded.length > 0 && selectedProduct ? `${uploaded.map((p) => p.key).join("|")}:${selectedProduct.id}` : null;
   const needsAttachConfirm = attachKey !== null && confirmedAttach !== attachKey;
+
+  function pickProduct(id: string) {
+    setProductId(id);
+    // An existing product brings its saved details; a new one starts empty.
+    const product = products.find((p) => p.id === id) ?? null;
+    setSku(product?.sku ?? "");
+    setBoxText((product?.boxContents ?? []).join("\n"));
+    setComparisonText((product?.comparisonFacts ?? []).join("\n"));
+  }
+
+  function updatePhoto(id: number, patch: Partial<PhotoItem>) {
+    setPhotos((current) => current.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  }
 
   function toggleChannel(id: string) {
     // A channel the server would refuse is never added to the pack.
@@ -200,15 +294,40 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
     );
   }
 
-  async function handleFile(file: File) {
-    const seq = ++uploadSeq.current;
-    const update = (state: UploadState) => {
-      if (seq === uploadSeq.current) {
-        setUpload(state);
-      }
-    };
+  function addFiles(files: File[]) {
     setSubmitError(null);
-    update({ phase: "uploading", name: file.name });
+    setUploadNotice(null);
+    const room = MAX_PACK_PHOTOS - photos.length;
+    if (room <= 0) {
+      setUploadNotice(`One pack takes up to ${MAX_PACK_PHOTOS} photos. Remove one to add another.`);
+    } else if (files.length > room) {
+      setUploadNotice(`One pack takes up to ${MAX_PACK_PHOTOS} photos, so only the first ${room} of these were added.`);
+    }
+    const taken = photos.filter((p) => p.kind === "image").map((p) => p.angle);
+    const added: Array<{ item: PhotoItem; file: File }> = [];
+    for (const file of files.slice(0, Math.max(0, room))) {
+      const kind = file.type.startsWith("video/") ? "video" : "image";
+      const angle = nextAngle(taken);
+      if (kind === "image") {
+        taken.push(angle);
+      }
+      added.push({ item: { id: ++photoSeq.current, name: file.name, phase: "uploading", kind, angle }, file });
+    }
+    if (added.length === 0) {
+      return;
+    }
+    setPhotos((current) => [...current, ...added.map((a) => a.item)]);
+    for (const { item, file } of added) {
+      void handleFile(file, item.id);
+    }
+  }
+
+  function removePhoto(id: number) {
+    setPhotos((current) => current.filter((p) => p.id !== id));
+  }
+
+  async function handleFile(file: File, id: number) {
+    const update = (patch: Partial<PhotoItem>) => updatePhoto(id, patch);
     try {
       const response = await fetch("/api/uploads/sign", {
         method: "POST",
@@ -221,10 +340,10 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
       });
       const data = (await response.json()) as { url?: string; key?: string; notice?: string; error?: string };
       if (response.status === 503) {
-        update({
-          phase: "notice",
-          message: data.notice ?? "Uploads are not configured yet. The pack will use the demo photo instead.",
-        });
+        // Uploads are off on this server (demo mode): the photo is dropped and
+        // the pack uses the demo photo.
+        removePhoto(id);
+        setUploadNotice(data.notice ?? "Uploads are not configured yet. The pack will use the demo photo instead.");
         return;
       }
       if (!response.ok || !data.url || !data.key) {
@@ -240,13 +359,7 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
         update({ phase: "error", message: "The upload failed. Try again." });
         return;
       }
-      update({
-        phase: "uploaded",
-        name: file.name,
-        key: data.key,
-        sha256: await sha256Hex(file),
-        kind: file.type.startsWith("video/") ? "video" : "image",
-      });
+      update({ phase: "uploaded", key: data.key, sha256: await sha256Hex(file) });
     } catch {
       update({ phase: "error", message: "The upload failed. Check your connection and try again." });
     }
@@ -268,13 +381,25 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
   // A photo picked from the imported listing is copied into this
   // workspace's uploads by the server, then used like an upload.
   async function handleImportedPhoto(image: ImportedImage, index: number) {
-    const seq = ++uploadSeq.current;
-    const name = `photo ${index + 1} from your listing`;
     setSubmitError(null);
-    setUpload({ phase: "uploading", name });
+    setUploadNotice(null);
+    if (photos.length >= MAX_PACK_PHOTOS) {
+      setUploadNotice(`One pack takes up to ${MAX_PACK_PHOTOS} photos. Remove one to add another.`);
+      return;
+    }
+    const id = ++photoSeq.current;
+    const name = `photo ${index + 1} from your listing`;
+    const angle = nextAngle(photos.filter((p) => p.kind === "image").map((p) => p.angle));
+    setPhotos((current) => [...current, { id, name, phase: "uploading", kind: "image", angle }]);
     const outcome = await requestPhotoImport(image.url, name);
-    if (seq === uploadSeq.current) {
-      setUpload(outcome);
+    if (outcome.phase === "uploaded") {
+      updatePhoto(id, { phase: "uploaded", key: outcome.key, sha256: outcome.sha256 });
+    } else if (outcome.phase === "notice") {
+      // Imports are off on this server (demo mode), like uploads.
+      removePhoto(id);
+      setUploadNotice(outcome.message);
+    } else {
+      updatePhoto(id, { phase: "error", message: outcome.message });
     }
   }
 
@@ -288,18 +413,30 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
       return;
     }
     if (needsAttachConfirm && selectedProduct) {
-      setSubmitError(`Confirm whether this photo shows ${selectedProduct.title}.`);
+      setSubmitError(`Confirm whether these photos show ${selectedProduct.title}.`);
       return;
     }
+    if (detailsProblem) {
+      setSubmitError(detailsProblem);
+      return;
+    }
+    const uploads = uploaded.map((p) => ({
+      key: p.key!,
+      sha256: p.sha256!,
+      kind: p.kind,
+      ...(p.kind === "image" ? { angle: p.angle } : {}),
+    }));
+    const details = { sku: sku.trim(), boxContents, comparisonFacts };
     const intent = intentFor(
       intentRef.current,
       {
         productId,
         channels: selected,
         mode: effectiveMode,
-        uploadKey: upload.phase === "uploaded" ? upload.key : null,
+        uploadKey: uploads.length > 0 ? uploads.map((u) => u.key).join("|") : null,
         newProductTitle,
         description,
+        details: JSON.stringify({ angles: uploads.map((u) => u.angle ?? ""), ...details }),
       },
       () => crypto.randomUUID(),
     );
@@ -316,12 +453,10 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
           productId,
           channels: selected,
           mode: effectiveMode,
-          uploads:
-            upload.phase === "uploaded"
-              ? [{ key: upload.key, sha256: upload.sha256, kind: upload.kind }]
-              : undefined,
+          uploads: uploads.length > 0 ? uploads : undefined,
           newProductTitle: productId === "new" && newProductTitle.trim() ? newProductTitle.trim() : undefined,
           userDescription: description.trim() ? description.trim() : undefined,
+          ...details,
         }),
       });
       const data = (await response.json().catch(() => ({}))) as {
@@ -346,7 +481,7 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
       }
       track("pack_created", {
         product_is_new: productId === "new",
-        photo_count: upload.phase === "uploaded" ? 1 : 0,
+        photo_count: uploads.filter((u) => u.kind === "image").length,
         replayed: data.replayed === true,
       });
       intentRef.current = null;
@@ -389,58 +524,103 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
             onDrop={(event) => {
               event.preventDefault();
               setDragOver(false);
-              const file = event.dataTransfer.files[0];
-              if (file) {
-                void handleFile(file);
-              }
+              addFiles([...event.dataTransfer.files]);
             }}
           >
-            <p className="text-sm font-medium text-ink-900">Drop one product photo here</p>
-            <p className="mt-1 text-xs text-ink-500">JPEG, PNG, WEBP, GIF or TIFF up to 25 MB. Video up to 200 MB.</p>
+            <p className="text-sm font-medium text-ink-900">Drop your product photos here</p>
+            <p className="mt-1 text-xs text-ink-500">
+              Up to {MAX_PACK_PHOTOS} photos, one per angle works best. JPEG, PNG, WEBP, GIF or TIFF up to 25 MB.
+              Video up to 200 MB.
+            </p>
             <input
               ref={fileInputRef}
               type="file"
+              multiple
               accept="image/jpeg,image/png,image/webp,image/gif,image/tiff,video/mp4,video/quicktime"
               className="sr-only"
               aria-label="Upload a product photo"
               onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  void handleFile(file);
-                }
+                addFiles([...(event.target.files ?? [])]);
+                // Picking the same file again after removing it still fires.
+                event.target.value = "";
               }}
             />
             <Button
               variant="outline"
               className="mt-4"
-              disabled={uploading}
+              disabled={photos.length >= MAX_PACK_PHOTOS}
               onClick={() => fileInputRef.current?.click()}
             >
-              {upload.phase === "uploaded" ? "Choose a different file" : "Choose a file"}
+              {photos.length > 0 ? "Add more photos" : "Choose photos"}
             </Button>
             <div aria-live="polite">
-              {upload.phase === "uploading" ? (
-                <p className="mt-3 text-sm text-ink-500" data-testid="upload-progress">
-                  Uploading {upload.name}
-                </p>
-              ) : null}
-              {upload.phase === "uploaded" ? (
-                <p className="mt-3 text-sm text-emerald-700" data-testid="upload-done">
-                  Uploaded {upload.name}
-                </p>
-              ) : null}
-              {upload.phase === "notice" ? (
+              {uploadNotice ? (
                 <p className="mt-3 text-sm text-amber-700" data-testid="upload-notice">
-                  {upload.message}
-                </p>
-              ) : null}
-              {upload.phase === "error" ? (
-                <p className="mt-3 text-sm text-red-600" role="alert">
-                  {upload.message}
+                  {uploadNotice}
                 </p>
               ) : null}
             </div>
           </div>
+
+          {photos.length > 0 ? (
+            <div className="mt-3">
+              <p className="text-xs text-ink-500">
+                Tell us what each photo shows, so every angle is made from the photo that really shows it.
+              </p>
+              <ul className="mt-2 space-y-2" data-testid="photo-list">
+                {photos.map((photo, index) => (
+                  <li
+                    key={photo.id}
+                    className="flex flex-wrap items-center gap-3 rounded-lg border border-ink-200 bg-white px-3 py-2"
+                    data-testid="photo-item"
+                  >
+                    <div className="min-w-0 flex-1" aria-live="polite">
+                      <p className="truncate text-sm font-medium text-ink-900">{photo.name}</p>
+                      {photo.phase === "uploading" ? (
+                        <p className="text-xs text-ink-500" data-testid="upload-progress">
+                          Uploading {photo.name}
+                        </p>
+                      ) : null}
+                      {photo.phase === "uploaded" ? (
+                        <p className="text-xs text-emerald-700" data-testid="upload-done">
+                          Uploaded {photo.name}
+                        </p>
+                      ) : null}
+                      {photo.phase === "error" ? (
+                        <p className="text-xs text-red-600" role="alert">
+                          {photo.message}
+                        </p>
+                      ) : null}
+                    </div>
+                    {photo.kind === "image" ? (
+                      <div>
+                        <Label htmlFor={`photo-angle-${photo.id}`} className="sr-only">
+                          What photo {index + 1} shows
+                        </Label>
+                        <Select
+                          id={`photo-angle-${photo.id}`}
+                          value={photo.angle}
+                          onChange={(event) => updatePhoto(photo.id, { angle: event.target.value as AngleRole })}
+                          data-testid="photo-angle"
+                        >
+                          {ANGLE_ROLES.map((role) => (
+                            <option key={role} value={role}>
+                              {ANGLE_LABELS[role]}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-ink-500">Video</span>
+                    )}
+                    <Button size="sm" variant="ghost" onClick={() => removePhoto(photo.id)}>
+                      Remove
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div>
@@ -448,7 +628,7 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
               <Select
                 id="product-select"
                 value={productId}
-                onChange={(event) => setProductId(event.target.value)}
+                onChange={(event) => pickProduct(event.target.value)}
                 className="mt-1"
               >
                 <option value="new">New product</option>
@@ -484,14 +664,14 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
                   data-testid="attach-confirm"
                 >
                   <p id="attach-question" className="text-sm text-ink-800">
-                    Does this photo show {selectedProduct.title}? Photos of different items in one pack give mixed
+                    Do these photos show {selectedProduct.title}? Photos of different items in one pack give mixed
                     results.
                   </p>
                   <div className="mt-2 flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => attachKey && setConfirmedAttach(attachKey)}>
-                      Add this photo to {selectedProduct.title}
+                      Add them to {selectedProduct.title}
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setProductId("new")}>
+                    <Button size="sm" variant="ghost" onClick={() => pickProduct("new")}>
                       It is a new product
                     </Button>
                   </div>
@@ -505,13 +685,62 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
                 value={description}
                 maxLength={2000}
                 onChange={(event) => setDescription(event.target.value)}
-                placeholder="Materials, sizes, what is in the box, claims you can back up."
+                placeholder="Materials, sizes, claims you can back up."
                 className="mt-1"
               />
               <p className="mt-1 text-xs text-ink-400">
                 Optional. The analyzer reads this as seller notes when planning your shots.
               </p>
             </div>
+          </div>
+
+          <div className="mt-6 rounded-xl border border-ink-200 bg-white p-4" data-testid="seller-details">
+            <h3 className="text-sm font-semibold text-ink-900">Details for more images</h3>
+            <p className="mt-1 text-xs text-ink-500">
+              Optional, and saved with the product. What is in the box adds an In the box image. Comparison facts
+              add a Comparison image. Both print exactly what you type, one line each, up to {MAX_SELLER_LINES}{" "}
+              lines of {MAX_SELLER_LINE_CHARS} characters.
+            </p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-3">
+              <div>
+                <Label htmlFor="product-sku">SKU</Label>
+                <Input
+                  id="product-sku"
+                  value={sku}
+                  maxLength={MAX_SKU_CHARS}
+                  onChange={(event) => setSku(event.target.value)}
+                  placeholder="MUG-12-CREAM"
+                  className="mt-1"
+                />
+                <p className="mt-1 text-xs text-ink-400">Names your files, for example MUG-12-CREAM.MAIN.jpg.</p>
+              </div>
+              <div>
+                <Label htmlFor="box-contents">What is in the box</Label>
+                <Textarea
+                  id="box-contents"
+                  value={boxText}
+                  onChange={(event) => setBoxText(event.target.value)}
+                  placeholder={"Mug\nPour over cone\nTwo paper filters"}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label htmlFor="comparison-facts">How it compares</Label>
+                <Textarea
+                  id="comparison-facts"
+                  value={comparisonText}
+                  onChange={(event) => setComparisonText(event.target.value)}
+                  placeholder={"Holds 12 oz, most hold 8 oz\nDishwasher safe glaze"}
+                  className="mt-1"
+                />
+                <p className="mt-1 text-xs text-ink-400">Only facts you can back up.</p>
+              </div>
+            </div>
+            {detailsProblem ? (
+              <p className="mt-3 text-sm text-amber-700" data-testid="seller-details-problem">
+                {detailsProblem}
+              </p>
+            ) : null}
           </div>
         </section>
 

@@ -1,7 +1,10 @@
 /**
  * Still template renderer for method "template" shots: infographic,
- * dimensions, the A+ banner and the social crops (the Meta feed and story
- * sizes, and the 2:3 Pinterest pin). Everything here is deterministic. The
+ * dimensions, in the box, comparison, the A+ banner and the social crops
+ * (the Meta feed and story sizes, and the 2:3 Pinterest pin). In the box and
+ * comparison use the infographic's product and list layout, with the lines
+ * the seller typed (box contents, comparison facts) as the list. Everything
+ * here is deterministic. The
  * product is only scaled and placed with its own alpha,
  * never recolored or regenerated (CLAUDE.md rule 3). Colors and copy always
  * come from the caller (seed stillStyle and the shot plan); the only numbers
@@ -21,6 +24,8 @@ import { loadTemplateFont } from "./font";
 export type TemplateStillType =
   | "infographic"
   | "dimensions"
+  | "in_the_box"
+  | "comparison"
   | "aplus_banner"
   | "social_1x1"
   | "social_4x5"
@@ -30,12 +35,29 @@ export type TemplateStillType =
 export const TEMPLATE_STILL_TYPES: ReadonlySet<string> = new Set<TemplateStillType>([
   "infographic",
   "dimensions",
+  "in_the_box",
+  "comparison",
   "aplus_banner",
   "social_1x1",
   "social_4x5",
   "social_9x16",
   "social_2x3",
 ]);
+
+/** Template types that print copy from the shot's callouts. They need a
+ * channel that allows text and at least one usable line. */
+export const TEXT_TEMPLATE_TYPES: ReadonlySet<string> = new Set<TemplateStillType>([
+  "infographic",
+  "dimensions",
+  "in_the_box",
+  "comparison",
+]);
+
+type TextTemplateType = "infographic" | "dimensions" | "in_the_box" | "comparison";
+
+function isTextTemplate(type: TemplateStillType): type is TextTemplateType {
+  return TEXT_TEMPLATE_TYPES.has(type);
+}
 
 /**
  * The template cannot be rendered for this input (missing copy, a spec that
@@ -119,7 +141,7 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
   if (!TEMPLATE_STILL_TYPES.has(type)) {
     throw new TemplateUnavailableError(`No still template for shot type ${String(type)}`);
   }
-  const needsText = type === "infographic" || type === "dimensions";
+  const needsText = isTextTemplate(type);
   const copy = needsText ? usableCopy(type, input.callouts) : [];
   if (needsText && spec.textAllowed === false) {
     throw new TemplateUnavailableError(`Channel ${spec.id} does not allow text for ${type}`);
@@ -159,6 +181,8 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
   let placement: BBox;
   switch (type) {
     case "infographic":
+    case "in_the_box":
+    case "comparison":
       placement = await layoutInfographic(canvas, product, content, copy, font!, text, accent);
       break;
     case "dimensions":
@@ -192,7 +216,7 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
 
 // Copy handling
 
-function usableCopy(type: "infographic" | "dimensions", callouts: string[] | undefined): string[] {
+function usableCopy(type: TextTemplateType, callouts: string[] | undefined): string[] {
   const cleaned = (callouts ?? []).map(sanitizeCallout).filter((c) => c.length > 0);
   if (type === "dimensions") {
     if (cleaned.length === 0) {
@@ -201,7 +225,9 @@ function usableCopy(type: "infographic" | "dimensions", callouts: string[] | und
     return [cleaned[0]];
   }
   if (cleaned.length === 0) {
-    throw new TemplateUnavailableError("Infographic template needs at least one usable callout");
+    // In the box and comparison print only lines the seller typed; with none
+    // there is nothing true to show.
+    throw new TemplateUnavailableError(`The ${type} template needs at least one usable line`);
   }
   return cleaned.slice(0, MAX_CALLOUTS);
 }

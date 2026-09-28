@@ -54,7 +54,14 @@ export default async function NewPackPage({
       ) : null}
       <div className="mt-8">
         <NewPackForm
-          products={products.map((p) => ({ id: p.id, title: p.title, mode: p.mode }))}
+          products={products.map((p) => ({
+            id: p.id,
+            title: p.title,
+            mode: p.mode,
+            sku: p.sku,
+            boxContents: p.boxContents,
+            comparisonFacts: p.comparisonFacts,
+          }))}
           channels={channels}
           tier={tier}
           creditBalance={workspace.creditBalance}

@@ -50,6 +50,7 @@ import {
   rawToSharp,
   renderTemplateStill,
   TEMPLATE_STILL_TYPES,
+  TEXT_TEMPLATE_TYPES,
   TemplateUnavailableError,
   type TemplateStillType,
   type CompositeResult,
@@ -447,7 +448,7 @@ export function makeR2MediaLoader(readEnv: ReadEnv = readEnvDefault): MediaLoade
 function precheckStill(shot: ShotGenerateArgs["shot"], label: string): void {
   const spec = getSpec(shot.channels[0]);
   const solidBackground = spec.background?.type === "solid";
-  const needsText = shot.type === "infographic" || shot.type === "dimensions";
+  const needsText = TEXT_TEMPLATE_TYPES.has(shot.type);
   if (needsText && spec.textAllowed === false) {
     throw new ShotUnavailableError(`This channel does not allow text, so the ${label} image needs review.`);
   }
@@ -607,7 +608,8 @@ type CapsHooks = CapsHook[] | undefined;
  *   chain and paste the original product pixels back via compositeShot;
  * - deterministic methods (white main image, alt angles, cutout, sweeps,
  *   collection thumb) place the real pixels with the whiten helpers;
- * - template methods (infographic, dimensions, A+ banner, social crops)
+ * - template methods (infographic, dimensions, in the box, comparison, A+
+ *   banner, social crops)
  *   place the real pixels on a seeded background with rendered text.
  * No path regenerates product pixels (CLAUDE.md rule 3).
  *

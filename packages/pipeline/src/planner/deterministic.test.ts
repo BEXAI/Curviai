@@ -163,6 +163,27 @@ describe("planShots", () => {
     expect(rich.shots.some((s) => s.type === "comparison")).toBe(true);
   });
 
+  it("prints the seller's box contents and comparison facts, and draws in_the_box from the in the box photo", () => {
+    const plan = planShots(profile(), {
+      ...baseOpts,
+      boxContents: ["Mug", "  Pour   over cone ", "", "Mug", "x".repeat(41)],
+      comparisonFacts: ["Holds 12 oz, most hold 8 oz"],
+      mediaIdsByAngle: { front: "m_front", packaging: "m_box" },
+      primaryMediaId: "m_front",
+    });
+    const box = plan.shots.find((s) => s.type === "in_the_box");
+    const comparison = plan.shots.find((s) => s.type === "comparison");
+    // Trimmed, deduped, and a line too long to print whole is dropped, never cut.
+    expect(box?.callouts).toEqual(["Mug", "Pour over cone"]);
+    expect(box?.sourceMediaId).toBe("m_box");
+    expect(comparison?.callouts).toEqual(["Holds 12 oz, most hold 8 oz"]);
+    expect(comparison?.sourceMediaId).toBe("m_front");
+    // Lists alone count as supplied facts; empty lists do not.
+    const empty = planShots(profile(), { ...baseOpts, boxContents: [" "], comparisonFacts: [] });
+    expect(empty.shots.some((s) => s.type === "in_the_box" || s.type === "comparison")).toBe(false);
+    expect(empty.skipped.map((s) => s.type)).toEqual(expect.arrayContaining(["in_the_box", "comparison"]));
+  });
+
   it("plans video_spin only with 4 or more angles or a video source", () => {
     const spin = planShots(profile(), baseOpts);
     expect(spin.shots.some((s) => s.type === "video_spin")).toBe(true);

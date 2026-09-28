@@ -90,12 +90,15 @@ export function skippedCopy(reason: string | null | undefined, shotType?: string
     };
   }
   if (r.includes("contents")) {
-    return { label: "Needs details", note: `List what is in the box in the notes to get this shot. ${NO_CHARGE}` };
+    return {
+      label: "Needs details",
+      note: `List what is in the box under Details for more images on your next pack to get this shot. ${NO_CHARGE}`,
+    };
   }
   if (r.includes("comparison")) {
     return {
       label: "Needs details",
-      note: `Add comparison facts you can back up in the notes to get this shot. ${NO_CHARGE}`,
+      note: `Add comparison facts you can back up under Details for more images on your next pack to get this shot. ${NO_CHARGE}`,
     };
   }
   return { label: "Skipped", note: `This shot was left out of the pack. ${NO_CHARGE}` };

@@ -26,6 +26,7 @@ import {
 import type { Shot } from "@curvi/pipeline/schemas";
 import type { PackFollowUpInput, PackFollowUpReason } from "@curvi/trigger/follow-up";
 import { presets, tierByKey } from "@curvi/pipeline/seed";
+import { isAngleRole, printableSellerLines, type AngleRole } from "@curvi/pipeline/seller-inputs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
@@ -39,6 +40,7 @@ import { estimatePackCredits } from "@/lib/pack-estimate";
 import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
 import { brandKitInputSchema, brandKitIssueNotice } from "@/lib/validation/brand-kit";
 import { isUuid } from "@/lib/validation/ids";
+import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
 import { looksStale, reconcileStaleJobs } from "./reconcile";
@@ -68,6 +70,7 @@ import type {
   JobSummary,
   JobView,
   MemberView,
+  ProductLibraryEntry,
   ProductSummary,
   RegisterSourceMediaInput,
   SaveResult,
@@ -107,9 +110,41 @@ export interface DbServiceDeps {
   getSupabase: () => Promise<SupabaseClient | null>;
 }
 
-/** Most photos a pack sends to the worker: this request's uploads first,
- * then the product's newest stored photos. */
-const MAX_PACK_MEDIA = 6;
+/** Most photos a pack sends to the worker (MAX_PACK_PHOTOS). */
+const MAX_PACK_MEDIA = MAX_PACK_PHOTOS;
+
+/** Most products the library lists, newest first. */
+const MAX_LIBRARY_PRODUCTS = 100;
+
+type ProductRow = typeof products.$inferSelect;
+
+/** The view of a product row, seller inputs included. */
+function productSummaryOf(row: ProductRow): ProductSummary {
+  return {
+    id: row.id,
+    title: row.title ?? "Untitled product",
+    mode: row.mode,
+    category: typeof row.profile?.category === "string" ? row.profile.category : "other",
+    createdAt: row.createdAt.toISOString(),
+    sku: row.sku ?? null,
+    boxContents: printableSellerLines(row.boxContents),
+    comparisonFacts: printableSellerLines(row.comparisonFacts),
+  };
+}
+
+/**
+ * The product columns a pack request changes: only the seller inputs the
+ * request carries. An empty SKU clears it; an empty list clears the list.
+ */
+function sellerInputUpdates(
+  input: Pick<CreateJobInput, "sku" | "boxContents" | "comparisonFacts">,
+): Partial<Pick<ProductRow, "sku" | "boxContents" | "comparisonFacts">> {
+  return {
+    ...(input.sku !== undefined ? { sku: input.sku.trim() || null } : {}),
+    ...(input.boxContents !== undefined ? { boxContents: printableSellerLines(input.boxContents) } : {}),
+    ...(input.comparisonFacts !== undefined ? { comparisonFacts: printableSellerLines(input.comparisonFacts) } : {}),
+  };
+}
 
 // Defined in ./errors so routes can map them without loading this module.
 export { PROVISIONING_ERROR_MESSAGE, ProvisioningError, RESTARTING_MESSAGE } from "./errors";
@@ -183,6 +218,7 @@ export function isInsufficientCreditsError(err: unknown): boolean {
 interface PackMedia {
   r2Key: string;
   kind: "image" | "video" | "frame" | null;
+  angle: AngleRole | null;
 }
 
 /** This request's uploads first, then stored photos, one entry per object,
@@ -427,12 +463,66 @@ export class DbService implements Services {
       orderBy: (t, { desc }) => [desc(t.createdAt)],
       limit: 50,
     });
+    return rows.map(productSummaryOf);
+  }
+
+  /**
+   * The products library: each product with its photo count and its packs,
+   * newest first. Stale runs are settled first, so a pack orphaned by a
+   * restart shows as failed with its hold returned, not as running forever.
+   * Credits show what each pack charged, or what it holds while it runs.
+   */
+  async listProductLibrary(workspaceId: string): Promise<ProductLibraryEntry[]> {
+    await reconcileStaleJobs(this.db, { workspaceId });
+    const rows = await this.db.query.products.findMany({
+      where: (t, { eq }) => eq(t.workspaceId, workspaceId),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+      limit: MAX_LIBRARY_PRODUCTS,
+    });
+    if (rows.length === 0) {
+      return [];
+    }
+    const productIds = rows.map((row) => row.id);
+    const [jobs, media] = await Promise.all([
+      this.db.query.generationJobs.findMany({
+        columns: {
+          id: true,
+          productId: true,
+          status: true,
+          channels: true,
+          creditsReserved: true,
+          creditsCharged: true,
+          createdAt: true,
+        },
+        where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.productId, productIds)),
+        orderBy: (t, { desc }) => [desc(t.createdAt)],
+      }),
+      this.db.query.sourceMedia.findMany({
+        columns: { productId: true },
+        where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.productId, productIds)),
+      }),
+    ]);
+    const photoCounts = new Map<string, number>();
+    for (const m of media) {
+      photoCounts.set(m.productId, (photoCounts.get(m.productId) ?? 0) + 1);
+    }
+    const packsByProduct = new Map<string, ProductLibraryEntry["packs"]>();
+    for (const job of jobs) {
+      const packs = packsByProduct.get(job.productId) ?? [];
+      packs.push({
+        id: job.id,
+        status: job.status as JobStatus,
+        channels: job.channels ?? [],
+        createdAt: job.createdAt.toISOString(),
+        creditsReserved: Number(job.creditsReserved),
+        creditsCharged: Number(job.creditsCharged),
+      });
+      packsByProduct.set(job.productId, packs);
+    }
     return rows.map((row) => ({
-      id: row.id,
-      title: row.title ?? "Untitled product",
-      mode: row.mode,
-      category: typeof row.profile?.category === "string" ? row.profile.category : "other",
-      createdAt: row.createdAt.toISOString(),
+      ...productSummaryOf(row),
+      photoCount: photoCounts.get(row.id) ?? 0,
+      packs: packsByProduct.get(row.id) ?? [],
     }));
   }
 
@@ -443,13 +533,7 @@ export class DbService implements Services {
     if (!row) {
       return null;
     }
-    return {
-      id: row.id,
-      title: row.title ?? "Untitled product",
-      mode: row.mode,
-      category: typeof row.profile?.category === "string" ? row.profile.category : "other",
-      createdAt: row.createdAt.toISOString(),
-    };
+    return productSummaryOf(row);
   }
 
   async listRecentJobs(workspaceId: string, limit = 10): Promise<JobSummary[]> {
@@ -1062,7 +1146,7 @@ export class DbService implements Services {
         (input.uploads ?? []).filter((u) => isWorkspaceSourceKey(workspaceId, u.key)).map((u) => [u.key, u]),
       ).values(),
     ];
-    const uploads = uploadRows.map((u) => ({ r2Key: u.key, kind: u.kind }));
+    const uploads: PackMedia[] = uploadRows.map((u) => ({ r2Key: u.key, kind: u.kind, angle: u.angle ?? null }));
     const storedMedia = existingProduct
       ? (
           await this.db.query.sourceMedia.findMany({
@@ -1077,9 +1161,18 @@ export class DbService implements Services {
           })
         )
           .filter((m) => isWorkspaceSourceKey(workspaceId, m.r2Key))
-          .map((m) => ({ r2Key: m.r2Key, kind: m.kind }))
+          .map((m): PackMedia => ({ r2Key: m.r2Key, kind: m.kind, angle: isAngleRole(m.angle) ? m.angle : null }))
       : [];
     const media = mergePackMedia(uploads, storedMedia);
+
+    // Seller inputs this request saves on the product, and what the product
+    // then holds. The hold covers the shots they unlock (the photo angles,
+    // in_the_box and comparison), so the worker's budget trim keeps them.
+    const sellerUpdates = sellerInputUpdates(input);
+    const sellerInputs = {
+      boxContents: sellerUpdates.boxContents ?? printableSellerLines(existingProduct?.boxContents),
+      comparisonFacts: sellerUpdates.comparisonFacts ?? printableSellerLines(existingProduct?.comparisonFacts),
+    };
 
     // Plan 2.7: Listing Mode requires at least one real photo. Angles that
     // were not photographed are skipped by the planner, never invented.
@@ -1094,7 +1187,11 @@ export class DbService implements Services {
     // Reservation is a seed cost estimate that leaves out shots production
     // cannot deliver; the worker's planner recomputes the exact plan and
     // charge_credits bills only the assets that pass QC.
-    const creditsReserved = estimatePackCredits(input.channels, input.mode, tier).total;
+    const creditsReserved = estimatePackCredits(input.channels, input.mode, tier, {
+      angles: media.filter((m) => m.kind !== "video").flatMap((m) => (m.angle ? [m.angle] : [])),
+      hasBoxContents: sellerInputs.boxContents.length > 0,
+      hasComparisonFacts: sellerInputs.comparisonFacts.length > 0,
+    }).total;
     if (creditsReserved <= 0) {
       return {
         outcome: "rejected",
@@ -1115,7 +1212,7 @@ export class DbService implements Services {
 
     // Product, uploads, job and reservation commit together, so a rejected
     // pack leaves no empty product or orphan uploads behind (Update.md 6.3).
-    let created: { product: typeof products.$inferSelect; jobId: string; insertedMediaIds: string[] };
+    let created: { product: ProductRow; jobId: string; insertedMediaIds: string[] };
     try {
       created = await this.db.transaction(async (tx) => {
         // Lock the workspace row before anything else. The foreign key checks
@@ -1129,18 +1226,29 @@ export class DbService implements Services {
         // connection and serializes transactions, so the unit tests can check
         // the statement order but cannot reproduce the race itself.
         await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
-        const product =
-          existingProduct ??
-          (
-            await tx
-              .insert(products)
-              .values({
-                workspaceId,
-                title: input.newProductTitle?.trim() || "New product",
-                mode: input.mode,
-              })
-              .returning()
-          )[0];
+        // A new product starts with this request's seller inputs; an existing
+        // one takes only the ones this request sent.
+        const product = existingProduct
+          ? Object.keys(sellerUpdates).length > 0
+            ? ((
+                await tx
+                  .update(products)
+                  .set({ ...sellerUpdates, updatedAt: new Date() })
+                  .where(and(eq(products.id, existingProduct.id), eq(products.workspaceId, workspaceId)))
+                  .returning()
+              )[0] ?? existingProduct)
+            : existingProduct
+          : (
+              await tx
+                .insert(products)
+                .values({
+                  workspaceId,
+                  title: input.newProductTitle?.trim() || "New product",
+                  mode: input.mode,
+                  ...sellerUpdates,
+                })
+                .returning()
+            )[0];
         // The rows this request really inserted (a photo already saved is
         // skipped by ON CONFLICT), so an abandoned new product pack can hand
         // its photos back for the retry.
@@ -1155,6 +1263,7 @@ export class DbService implements Services {
                     r2Key: u.key,
                     kind: u.kind,
                     sha256: u.sha256,
+                    angle: u.angle ?? null,
                   })),
                 )
                 .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
@@ -1230,6 +1339,9 @@ export class DbService implements Services {
             title: product.title,
             mode: product.mode,
             amazonSku: product.amazonSku,
+            sku: product.sku,
+            boxContents: product.boxContents,
+            comparisonFacts: product.comparisonFacts,
           },
           media,
           userDescription: input.userDescription,
@@ -1328,13 +1440,7 @@ export class DbService implements Services {
       .insert(products)
       .values({ workspaceId, title: input.title, mode: input.mode })
       .returning();
-    return {
-      id: row.id,
-      title: row.title ?? "Untitled product",
-      mode: row.mode,
-      category: "other",
-      createdAt: row.createdAt.toISOString(),
-    };
+    return productSummaryOf(row);
   }
 
   async registerSourceMedia(workspaceId: string, input: RegisterSourceMediaInput): Promise<SaveResult> {

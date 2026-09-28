@@ -41,9 +41,6 @@ const profile: ProductProfile = {
   imageQuality: { usableForMain: true, issues: [] },
 };
 
-/** Shot types whose live renderer is not built yet; they go to needs review. */
-const NOT_RENDERED_LIVE = new Set<Shot["type"]>(["in_the_box", "comparison"]);
-
 async function product(): Promise<{ source: Buffer; mask: Buffer; productPng: Buffer }> {
   const p = await rectProduct(256, "rgb(30,110,170)");
   const rgba = await decodeToRgba(p.source);
@@ -105,8 +102,8 @@ describe("files planned for the newer marketplaces pass their spec's pixel check
         channels: [specId],
         tier: "growth",
         creditBudget: 100,
-        hasBoxContents: true,
-        hasComparisonFacts: true,
+        boxContents: ["Mug", "Pour over cone", "Two paper filters"],
+        comparisonFacts: ["Holds 12 oz, most hold 8 oz"],
       });
       const shots = plan.shots.filter((s) => s.channels.includes(specId));
       expect(shots.length).toBeGreaterThan(0);
@@ -114,7 +111,7 @@ describe("files planned for the newer marketplaces pass their spec's pixel check
       // same helper as the front image.
       const byType = new Map<Shot["type"], Shot>();
       for (const shot of shots) {
-        if (!NOT_RENDERED_LIVE.has(shot.type) && shot.type !== "cutout_png" && !byType.has(shot.type)) {
+        if (shot.type !== "cutout_png" && !byType.has(shot.type)) {
           byType.set(shot.type, shot);
         }
       }

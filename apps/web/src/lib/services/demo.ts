@@ -9,6 +9,7 @@
 import { createHash } from "node:crypto";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { tierByKey, type TierKey } from "@curvi/pipeline/seed";
+import { isAngleRole, printableSellerLines } from "@curvi/pipeline/seller-inputs";
 import { filenameFor, getSpec } from "@curvi/specs";
 import { beforeDemoImage } from "@/components/marketing/demo-images";
 import { checkChannelEntitlements } from "@/lib/entitlements";
@@ -31,6 +32,7 @@ import type {
   JobSummary,
   JobView,
   MemberView,
+  ProductLibraryEntry,
   ProductSummary,
   RegisterSourceMediaInput,
   SaveResult,
@@ -58,6 +60,9 @@ const DEMO_PRODUCTS: ProductSummary[] = [
     mode: "listing",
     category: "home_kitchen",
     createdAt: "2026-09-20T09:00:00.000Z",
+    sku: "JUNIPER-750",
+    boxContents: ["Glass bottle", "Bamboo lid", "Silicone sleeve"],
+    comparisonFacts: [],
   },
   {
     id: "00000000-0000-4000-8000-000000000102",
@@ -65,6 +70,9 @@ const DEMO_PRODUCTS: ProductSummary[] = [
     mode: "listing",
     category: "apparel",
     createdAt: "2026-09-22T14:30:00.000Z",
+    sku: null,
+    boxContents: [],
+    comparisonFacts: [],
   },
   {
     id: "00000000-0000-4000-8000-000000000103",
@@ -72,6 +80,9 @@ const DEMO_PRODUCTS: ProductSummary[] = [
     mode: "concept",
     category: "electronics",
     createdAt: "2026-09-25T11:15:00.000Z",
+    sku: null,
+    boxContents: [],
+    comparisonFacts: [],
   },
 ];
 
@@ -116,6 +127,10 @@ export class DemoStore {
   readonly jobs = new Map<string, DemoJobRecord>();
   readonly jobIdByIdempotencyKey = new Map<string, string>();
   readonly extraProducts: ProductSummary[] = [];
+  /** Seller inputs saved by demo packs, over the fixture values. */
+  readonly productEdits = new Map<string, Pick<ProductSummary, "sku" | "boxContents" | "comparisonFacts">>();
+  /** Photos each demo pack uploaded, per product. */
+  readonly photoCounts = new Map<string, number>();
   /** Rename override for the demo workspace; null keeps the default name. */
   workspaceName: string | null = null;
   private counter = 0;
@@ -299,16 +314,42 @@ export class DemoService implements Services {
     return { ok: true, notice: "Workspace name saved for this demo session." };
   }
 
+  /** Every product with the seller inputs demo packs saved on it. */
+  private allProducts(): ProductSummary[] {
+    return [...this.store.extraProducts, ...DEMO_PRODUCTS].map((p) => ({
+      ...p,
+      ...(this.store.productEdits.get(p.id) ?? {}),
+    }));
+  }
+
   async listProducts(_workspaceId: string): Promise<ProductSummary[]> {
-    return [...this.store.extraProducts, ...DEMO_PRODUCTS];
+    return this.allProducts();
+  }
+
+  async listProductLibrary(_workspaceId: string): Promise<ProductLibraryEntry[]> {
+    const records = [...this.store.jobs.values()].reverse();
+    return this.allProducts().map((product) => {
+      const packs = records
+        .filter((record) => record.productId === product.id)
+        .map((record) => {
+          const view = projectJob(record, product.title);
+          return {
+            id: view.id,
+            status: view.status,
+            channels: view.channels,
+            createdAt: view.createdAt,
+            creditsReserved: view.creditsReserved,
+            creditsCharged: view.creditsCharged,
+          };
+        });
+      // Fixture products stand for a product photographed once.
+      const fixture = DEMO_PRODUCTS.some((p) => p.id === product.id) ? 1 : 0;
+      return { ...product, photoCount: fixture + (this.store.photoCounts.get(product.id) ?? 0), packs };
+    });
   }
 
   async getProduct(_workspaceId: string, productId: string): Promise<ProductSummary | null> {
-    return (
-      this.store.extraProducts.find((p) => p.id === productId) ??
-      DEMO_PRODUCTS.find((p) => p.id === productId) ??
-      null
-    );
+    return this.allProducts().find((p) => p.id === productId) ?? null;
   }
 
   async createProduct(_workspaceId: string, input: CreateProductInput): Promise<ProductSummary> {
@@ -318,6 +359,9 @@ export class DemoService implements Services {
       mode: input.mode,
       category: "other",
       createdAt: this.now().toISOString(),
+      sku: null,
+      boxContents: [],
+      comparisonFacts: [],
     };
     this.store.extraProducts.unshift(product);
     return product;
@@ -487,15 +531,30 @@ export class DemoService implements Services {
 
     // Products made through /api/products live in extraProducts (Update.md 6.7).
     const existingProduct =
-      input.productId === "new"
-        ? null
-        : ([...this.store.extraProducts, ...DEMO_PRODUCTS].find((p) => p.id === input.productId) ?? null);
+      input.productId === "new" ? null : (this.allProducts().find((p) => p.id === input.productId) ?? null);
     if (input.productId !== "new" && !existingProduct) {
       return { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." };
     }
 
+    // The seller inputs the product will hold after this pack, as in db mode:
+    // a field the request sent replaces the saved one.
+    const sellerInputs = {
+      sku: input.sku !== undefined ? input.sku.trim() || null : (existingProduct?.sku ?? null),
+      boxContents:
+        input.boxContents !== undefined ? printableSellerLines(input.boxContents) : (existingProduct?.boxContents ?? []),
+      comparisonFacts:
+        input.comparisonFacts !== undefined
+          ? printableSellerLines(input.comparisonFacts)
+          : (existingProduct?.comparisonFacts ?? []),
+    };
+    const photos = (input.uploads ?? []).filter((u) => u.kind === "image");
+
     const balance = this.balance();
-    const shots = planDemoShots(input.channels, DEMO_TIER, input.mode);
+    const shots = planDemoShots(input.channels, DEMO_TIER, input.mode, {
+      angles: photos.flatMap((u) => (isAngleRole(u.angle) ? [u.angle] : [])),
+      boxContents: sellerInputs.boxContents,
+      comparisonFacts: sellerInputs.comparisonFacts,
+    });
     const creditsReserved = Math.ceil(shots.reduce((sum, shot) => sum + shot.credits, 0));
     if (creditsReserved <= 0 || creditsReserved > balance) {
       return {
@@ -515,6 +574,10 @@ export class DemoService implements Services {
         title: input.newProductTitle?.trim() || "New product",
         mode: input.mode,
       }));
+    this.store.productEdits.set(product.id, sellerInputs);
+    if (photos.length > 0) {
+      this.store.photoCounts.set(product.id, (this.store.photoCounts.get(product.id) ?? 0) + photos.length);
+    }
 
     const record: DemoJobRecord = {
       id: this.store.nextJobId(),
@@ -550,11 +613,7 @@ export class DemoService implements Services {
   }
 
   private productTitle(productId: string): string {
-    return (
-      this.store.extraProducts.find((p) => p.id === productId)?.title ??
-      DEMO_PRODUCTS.find((p) => p.id === productId)?.title ??
-      "Product"
-    );
+    return this.allProducts().find((p) => p.id === productId)?.title ?? "Product";
   }
 }
 

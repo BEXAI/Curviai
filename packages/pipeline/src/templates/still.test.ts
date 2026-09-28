@@ -14,6 +14,7 @@ import {
   renderTemplateStill,
   sanitizeCallout,
   TEMPLATE_STILL_TYPES,
+  TEXT_TEMPLATE_TYPES,
   TemplateUnavailableError,
   type TemplateStillType,
 } from "./still";
@@ -87,6 +88,16 @@ const cases: { type: TemplateStillType; specId: string; callouts?: string[] }[] 
     callouts: ["Keeps drinks cold for 24 hours", "Leak proof lid", "Dishwasher safe", "BPA free steel"],
   },
   { type: "dimensions", specId: "amazon.secondary", callouts: ["12 x 8 x 4 in"] },
+  {
+    type: "in_the_box",
+    specId: "amazon.secondary",
+    callouts: ["Bottle", "Bamboo lid", "Cleaning brush", "Carry strap"],
+  },
+  {
+    type: "comparison",
+    specId: "amazon.secondary",
+    callouts: ["Holds 24 oz, most hold 16 oz", "Cold for 24 hours, not 12"],
+  },
   { type: "aplus_banner", specId: "amazon.aplus.basic_header" },
   { type: "social_1x1", specId: "meta.feed_1x1" },
   { type: "social_4x5", specId: "meta.feed_4x5" },
@@ -105,7 +116,14 @@ describe("renderTemplateStill", () => {
     for (const c of cases) {
       expect(TEMPLATE_STILL_TYPES.has(c.type)).toBe(true);
     }
-    expect(TEMPLATE_STILL_TYPES.has("in_the_box")).toBe(false);
+    expect(TEMPLATE_STILL_TYPES.has("lifestyle")).toBe(false);
+  });
+
+  it("marks the list templates as text templates", () => {
+    for (const type of ["infographic", "dimensions", "in_the_box", "comparison"]) {
+      expect(TEXT_TEMPLATE_TYPES.has(type)).toBe(true);
+    }
+    expect(TEXT_TEMPLATE_TYPES.has("social_1x1")).toBe(false);
   });
 
   for (const c of cases) {
@@ -160,7 +178,7 @@ describe("renderTemplateStill", () => {
         if (nearColor(image.data, i * 4, text, 24)) textPixels++;
         if (nearColor(image.data, i * 4, accent, 24)) accentPixels++;
       }
-      if (c.type === "infographic" || c.type === "dimensions") {
+      if (TEXT_TEMPLATE_TYPES.has(c.type)) {
         expect(textPixels).toBeGreaterThan(200);
         expect(accentPixels).toBeGreaterThan(50);
       } else {
@@ -210,6 +228,19 @@ describe("renderTemplateStill", () => {
     await expect(renderTemplateStill({ type: "infographic", spec, ...cutout, ...colors })).rejects.toBeInstanceOf(
       TemplateUnavailableError,
     );
+  });
+
+  it("throws TemplateUnavailableError for in the box and comparison with no seller lines", async () => {
+    const cutout = await syntheticCutout();
+    const spec = getSpec("amazon.secondary");
+    for (const type of ["in_the_box", "comparison"] as const) {
+      await expect(renderTemplateStill({ type, spec, ...cutout, ...colors })).rejects.toBeInstanceOf(
+        TemplateUnavailableError,
+      );
+      await expect(renderTemplateStill({ type, spec, ...cutout, callouts: [" "], ...colors })).rejects.toBeInstanceOf(
+        TemplateUnavailableError,
+      );
+    }
   });
 
   it("throws TemplateUnavailableError for dimensions with no label", async () => {

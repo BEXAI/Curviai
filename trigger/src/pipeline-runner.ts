@@ -45,14 +45,20 @@ import {
   pixelChecks,
   planRetry,
   encodeVisionJpeg,
+  mediaIdsByAngle,
+  NO_BOX_CONTENTS_REASON,
+  NO_COMPARISON_FACTS_REASON,
   planShots,
+  printableSellerLines,
   qcKindForSpec,
   trimToBudget,
+  withSellerAngles,
   IntakeResult,
   ProductProfile,
   QCVerdict,
   ShotList,
   strictToolSchema,
+  type AngleRole,
   type DigitalSourceKind,
   type FidelityReport,
   type PackAsset,
@@ -652,12 +658,23 @@ export interface GeneratePackInput {
   /** Channel families or spec ids, e.g. ["amazon", "shopify"]. */
   channels: string[];
   creditBudget: number;
-  images: Array<{ mediaId: string; url?: string }>;
+  /** The pack's photos. angle is the role the seller picked for the photo
+   * (front, back, side, detail, in_the_box, scale), when they picked one. */
+  images: Array<{ mediaId: string; url?: string; angle?: AngleRole }>;
   userDescription?: string;
   sku?: string;
   seoSlug?: string;
+  /** Older payload flags. The in_the_box and comparison shots are planned
+   * only when boxContents or comparisonFacts has a printable line, since
+   * those images print nothing else. */
   hasBoxContents?: boolean;
   hasComparisonFacts?: boolean;
+  /** What is in the box, one item per line, exactly as the seller typed it.
+   * Printed on the in_the_box image; a non empty list implies hasBoxContents. */
+  boxContents?: string[];
+  /** Comparison facts the seller can back up, printed on the comparison
+   * image; a non empty list implies hasComparisonFacts. */
+  comparisonFacts?: string[];
   hasVideoSource?: boolean;
   /** Workspace brand kit colors (hex), for brand colored stills. */
   brandColors?: string[];
@@ -1909,6 +1926,47 @@ export function deterministicPlan(profile: ProductProfile, options: RunnerPlanOp
   return fitShotsToChannels(planShots(profile, everything), fit);
 }
 
+/** The seller's printable lines for the in_the_box and comparison images. */
+export interface SellerCopy {
+  boxContents: string[];
+  comparisonFacts: string[];
+}
+
+export function sellerCopyOf(input: Pick<GeneratePackInput, "boxContents" | "comparisonFacts">): SellerCopy {
+  return {
+    boxContents: printableSellerLines(input.boxContents),
+    comparisonFacts: printableSellerLines(input.comparisonFacts),
+  };
+}
+
+/**
+ * Puts the seller's own lines on the in_the_box and comparison shots of the
+ * chosen plan, whichever planner made it, so these images print exactly what
+ * the seller typed and never a model's wording. A plan that has either shot
+ * without the seller's lines for it (an LLM plan that invented one) loses
+ * that shot to skipped with the planner's reason, so nothing is generated
+ * or charged for it.
+ */
+export function withSellerCopy(plan: ShotList, copy: SellerCopy): ShotList {
+  const skipped = [...plan.skipped];
+  const shots: Shot[] = [];
+  for (const shot of plan.shots) {
+    const lines =
+      shot.type === "in_the_box" ? copy.boxContents : shot.type === "comparison" ? copy.comparisonFacts : null;
+    if (lines === null) {
+      shots.push(shot);
+    } else if (lines.length > 0) {
+      shots.push({ ...shot, callouts: [...lines] });
+    } else {
+      skipped.push({
+        type: shot.type,
+        reason: shot.type === "in_the_box" ? NO_BOX_CONTENTS_REASON : NO_COMPARISON_FACTS_REASON,
+      });
+    }
+  }
+  return { shots, skipped };
+}
+
 /** Job error when neither shot planner produced a plan. Plain copy the
  * board shows; credits held for the pack are released by the failure path. */
 export const PLAN_FAILED_MESSAGE = "We could not plan the shots for this product, so nothing was charged.";
@@ -2051,11 +2109,16 @@ export async function runGeneratePack(
     if (!analysis.value) {
       throw new Error("Product analysis response failed schema validation");
     }
-    const profile = analysis.value;
-    const profileBlock = moderationBlockReasons(intake.value, profile);
+    const profileBlock = moderationBlockReasons(intake.value, analysis.value);
     if (profileBlock.length > 0) {
       throw new Error(`This product was flagged for ${profileBlock.join(", ")} and needs a manual review before a pack can run`);
     }
+    // A photo the seller marked with a role is that angle, whatever the
+    // analyzer saw, so the planner plans it from that exact photo.
+    const profile = withSellerAngles(
+      analysis.value,
+      input.images.map((image) => image.angle),
+    );
     await store.saveProfile?.(input.jobId, profile);
 
     // Plan shots: LLM planner recipe first, validated and repriced from the
@@ -2068,15 +2131,22 @@ export async function runGeneratePack(
     const mode = input.mode ?? "listing";
     const conceptExcluded = mode === "concept" ? input.channels.filter((c) => isMarketplaceChannel(c)) : [];
     const effectiveChannels = input.channels.filter((c) => !conceptExcluded.includes(c));
-    const primaryMediaId = input.images[0]?.mediaId;
+    // The photo the seller marked as the front leads; otherwise the first.
+    const primaryMediaId = (input.images.find((image) => image.angle === "front") ?? input.images[0])?.mediaId;
     const excludeMethods = [...new Set(deps.excludeShotMethods ?? [])];
+    const sellerCopy = sellerCopyOf(input);
+    const angleMedia = mediaIdsByAngle(input.images);
+    // The LLM planner sees whether the seller supplied box contents and
+    // comparison facts, never the text itself: seller text only ever reaches
+    // an image through withSellerCopy below, exactly as typed.
     const planOptions: RunnerPlanOptions = {
       channels: effectiveChannels,
       tier: input.tier,
       creditBudget: input.creditBudget,
-      hasBoxContents: input.hasBoxContents,
-      hasComparisonFacts: input.hasComparisonFacts,
+      hasBoxContents: sellerCopy.boxContents.length > 0,
+      hasComparisonFacts: sellerCopy.comparisonFacts.length > 0,
       hasVideoSource: input.hasVideoSource,
+      ...(Object.keys(angleMedia).length > 0 ? { mediaIdsByAngle: angleMedia } : {}),
       primaryMediaId,
       ...(excludeMethods.length > 0 ? { undeliverableMethods: excludeMethods } : {}),
     };
@@ -2108,7 +2178,7 @@ export async function runGeneratePack(
     // sinks a valid LLM plan.
     let fallback: ShotList | null = null;
     try {
-      fallback = deterministicPlan(profile, planOptions, fit);
+      fallback = deterministicPlan(profile, { ...planOptions, ...sellerCopy }, fit);
     } catch (planErr) {
       console.error(`[runner] job ${input.jobId} deterministic plan failed`, planErr);
     }
@@ -2148,7 +2218,7 @@ export async function runGeneratePack(
       chosen = fallback;
       plannerSource = "deterministic";
     }
-    const shotList: ShotList = chosen;
+    const shotList: ShotList = withSellerCopy(chosen, sellerCopy);
     plannedShots = shotList.shots.length;
     skipped = [
       ...conceptExcluded.map((channel) => ({
