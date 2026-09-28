@@ -71,6 +71,13 @@
       "when": 1790590300000,
       "tag": "0009_provision_workspace",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790600735599,
+      "tag": "0010_spend_cap_counters",
+      "breakpoints": true
     }
   ]
 }

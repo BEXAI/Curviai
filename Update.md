@@ -25,6 +25,21 @@ How this plan was built: the full check suite above, then four parallel code rev
   - `saveProfile` now runs after the moderation block.
 - Two iCloud duplicates were moved out of `.git` (`refs/heads/main 2`, `index 2`). The broken ref was making `git fetch` fail.
 
+## Progress
+
+Fixed on 2026-09-28, before any pack runs with live keys (branch fix/live-pack-safety):
+
+- **2.1 done.** `LiveShotGenerator` never falls back to demo output. Unsupported methods (deterministic, template, video), a missing or foreign source photo, missing storage and spend cap blocks throw `ShotUnavailableError`. `runShot` turns that into needs review with credits released and no retries. Any live key puts the runtime in live mode. LLM plans must use the job's own uploaded photos. Consequence: until deterministic and template shots get live paths (the `makeAmazonMain`, `makeSweep` and `makeCutoutPng` helpers exist), live packs deliver lifestyle composites only, and the rest show as needs review at no charge.
+- **5.2 done.** Cutout, scene plate and harmonize calls reserve against the image asset, pack and global day caps before invoking. The after-the-fact reservation is skipped for these generations, so spend is not double counted. The $50 alert still fires.
+- **1.6 done.** Failed shots are released first, the pack is saved, and only then are passing assets charged. `DbJobStore.savePack` fails the run when storage is not configured, instead of pretending it delivered.
+- **3.1 done.** Items (a), (b) and (c): heartbeat per shot attempt and per stored asset; the reconciler updates conditionally and only the winner releases; the worker refuses to leave a terminal state and stops (`JobAbandonedError`). The failure path never throws and runs a release sweep. Item (d), checking Trigger run status, is not done; the heartbeat covers it.
+- **Reviewer follow ups, same day:**
+  - Spend cap totals now live in Postgres (`spend_cap_counters`, migration 0010, `PgCapStore`). Every task run, subtask retry and web instance used to start from an empty in-process counter, so the pack cap and the $150 global stop never held.
+  - Database-backed runs never use the demo generator, even with no provider keys. Local dev can opt in with `CURVI_ALLOW_DEMO_GENERATION=1`.
+  - A chain counts as cap blocked if any provider was refused by a cap, and a cap block at the QC judge ends only that shot.
+  - A shot stops before spending once the job is no longer live.
+  - A delivered and charged pack stays done if the final state write fails.
+
 ## Wave 0: release blockers (do first, in this order)
 
 Steps 1 and 2 were completed on 2026-09-28 (see docs/verification.md).

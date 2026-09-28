@@ -13,6 +13,7 @@ import {
   AnthropicLLMProvider,
   BflFluxProvider,
   callWithFailover,
+  type CapsHook,
   GeminiImageProvider,
   OpenaiImageProvider,
   PhotoroomCutoutProvider,
@@ -57,7 +58,14 @@ import {
   type PresetKey,
 } from "@curvi/pipeline/seed";
 import { getSpec } from "@curvi/specs";
-import type { PipelineDeps, ShotGenerateArgs, ShotGeneration, ShotGenerator } from "./pipeline-runner";
+import {
+  isSpendCapBlock,
+  ShotUnavailableError,
+  type PipelineDeps,
+  type ShotGenerateArgs,
+  type ShotGeneration,
+  type ShotGenerator,
+} from "./pipeline-runner";
 
 export type ReadEnv = (name: string) => string | undefined;
 
@@ -325,31 +333,68 @@ const LIVE_METHODS: ReadonlySet<string> = new Set(["composite_generate", "edit_g
 export interface LiveShotGeneratorOptions {
   ai: PipelineDeps["ai"];
   wiring: LiveWiring;
-  loadMedia: MediaLoader;
-  /** Handles shot methods the live path does not cover yet. */
-  fallback: ShotGenerator;
+  /** Null when R2 is not configured; every shot is then unavailable. */
+  loadMedia: MediaLoader | null;
 }
 
 /**
  * Real shot generator for composite and edit methods: load the source photo
  * from R2, cut the product out with Photoroom, generate the scene plate
  * through the image chain, and paste the original product pixels back via
- * compositeShot so the fidelity lock holds. Deterministic, template and
- * video methods delegate to the fallback generator until their live paths
- * land.
+ * compositeShot so the fidelity lock holds.
+ *
+ * Anything it cannot produce for real (deterministic, template and video
+ * methods until their live paths land, a missing or foreign source photo, a
+ * spend cap block) throws ShotUnavailableError: the shot goes to needs
+ * review with its credits released. It never substitutes demo output, which
+ * would ship a placeholder as the customer's product and charge for it.
+ *
+ * Every provider call reserves its estimated cost against the per asset,
+ * pack and global day caps before it runs (plan 4.4), so the hard stop
+ * actually stops spend instead of noticing it afterwards.
  */
 export class LiveShotGenerator implements ShotGenerator {
   constructor(private readonly opts: LiveShotGeneratorOptions) {}
 
   async generate(args: ShotGenerateArgs): Promise<ShotGeneration> {
-    const { ai, wiring, loadMedia, fallback } = this.opts;
-    if (!LIVE_METHODS.has(args.shot.method) || wiring.imageProviders.length === 0 || !wiring.cutoutLive) {
-      return fallback.generate(args);
+    try {
+      return await this.generateLive(args);
+    } catch (err) {
+      if (isSpendCapBlock(err)) {
+        throw new ShotUnavailableError("Spend cap reached before this shot could be generated.");
+      }
+      throw err;
+    }
+  }
+
+  private async generateLive(args: ShotGenerateArgs): Promise<ShotGeneration> {
+    const { ai, wiring, loadMedia } = this.opts;
+    const label = args.shot.type.replaceAll("_", " ");
+    if (!LIVE_METHODS.has(args.shot.method)) {
+      throw new ShotUnavailableError(`The ${label} shot is not produced by live providers yet.`);
+    }
+    if (wiring.imageProviders.length === 0 || !wiring.cutoutLive || !loadMedia) {
+      throw new ShotUnavailableError(
+        `The ${label} shot needs the image, cutout and storage providers, and at least one is not configured.`,
+      );
+    }
+    // Source photos live under the workspace's own prefix; anything else
+    // (a planner hallucination or another tenant's key) is never loaded.
+    if (!args.shot.sourceMediaId.startsWith(`ws/${args.workspaceId}/`)) {
+      throw new ShotUnavailableError(`The ${label} shot does not point at one of this product's photos.`);
     }
     const source = await loadMedia(args.shot.sourceMediaId);
-    if (!source) {
-      return fallback.generate(args);
+    if (!source || source.length === 0) {
+      throw new ShotUnavailableError(`The source photo for the ${label} shot could not be loaded.`);
     }
+
+    const caps: CapsHook[] | undefined = ai.caps
+      ? [
+          { spendCaps: ai.caps, capKind: "image_asset", assetId: args.shot.id },
+          { spendCaps: ai.caps, capKind: "pack", jobId: args.jobId },
+          { spendCaps: ai.caps, capKind: "global_day" },
+        ]
+      : undefined;
 
     const cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
       ai.registry,
@@ -363,6 +408,7 @@ export class LiveShotGenerator implements ShotGenerator {
         jobId: args.jobId,
         stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
       },
+      { caps },
     );
     const productRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
     const mask = alphaMask(productRgba);
@@ -393,7 +439,9 @@ export class LiveShotGenerator implements ShotGenerator {
       kind: "image",
       supports: (task) => task === SCENE_PLATE_TASK || task === HARMONIZE_TASK,
       invoke: async <TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> => {
-        const result = await callWithFailover<TIn, TOut>(ai.registry, sceneRouting, ai.meter, ai.breakerStore, req);
+        const result = await callWithFailover<TIn, TOut>(ai.registry, sceneRouting, ai.meter, ai.breakerStore, req, {
+          caps,
+        });
         return { output: result.output, costMicros: result.costMicros };
       },
     };
@@ -426,6 +474,7 @@ export class LiveShotGenerator implements ShotGenerator {
       productReference: result.productReference,
       encoded,
       costMicros: cutout.costMicros + result.costMicros,
+      spendReserved: caps !== undefined,
     };
   }
 }

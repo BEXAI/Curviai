@@ -48,7 +48,7 @@ import {
 import { recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
 import { getSpec, hasSpec, isMarketplaceSpec, listSpecs } from "@curvi/specs";
 import { z } from "zod";
-import { JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
+import { isTerminal, JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 
 export type { JobState } from "./state";
 
@@ -134,12 +134,52 @@ export interface StoredPack {
 /** Minimal persistence interface. The app wires this to @curvi/db; tests and
  * demo mode use the in memory implementation below. */
 export interface JobStore {
-  setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<void>;
+  /** Returns false when the job already reached a terminal state elsewhere
+   * (for example the stale run reconciler failed it); the runner then stops
+   * instead of spending on a job nobody will settle. */
+  setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<boolean | void>;
   appendLedger(entry: JobLedgerEntry): Promise<void>;
   saveAsset(asset: StoredAsset): Promise<void>;
   savePack(pack: StoredPack): Promise<void>;
   /** Persists the analyzed ProductProfile; stores without product rows skip it. */
   saveProfile?(jobId: string, profile: ProductProfile): Promise<void>;
+  /** Marks the run alive between state changes so a long generation phase
+   * never looks stale to the reconciler. Returns false once the job is
+   * terminal, so shots stop spending on a job nobody will settle. */
+  heartbeat?(jobId: string): Promise<boolean | void>;
+  /** Failure path safety sweep: returns every credit the ledger still holds
+   * for the job, whatever the in process plan believes is outstanding. */
+  releaseAllHeld?(jobId: string, workspaceId: string): Promise<void>;
+}
+
+/** Thrown by a shot generator that cannot honestly produce a shot, for
+ * example a method live providers do not cover yet, a missing source photo
+ * or a spend cap block. The shot goes to needs review and its credits are
+ * released; nothing placeholder is ever delivered or charged. */
+export class ShotUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ShotUnavailableError";
+  }
+}
+
+/** True when a provider chain failed because a spend cap refused at least
+ * one provider. The remaining providers failing too (breaker open, outage)
+ * does not change that the cap is what stopped the shot, so it goes to needs
+ * review rather than failing the whole pack. */
+export function isSpendCapBlock(err: unknown): boolean {
+  return (
+    err instanceof AllProvidersFailedError &&
+    err.errors.some((e) => e.message.startsWith("Spend cap blocked"))
+  );
+}
+
+/** The job reached a terminal state outside this run; stop working on it. */
+export class JobAbandonedError extends Error {
+  constructor(jobId: string) {
+    super(`Job ${jobId} was already finished or failed elsewhere, so this run stopped`);
+    this.name = "JobAbandonedError";
+  }
 }
 
 export class InMemoryJobStore implements JobStore {
@@ -148,8 +188,9 @@ export class InMemoryJobStore implements JobStore {
   readonly assets: StoredAsset[] = [];
   readonly packs: StoredPack[] = [];
 
-  async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<void> {
+  async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<boolean> {
     this.states.push({ jobId, state, meta });
+    return true;
   }
 
   async appendLedger(entry: JobLedgerEntry): Promise<void> {
@@ -176,6 +217,10 @@ export interface ShotGeneration {
   productReference?: RawImage;
   encoded: { buffer: Buffer; format: string };
   costMicros: number;
+  /** True when the generator reserved its provider spend against the caps
+   * before each call; runShot then skips its after the fact reservation so
+   * the spend is not counted twice. */
+  spendReserved?: boolean;
 }
 
 export interface ShotGenerateArgs {
@@ -573,48 +618,68 @@ export async function runShot(
   let useFallbackProvider = false;
   let costMicros = 0;
 
+  // A shot that ends without a usable image: needs review, credits released
+  // by the pack runner, nothing delivered.
+  const unusable = async (reason: string): Promise<ShotOutcome> => {
+    const outcome: ShotOutcome = {
+      shotId: shot.id,
+      shotType: shot.type,
+      specId,
+      credits: shot.credits,
+      status: "needs_review",
+      attempts: attempt,
+      usedFallbackProvider: useFallbackProvider,
+      costMicros,
+      verdict: { pass: false, fidelity: 0, issues: ["other"], repairHint: reason.slice(0, 300) },
+      pixelPass: false,
+      fidelityPass: null,
+      digitalSource: digitalSourceFor(shot.method, ctx.mode),
+      measured: { fillPct: null, background: null },
+    };
+    await deps.store.saveAsset(toStoredAsset(outcome, ctx));
+    return outcome;
+  };
+
   for (;;) {
-    const generation = await deps.generator.generate({
-      shot,
-      attempt,
-      repairHint,
-      useFallbackProvider,
-      jobId: ctx.jobId,
-      workspaceId: ctx.workspaceId,
-    });
+    // The heartbeat doubles as a liveness check: once the job was settled
+    // elsewhere (the stale reconciler failed it), stop before spending more.
+    if ((await deps.store.heartbeat?.(ctx.jobId)) === false) {
+      return unusable("The job was stopped before this shot finished.");
+    }
+    let generation: ShotGeneration;
+    try {
+      generation = await deps.generator.generate({
+        shot,
+        attempt,
+        repairHint,
+        useFallbackProvider,
+        jobId: ctx.jobId,
+        workspaceId: ctx.workspaceId,
+      });
+    } catch (err) {
+      if (err instanceof ShotUnavailableError) {
+        return unusable(err.message);
+      }
+      throw err;
+    }
     costMicros += generation.costMicros;
 
     // Spend caps on the generation cost (plan 4.4). A cost capped shot goes
     // to needs review and releases its credits, per the 5.6 retry policy.
-    if (deps.ai.caps && generation.costMicros > 0) {
+    // Generators that reserve before each provider call report it, and only
+    // the alert check runs here (a zero reservation reads the global total).
+    if (deps.ai.caps && generation.spendReserved) {
+      const global = await deps.ai.caps.checkAndReserveGlobalDay(0);
+      if (global.alert) {
+        deps.onSpendAlert?.(global.totalMicros);
+      }
+    } else if (deps.ai.caps && generation.costMicros > 0) {
       const spend = await reserveGenerationSpend(deps.ai.caps, shot, ctx, generation.costMicros);
       if (spend.alert && spend.alertTotalMicros !== undefined) {
         deps.onSpendAlert?.(spend.alertTotalMicros);
       }
       if (!spend.allowed) {
-        const verdict: QCVerdict = {
-          pass: false,
-          fidelity: 0,
-          issues: ["other"],
-          repairHint: `Cost cap reached: ${spend.reason ?? "spend cap"}`.slice(0, 300),
-        };
-        const outcome: ShotOutcome = {
-          shotId: shot.id,
-          shotType: shot.type,
-          specId,
-          credits: shot.credits,
-          status: "needs_review",
-          attempts: attempt,
-          usedFallbackProvider: useFallbackProvider,
-          costMicros,
-          verdict,
-          pixelPass: false,
-          fidelityPass: null,
-          digitalSource: digitalSourceFor(shot.method, ctx.mode),
-          measured: { fillPct: null, background: null },
-        };
-        await deps.store.saveAsset(toStoredAsset(outcome, ctx));
-        return outcome;
+        return unusable(`Cost cap reached: ${spend.reason ?? "spend cap"}`);
       }
     }
 
@@ -638,24 +703,33 @@ export async function runShot(
     }
     const fidelityOk = fidelityInputsMissing ? false : (fidelity?.pass ?? true);
 
-    const judged = await llmJson<QCVerdict>(
-      deps.ai,
-      "qc",
-      QCVerdict,
-      {
-        shot: { id: shot.id, type: shot.type, scene: shot.scene },
-        deterministic: {
-          pixel: { pass: pixel.pass, checks: pixel.checks },
-          fidelity: fidelity
-            ? { pass: fidelity.pass, meanDeltaE: fidelity.meanDeltaE, exactByteShare: fidelity.exactByteShare }
-            : null,
+    let judged: LlmCall<QCVerdict>;
+    try {
+      judged = await llmJson<QCVerdict>(
+        deps.ai,
+        "qc",
+        QCVerdict,
+        {
+          shot: { id: shot.id, type: shot.type, scene: shot.scene },
+          deterministic: {
+            pixel: { pass: pixel.pass, checks: pixel.checks },
+            fidelity: fidelity
+              ? { pass: fidelity.pass, meanDeltaE: fidelity.meanDeltaE, exactByteShare: fidelity.exactByteShare }
+              : null,
+          },
+          attempt,
         },
-        attempt,
-      },
-      { jobId: ctx.jobId, workspaceId: ctx.workspaceId, stepId: `${shot.id}:qc:${attempt}` },
-      undefined,
-      QCVerdict,
-    );
+        { jobId: ctx.jobId, workspaceId: ctx.workspaceId, stepId: `${shot.id}:qc:${attempt}` },
+        undefined,
+        QCVerdict,
+      );
+    } catch (err) {
+      // A cap reached at the judge ends this shot, not the whole pack.
+      if (isSpendCapBlock(err)) {
+        return unusable("Spend cap reached before this shot could be checked.");
+      }
+      throw err;
+    }
     costMicros += judged.costMicros;
     const verdict = judged.value ?? deterministicVerdict(pixel, fidelity);
     // Deterministic metrics are the contract: the judge can fail a shot the
@@ -809,13 +883,25 @@ export function isMarketplaceChannel(channel: string): boolean {
 }
 
 /** An LLM shot list is usable only when it validates, every shot targets a
- * known channel spec, and the plan fits the credit budget. */
-export function validateLlmShotList(raw: unknown, creditBudget: number): ShotList | null {
+ * known channel spec, every shot draws from one of this job's uploaded
+ * photos (when the allowed media ids are given), and the plan fits the
+ * credit budget. */
+export function validateLlmShotList(
+  raw: unknown,
+  creditBudget: number,
+  allowedMediaIds?: readonly string[],
+): ShotList | null {
   const parsed = ShotList.safeParse(raw);
   if (!parsed.success) {
     return null;
   }
   const shots = parsed.data.shots;
+  if (allowedMediaIds && allowedMediaIds.length > 0) {
+    const allowed = new Set(allowedMediaIds);
+    if (shots.some((s) => !allowed.has(s.sourceMediaId))) {
+      return null;
+    }
+  }
   if (shots.some((s) => s.channels.length === 0 || !hasSpec(s.channels[0]))) {
     return null;
   }
@@ -840,6 +926,7 @@ export async function runGeneratePack(
   let passed = 0;
   let needsReview = 0;
   let pack: StoredPack | null = null;
+  let settled = false;
 
   const applyLedger = async (action: LedgerAction | null): Promise<void> => {
     if (!action) {
@@ -853,14 +940,43 @@ export async function runGeneratePack(
     });
   };
 
-  await store.setJobState(input.jobId, state);
+  // Every state write doubles as a liveness check: a job the stale run
+  // reconciler already failed stops here instead of spending further.
+  const advance = async (next: JobState, meta?: Record<string, unknown>): Promise<void> => {
+    const applied = await store.setJobState(input.jobId, next, meta);
+    if (applied === false) {
+      throw new JobAbandonedError(input.jobId);
+    }
+    state = next;
+  };
+
+  const summarize = (outcome: "done" | "failed", error?: string): GeneratePackSummary => ({
+    jobId: input.jobId,
+    state: outcome,
+    reservedCredits: ledger.reserved,
+    chargedCredits: ledger.charged,
+    releasedCredits: ledger.released,
+    passed,
+    needsReview,
+    plannedShots,
+    skipped,
+    plannerSource,
+    costMicros,
+    pack,
+    ...(error !== undefined ? { error } : {}),
+  });
+
+  if ((await store.setJobState(input.jobId, state)) === false) {
+    // Already terminal before this run started (for example reconciled while
+    // it waited in the queue); its reservation was settled there.
+    return summarize("failed", new JobAbandonedError(input.jobId).message);
+  }
   await applyLedger(ledger.reserveOnQueue(input.creditBudget));
 
   try {
     // Intake and analyze, with the uploaded photos as vision input when a
     // media loader is wired.
-    state = transition(state, "start_analysis");
-    await store.setJobState(input.jobId, state);
+    await advance(transition(state, "start_analysis"));
     const photos = await visionBlocks(deps, input.images);
     const intake = await llmJson<IntakeResult>(
       deps.ai,
@@ -908,8 +1024,7 @@ export async function runGeneratePack(
     // Plan shots: LLM planner recipe first, deterministic planShots when the
     // response is schema invalid. Concept mode drops marketplace channels
     // before planning; the exclusion is structural, not a pricing convention.
-    state = transition(state, "analysis_done");
-    await store.setJobState(input.jobId, state);
+    await advance(transition(state, "analysis_done"));
     const conceptExcluded =
       input.mode === "concept" ? input.channels.filter((c) => isMarketplaceChannel(c)) : [];
     const effectiveChannels = input.channels.filter((c) => !conceptExcluded.includes(c));
@@ -932,7 +1047,11 @@ export async function runGeneratePack(
       ShotList,
     );
     costMicros += planned.costMicros;
-    let shotList = validateLlmShotList(planned.raw, input.creditBudget);
+    let shotList = validateLlmShotList(
+      planned.raw,
+      input.creditBudget,
+      input.images.map((image) => image.mediaId),
+    );
     if (shotList) {
       plannerSource = "llm";
     } else {
@@ -959,8 +1078,7 @@ export async function runGeneratePack(
     ];
 
     // Fan out per shot generation, each shot carrying its own QC retry loop.
-    state = transition(state, "plan_ready");
-    await store.setJobState(input.jobId, state);
+    await advance(transition(state, "plan_ready"));
     const ctx: ShotContext = {
       jobId: input.jobId,
       workspaceId: input.workspaceId,
@@ -996,22 +1114,20 @@ export async function runGeneratePack(
     const outcomes = await runShots(shotList.shots, ctx);
     costMicros += outcomes.reduce((sum, o) => sum + o.costMicros, 0);
 
-    // QC accounting: charge per passing asset, release per failed shot.
-    state = transition(state, "shots_generated");
-    await store.setJobState(input.jobId, state);
+    // QC accounting, part one: release every failed shot now. Passing shots
+    // stay held until their files are delivered (below), so a pack that
+    // never ships is never charged.
+    await advance(transition(state, "shots_generated"));
+    const passing = outcomes.filter((o) => o.status === "passed");
     for (const outcome of outcomes) {
-      if (outcome.status === "passed") {
-        passed += 1;
-        await applyLedger(ledger.chargeForPassingAsset(outcome.shotId, outcome.credits));
-      } else {
+      if (outcome.status !== "passed") {
         needsReview += 1;
         await applyLedger(ledger.releaseForFailedShot(outcome.shotId, outcome.credits));
       }
     }
 
     // Packaging.
-    state = transition(state, "qc_done");
-    await store.setJobState(input.jobId, state);
+    await advance(transition(state, "qc_done"));
     const packAssets = outcomes
       .filter((o) => o.status === "passed" && o.packAsset)
       .map((o) => o.packAsset as PackAsset);
@@ -1030,48 +1146,57 @@ export async function runGeneratePack(
     };
     await store.savePack(pack);
 
-    state = transition(state, "packaged");
+    // QC accounting, part two: the files are delivered, so charge each
+    // passing asset. The heartbeat keeps the reconciler off the job while
+    // the charges land.
+    await store.heartbeat?.(input.jobId);
+    for (const outcome of passing) {
+      passed += 1;
+      await applyLedger(ledger.chargeForPassingAsset(outcome.shotId, outcome.credits));
+    }
     await applyLedger(ledger.releaseUnusedOnCompletion());
-    await store.setJobState(input.jobId, state, { passed, needsReview, costMicros });
+    // From here the pack is delivered and fully settled; a failure writing
+    // the final state must not turn a charged, delivered pack into "failed".
+    settled = true;
+    await advance(transition(state, "packaged"), { passed, needsReview, costMicros });
 
-    return {
-      jobId: input.jobId,
-      state: "done",
-      reservedCredits: ledger.reserved,
-      chargedCredits: ledger.charged,
-      releasedCredits: ledger.released,
-      passed,
-      needsReview,
-      plannedShots,
-      skipped,
-      plannerSource,
-      costMicros,
-      pack,
-    };
+    return summarize("done");
   } catch (err) {
+    if (settled && !(err instanceof JobAbandonedError)) {
+      try {
+        await store.setJobState(input.jobId, "done", { passed, needsReview, costMicros });
+      } catch (retryErr) {
+        console.error(`[runner] job ${input.jobId} is delivered and settled but its done state could not be saved`, retryErr);
+      }
+      return summarize("done");
+    }
     const message =
       err instanceof AllProvidersFailedError
         ? err.message
         : err instanceof Error
           ? err.message
           : String(err);
-    state = transition(state, "fail");
-    await applyLedger(ledger.releaseRemainderOnFailure("failed"));
-    await store.setJobState(input.jobId, state, { error: message, costMicros });
-    return {
-      jobId: input.jobId,
-      state: "failed",
-      reservedCredits: ledger.reserved,
-      chargedCredits: ledger.charged,
-      releasedCredits: ledger.released,
-      passed,
-      needsReview,
-      plannedShots,
-      skipped,
-      plannerSource,
-      costMicros,
-      pack,
-      error: message,
-    };
+    // The failure path must never throw out of the runner (a throw here
+    // would leave the job row stuck in a working state): mark the job failed
+    // first so the board shows it, then return whatever the ledger holds.
+    if (!isTerminal(state)) {
+      state = transition(state, "fail");
+    }
+    try {
+      await store.setJobState(input.jobId, "failed", { error: message, costMicros });
+    } catch (stateErr) {
+      console.error(`[runner] could not mark job ${input.jobId} failed`, stateErr);
+    }
+    try {
+      await applyLedger(ledger.releaseRemainderOnFailure("failed"));
+    } catch (releaseErr) {
+      console.error(`[runner] planned release failed for job ${input.jobId}`, releaseErr);
+    }
+    try {
+      await store.releaseAllHeld?.(input.jobId, input.workspaceId);
+    } catch (sweepErr) {
+      console.error(`[runner] release sweep failed for job ${input.jobId}`, sweepErr);
+    }
+    return summarize("failed", message);
   }
 }
