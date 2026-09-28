@@ -44,6 +44,7 @@ import {
 } from "@curvi/pipeline";
 import { recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
 import { getSpec, hasSpec } from "@curvi/specs";
+import { z } from "zod";
 import { JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 
 export type { JobState } from "./state";
@@ -286,6 +287,9 @@ export interface LlmTaskInput {
   model: string;
   /** Content is a string, or an array of vision and text blocks. */
   messages: Array<{ role: "user" | "assistant"; content: unknown }>;
+  /** Forced structured output tool definitions, when a schema is enforced. */
+  tools?: unknown[];
+  toolChoice?: unknown;
 }
 
 function sniffImageMime(bytes: Buffer): string {
@@ -334,7 +338,9 @@ interface LlmCall<T> {
 }
 
 /** Accepts either a raw JSON object (mock and demo providers) or an
- * Anthropic adapter shaped output with toolUse or text. */
+ * Anthropic adapter shaped output with toolUse or text. Plain text answers
+ * often wrap JSON in markdown fences or prose, so parsing falls back to the
+ * fenced block, then the outermost object literal. */
 function extractJsonOutput(output: unknown): unknown {
   if (output && typeof output === "object") {
     const o = output as { toolUse?: { input?: unknown } | null; text?: string | null };
@@ -342,11 +348,24 @@ function extractJsonOutput(output: unknown): unknown {
       return o.toolUse.input;
     }
     if (typeof o.text === "string") {
-      try {
-        return JSON.parse(o.text);
-      } catch {
-        return o.text;
+      const candidates = [o.text];
+      const fenced = o.text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenced) {
+        candidates.push(fenced[1]);
       }
+      const start = o.text.indexOf("{");
+      const end = o.text.lastIndexOf("}");
+      if (start >= 0 && end > start) {
+        candidates.push(o.text.slice(start, end + 1));
+      }
+      for (const candidate of candidates) {
+        try {
+          return JSON.parse(candidate);
+        } catch {
+          // Try the next candidate.
+        }
+      }
+      return o.text;
     }
   }
   return output;
@@ -359,6 +378,7 @@ async function llmJson<T>(
   payload: unknown,
   ctx: { jobId: string; workspaceId: string; stepId: string },
   contentBlocks?: unknown[],
+  outputSchema?: z.ZodType,
 ): Promise<LlmCall<T>> {
   const recipe = activeRecipe(stage);
   const text = JSON.stringify(payload);
@@ -369,6 +389,18 @@ async function llmJson<T>(
     model: recipe.model,
     messages: [{ role: "user", content }],
   };
+  if (outputSchema) {
+    // Forced tool call per plan 5.2: the model must answer with structured
+    // data matching the schema instead of free text that may not parse.
+    input.tools = [
+      {
+        name: "emit_result",
+        description: "Return the task result as structured data matching the schema exactly.",
+        input_schema: z.toJSONSchema(outputSchema),
+      },
+    ];
+    input.toolChoice = { type: "tool", name: "emit_result" };
+  }
   const result = await callWithFailover<LlmTaskInput, unknown>(
     ai.registry,
     ai.routing,
@@ -472,6 +504,8 @@ export async function runShot(
         attempt,
       },
       { jobId: ctx.jobId, workspaceId: ctx.workspaceId, stepId: `${shot.id}:qc:${attempt}` },
+      undefined,
+      QCVerdict,
     );
     costMicros += judged.costMicros;
     const verdict = judged.value ?? deterministicVerdict(pixel, fidelity);
@@ -620,6 +654,7 @@ export async function runGeneratePack(
       { images: input.images, userDescription: input.userDescription ?? null },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
       photos,
+      IntakeResult,
     );
     costMicros += intake.costMicros;
     if (!intake.value) {
@@ -636,6 +671,7 @@ export async function runGeneratePack(
       { images: input.images, userDescription: input.userDescription ?? null },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
       photos,
+      ProductProfile,
     );
     costMicros += analysis.costMicros;
     if (!analysis.value) {
@@ -663,6 +699,8 @@ export async function runGeneratePack(
       { safeParse: (data: unknown) => ({ success: true, data }) },
       { profile, options: planOptions },
       { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "plan" },
+      undefined,
+      ShotList,
     );
     costMicros += planned.costMicros;
     let shotList = validateLlmShotList(planned.raw, input.creditBudget);
