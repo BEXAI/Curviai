@@ -5,7 +5,8 @@
  * (charge_credits per passing asset with the shot id as the idempotency step
  * key, release_credits with an exact amount for failed shots and remainders),
  * assets and job_steps rows feed the progress board, and savePack uploads the
- * delivered files to R2 and records asset_variants and pack_files rows.
+ * delivered files to R2 and records asset_variants and pack_files rows, only
+ * while the job is still live.
  *
  * The web app reserves credits when it creates the job, so the store's
  * reserve action is an accounting no op here; JobLedgerPlan still tracks it
@@ -29,13 +30,14 @@ import {
 } from "@curvi/db";
 import type { PackFileReport } from "@curvi/pipeline";
 import type { Shot } from "@curvi/pipeline/schemas";
-import type {
-  JobLedgerEntry,
-  JobStore,
-  StoredAsset,
-  StoredPack,
-  StoredPlan,
-  UndeliveredShot,
+import {
+  JobAbandonedError,
+  type JobLedgerEntry,
+  type JobStore,
+  type StoredAsset,
+  type StoredPack,
+  type StoredPlan,
+  type UndeliveredShot,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
 import { assetFileKey, packFileKey, type PackUploader } from "./r2";
@@ -229,6 +231,21 @@ export class DbJobStore implements JobStore {
     await this.heartbeat(update.jobId);
   }
 
+  /**
+   * Uploads the delivered files, then records them, but only while the job
+   * is live. The pack is delivered the moment its compliance report row
+   * exists: the web app's settle (settleInterruptedJob, run by the inline
+   * run cap, a shutdown or a crash) marks a job with that row done and
+   * charges it, and fails any other job and releases its hold. So the
+   * asset_variants, zip and report rows are written in one transaction that
+   * first locks the workspace row, the same lock the settle and
+   * charge_credits take first, and then checks the job is not terminal.
+   * Either this transaction goes first and the settle sees a delivered pack,
+   * or the settle goes first and nothing is recorded: a settled job never
+   * gains files that nobody pays for. A job already terminal throws
+   * JobAbandonedError before any upload; one settled during the uploads
+   * throws it with nothing recorded (its uploaded objects stay unlisted).
+   */
   async savePack(pack: StoredPack): Promise<void> {
     const uploader = this.opts.uploader ?? null;
     if (!uploader) {
@@ -237,11 +254,15 @@ export class DbJobStore implements JobStore {
       // of charging for files that were never delivered.
       throw new Error("Pack storage is not configured, so the pack could not be delivered.");
     }
+    if (!(await this.heartbeat(pack.jobId))) {
+      throw new JobAbandonedError(pack.jobId);
+    }
 
     const report = JSON.parse(await readFile(pack.reportPath, "utf8")) as ComplianceReport;
     const assetIdByShot = await this.assetIdsByShot(pack.jobId);
     await this.ensureChannelSpecs();
 
+    const variants: Array<typeof assetVariants.$inferInsert> = [];
     for (const file of report.files) {
       const localPath = path.join(pack.outDir, "files", file.channel, file.file);
       if (!(await exists(localPath))) {
@@ -253,7 +274,7 @@ export class DbJobStore implements JobStore {
       if (!assetId) {
         continue;
       }
-      await this.db.insert(assetVariants).values({
+      variants.push({
         workspaceId: pack.workspaceId,
         assetId,
         channelSpecId: file.specId,
@@ -265,6 +286,7 @@ export class DbJobStore implements JobStore {
       });
     }
 
+    const packRows: Array<typeof packFiles.$inferInsert> = [];
     for (const channel of pack.channels) {
       const zipPath = path.join(pack.outDir, `${channel}.zip`);
       if (!(await exists(zipPath))) {
@@ -272,7 +294,7 @@ export class DbJobStore implements JobStore {
       }
       const key = packFileKey(pack.workspaceId, pack.jobId, `${channel}.zip`);
       const { bytes } = await uploader.upload(zipPath, key);
-      await this.db.insert(packFiles).values({
+      packRows.push({
         workspaceId: pack.workspaceId,
         jobId: pack.jobId,
         kind: "zip",
@@ -285,7 +307,8 @@ export class DbJobStore implements JobStore {
 
     const reportKey = packFileKey(pack.workspaceId, pack.jobId, "compliance-report.json");
     const { bytes } = await uploader.upload(pack.reportPath, reportKey);
-    await this.db.insert(packFiles).values({
+    // The report row goes last: it is what marks the pack delivered.
+    packRows.push({
       workspaceId: pack.workspaceId,
       jobId: pack.jobId,
       kind: "report",
@@ -293,6 +316,21 @@ export class DbJobStore implements JobStore {
       filename: "compliance-report.json",
       r2Key: reportKey,
       bytes,
+    });
+
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`select 1 from workspaces where id = ${pack.workspaceId}::uuid for update`);
+      const live = await tx
+        .select({ id: generationJobs.id })
+        .from(generationJobs)
+        .where(and(eq(generationJobs.id, pack.jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)));
+      if (live.length === 0) {
+        throw new JobAbandonedError(pack.jobId);
+      }
+      if (variants.length > 0) {
+        await tx.insert(assetVariants).values(variants);
+      }
+      await tx.insert(packFiles).values(packRows);
     });
   }
 

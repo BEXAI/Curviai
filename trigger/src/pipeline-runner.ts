@@ -47,6 +47,7 @@ import {
   encodeVisionJpeg,
   planShots,
   qcKindForSpec,
+  trimToBudget,
   IntakeResult,
   ProductProfile,
   QCVerdict,
@@ -61,7 +62,14 @@ import {
   type Shot,
 } from "@curvi/pipeline";
 import { creditCosts, recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
-import { getSpec, hasSpec, isMarketplaceSpec, listSpecs, type ChannelSpec } from "@curvi/specs";
+import {
+  getSpec,
+  hasSpec,
+  isMarketplaceChannel,
+  isMarketplaceSpec,
+  isSpecSelected,
+  type ChannelSpec,
+} from "@curvi/specs";
 import { z } from "zod";
 import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { isWorkspaceObjectKey } from "./object-keys";
@@ -1423,15 +1431,9 @@ export function moderationBlockReasons(
   return [...reasons];
 }
 
-/** True when the channel string, a spec id or a channel family, is
- * marketplace bound. Concept packs never target marketplace channels
- * (plan 2.7). */
-export function isMarketplaceChannel(channel: string): boolean {
-  if (hasSpec(channel)) {
-    return isMarketplaceSpec(channel);
-  }
-  return listSpecs().some((s) => channelOf(s.id) === channel && isMarketplaceSpec(s.id));
-}
+/** Concept packs never target marketplace channels (plan 2.7); the web
+ * estimate leaves the same channels out, with the same helper. */
+export { isMarketplaceChannel };
 
 /** Channel families of the selected channels ("amazon.main" and "amazon"
  * both select the amazon family). Decides which zips a pack gets and which
@@ -1441,17 +1443,11 @@ export function selectedFamilies(channels: readonly string[]): Set<string> {
 }
 
 /**
- * True when the seller picked this channel spec (Update.md 2.11). A spec id
- * selects only itself, so a seller who ticked meta.feed_1x1 gets no 4x5 or
- * story crop, and amazon.main alone gets no A+ banner; a bare family
- * ("amazon") or a group prefix ("amazon.aplus") selects every spec under it.
+ * True when the seller picked this channel spec (Update.md 2.11). The one
+ * selection rule lives in @curvi/specs, so the planner, this runner and the
+ * web estimate and hold always agree on what a pack makes.
  */
-export function isSpecSelected(channels: readonly string[], specId: string): boolean {
-  if (!hasSpec(specId)) {
-    return false;
-  }
-  return channels.some((c) => c === specId || (!hasSpec(c) && specId.startsWith(`${c}.`)));
-}
+export { isSpecSelected };
 
 /**
  * Credits for a shot, from the creditCosts seed by method (CLAUDE.md rule 2),
@@ -1493,6 +1489,10 @@ export interface LlmPlanRules {
    * and includes them is neither rejected nor trimmed against a stills only
    * budget (Update.md 1.7). */
   excludeMethods?: ReadonlyArray<Shot["method"]>;
+  /** Picked specs the plan must give a file: the specs the deterministic
+   * planner delivers for this pack at this budget (coveredSpecs). A plan
+   * that leaves one of them out is rejected, so the fallback makes it. */
+  requiredSpecs?: readonly string[];
 }
 
 export type LlmPlanCheck = { ok: true; shotList: ShotList } | { ok: false; reason: string };
@@ -1505,9 +1505,11 @@ export type LlmPlanCheck = { ok: true; shotList: ShotList } | { ok: false; reaso
  * marketplace spec in concept mode), at most one shot targets amazon.main and
  * it is the deterministic amazon_main, no channel spec gets more shots than
  * it takes files (a ninth amazon.secondary), Amazon gets its main image when
- * amazon.main is selected and a usable front photo exists, and the plan fits
- * the budget once every shot is repriced from the seed (Update.md 1.7, 2.10,
- * 2.12). Shots of an excluded method are dropped first, and each shot keeps
+ * amazon.main is selected and a usable front photo exists, every required
+ * spec (a picked spec the deterministic planner can deliver, such as
+ * walmart.main next to Amazon) has a shot, and the plan fits the budget once
+ * every shot is repriced from the seed (Update.md 1.7, 2.10, 2.11, 2.12).
+ * Shots of an excluded method are dropped first, and each shot keeps
  * only the channel specs the seller picked (a shot left with none is
  * skipped), so the limits and the budget are checked against what would
  * really run. Otherwise the deterministic planner runs, and the reason is
@@ -1596,12 +1598,22 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
   ) {
     return { ok: false, reason: "Amazon is selected but the plan has no amazon_main shot" };
   }
+  const planned = coveredSpecs(narrowed);
+  const uncovered = (rules.requiredSpecs ?? []).filter((specId) => !planned.has(specId));
+  if (uncovered.length > 0) {
+    return { ok: false, reason: `the plan has no shot for ${uncovered.join(", ")}` };
+  }
   const repriced = narrowed.map((s) => ({ ...s, credits: creditsForShot(s) }));
   const total = repriced.reduce((sum, s) => sum + s.credits, 0);
   if (total > rules.budget) {
     return { ok: false, reason: `the plan needs ${total} credits and the budget is ${rules.budget}` };
   }
   return { ok: true, shotList: { shots: repriced, skipped } };
+}
+
+/** The channel specs a shot list gives at least one file. */
+export function coveredSpecs(shots: readonly Shot[]): Set<string> {
+  return new Set(shots.flatMap((shot) => shot.channels));
 }
 
 export interface FitOptions {
@@ -1706,15 +1718,17 @@ export function fitShotsToChannels(plan: ShotList, opts: FitOptions): ShotList {
 }
 
 /**
- * Keeps the plan within the credit budget and the schema's shot cap by
- * dropping the lowest priority shot first (the largest number) and, among
- * ties, the most expensive one, so a single drop frees the most budget: the
- * planner's rule 6, applied after the plan was fitted to the selection.
+ * Keeps the plan within the credit budget and the schema's shot cap: the
+ * planner's rule 6 (trimToBudget, shared with planShots), applied after the
+ * plan was fitted to the selection. Every shot left here targets a picked
+ * spec, and the trim keeps a file for each picked spec it can afford before
+ * it keeps extras, dropping the lowest priority shot first (the largest
+ * number) and, among ties, the most expensive one. Past the shot cap the
+ * lowest priority shots go.
  */
 export function trimShotsToBudget(shots: readonly Shot[], budget: number, skipped: ShotList["skipped"]): Shot[] {
-  const kept = [...shots];
-  const total = (): number => kept.reduce((sum, s) => sum + s.credits, 0);
-  const dropOne = (reason: string): void => {
+  const kept = trimToBudget(shots, budget, skipped);
+  while (kept.length > MAX_PLAN_SHOTS) {
     let dropIdx = 0;
     for (let i = 1; i < kept.length; i++) {
       const a = kept[i];
@@ -1724,13 +1738,7 @@ export function trimShotsToBudget(shots: readonly Shot[], budget: number, skippe
       }
     }
     const [dropped] = kept.splice(dropIdx, 1);
-    skipped.push({ type: dropped.type, reason });
-  };
-  while (kept.length > 0 && total() > budget) {
-    dropOne("credit budget");
-  }
-  while (kept.length > MAX_PLAN_SHOTS) {
-    dropOne("shot cap");
+    skipped.push({ type: dropped.type, reason: "shot cap" });
   }
   return kept;
 }
@@ -1801,6 +1809,13 @@ export async function runGeneratePack(
       throw new JobAbandonedError(input.jobId);
     }
     state = next;
+  };
+  // Liveness between state writes: the heartbeat returns false once the job
+  // was settled elsewhere, for example by the web app's inline run cap.
+  const assertLive = async (): Promise<void> => {
+    if ((await store.heartbeat?.(input.jobId)) === false) {
+      throw new JobAbandonedError(input.jobId);
+    }
   };
 
   const summarize = (outcome: "done" | "failed", error?: string): GeneratePackSummary => ({
@@ -1923,14 +1938,6 @@ export async function runGeneratePack(
         ShotList,
       ),
     );
-    const check = validateLlmShotList(planned.raw, {
-      budget: input.creditBudget,
-      mediaIds: input.images.map((image) => image.mediaId),
-      channels: effectiveChannels,
-      mode,
-      requireAmazonMain: profile.imageQuality.usableForMain && profile.photographedAngles.includes("front"),
-      excludeMethods,
-    });
     const fit: FitOptions = {
       channels: effectiveChannels,
       mode,
@@ -1939,6 +1946,20 @@ export async function runGeneratePack(
       primaryMediaId,
       excludeMethods,
     };
+    // The deterministic plan is the fallback, and the bar an LLM plan must
+    // meet: every picked spec it delivers at this budget needs a shot in the
+    // LLM plan too (a Walmart pick next to Amazon, say), or the LLM plan is
+    // rejected and this one runs.
+    const fallback = deterministicPlan(profile, planOptions, fit);
+    const check = validateLlmShotList(planned.raw, {
+      budget: input.creditBudget,
+      mediaIds: input.images.map((image) => image.mediaId),
+      channels: effectiveChannels,
+      mode,
+      requireAmazonMain: profile.imageQuality.usableForMain && profile.photographedAngles.includes("front"),
+      excludeMethods,
+      requiredSpecs: [...coveredSpecs(fallback.shots)],
+    });
     let shotList: ShotList;
     if (check.ok) {
       shotList = fitShotsToChannels(check.shotList, fit);
@@ -1952,7 +1973,7 @@ export async function runGeneratePack(
       if (attempted) {
         console.warn(`[runner] job ${input.jobId} LLM shot plan rejected: ${check.reason}`);
       }
-      shotList = deterministicPlan(profile, planOptions, fit);
+      shotList = fallback;
       plannerSource = "deterministic";
     }
     plannedShots = shotList.shots.length;
@@ -2056,7 +2077,13 @@ export async function runGeneratePack(
 
     // Packaging: one zip per selected channel family, one file per passing
     // channel output. The packager decodes each file when it checks it.
+    // Liveness is checked right before packaging and right before the pack
+    // is saved: a pack the web app settled meanwhile (its inline run cap, a
+    // shutdown, the stale run reconciler) released its hold, so it must not
+    // deliver files nobody pays for. The store's savePack checks again,
+    // atomically with the rows that deliver the pack.
     await advance(transition(state, "qc_done"));
+    await assertLive();
     const packAssets = passing.flatMap((o) => o.packAssets ?? []);
     const families = [...selectedFamilies(effectiveChannels)];
     const built = await buildPack(packAssets, families, {
@@ -2066,7 +2093,7 @@ export async function runGeneratePack(
     if (built.report.files.length === 0) {
       throw new Error("None of the shots in this pack could be delivered, so nothing was charged.");
     }
-    pack = {
+    const toSave: StoredPack = {
       jobId: input.jobId,
       workspaceId: input.workspaceId,
       outDir: built.outDir,
@@ -2074,7 +2101,9 @@ export async function runGeneratePack(
       files: built.report.files.length,
       reportPath: built.reportPath,
     };
-    await store.savePack(pack);
+    await assertLive();
+    await store.savePack(toSave);
+    pack = toSave;
 
     // QC accounting, part two: charge each passing shot once, and only when
     // at least one of its files is in the delivered pack (a ref in
@@ -2152,7 +2181,13 @@ export async function runGeneratePack(
       console.error(`[runner] could not mark job ${input.jobId} failed`, stateErr);
     }
     try {
-      await applyLedger(ledger.releaseRemainderOnFailure("failed"));
+      const release = ledger.releaseRemainderOnFailure("failed");
+      // A job settled elsewhere already had its hold released there, so an
+      // exact release would be refused as more than is held; the sweep
+      // below returns anything that is somehow still held.
+      if (!(err instanceof JobAbandonedError)) {
+        await applyLedger(release);
+      }
     } catch (releaseErr) {
       console.error(`[runner] planned release failed for job ${input.jobId}`, releaseErr);
     }

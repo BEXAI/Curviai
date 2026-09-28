@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { channelFileLimit, dimensionBounds, getSpec, listSpecs } from "@curvi/specs";
+import { channelFileLimit, dimensionBounds, getSpec, isSpecSelected, listSpecs } from "@curvi/specs";
 import { undeliverableShotMethods } from "../seed/credits";
 import { ShotList, type ProductProfile, type Shot } from "../schemas";
 import {
   CHANNEL_LIMIT_REASON,
   CHANNEL_NOT_SELECTED_REASON,
+  CREDIT_BUDGET_REASON,
   NO_COMPATIBLE_CHANNEL_REASON,
   RESERVED_GALLERY_SLOTS,
   UNDELIVERABLE_METHOD_REASON,
@@ -12,6 +13,7 @@ import {
   channelLimitViolations,
   planShots,
   specAcceptsImage,
+  trimToBudget,
 } from "./deterministic";
 
 function profile(overrides: Partial<ProductProfile> = {}): ProductProfile {
@@ -41,7 +43,8 @@ function profile(overrides: Partial<ProductProfile> = {}): ProductProfile {
 }
 
 const baseOpts = {
-  channels: ["amazon", "shopify", "meta"],
+  // Video is picked too: the planner only plans shots for picked specs.
+  channels: ["amazon", "shopify", "meta", "video"],
   tier: "growth" as const,
   creditBudget: 100,
   hasBoxContents: false,
@@ -90,14 +93,26 @@ describe("planShots", () => {
     expect(tight.shots.find((s) => s.type === "amazon_main")).toBeDefined();
     // Something was dropped for budget and recorded.
     expect(tight.skipped.some((s) => s.reason === "credit budget")).toBe(true);
-    // Dropped shots are the low priority ones: everything kept has priority
-    // no worse than anything dropped for budget.
-    const maxKept = Math.max(...tight.shots.map((s) => s.priority));
-    const generousByType = new Map(generous.shots.map((s) => [s.id, s]));
+    // Every picked spec whose best shot fits keeps a file: the social crops
+    // (priority 7) stay while gallery extras go. The 6 credit hero loop does
+    // not fit next to them, so its spec goes without.
+    for (const specId of ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1", "meta.story_9x16"]) {
+      expect(tight.shots.some((s) => s.channels.includes(specId)), specId).toBe(true);
+    }
+    expect(tight.shots.some((s) => s.channels.includes("video.social_9x16"))).toBe(false);
+    // Apart from the one shot that keeps each picked spec's file, dropped
+    // shots are the low priority ones: every other kept shot has priority no
+    // worse than anything dropped for budget.
+    const soleFile = (shot: Shot): boolean =>
+      shot.channels.some((c) => tight.shots.filter((s) => s.channels.includes(c)).length === 1);
+    const maxKept = Math.max(...tight.shots.filter((s) => !soleFile(s)).map((s) => s.priority));
     for (const skip of tight.skipped.filter((s) => s.reason === "credit budget")) {
-      const match = [...generousByType.values()].find((s) => s.type === skip.type);
+      const match = generous.shots.find((s) => s.type === skip.type);
+      if (match && !match.channels.every((c) => tight.shots.some((s) => s.channels.includes(c)))) {
+        continue;
+      }
       if (match) {
-        expect(match.priority).toBeGreaterThanOrEqual(maxKept);
+        expect(match.priority, skip.type).toBeGreaterThanOrEqual(maxKept);
       }
     }
   });
@@ -336,7 +351,8 @@ describe("planShots channel image limits (Update.md 2.10 and 2.12)", () => {
     const budget = 5;
     const list = planShots(
       profile({ photographedAngles: allAngles, missingAnglesNeeded: [], useContexts: ["a", "b", "c", "d"] }),
-      { ...baseOpts, channels: ["amazon"], creditBudget: budget },
+      // The listing specs only: a picked A+ spec would keep one banner.
+      { ...baseOpts, channels: ["amazon.main", "amazon.secondary"], creditBudget: budget },
     );
     const total = list.shots.reduce((sum, s) => sum + s.credits, 0);
     expect(total).toBeLessThanOrEqual(budget);
@@ -446,12 +462,15 @@ describe("planShots undeliverable methods", () => {
     });
     expect(exact.shots.map((s) => s.id)).toEqual(roomy.shots.map((s) => s.id));
     expect(exact.skipped.some((s) => s.reason === "credit budget")).toBe(false);
-    // Without the option the video shots are planned, and the same budget
-    // has to trim them.
+    // Without the option the video shots are planned and compete for the
+    // same budget: the spin video keeps the picked video.amazon_listing spec
+    // its file, so stills are trimmed to make room, and the video shots too
+    // big for the budget go.
     const unfiltered = planShots(profile(), { ...baseOpts, channels, tier: "pro", creditBudget: need });
-    expect(unfiltered.skipped.filter((s) => s.reason === "credit budget").map((s) => s.type).sort()).toEqual(
-      [...VIDEO_TYPES].sort(),
-    );
+    const trimmed = unfiltered.skipped.filter((s) => s.reason === "credit budget").map((s) => s.type);
+    expect(trimmed).toEqual(expect.arrayContaining(["video_hero_6s", "video_lifestyle_15s", "video_ugc_hook"]));
+    expect(unfiltered.shots.some((s) => s.type === "video_spin")).toBe(true);
+    expect(trimmed.some((type) => !VIDEO_TYPES.includes(type))).toBe(true);
   });
 
   it("takes the seed's undeliverable list as is", () => {
@@ -643,5 +662,207 @@ describe("specAcceptsImage", () => {
       background: { type: "solid" as const, rgb: [240, 240, 240] as [number, number, number] },
     };
     expect(specAcceptsImage(spec, "white")).toBe(false);
+  });
+});
+
+describe("planShots selects by channel spec, as the runner and the estimate do (Update.md 2.11)", () => {
+  /** The product the web estimate reserves for: three angles, no confirmed size. */
+  const threeAngles = profile({
+    photographedAngles: ["front", "45", "back"],
+    missingAnglesNeeded: [],
+    dimensions: { value: "10 x 10 x 12 cm", source: "unknown" },
+  });
+  /** A richer product: four angles and a size the seller confirmed. */
+  const fourAngles = profile({ photographedAngles: ["front", "45", "back", "top"], missingAnglesNeeded: [] });
+  const DEFAULT_FORM = ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"];
+  const cost = (list: ShotList): number => list.shots.reduce((sum, s) => sum + s.credits, 0);
+  const SELECTIONS = [
+    ["amazon.main", "etsy.listing"],
+    ["amazon.main", "meta.feed_1x1"],
+    ["etsy.listing", "google"],
+    ["google.merchant.main"],
+    ["pinterest.pin", "ebay.listing"],
+    ["shopify.hero_banner"],
+    ["amazon.aplus.basic_header", "walmart.main"],
+    DEFAULT_FORM,
+  ];
+
+  it("never aims a shot at a spec the seller did not pick", () => {
+    for (const channels of SELECTIONS) {
+      for (const budget of [1, 4, 100]) {
+        const list = planShots(fourAngles, { ...baseOpts, channels, tier: "agency", creditBudget: budget });
+        for (const shot of list.shots) {
+          expect(
+            shot.channels.every((c) => isSpecSelected(channels, c)),
+            `${channels.join(",")} at ${budget}: ${shot.id} on ${shot.channels.join(",")}`,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("sends amazon.main plus etsy.listing no lifestyle scene, A+ banner or crop nobody picked", () => {
+    const list = planShots(profile(), { ...baseOpts, channels: ["amazon.main", "etsy.listing"] });
+    const specs = new Set(list.shots.flatMap((s) => s.channels));
+    expect([...specs].sort()).toEqual(["amazon.main", "etsy.listing"]);
+    // The main image leads Etsy too, charged once.
+    const main = list.shots.find((s) => s.type === "amazon_main")!;
+    expect(main.channels).toEqual(["amazon.main", "etsy.listing"]);
+    // Scenes only ship to amazon.secondary here, which was not picked.
+    expect(list.shots.some((s) => s.type === "lifestyle")).toBe(false);
+    expect(list.skipped).toContainEqual({ type: "lifestyle", reason: NO_COMPATIBLE_CHANNEL_REASON });
+    for (const type of ["aplus_banner", "social_1x1", "social_4x5", "social_9x16"]) {
+      expect(list.skipped, type).toContainEqual({ type, reason: CHANNEL_NOT_SELECTED_REASON });
+    }
+  });
+
+  it("never trims a shipping shot while a shot that would not ship is kept", () => {
+    const channels = ["amazon.main", "etsy.listing"];
+    for (let budget = 0.5; budget <= 6; budget += 0.5) {
+      const list = planShots(fourAngles, { ...baseOpts, channels, creditBudget: budget });
+      expect(cost(list)).toBeLessThanOrEqual(budget);
+      // Everything kept ships to a picked spec, so a trim only ever removed
+      // shots that ship when nothing else was left to remove.
+      expect(list.shots.every((s) => s.channels.some((c) => isSpecSelected(channels, c)))).toBe(true);
+      expect(list.skipped.some((s) => s.reason === CHANNEL_NOT_SELECTED_REASON && s.type === "alt_angle_white")).toBe(
+        false,
+      );
+    }
+    // The trim itself drops shots for unpicked specs first, whatever their priority.
+    const ship = (id: string, channels: string[], priority: number): Shot => ({
+      id,
+      type: "alt_angle_white",
+      sourceMediaId: "m1",
+      method: "deterministic",
+      channels,
+      stylePreset: "none",
+      credits: 0.5,
+      priority,
+    });
+    const skipped: ShotList["skipped"] = [];
+    const kept = trimToBudget(
+      [ship("a", ["etsy.listing"], 9), ship("b", ["amazon.secondary"], 1), ship("c", ["etsy.listing"], 8)],
+      1,
+      skipped,
+      (c) => isSpecSelected(channels, c),
+    );
+    expect(kept.map((s) => s.id)).toEqual(["a", "c"]);
+    expect(skipped).toEqual([{ type: "alt_angle_white", reason: CHANNEL_NOT_SELECTED_REASON }]);
+  });
+
+  it("plans exactly one white front image for Etsy and Google together", () => {
+    const list = planShots(profile(), { ...baseOpts, channels: ["etsy.listing", "google"] });
+    const fronts = list.shots.filter((s) => s.priority === 1);
+    expect(fronts).toHaveLength(1);
+    expect(fronts[0]).toMatchObject({
+      type: "alt_angle_white",
+      method: "deterministic",
+      scene: "front angle on white",
+      channels: ["etsy.listing", "google.merchant.main"],
+    });
+    expect(list.shots.filter((s) => s.channels.includes("google.merchant.main"))).toEqual(fronts);
+    expect(list.shots.filter((s) => s.scene === "front angle on white")).toHaveLength(1);
+  });
+
+  it("fills Google's main slot with the white front image when Google is picked alone", () => {
+    const list = planShots(profile(), { ...baseOpts, channels: ["google.merchant.main"] });
+    expect(list.shots).toEqual([
+      expect.objectContaining({ type: "alt_angle_white", priority: 1, channels: ["google.merchant.main"] }),
+    ]);
+    // With Amazon picked, the Amazon main image fills it instead.
+    const withAmazon = planShots(profile(), { ...baseOpts, channels: ["amazon.main", "google.merchant.main"] });
+    expect(withAmazon.shots.filter((s) => s.channels.includes("google.merchant.main"))).toEqual([
+      expect.objectContaining({ type: "amazon_main", channels: ["amazon.main", "google.merchant.main"] }),
+    ]);
+  });
+
+  it("plans no gallery shots for a social only pack instead of a Shopify fallback", () => {
+    const list = planShots(profile(), { ...baseOpts, channels: ["meta.feed_1x1"] });
+    expect(list.shots.map((s) => [s.type, s.channels])).toEqual([["social_1x1", ["meta.feed_1x1"]]]);
+    for (const type of ["alt_angle_white", "cutout_png", "sweep_gray", "lifestyle", "infographic"]) {
+      expect(list.skipped, type).toContainEqual({ type, reason: CHANNEL_NOT_SELECTED_REASON });
+    }
+  });
+
+  it("keeps a file for every picked spec at the reserved budget, however many angles were photographed", () => {
+    // The reserve for the default form is the three angle product's plan.
+    const reserve = Math.ceil(cost(planShots(threeAngles, { ...baseOpts, channels: DEFAULT_FORM, creditBudget: 1000 })));
+    let squeezed = 0;
+    for (const product of [threeAngles, fourAngles, profile({ photographedAngles: allAngles, missingAnglesNeeded: [] })]) {
+      const roomy = planShots(product, { ...baseOpts, channels: DEFAULT_FORM, creditBudget: 1000 });
+      const list = planShots(product, { ...baseOpts, channels: DEFAULT_FORM, creditBudget: reserve });
+      expect(cost(list)).toBeLessThanOrEqual(reserve);
+      for (const specId of DEFAULT_FORM) {
+        expect(list.shots.some((s) => s.channels.includes(specId)), `${product.photographedAngles.length} angles ${specId}`).toBe(
+          true,
+        );
+      }
+      if (cost(roomy) > reserve) {
+        // The richer product lost gallery extras, never the social crop.
+        squeezed += 1;
+        expect(list.skipped.some((s) => s.reason === CREDIT_BUDGET_REASON)).toBe(true);
+        expect(list.skipped.some((s) => s.type === "social_1x1")).toBe(false);
+      }
+    }
+    // Both richer products needed more than the reserve.
+    expect(squeezed).toBe(2);
+  });
+});
+
+describe("trimToBudget keeps a file for every picked spec it can afford", () => {
+  const shot = (id: string, channels: string[], priority: number, credits = 0.5): Shot => ({
+    id,
+    type: "alt_angle_white",
+    sourceMediaId: "m1",
+    method: "deterministic",
+    channels,
+    stylePreset: "none",
+    credits,
+    priority,
+  });
+
+  it("returns a plan within budget untouched", () => {
+    const shots = [shot("a", ["amazon.main"], 1), shot("b", ["meta.feed_1x1"], 7)];
+    const skipped: ShotList["skipped"] = [];
+    expect(trimToBudget(shots, 1, skipped)).toEqual(shots);
+    expect(skipped).toEqual([]);
+  });
+
+  it("drops extras on a covered spec before the only shot on another spec, whatever its priority", () => {
+    const shots = [
+      shot("main", ["amazon.main"], 1),
+      shot("alt1", ["amazon.secondary"], 2),
+      shot("alt2", ["amazon.secondary"], 2),
+      shot("alt3", ["amazon.secondary"], 3),
+      shot("crop", ["meta.feed_1x1"], 7),
+    ];
+    const skipped: ShotList["skipped"] = [];
+    const kept = trimToBudget(shots, 1.5, skipped);
+    expect(kept.map((s) => s.id)).toEqual(["main", "alt1", "crop"]);
+    expect(skipped).toEqual([
+      { type: "alt_angle_white", reason: CREDIT_BUDGET_REASON },
+      { type: "alt_angle_white", reason: CREDIT_BUDGET_REASON },
+    ]);
+  });
+
+  it("lets a spec go without when its only shot does not fit, and keeps the budget for the rest", () => {
+    const shots = [
+      shot("main", ["amazon.main"], 1),
+      shot("alt1", ["amazon.secondary"], 2),
+      shot("alt2", ["amazon.secondary"], 2),
+      shot("loop", ["video.social_9x16"], 9, 6),
+    ];
+    const kept = trimToBudget(shots, 1.5, []);
+    expect(kept.map((s) => s.id)).toEqual(["main", "alt1", "alt2"]);
+  });
+
+  it("protects the best shot on each spec by priority, then the cheaper one", () => {
+    const shots = [
+      shot("scene", ["google.merchant.lifestyle"], 4, 1),
+      shot("sweep", ["google.merchant.lifestyle"], 4, 0.5),
+      shot("pin", ["pinterest.pin"], 7),
+    ];
+    const kept = trimToBudget(shots, 1, []);
+    expect(kept.map((s) => s.id)).toEqual(["sweep", "pin"]);
   });
 });

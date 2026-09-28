@@ -151,7 +151,10 @@ describe("planner tier gates follow the entitlements", () => {
 
   it("plans video shots only for tiers entitled to them", () => {
     for (const tier of TIER_ORDER) {
-      const types = planShots(profile, { channels: ["amazon"], tier, creditBudget: 1000 }).shots.map((s) => s.type);
+      // Video is picked: the planner only plans shots for picked specs.
+      const types = planShots(profile, { channels: ["amazon", "video"], tier, creditBudget: 1000 }).shots.map(
+        (s) => s.type,
+      );
       expect(types.includes("video_hero_6s"), `${tier} hero`).toBe(isEntitled(tier, "generativeVideo"));
       expect(types.includes("video_lifestyle_15s"), `${tier} lifestyle`).toBe(isEntitled(tier, "lifestyleVideo"));
       expect(types.includes("video_ugc_hook"), `${tier} ugc`).toBe(isEntitled(tier, "ugcAds"));

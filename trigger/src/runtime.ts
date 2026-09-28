@@ -13,6 +13,8 @@ import type { CapStore, CostAwareProvider, ProviderRequest, ProviderResponse, Ro
 import {
   encodeJpeg,
   encodePng,
+  QC_THRESHOLDS,
+  qcKindForSpec,
   solidCanvas,
   type ProductProfile,
   type RawImage,
@@ -156,7 +158,14 @@ export class DemoShotGenerator implements ShotGenerator {
     const spec = getSpec(specId);
     const { width, height } = canvasSizeFor(spec);
     const longest = Math.max(width, height);
-    const fillFraction = spec.fill ? (spec.fill.min + spec.fill.max) / 2 : 0.6;
+    // A main class spec without its own fill rule (walmart.main) is checked
+    // against the main image fill band, so the demo render sits inside it.
+    const fill =
+      spec.fill ??
+      (qcKindForSpec(spec) === "main"
+        ? { min: QC_THRESHOLDS.main.fillMin, max: QC_THRESHOLDS.main.fillMax }
+        : null);
+    const fillFraction = fill ? (fill.min + fill.max) / 2 : 0.6;
     const rectLong = Math.round(fillFraction * longest);
     const rectW = Math.min(rectLong, Math.floor(width * 0.92));
     const rectH = Math.min(rectLong, Math.floor(height * 0.92));

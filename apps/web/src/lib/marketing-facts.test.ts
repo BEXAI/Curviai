@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { planShots, TEMPLATE_STILL_TYPES, type ProductProfile, type Shot } from "@curvi/pipeline";
+import { TEMPLATE_STILL_TYPES, type ProductProfile, type Shot } from "@curvi/pipeline";
 import {
   creditCosts,
   isShotMethodDeliverable,
@@ -9,14 +9,15 @@ import {
   tierByKey,
   tiers,
   topUps,
+  undeliverableShotMethods,
   type TierKey,
 } from "@curvi/pipeline/seed";
 import { getSpec } from "@curvi/specs";
-import { fitShotsToChannels, shotTargetSpecs } from "@curvi/trigger/runner";
+import { deterministicPlan, shotTargetSpecs } from "@curvi/trigger/runner";
 // The worker's live shot types are not a package export; the generator
 // rejects any other deterministic type, so the drift test reads the same set.
 import { DETERMINISTIC_LIVE_TYPES } from "../../../../trigger/src/live-deterministic";
-import { estimatePackCredits } from "./pack-estimate";
+import { ESTIMATE_REFERENCE_PRODUCT, estimatePackCredits } from "./pack-estimate";
 import {
   CHANNEL_FAMILIES,
   CHANNEL_SPECS,
@@ -156,33 +157,39 @@ describe("amazon main rules", () => {
 });
 
 /**
- * A product photographed from three angles with no confirmed measurements,
- * the product the pack estimate is built around (see lib/pack-estimate.ts).
+ * The products the drift guard plans for. The reference product is the one
+ * the pack estimate, and so the credits the server reserves, is built around
+ * (lib/pack-estimate.ts). The others photograph more angles or confirm their
+ * measurements, so their full plan costs more than that reserve and the
+ * worker's budget trim has to choose; a live spec must still get its file.
  */
-function profile(): ProductProfile {
-  return {
-    productCount: 1,
-    category: "home_kitchen",
-    amazonProductTypeGuess: "KITCHEN",
-    shopifyTaxonomyGuess: "Home & Garden > Kitchen",
-    name: "Ceramic pour over mug",
-    formFactor: "mug",
-    materials: ["ceramic"],
-    dominantColors: [{ name: "cream", hex: "#F2E8D8", coveragePct: 70 }],
-    dimensions: { value: "10 x 10 x 12 cm", source: "unknown" },
-    preserveText: [],
-    preserveLogos: [],
-    surface: { reflective: false, transparent: false, textured: false },
-    features: ["pour over rim"],
-    benefits: ["keeps coffee hot", "easy grip handle"],
-    targetBuyer: "home coffee drinkers",
-    useContexts: ["morning kitchen counter", "office desk"],
-    photographedAngles: ["front", "45", "back"],
-    missingAnglesNeeded: [],
-    complianceFlags: ["none"],
-    imageQuality: { usableForMain: true, issues: [] },
-  };
+function withProfile(overrides: Partial<ProductProfile>): ProductProfile {
+  return { ...ESTIMATE_REFERENCE_PRODUCT, name: "Ceramic pour over mug", ...overrides };
 }
+
+const DRIFT_PROFILES: Array<{ label: string; profile: ProductProfile }> = [
+  { label: "three angles, size not confirmed", profile: withProfile({}) },
+  {
+    label: "four angles, size the seller confirmed",
+    profile: withProfile({
+      photographedAngles: ["front", "45", "back", "top"],
+      dimensions: { value: "10 x 10 x 12 cm", source: "user" },
+    }),
+  },
+  {
+    label: "every angle, size from the packaging, four use contexts",
+    profile: withProfile({
+      photographedAngles: ["front", "45", "side", "back", "top", "bottom", "detail", "in_use", "packaging"],
+      dimensions: { value: "10 x 10 x 12 cm", source: "packaging" },
+      benefits: ["keeps coffee hot", "easy grip handle", "fits any dripper", "dishwasher safe", "stacks neatly"],
+      useContexts: ["morning kitchen counter", "office desk", "camping trip", "gift box"],
+    }),
+  },
+  {
+    label: "front photo only",
+    profile: withProfile({ photographedAngles: ["front"], benefits: [], useContexts: [] }),
+  },
+];
 
 const COMPOSITE_METHODS = new Set<Shot["method"]>(["composite_generate", "edit_generate"]);
 
@@ -200,23 +207,27 @@ function liveGeneratorMakes(shot: Shot): boolean {
 
 /**
  * The channel specs a Listing Mode pack ships files for, the way the worker
- * builds it: the deterministic planner (the fallback every LLM plan must
- * beat), the runner's channel fitting, the production exclusion of methods
- * that are not live, and one file per spec a surviving shot targets.
- * The budget defaults to the credits the server reserves for the selection.
+ * builds it: the runner's deterministicPlan (the planner every LLM plan must
+ * match spec for spec, fitted to the selection and trimmed to the budget),
+ * the production exclusion of methods that are not live, and one file per
+ * spec a surviving shot targets. The budget defaults to the credits the
+ * server reserves for the selection.
  */
-function deliveredSpecs(channels: string[], tier: TierKey, budget?: number): Set<string> {
+function deliveredSpecs(
+  channels: string[],
+  tier: TierKey,
+  budget?: number,
+  profile: ProductProfile = DRIFT_PROFILES[0].profile,
+): Set<string> {
   const creditBudget = budget ?? estimatePackCredits(channels, "listing", tier).total;
   const primaryMediaId = "media_front";
-  const plan = planShots(profile(), { channels, tier, creditBudget, primaryMediaId });
-  const fitted = fitShotsToChannels(plan, {
-    channels,
-    mode: "listing",
-    budget: creditBudget,
-    profile: profile(),
-    primaryMediaId,
-  });
-  const made = fitted.shots.filter((shot) => isShotMethodDeliverable(shot.method) && liveGeneratorMakes(shot));
+  const excludeMethods = [...undeliverableShotMethods];
+  const plan = deterministicPlan(
+    profile,
+    { channels, tier, creditBudget, primaryMediaId, undeliverableMethods: excludeMethods },
+    { channels, mode: "listing", budget: creditBudget, profile, primaryMediaId, excludeMethods },
+  );
+  const made = plan.shots.filter((shot) => isShotMethodDeliverable(shot.method) && liveGeneratorMakes(shot));
   return new Set(made.flatMap((shot) => shotTargetSpecs(shot)));
 }
 
@@ -246,32 +257,52 @@ describe("channel availability", () => {
 
   for (const tier of tiers.map((t) => t.key)) {
     it(`marks a spec live only when a pack on the ${tier} plan that picks just that spec gets its file`, () => {
-      const missing = liveSpecIds.filter((specId) => !deliveredSpecs([specId], tier).has(specId));
-      expect(missing, "marked live in CHANNEL_SPECS but a pack that picks them gets no file").toEqual([]);
+      for (const { label, profile } of DRIFT_PROFILES) {
+        const missing = liveSpecIds.filter((specId) => !deliveredSpecs([specId], tier, undefined, profile).has(specId));
+        expect(missing, `${label}: marked live in CHANNEL_SPECS but a pack that picks them gets no file`).toEqual([]);
+      }
     });
   }
 
   it("delivers every live spec when every channel is picked together", () => {
-    const delivered = deliveredSpecs([...imageSpecIds], "free");
-    const missing = liveSpecIds.filter((specId) => !delivered.has(specId));
-    expect(missing, "marked live in CHANNEL_SPECS but a full pack gets no file").toEqual([]);
+    for (const { label, profile } of DRIFT_PROFILES) {
+      const delivered = deliveredSpecs([...imageSpecIds], "free", undefined, profile);
+      const missing = liveSpecIds.filter((specId) => !delivered.has(specId));
+      expect(missing, `${label}: marked live in CHANNEL_SPECS but a full pack gets no file`).toEqual([]);
+    }
   });
 
-  it("delivers every spec the new pack form preselects", () => {
-    const delivered = deliveredSpecs([...TYPICAL_PACK_CHANNELS], "free");
-    for (const specId of TYPICAL_PACK_CHANNELS) {
-      expect(delivered.has(specId), specId).toBe(true);
-      expect(isSpecLive(specId), specId).toBe(true);
+  it("delivers every spec the new pack form preselects, for every product", () => {
+    for (const { label, profile } of DRIFT_PROFILES) {
+      const delivered = deliveredSpecs([...TYPICAL_PACK_CHANNELS], "free", undefined, profile);
+      for (const specId of TYPICAL_PACK_CHANNELS) {
+        expect(delivered.has(specId), `${label}: ${specId}`).toBe(true);
+        expect(isSpecLive(specId), specId).toBe(true);
+      }
+    }
+  });
+
+  it("gives a Meta feed square pick its file at the reserved budget, alone or in the default pack", () => {
+    for (const { label, profile } of DRIFT_PROFILES) {
+      for (const channels of [["meta.feed_1x1"], [...TYPICAL_PACK_CHANNELS]]) {
+        const delivered = deliveredSpecs(channels, "free", undefined, profile);
+        expect(delivered.has("meta.feed_1x1"), `${label}: ${channels.join(",")}`).toBe(true);
+      }
     }
   });
 
   it("keeps a spec coming soon only while no pack gets its file", () => {
-    // The richest plan with room to spare: any file at all means it ships.
-    const all = deliveredSpecs([...imageSpecIds], "agency", 10_000);
-    const shipping = CHANNEL_SPECS.filter((entry) => entry.status === "coming_soon")
-      .map((entry) => entry.specId)
-      .filter((specId) => all.has(specId) || deliveredSpecs([specId], "agency", 10_000).has(specId));
-    expect(shipping, "these now get files; mark them live in CHANNEL_SPECS").toEqual([]);
+    // The richest plans with room to spare: any file at all means it ships.
+    const shipping = new Set<string>();
+    for (const { profile } of DRIFT_PROFILES) {
+      const all = deliveredSpecs([...imageSpecIds], "agency", 10_000, profile);
+      for (const entry of CHANNEL_SPECS.filter((spec) => spec.status === "coming_soon")) {
+        if (all.has(entry.specId) || deliveredSpecs([entry.specId], "agency", 10_000, profile).has(entry.specId)) {
+          shipping.add(entry.specId);
+        }
+      }
+    }
+    expect([...shipping], "these now get files; mark them live in CHANNEL_SPECS").toEqual([]);
   });
 
   it("gives every coming soon spec in a live channel its own pattern to police", () => {

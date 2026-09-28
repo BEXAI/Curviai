@@ -25,7 +25,14 @@ import {
 } from "@curvi/db/schema";
 import { endExiftool } from "@curvi/pipeline";
 import { DbJobStore } from "./db-store";
-import { runGeneratePack, systemClock, type GeneratePackInput, type UndeliveredShot } from "./pipeline-runner";
+import {
+  JobAbandonedError,
+  runGeneratePack,
+  systemClock,
+  type GeneratePackInput,
+  type UndeliveredShot,
+} from "./pipeline-runner";
+import type { JobState } from "./state";
 import { buildRuntimeDeps } from "./runtime";
 import type { PackUploader } from "./r2";
 
@@ -303,5 +310,135 @@ describe("DbJobStore guards live pack runs", () => {
     expect(await balance()).toBe(held + 10);
     const rows = await db.select().from(creditLedger).where(eq(creditLedger.jobId, id));
     expect(rows.filter((r) => r.reason === "charge")).toHaveLength(0);
+  });
+});
+
+describe("DbJobStore never delivers a pack the web app settled (inline run cap)", () => {
+  async function newJob(reserve: number): Promise<string> {
+    const [p] = await db.select().from(products).where(eq(products.workspaceId, ws));
+    const [j] = await db
+      .insert(generationJobs)
+      .values({ workspaceId: ws, productId: p.id, status: "queued" })
+      .returning();
+    await client.query("select reserve_credits($1, $2, $3)", [ws, reserve, j.id]);
+    return j.id;
+  }
+
+  /** What settleInterruptedJob does when the run cap fires before the
+   * compliance report row exists: the job fails and its hold is released. */
+  async function settleAsCapped(id: string): Promise<void> {
+    await db
+      .update(generationJobs)
+      .set({ status: "failed", error: "The pack ran past its time limit." })
+      .where(eq(generationJobs.id, id));
+    await client.query("select release_credits($1, $2)", [ws, id]);
+  }
+
+  async function deliveredRows(id: string): Promise<{ packFiles: number; variants: number }> {
+    const packRows = await db.select().from(packFiles).where(eq(packFiles.jobId, id));
+    const variantRows = await db
+      .select({ id: assetVariants.id })
+      .from(assetVariants)
+      .innerJoin(assets, eq(assetVariants.assetId, assets.id))
+      .where(eq(assets.jobId, id));
+    return { packFiles: packRows.length, variants: variantRows.length };
+  }
+
+  const input = (id: string): GeneratePackInput => ({
+    jobId: id,
+    workspaceId: ws,
+    tier: "starter",
+    channels: ["amazon.main", "amazon.secondary"],
+    creditBudget: 10,
+    images: [{ mediaId: "m1" }],
+    sku: "MUG1",
+    mode: "listing",
+  });
+
+  it("saves and charges nothing when the cap fires between qc_done and savePack", async () => {
+    const id = await newJob(10);
+    const before = await balance();
+    class CappedStore extends DbJobStore {
+      override async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<boolean> {
+        const applied = await super.setJobState(jobId, state, meta);
+        if (applied && state === "packaging") {
+          await settleAsCapped(jobId);
+        }
+        return applied;
+      }
+    }
+    const uploader = new FakeUploader();
+    const store = new CappedStore(db as unknown as Db, { reserveHandledExternally: true, uploader });
+    const summary = await runGeneratePack(input(id), { ...buildRuntimeDeps(), store, clock: systemClock });
+
+    expect(summary.state).toBe("failed");
+    expect(summary.error).toContain("already finished or failed elsewhere");
+    expect(summary.pack).toBeNull();
+    expect(uploader.uploads).toHaveLength(0);
+    expect(await deliveredRows(id)).toEqual({ packFiles: 0, variants: 0 });
+    const rows = await db.select().from(creditLedger).where(eq(creditLedger.jobId, id));
+    expect(rows.filter((r) => r.reason === "charge")).toHaveLength(0);
+    // The settle returned the whole hold, and the run took nothing back.
+    expect(await balance()).toBe(before + 10);
+    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+    expect(job.status).toBe("failed");
+    expect(job.creditsCharged).toBe(0);
+  });
+
+  it("records no files when the job is settled while its files upload", async () => {
+    const id = await newJob(10);
+    const before = await balance();
+    class SettlingUploader extends FakeUploader {
+      private settled = false;
+      override async upload(localPath: string, key: string): Promise<{ bytes: number }> {
+        if (!this.settled) {
+          this.settled = true;
+          await settleAsCapped(id);
+        }
+        return super.upload(localPath, key);
+      }
+    }
+    const uploader = new SettlingUploader();
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true, uploader });
+    const summary = await runGeneratePack(input(id), { ...buildRuntimeDeps(), store, clock: systemClock });
+
+    expect(summary.state).toBe("failed");
+    expect(summary.error).toContain("already finished or failed elsewhere");
+    expect(summary.pack).toBeNull();
+    // The files went up, but no row lists them, so nothing can be downloaded
+    // and the settle's view (no report row, job failed) stays true.
+    expect(uploader.uploads.length).toBeGreaterThan(0);
+    expect(await deliveredRows(id)).toEqual({ packFiles: 0, variants: 0 });
+    const rows = await db.select().from(creditLedger).where(eq(creditLedger.jobId, id));
+    expect(rows.filter((r) => r.reason === "charge")).toHaveLength(0);
+    expect(await balance()).toBe(before + 10);
+  });
+
+  it("refuses to save a pack for a terminal job before uploading anything", async () => {
+    const id = await newJob(10);
+    await settleAsCapped(id);
+    const uploader = new FakeUploader();
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true, uploader });
+    await expect(
+      store.savePack({ jobId: id, workspaceId: ws, outDir: "/nonexistent", channels: ["amazon"], files: 1, reportPath: "/nonexistent/report.json" }),
+    ).rejects.toBeInstanceOf(JobAbandonedError);
+    expect(uploader.uploads).toHaveLength(0);
+    expect(await deliveredRows(id)).toEqual({ packFiles: 0, variants: 0 });
+  });
+
+  it("still delivers and charges a pack whose job stays live", async () => {
+    const id = await newJob(10);
+    const uploader = new FakeUploader();
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true, uploader });
+    const summary = await runGeneratePack(input(id), { ...buildRuntimeDeps(), store, clock: systemClock });
+    expect(summary.state).toBe("done");
+    const delivered = await deliveredRows(id);
+    expect(delivered.variants).toBeGreaterThan(0);
+    expect(delivered.packFiles).toBeGreaterThan(1);
+    const reports = await db.select().from(packFiles).where(eq(packFiles.jobId, id));
+    expect(reports.filter((r) => r.kind === "report")).toHaveLength(1);
+    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+    expect(job.status).toBe("done");
+    expect(job.creditsCharged).toBe(summary.chargedCredits);
   });
 });
