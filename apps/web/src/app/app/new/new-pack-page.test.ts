@@ -197,4 +197,21 @@ describe("/app/new", () => {
       page.creditBalance = 40;
     }
   });
+
+  it("nudges a low balance above the form and warns when the pick costs more than the balance", async () => {
+    page.creditBalance = 2;
+    try {
+      const html = await renderPage();
+      expect(html).toContain('data-testid="low-balance-nudge"');
+      // No Stripe keys in tests: early access copy, and no checkout link.
+      expect(html).toContain("Credits are limited during early access");
+      expect(html).not.toContain("checkout=");
+      expect(html).toContain('data-testid="estimate-over-balance"');
+    } finally {
+      page.creditBalance = 40;
+    }
+    const html = await renderPage();
+    expect(html).not.toContain('data-testid="low-balance-nudge"');
+    expect(html).not.toContain('data-testid="estimate-over-balance"');
+  });
 });
