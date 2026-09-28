@@ -8,6 +8,7 @@ import {
   packsForCredits,
   topUpMonths,
   typicalPackCredits,
+  UNUSED_CREDITS_SENTENCE,
 } from "@/lib/marketing-facts";
 import type { BillingAccount } from "./account";
 import { paidTiers } from "./plans";
@@ -103,7 +104,7 @@ describe("/pricing", () => {
   it("makes no rollover promise, since nothing enforces one", () => {
     const text = textOf(renderToStaticMarkup(React.createElement(PricingTiers)));
     expect(text).not.toMatch(ROLLOVER);
-    expect(text).toContain("Credits you do not use stay in your balance from one billing period to the next.");
+    expect(text).toContain(UNUSED_CREDITS_SENTENCE);
   });
 
   it("labels features and assets that do not run yet with the site's Coming soon badge", () => {
@@ -132,7 +133,7 @@ describe("/app/billing", () => {
   it("makes no rollover promise and states the top up term from the seed", async () => {
     const text = await renderBilling();
     expect(text).not.toMatch(ROLLOVER);
-    expect(text).toContain("Credits you do not use stay in your balance from one billing period to the next.");
+    expect(text).toContain(UNUSED_CREDITS_SENTENCE);
     expect(text).toContain(`Stays usable for ${topUpMonths()} months.`);
     expect(text).not.toMatch(FORBIDDEN_COPY);
   });

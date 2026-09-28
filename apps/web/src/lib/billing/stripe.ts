@@ -30,8 +30,22 @@ export function isStripeTaxEnabled(): boolean {
 }
 
 /** Webhook lookups give up after this long, so a slow Stripe answer fails
- * the delivery (Stripe retries it) instead of holding a database lock. */
+ * the delivery instead of stretching it. */
 export const STRIPE_LOOKUP_TIMEOUT_MS = 10_000;
+
+/**
+ * Per request options for every webhook lookup. The SDK retries a network
+ * error or a timeout twice by default, which would stretch one lookup to
+ * three timeouts plus backoff. A failed lookup fails the delivery instead
+ * and Stripe's own webhook retry sends it again later, so one attempt,
+ * bounded by the timeout, is all a lookup makes. The billing store also runs
+ * these lookups before it opens a transaction, so no database connection or
+ * lock waits on Stripe.
+ */
+export const STRIPE_LOOKUP_OPTIONS = {
+  timeout: STRIPE_LOOKUP_TIMEOUT_MS,
+  maxNetworkRetries: 0,
+} as const satisfies Stripe.RequestOptions;
 
 /** A 404 from Stripe: the object does not exist (for example it belongs to
  * another account or mode). Any other failure is thrown so Stripe retries. */
@@ -53,7 +67,7 @@ export function createStripeLookup(stripe: Stripe): StripeLookup {
           payment: { type: "payment_intent", payment_intent: paymentIntentId },
           limit: 1,
         },
-        { timeout: STRIPE_LOOKUP_TIMEOUT_MS },
+        { ...STRIPE_LOOKUP_OPTIONS },
       );
       const invoice = payments.data[0]?.invoice;
       if (!invoice) {
@@ -64,7 +78,7 @@ export function createStripeLookup(stripe: Stripe): StripeLookup {
 
     async retrieveSubscription(subscriptionId: string): Promise<Stripe.Subscription | null> {
       try {
-        return await stripe.subscriptions.retrieve(subscriptionId, {}, { timeout: STRIPE_LOOKUP_TIMEOUT_MS });
+        return await stripe.subscriptions.retrieve(subscriptionId, {}, { ...STRIPE_LOOKUP_OPTIONS });
       } catch (error) {
         if (isStripeMissingResource(error)) {
           return null;

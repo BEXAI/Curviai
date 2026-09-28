@@ -14,14 +14,16 @@
  * - Subscription credits are granted only on invoice.paid. A monthly invoice
  *   grants one month of the tier allowance; an annual invoice grants the full
  *   year (Phase 10 decision 2).
- * - A plan change can never create credits. Each proration line counts only
- *   for the share of the billing period it covers, for monthly and annual
- *   prices alike, so an upgrade grants the new minus the old allowance for
- *   the time left and a downgrade takes the same amount back. The downgrade
- *   debit is taken in full, even below a zero balance: the debt blocks new
- *   packs until a top up or a renewal covers it. Upgrade, spend, downgrade
- *   therefore nets nothing beyond the time actually paid for on the bigger
- *   plan.
+ * - A plan change can never create credits. Each proration line counts for
+ *   the share of a full period that Stripe itself prorated: the line amount
+ *   over the tier's full period price from the seed, for monthly and annual
+ *   prices alike. An upgrade grants the new minus the old allowance for the
+ *   time left and a downgrade takes the same amount back. A charge line never
+ *   counts more than Stripe charged and a credit line never less than Stripe
+ *   returned. The downgrade debit is taken in full, even below a zero
+ *   balance: the debt blocks new packs until a top up or a renewal covers
+ *   it. Upgrade, spend, downgrade therefore nets nothing beyond what was
+ *   actually paid for on the bigger plan.
  * - Top ups are granted only once Checkout reports the payment as paid,
  *   including delayed methods through async_payment_succeeded (Update.md 1.4).
  * - A refund, or dispute funds being withdrawn, claws back the credits that
@@ -33,9 +35,10 @@
  *
  * Subscription sync: Stripe does not deliver events in order. Every
  * customer.subscription.* event reads the subscription's current state from
- * Stripe (under a per subscription lock in the database store) instead of
- * trusting the payload, and no status ever moves out of canceled or
- * incomplete_expired, or back to incomplete.
+ * Stripe instead of trusting the payload. The database store reads it before
+ * it opens a transaction, then writes only if nothing else wrote the
+ * subscription in between, and reads again otherwise. No status ever moves
+ * out of canceled or incomplete_expired, or back to incomplete.
  */
 
 import Stripe from "stripe";
@@ -75,10 +78,12 @@ export interface SubscriptionUpdate extends SubscriptionState {
   externalId: string;
   /**
    * Reads the subscription's current state from the provider. The store
-   * calls it while it holds the lock for this subscription, so reads and
-   * writes happen in the same order and the last write always carries the
-   * newest state, whatever order the events arrived in. null means the
-   * provider no longer knows the subscription; the event's own state is used.
+   * calls it before it takes any lock or database connection, then checks
+   * under the lock that nobody wrote the subscription since, and calls it
+   * again if someone did. Every write therefore carries a state read after
+   * the write before it, so the last write holds the newest state whatever
+   * order the events arrived in. null means the provider no longer knows the
+   * subscription; the event's own state is used.
    */
   refresh?: () => Promise<SubscriptionState | null>;
 }
@@ -498,21 +503,29 @@ function invoiceLines(invoice: Stripe.Invoice): InvoiceLineView[] {
 }
 
 /**
- * Start of the billing period that ends at `endSeconds`: one calendar month
- * (or year) earlier, on the same day clamped to the end of a shorter month.
- * For a period whose own end was clamped (an anchor on the 31st ending on
- * February 28) this start is a little early, which makes the period look
- * longer and the share smaller; both sides of a plan change use the same
- * period, so that can only ever grant less, never more.
+ * Start of a billing period that ends at `endSeconds`, one month (or year)
+ * earlier at the same time of day. Stripe keeps a subscription's anchor day
+ * and clamps it to the end of a shorter month, so a period ending on
+ * February 28 may have started on any of January 28 to 31.
+ * - "longest" (the default) is the calendar start: the same day, clamped to
+ *   the end of a shorter month. Stripe's real period is never longer.
+ * - "shortest" also moves a month end start to the last day of that month
+ *   (April 30 back to March 31, February 28 back to January 31), the latest
+ *   start an anchor could give. Stripe's real period is never shorter.
  */
-export function billingPeriodStart(endSeconds: number, cadence: BillingCadence): number {
+export function billingPeriodStart(
+  endSeconds: number,
+  cadence: BillingCadence,
+  bound: "longest" | "shortest" = "longest",
+): number {
   const end = new Date(endSeconds * 1000);
   const year = end.getUTCFullYear();
   const month = end.getUTCMonth() - (cadence === "annual" ? 12 : 1);
   // Date.UTC normalizes negative months into the previous year; day 0 of the
   // next month is the last day of this one.
   const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  const day = Math.min(end.getUTCDate(), lastDay);
+  const endIsMonthEnd = end.getUTCDate() === new Date(Date.UTC(year, end.getUTCMonth() + 1, 0)).getUTCDate();
+  const day = bound === "shortest" && endIsMonthEnd ? lastDay : Math.min(end.getUTCDate(), lastDay);
   return (
     Date.UTC(year, month, day, end.getUTCHours(), end.getUTCMinutes(), end.getUTCSeconds(), end.getUTCMilliseconds()) /
     1000
@@ -520,23 +533,66 @@ export function billingPeriodStart(endSeconds: number, cadence: BillingCadence):
 }
 
 /**
- * Share of a full billing period a proration line covers, 0 to 1. A
- * proration line runs from the moment of the change to the end of the
- * current period, so this is the time left, for monthly and annual prices
- * alike. Stripe always sends a period; without one the line counts in full.
+ * The time a proration line covers as a share of the longest and of the
+ * shortest billing period that can end with it, each 0 to 1. The share
+ * Stripe prorated lies between the two: `floor` is the calendar share, too
+ * small for a period whose end was clamped (January 31 to February 28), and
+ * `ceiling` is never smaller than Stripe's. Without a period the line
+ * counts in full.
  */
-export function prorationShare(
+export function timeShareBounds(
   line: { periodStart: number | null; periodEnd: number | null },
   cadence: BillingCadence,
+): { floor: number; ceiling: number } {
+  const { periodStart, periodEnd } = line;
+  if (periodStart === null || periodEnd === null || periodEnd <= periodStart) {
+    return { floor: 1, ceiling: 1 };
+  }
+  const shareOf = (start: number): number =>
+    periodEnd > start ? clampShare((periodEnd - periodStart) / (periodEnd - start)) : 1;
+  return {
+    floor: shareOf(billingPeriodStart(periodEnd, cadence, "longest")),
+    ceiling: shareOf(billingPeriodStart(periodEnd, cadence, "shortest")),
+  };
+}
+
+/** The currency the seed prices are in, as Stripe writes it. */
+const SEED_CURRENCY = "usd";
+
+/**
+ * Share of a full billing period a proration line stands for, 0 to 1, taken
+ * from Stripe's own proration. Stripe prorates against the subscription's
+ * real current period, so the line amount over the tier's full period price
+ * (from the seed, in cents) is the share it charged or returned, also for
+ * short and clamped periods where a calendar month would be wrong.
+ * - A charge line (amount > 0) counts that share and never more, so it never
+ *   grants more than Stripe charged. A discount on the line can only make
+ *   it grant less.
+ * - A credit line (amount < 0) counts that share, or the calendar share of
+ *   the time left when that is bigger, so it never takes back less than
+ *   Stripe returned, and neither a discount nor a Stripe price below the
+ *   seed price can shrink a debit below the time given back.
+ * Neither counts more than one full period, since a period's grant is one
+ * period's allowance whatever Stripe charged for it.
+ * When the amount cannot be compared with the seed price (another currency,
+ * or no price), a charge line counts the smallest share the time allows and
+ * a credit line the largest, so neither side can create credits.
+ */
+export function prorationShare(
+  line: { amount: number; periodStart: number | null; periodEnd: number | null },
+  price: { cadence: BillingCadence; priceCents: number },
+  currency: string | null = SEED_CURRENCY,
 ): number {
-  if (line.periodStart === null || line.periodEnd === null || line.periodEnd <= line.periodStart) {
-    return 1;
+  const { floor, ceiling } = timeShareBounds(line, price.cadence);
+  const comparable =
+    price.priceCents > 0 &&
+    Number.isFinite(line.amount) &&
+    (currency ?? SEED_CURRENCY).toLowerCase() === SEED_CURRENCY;
+  if (!comparable) {
+    return line.amount < 0 ? ceiling : floor;
   }
-  const full = line.periodEnd - billingPeriodStart(line.periodEnd, cadence);
-  if (full <= 0) {
-    return 1;
-  }
-  return clampShare((line.periodEnd - line.periodStart) / full);
+  const stripeShare = Math.abs(line.amount) / price.priceCents;
+  return clampShare(line.amount < 0 ? Math.max(stripeShare, floor) : stripeShare);
 }
 
 type TierMapping = Extract<PriceMapping, { kind: "tier" }>;
@@ -577,14 +633,15 @@ function auditCredits(value: number): number {
  *   subscription line's tier (12 months up front for an annual price).
  * - A non proration line on a subscription_update invoice (an interval
  *   change starts a new full period): that full period's allowance.
- * - Proration lines: the line's tier allowance times the share of the
- *   billing period the line covers. Positive lines add, credit lines
- *   subtract. The net is rounded down when it grants and up when it takes
- *   back, so rounding never creates credits.
+ * - Proration lines: the line's tier allowance times the share Stripe
+ *   prorated (prorationShare). Positive lines add, credit lines subtract.
+ *   The net is rounded down when it grants and up when it takes back, so
+ *   rounding never creates credits.
  * - Any other billing reason grants nothing.
  */
 export function planInvoiceGrant(invoice: Stripe.Invoice, table: PriceTable): InvoiceGrantPlan {
   const billingReason = invoice.billing_reason ?? null;
+  const currency = typeof invoice.currency === "string" && invoice.currency.length > 0 ? invoice.currency : null;
   const lines = invoiceLines(invoice);
   let base = 0;
   let changeNew = 0;
@@ -615,7 +672,7 @@ export function planInvoiceGrant(invoice: Stripe.Invoice, table: PriceTable): In
       continue;
     }
     const credits =
-      allowanceCredits(mapping.creditsPerMonth, mapping.cadence) * prorationShare(line, mapping.cadence);
+      allowanceCredits(mapping.creditsPerMonth, mapping.cadence) * prorationShare(line, mapping, currency);
     if (line.amount > 0) {
       changeNew += credits;
       tier ??= mapping.tier;
@@ -835,7 +892,8 @@ export async function processStripeEvent(
         externalId: subscription.id,
         ...subscriptionState(subscription, table, deleted),
         // The payload may be older than a state already stored, so the
-        // store reads Stripe's current state under its lock.
+        // store reads Stripe's current state (before taking its lock) and
+        // writes it only if nothing wrote the subscription meanwhile.
         refresh: retrieve
           ? async () => {
               const current = await retrieve(subscription.id);

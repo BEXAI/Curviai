@@ -4,7 +4,7 @@ import { tierByKey } from "@curvi/pipeline/seed";
 import { creditLedger, events, generationJobs, products, subscriptions, workspaces } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, type Db } from "@curvi/db";
-import { DbBillingStore } from "./db-store";
+import { DbBillingStore, SUBSCRIPTION_SYNC_ATTEMPTS, SubscriptionSyncConflictError } from "./db-store";
 import { buildPriceTable, tierPriceEnvName, topUpPriceEnvName } from "./price-table";
 import { processStripeEvent, UnroutableBillingEventError } from "./stripe-webhook";
 
@@ -151,6 +151,30 @@ function failingLedgerDb(target: TestDb, failures: number): TestDb {
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(obj) : value;
     },
   });
+}
+
+/** Wraps the database to count the transactions open at any moment. */
+function transactionTrackingDb(target: TestDb): { db: TestDb; open: () => number; opened: () => number } {
+  let open = 0;
+  let opened = 0;
+  const tracked = new Proxy(target, {
+    get(obj, prop, receiver) {
+      if (prop === "transaction") {
+        return async (fn: (tx: unknown) => Promise<unknown>) => {
+          open += 1;
+          opened += 1;
+          try {
+            return await obj.transaction((tx) => fn(tx));
+          } finally {
+            open -= 1;
+          }
+        };
+      }
+      const value = Reflect.get(obj, prop, receiver) as unknown;
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(obj) : value;
+    },
+  });
+  return { db: tracked, open: () => open, opened: () => opened };
 }
 
 describe("grant atomicity (Update.md 1.3)", () => {
@@ -464,7 +488,128 @@ describe("subscription events out of order (money-webhook-hardening)", () => {
     }
   });
 
-  it("rolls back and retries when Stripe cannot be read", async () => {
+  it("reads Stripe before opening a transaction, so no connection or lock waits on Stripe", async () => {
+    const ws = await newWorkspace();
+    const sub = { id: "sub_read_first", workspaceId: ws, price: "price_pro_monthly" };
+    const tracked = transactionTrackingDb(db);
+    const openDuringRead: number[] = [];
+    const lookup = {
+      invoiceIdForPaymentIntent: async () => null,
+      retrieveSubscription: async () => {
+        openDuringRead.push(tracked.open());
+        return stripeSubscription({ ...sub, status: "active" });
+      },
+    };
+    await processStripeEvent(
+      subscriptionEvent("evt_read_first", "customer.subscription.created", { ...sub, status: "incomplete" }),
+      table,
+      store(tracked.db),
+      { lookup },
+    );
+    expect(openDuringRead).toEqual([0]);
+    expect(tracked.opened()).toBe(1);
+    expect(await statusOf(sub.id)).toBe("active");
+    expect(await planOf(ws)).toBe("pro");
+  });
+
+  it("reads Stripe again when another handler wrote the subscription during the read", async () => {
+    const ws = await newWorkspace();
+    const sub = { id: "sub_race", workspaceId: ws };
+    await processStripeEvent(
+      subscriptionEvent("evt_race_0", "customer.subscription.created", {
+        ...sub,
+        status: "active",
+        price: "price_growth_monthly",
+      }),
+      table,
+      store(),
+    );
+    expect(await planOf(ws)).toBe("growth");
+
+    // The customer moved to Pro. Handler A's first Stripe read is slow and
+    // answers with the state from before the move; meanwhile handler B reads
+    // the new state and writes it.
+    let reads = 0;
+    const lookupA = {
+      invoiceIdForPaymentIntent: async () => null,
+      retrieveSubscription: async () => {
+        reads += 1;
+        if (reads === 1) {
+          await processStripeEvent(
+            subscriptionEvent("evt_race_b", "customer.subscription.updated", {
+              ...sub,
+              status: "active",
+              price: "price_pro_monthly",
+            }),
+            table,
+            store(),
+            {
+              lookup: {
+                invoiceIdForPaymentIntent: async () => null,
+                retrieveSubscription: async () =>
+                  stripeSubscription({ ...sub, status: "active", price: "price_pro_monthly" }),
+              },
+            },
+          );
+          return stripeSubscription({ ...sub, status: "active", price: "price_growth_monthly" });
+        }
+        return stripeSubscription({ ...sub, status: "active", price: "price_pro_monthly" });
+      },
+    };
+    const result = await processStripeEvent(
+      subscriptionEvent("evt_race_a", "customer.subscription.updated", {
+        ...sub,
+        status: "active",
+        price: "price_growth_monthly",
+      }),
+      table,
+      store(),
+      { lookup: lookupA },
+    );
+    expect(result).toMatchObject({ action: "subscription_synced" });
+    // A saw B's write under the lock, dropped its older read and read again.
+    expect(reads).toBe(2);
+    expect(await planOf(ws)).toBe("pro");
+    const [row] = await db.select().from(subscriptions).where(eq(subscriptions.externalId, sub.id));
+    expect(row).toMatchObject({ status: "active", tier: "pro" });
+  });
+
+  it("gives up after a few reads when every read races a write, so Stripe retries later", async () => {
+    const ws = await newWorkspace();
+    const sub = { id: "sub_burst", workspaceId: ws, price: "price_growth_monthly" };
+    await processStripeEvent(
+      subscriptionEvent("evt_burst_0", "customer.subscription.created", { ...sub, status: "active" }),
+      table,
+      store(),
+    );
+    let reads = 0;
+    const lookup = {
+      invoiceIdForPaymentIntent: async () => null,
+      retrieveSubscription: async () => {
+        reads += 1;
+        // Another event for the subscription lands during every read.
+        await processStripeEvent(
+          subscriptionEvent(`evt_burst_${reads}`, "customer.subscription.updated", { ...sub, status: "active" }),
+          table,
+          store(),
+        );
+        return stripeSubscription({ ...sub, status: "past_due" });
+      },
+    };
+    await expect(
+      processStripeEvent(
+        subscriptionEvent("evt_burst_late", "customer.subscription.updated", { ...sub, status: "past_due" }),
+        table,
+        store(),
+        { lookup },
+      ),
+    ).rejects.toBeInstanceOf(SubscriptionSyncConflictError);
+    expect(reads).toBe(SUBSCRIPTION_SYNC_ATTEMPTS);
+    // Nothing from the raced reads was written.
+    expect(await statusOf(sub.id)).toBe("active");
+  });
+
+  it("writes nothing and fails the delivery when Stripe cannot be read", async () => {
     const ws = await newWorkspace();
     const lookup = {
       invoiceIdForPaymentIntent: async () => null,

@@ -1,7 +1,7 @@
 import Stripe from "stripe";
 import { describe, expect, it } from "vitest";
 import { tierByKey, topUps } from "@curvi/pipeline/seed";
-import { buildPriceTable, tierPriceEnvName, topUpPriceEnvName } from "./price-table";
+import { buildPriceTable, tierPriceCents, tierPriceEnvName, topUpPriceEnvName } from "./price-table";
 import {
   billingPeriodStart,
   ceilCredits,
@@ -12,6 +12,7 @@ import {
   processStripeEvent,
   prorationShare,
   roundCredits,
+  timeShareBounds,
   UnroutableBillingEventError,
   verifyStripeEvent,
 } from "./stripe-webhook";
@@ -142,8 +143,16 @@ describe("price table", () => {
       tier: "starter",
       cadence: "monthly",
       creditsPerMonth: tierByKey("starter").creditsPerMonth,
+      priceCents: tierByKey("starter").monthlyUsd * 100,
     });
-    expect(table["price_growth_annual"]).toMatchObject({ kind: "tier", tier: "growth", cadence: "annual" });
+    expect(table["price_growth_annual"]).toMatchObject({
+      kind: "tier",
+      tier: "growth",
+      cadence: "annual",
+      // A full year at the annual rate, from the seed.
+      priceCents: tierByKey("growth").annualUsdPerMonth * 12 * 100,
+    });
+    expect(tierPriceCents("free", "monthly")).toBe(0);
     expect(table["price_topup_100"]).toEqual({
       kind: "topup",
       credits: 100,
@@ -218,25 +227,84 @@ function planOf(event: Stripe.Event) {
   return planInvoiceGrant(event.data.object as Stripe.Invoice, table);
 }
 
-describe("proration share (money-plan-change)", () => {
-  const utc = (iso: string) => Date.parse(iso) / 1000;
+const utc = (iso: string) => Date.parse(iso) / 1000;
+const PRO_CENTS = tierPriceCents("pro", "monthly");
+const GROWTH_CENTS = tierPriceCents("growth", "monthly");
+const PRO_MONTHLY = { cadence: "monthly" as const, priceCents: PRO_CENTS };
+const GROWTH_MONTHLY = { cadence: "monthly" as const, priceCents: GROWTH_CENTS };
+/** A subscription anchored on the 31st: its February period is 28 days. */
+const JAN31_FEB28 = { start: utc("2027-01-31T00:00:00Z"), end: utc("2027-02-28T00:00:00Z") };
+/** The same anchor in a 30 day month. */
+const MAR31_APR30 = { start: utc("2027-03-31T00:00:00Z"), end: utc("2027-04-30T00:00:00Z") };
 
-  it("measures a monthly line against the calendar month that ends with it", () => {
-    expect(prorationShare({ periodStart: HALF_MONTH.start, periodEnd: HALF_MONTH.end }, "monthly")).toBe(0.5);
-    expect(prorationShare({ periodStart: T0, periodEnd: T0 + 30 * DAY }, "monthly")).toBe(1);
+/** What Stripe puts on a proration line for a change at `changeAt`: the full
+ * period price times the time left of the real period, to the cent. */
+function stripeProration(priceCents: number, period: { start: number; end: number }, changeAt: number): number {
+  return Math.round((priceCents * (period.end - changeAt)) / (period.end - period.start));
+}
+
+describe("proration share (money-plan-change)", () => {
+  it("finds the longest and the shortest billing period that can end on a date", () => {
     expect(billingPeriodStart(utc("2027-03-31T00:00:00Z"), "monthly")).toBe(utc("2027-02-28T00:00:00Z"));
     expect(billingPeriodStart(utc("2027-01-15T08:00:00Z"), "monthly")).toBe(utc("2026-12-15T08:00:00Z"));
     expect(billingPeriodStart(utc("2028-02-29T00:00:00Z"), "annual")).toBe(utc("2027-02-28T00:00:00Z"));
+    // A period ending on a month end may have begun on a later anchor day.
+    expect(billingPeriodStart(JAN31_FEB28.end, "monthly")).toBe(utc("2027-01-28T00:00:00Z"));
+    expect(billingPeriodStart(JAN31_FEB28.end, "monthly", "shortest")).toBe(JAN31_FEB28.start);
+    expect(billingPeriodStart(MAR31_APR30.end, "monthly")).toBe(utc("2027-03-30T00:00:00Z"));
+    expect(billingPeriodStart(MAR31_APR30.end, "monthly", "shortest")).toBe(MAR31_APR30.start);
+    expect(billingPeriodStart(utc("2029-02-28T00:00:00Z"), "annual", "shortest")).toBe(utc("2028-02-29T00:00:00Z"));
+    // Away from a month end both are the calendar start.
+    expect(billingPeriodStart(utc("2027-01-15T08:00:00Z"), "monthly", "shortest")).toBe(utc("2026-12-15T08:00:00Z"));
   });
 
-  it("measures an annual line against the year that ends with it", () => {
+  it("bounds the time a line covers between the longest and the shortest period", () => {
+    expect(timeShareBounds({ periodStart: HALF_MONTH.start, periodEnd: HALF_MONTH.end }, "monthly")).toEqual({
+      floor: 0.5,
+      ceiling: 0.5,
+    });
+    const midFeb = timeShareBounds({ periodStart: utc("2027-02-14T00:00:00Z"), periodEnd: JAN31_FEB28.end }, "monthly");
+    expect(midFeb.floor).toBeCloseTo(14 / 31, 10);
+    expect(midFeb.ceiling).toBe(0.5);
     const end = utc("2027-09-21T00:00:00Z");
-    expect(prorationShare({ periodStart: end - 73 * DAY, periodEnd: end }, "annual")).toBeCloseTo(73 / 365, 10);
+    expect(timeShareBounds({ periodStart: end - 73 * DAY, periodEnd: end }, "annual").floor).toBeCloseTo(73 / 365, 10);
+    expect(timeShareBounds({ periodStart: T0 - 60 * DAY, periodEnd: T0 }, "monthly")).toEqual({ floor: 1, ceiling: 1 });
+    expect(timeShareBounds({ periodStart: null, periodEnd: null }, "monthly")).toEqual({ floor: 1, ceiling: 1 });
   });
 
-  it("never counts more than a whole period", () => {
-    expect(prorationShare({ periodStart: T0 - 60 * DAY, periodEnd: T0 }, "monthly")).toBe(1);
-    expect(prorationShare({ periodStart: null, periodEnd: null }, "monthly")).toBe(1);
+  it("follows Stripe's own proration on a clamped period, not the calendar month", () => {
+    const changeAt = utc("2027-02-14T00:00:00Z");
+    const credit = { amount: -stripeProration(PRO_CENTS, JAN31_FEB28, changeAt), periodStart: changeAt, periodEnd: JAN31_FEB28.end };
+    const charge = { amount: stripeProration(GROWTH_CENTS, JAN31_FEB28, changeAt), periodStart: changeAt, periodEnd: JAN31_FEB28.end };
+    // Half of the real 28 day period is left; a calendar month says 14 of 31 days.
+    expect(prorationShare(credit, PRO_MONTHLY)).toBe(0.5);
+    expect(prorationShare(charge, GROWTH_MONTHLY)).toBe(0.5);
+    // Right after a full price renewal Stripe returns the whole price.
+    const renewal = { amount: -PRO_CENTS, periodStart: JAN31_FEB28.start + 60, periodEnd: JAN31_FEB28.end };
+    expect(prorationShare(renewal, PRO_MONTHLY)).toBe(1);
+  });
+
+  it("never counts a charge for more than Stripe charged, nor a credit for less than Stripe returned", () => {
+    const half = { periodStart: HALF_MONTH.start, periodEnd: HALF_MONTH.end };
+    // A Stripe price below the seed price: the charge counts what was paid,
+    // the credit never less than the time given back.
+    expect(prorationShare({ ...half, amount: 3000 }, PRO_MONTHLY)).toBeCloseTo(3000 / PRO_CENTS, 10);
+    expect(prorationShare({ ...half, amount: -3000 }, PRO_MONTHLY)).toBe(0.5);
+    // A credit bigger than the time share counts what Stripe returned.
+    expect(prorationShare({ ...half, amount: -11175 }, PRO_MONTHLY)).toBe(0.75);
+    // Never more than one full period either way.
+    expect(prorationShare({ ...half, amount: PRO_CENTS * 2 }, PRO_MONTHLY)).toBe(1);
+    expect(prorationShare({ ...half, amount: -PRO_CENTS * 2 }, PRO_MONTHLY)).toBe(1);
+  });
+
+  it("uses the side of the time bounds that cannot create credits when amounts are not comparable", () => {
+    const changeAt = utc("2027-02-14T00:00:00Z");
+    const feb = { periodStart: changeAt, periodEnd: JAN31_FEB28.end };
+    expect(prorationShare({ ...feb, amount: 5000 }, PRO_MONTHLY, "eur")).toBeCloseTo(14 / 31, 10);
+    expect(prorationShare({ ...feb, amount: -5000 }, PRO_MONTHLY, "eur")).toBe(0.5);
+    expect(prorationShare({ ...feb, amount: 5000 }, { cadence: "monthly", priceCents: 0 })).toBeCloseTo(14 / 31, 10);
+    expect(prorationShare({ ...feb, amount: -5000 }, { cadence: "monthly", priceCents: 0 })).toBe(0.5);
+    expect(prorationShare({ ...feb, amount: -7450 }, PRO_MONTHLY, "USD")).toBe(0.5);
   });
 
   it("rounds grants down and debits up", () => {
@@ -472,7 +540,8 @@ describe("plan changes never create credits (money-plan-change exploit loop)", (
   it("keeps only the credits for the days actually paid for on the bigger plan", async () => {
     const store = new InMemoryBillingStore();
     await processStripeEvent(changeLines("in_up_t", "price_growth_monthly", "price_pro_monthly", 3950, 7450, 15), table, store);
-    await processStripeEvent(changeLines("in_down_t", "price_pro_monthly", "price_growth_monthly", 5267, 2633, 10), table, store);
+    // Stripe returns ten of thirty days of the Pro price and charges ten of Growth.
+    await processStripeEvent(changeLines("in_down_t", "price_pro_monthly", "price_growth_monthly", 4967, 2633, 10), table, store);
     // Five of thirty days on Pro were paid for, so at most five days of the
     // Pro minus Growth allowance may remain.
     const paidFor = PRO_GROWTH_MONTH * (5 / 30);
@@ -502,6 +571,131 @@ describe("plan changes never create credits (money-plan-change exploit loop)", (
     const owed = growth.creditsPerMonth * 12 * (364 / 365) - growth.creditsPerMonth;
     expect(store.balance("ws_9")).toBeLessThanOrEqual(-owed + 0.1);
     expect(store.spend("ws_9", 0.5)).toBe(false);
+  });
+});
+
+describe("plan changes on short and clamped periods follow Stripe's proration", () => {
+  /** A Pro to Growth (or Growth to Pro) change at `changeAt`, with the
+   * amounts Stripe computes over the real period. */
+  function changeInvoice(id: string, period: { start: number; end: number }, changeAt: number, direction: "down" | "up") {
+    const [from, fromCents, to, toCents] =
+      direction === "down"
+        ? (["price_pro_monthly", PRO_CENTS, "price_growth_monthly", GROWTH_CENTS] as const)
+        : (["price_growth_monthly", GROWTH_CENTS, "price_pro_monthly", PRO_CENTS] as const);
+    const returned = stripeProration(fromCents, period, changeAt);
+    const charged = stripeProration(toCents, period, changeAt);
+    return {
+      event: invoiceEvent(id, "subscription_update", [
+        line({ price: from, amount: -returned, proration: true, start: changeAt, end: period.end }),
+        line({ price: to, amount: charged, proration: true, start: changeAt, end: period.end }),
+      ]),
+      returned,
+      charged,
+    };
+  }
+
+  const periods = [
+    { name: "2027-01-31 to 2027-02-28", period: JAN31_FEB28 },
+    { name: "2027-03-31 to 2027-04-30", period: MAR31_APR30 },
+  ];
+  const moments = [
+    // One minute after a full price renewal Stripe returns the whole price.
+    { name: "right after the full price renewal", at: (p: { start: number }) => p.start + 60, share: 1 },
+    { name: "halfway through", at: (p: { start: number; end: number }) => (p.start + p.end) / 2, share: 0.5 },
+  ];
+
+  for (const { name, period } of periods) {
+    for (const moment of moments) {
+      it(`a downgrade ${moment.name} of ${name} takes back the full difference times Stripe's share`, async () => {
+        const store = new InMemoryBillingStore();
+        const tag = `${period.start}_${moment.share}`;
+        await processStripeEvent(
+          invoiceEvent(`in_renew_${tag}`, "subscription_cycle", [
+            line({ price: "price_pro_monthly", amount: PRO_CENTS, start: period.start, end: period.end }),
+          ]),
+          table,
+          store,
+        );
+        const spent = store.balance("ws_9");
+        expect(store.spend("ws_9", spent)).toBe(true);
+
+        const changeAt = moment.at(period);
+        const { event, returned, charged } = changeInvoice(`in_down_${tag}`, period, changeAt, "down");
+        expect(returned / PRO_CENTS).toBe(moment.share);
+        const result = await processStripeEvent(event, table, store);
+        expect(result).toEqual({
+          handled: true,
+          action: "plan_change_credits_returned",
+          credits: PRO_GROWTH_MONTH * moment.share,
+        });
+        // The calendar month is longer than this period, so measuring
+        // against it would have taken back less than Stripe returned.
+        const calendar = timeShareBounds({ periodStart: changeAt, periodEnd: period.end }, "monthly").floor;
+        expect(PRO_GROWTH_MONTH * calendar).toBeLessThan(PRO_GROWTH_MONTH * moment.share);
+
+        // What was paid, in credits at the seed rate: the Pro month, less
+        // the Pro time Stripe returned, plus the Growth time it charged.
+        const paid =
+          pro.creditsPerMonth -
+          (pro.creditsPerMonth * returned) / PRO_CENTS +
+          (growth.creditsPerMonth * charged) / GROWTH_CENTS;
+        expect(roundCredits(spent + store.balance("ws_9"))).toBe(roundCredits(paid));
+        expect(store.spend("ws_9", 0.5)).toBe(false);
+      });
+    }
+
+    it(`an upgrade halfway through ${name} grants the full difference for half the period`, () => {
+      const changeAt = (period.start + period.end) / 2;
+      const plan = planOf(changeInvoice(`in_up_${period.start}`, period, changeAt, "up").event);
+      expect(plan.credits).toBe(PRO_GROWTH_MONTH / 2);
+    });
+
+    it(`upgrade, spend, downgrade on ${name} leaves only what was paid for`, async () => {
+      const store = new InMemoryBillingStore();
+      await processStripeEvent(
+        invoiceEvent(`in_growth_${period.start}`, "subscription_cycle", [
+          line({ price: "price_growth_monthly", amount: GROWTH_CENTS, start: period.start, end: period.end }),
+        ]),
+        table,
+        store,
+      );
+      let spent = 0;
+      const upAt = period.start + 3 * DAY;
+      const downAt = period.start + 9 * DAY;
+      const up = changeInvoice(`in_up_loop_${period.start}`, period, upAt, "up");
+      await processStripeEvent(up.event, table, store);
+      spent += store.balance("ws_9");
+      expect(store.spend("ws_9", store.balance("ws_9"))).toBe(true);
+      const down = changeInvoice(`in_down_loop_${period.start}`, period, downAt, "down");
+      await processStripeEvent(down.event, table, store);
+
+      const paid =
+        growth.creditsPerMonth +
+        (pro.creditsPerMonth * up.charged) / PRO_CENTS -
+        (growth.creditsPerMonth * up.returned) / GROWTH_CENTS -
+        (pro.creditsPerMonth * down.returned) / PRO_CENTS +
+        (growth.creditsPerMonth * down.charged) / GROWTH_CENTS;
+      // Grants round down and debits round up, so what is left never beats
+      // what was paid, and misses it by less than the rounding.
+      const kept = spent + store.balance("ws_9");
+      expect(kept).toBeLessThanOrEqual(paid + 1e-9);
+      expect(kept).toBeGreaterThan(paid - 0.2);
+    });
+  }
+
+  it("a bill in another currency still never grants more than the time allows", () => {
+    const changeAt = utc("2027-02-14T00:00:00Z");
+    const eur = (event: Stripe.Event) => {
+      (event.data.object as { currency?: string }).currency = "eur";
+      return event;
+    };
+    const up = planOf(eur(changeInvoice("in_up_eur", JAN31_FEB28, changeAt, "up").event));
+    // Growth to Pro still grants, at most the difference for the time left.
+    expect(up.credits).toBeGreaterThan(0);
+    expect(up.credits).toBeLessThanOrEqual(PRO_GROWTH_MONTH / 2);
+    const down = planOf(eur(changeInvoice("in_down_eur", JAN31_FEB28, changeAt, "down").event));
+    // Pro to Growth takes back at least the difference for the time left.
+    expect(down.debit).toBeGreaterThanOrEqual(PRO_GROWTH_MONTH / 2);
   });
 });
 

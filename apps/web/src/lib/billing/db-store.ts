@@ -8,14 +8,18 @@
  *   migration 0003) and inserts the ledger row in the same transaction, so a
  *   failed ledger insert rolls the claim back and Stripe's retry grants
  *   exactly once (Update.md 1.3).
- * - A subscription change first takes a transaction scoped advisory lock on
- *   the subscription, then reads the subscription's current state from Stripe,
- *   then upserts the row, retires any other active row for the workspace and
- *   sets workspaces.plan under a lock on the workspace row (Update.md 1.1 and
- *   1.5). Handlers for one subscription therefore read and write in the same
- *   order, so a late, older event can never overwrite a newer state. The
- *   workspace row is locked only after the Stripe read, so credit holds are
- *   never kept waiting on the network.
+ * - A subscription change reads the subscription's current state from Stripe
+ *   before it opens a transaction, so no pooled connection and no lock waits
+ *   on the network. It then takes a transaction scoped advisory lock on the
+ *   subscription and a lock on the workspace row, and checks that nobody
+ *   wrote the subscription row since the read began (the row's xmin, which
+ *   every write changes). If someone did, their state may be newer than the
+ *   one just read, so it rolls back, reads Stripe again and tries once more;
+ *   after SUBSCRIPTION_SYNC_ATTEMPTS it throws and Stripe redelivers the
+ *   event. Otherwise it upserts the row, retires any other active row for
+ *   the workspace and sets workspaces.plan (Update.md 1.1 and 1.5). Every
+ *   write therefore carries a state read after the write before it, so a
+ *   late, older event can never overwrite a newer state.
  * - A clawback (refund, dispute) claims its dedupe name, reads the balance
  *   under the same workspace lock the ledger functions use and never takes it
  *   below zero (Phase 10 decision 3). A won dispute gives back what its
@@ -53,6 +57,34 @@ interface GrantRow {
   workspaceId: string | null;
   credits: number;
 }
+
+/** How many Stripe reads one subscription sync makes at most when other
+ * handlers keep writing the same subscription while it reads. */
+export const SUBSCRIPTION_SYNC_ATTEMPTS = 3;
+
+/**
+ * The subscription row changed during every Stripe read. The route answers
+ * 500 and Stripe redelivers the event later, when the burst has passed.
+ */
+export class SubscriptionSyncConflictError extends Error {
+  readonly retryable = true;
+
+  constructor(externalId: string) {
+    super(
+      `Subscription ${externalId} changed during each of ${SUBSCRIPTION_SYNC_ATTEMPTS} Stripe reads; Stripe will retry the event.`,
+    );
+    this.name = "SubscriptionSyncConflictError";
+  }
+}
+
+/** A subscription row as last written: its workspace and its row version. */
+interface SubscriptionVersion {
+  workspaceId: string;
+  version: string;
+}
+
+/** Returned from the write transaction when the row changed during the read. */
+const CHANGED_DURING_READ = Symbol("changed during read");
 
 export class DbBillingStore implements BillingStore {
   private readonly requireRouting: boolean;
@@ -170,12 +202,24 @@ export class DbBillingStore implements BillingStore {
       .where(eq(workspaces.id, workspaceId));
   }
 
+  /** The subscription row's workspace and version. xmin changes on every
+   * write to the row, so an unchanged xmin means nobody wrote it since. */
+  private async subscriptionVersion(
+    executor: Pick<Tx, "select">,
+    externalId: string,
+  ): Promise<SubscriptionVersion | null> {
+    const [row] = await executor
+      .select({ workspaceId: subscriptions.workspaceId, version: sql<string>`xmin::text` })
+      .from(subscriptions)
+      .where(eq(subscriptions.externalId, externalId))
+      .limit(1);
+    return row ?? null;
+  }
+
   async upsertSubscription(update: SubscriptionUpdate): Promise<SubscriptionSyncOutcome> {
-    const existing = await this.db.query.subscriptions.findFirst({
-      where: (t, { eq }) => eq(t.externalId, update.externalId),
-    });
+    let seen = await this.subscriptionVersion(this.db, update.externalId);
     const workspaceId =
-      existing?.workspaceId ?? (await this.resolveWorkspaceId(update.workspaceId, update.stripeCustomerId));
+      seen?.workspaceId ?? (await this.resolveWorkspaceId(update.workspaceId, update.stripeCustomerId));
     if (!workspaceId) {
       if (this.requireRouting) {
         throw new UnroutableBillingEventError(
@@ -185,27 +229,61 @@ export class DbBillingStore implements BillingStore {
       return { status: "unrouted" };
     }
 
-    return this.db.transaction(async (tx): Promise<SubscriptionSyncOutcome> => {
-      await this.advisoryLock(tx, `subscription:${update.externalId}`);
-      // Read Stripe only after taking the lock: the handler that writes last
-      // is then also the one that read last.
+    for (let attempt = 1; ; attempt += 1) {
+      // Stripe is read with no transaction open, so neither a pooled
+      // connection nor a lock waits on the network.
       const fresh = update.refresh ? await update.refresh() : null;
       const incoming: SubscriptionState = fresh ?? {
         tier: update.tier,
         status: update.status,
         periodEnd: update.periodEnd,
       };
+      // Without a Stripe read the payload is all there is, and the status
+      // rules alone keep an older payload from winning.
+      const expected = update.refresh ? (seen?.version ?? null) : undefined;
+      const outcome = await this.writeSubscription(update.externalId, workspaceId, incoming, expected);
+      if (outcome !== CHANGED_DURING_READ) {
+        return outcome;
+      }
+      if (attempt >= SUBSCRIPTION_SYNC_ATTEMPTS) {
+        throw new SubscriptionSyncConflictError(update.externalId);
+      }
+      seen = await this.subscriptionVersion(this.db, update.externalId);
+    }
+  }
 
+  /**
+   * Writes a subscription state read from Stripe (or the event payload) and
+   * sets workspaces.plan. `expected` is the row version seen before the
+   * Stripe read began (null when there was no row); if the row has another
+   * version under the lock, another handler wrote in between, possibly with
+   * a newer state, and nothing is written.
+   */
+  private async writeSubscription(
+    externalId: string,
+    workspaceId: string,
+    incoming: SubscriptionState,
+    expected: string | null | undefined,
+  ): Promise<SubscriptionSyncOutcome | typeof CHANGED_DURING_READ> {
+    return this.db.transaction(async (tx): Promise<SubscriptionSyncOutcome | typeof CHANGED_DURING_READ> => {
+      await this.advisoryLock(tx, `subscription:${externalId}`);
       await this.lockWorkspace(tx, workspaceId);
+      if (expected !== undefined) {
+        const now = await this.subscriptionVersion(tx, externalId);
+        if ((now?.version ?? null) !== expected) {
+          return CHANGED_DURING_READ;
+        }
+      }
+
       const rows = await tx.select().from(subscriptions).where(eq(subscriptions.workspaceId, workspaceId));
-      const current = rows.find((row) => row.externalId === update.externalId);
+      const current = rows.find((row) => row.externalId === externalId);
 
       if (current && !acceptsSubscriptionStatus(current.status, incoming.status)) {
         console.warn(
           JSON.stringify({
             msg: "billing: older subscription state ignored",
             workspaceId,
-            subscription: update.externalId,
+            subscription: externalId,
             kept: current.status,
             incoming: incoming.status,
           }),
@@ -219,13 +297,13 @@ export class DbBillingStore implements BillingStore {
         // portal, so this only happens for subscriptions made by hand; the
         // newest one wins and the older row is retired.
         for (const row of rows) {
-          if (row.externalId !== update.externalId && row.status === "active") {
+          if (row.externalId !== externalId && row.status === "active") {
             console.warn(
               JSON.stringify({
                 msg: "billing: second active subscription, retiring the older row",
                 workspaceId,
                 retired: row.externalId,
-                active: update.externalId,
+                active: externalId,
               }),
             );
             await tx
@@ -251,7 +329,7 @@ export class DbBillingStore implements BillingStore {
           .values({
             workspaceId,
             provider: this.eventSource,
-            externalId: update.externalId,
+            externalId,
             tier: incoming.tier ?? undefined,
             status: incoming.status,
             periodEnd,
@@ -260,7 +338,7 @@ export class DbBillingStore implements BillingStore {
         rows.push(inserted);
       }
 
-      await this.syncPlan(tx, workspaceId, rows, update.externalId, incoming.status);
+      await this.syncPlan(tx, workspaceId, rows, externalId, incoming.status);
       return { status: "applied", subscriptionStatus: incoming.status };
     });
   }

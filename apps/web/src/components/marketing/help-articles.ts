@@ -7,9 +7,9 @@ import {
   formatCredits,
   freeCredits,
   liveFilesPhrase,
-  rolloverSentence,
   topUpMonths,
   typicalPackCredits,
+  UNUSED_CREDITS_SENTENCE,
 } from "@/lib/marketing-facts";
 
 /**
@@ -48,7 +48,7 @@ export const helpArticles: HelpArticle[] = [
     title: "How do credits work?",
     body: [
       `Every paid plan includes a monthly credit allowance, and the free plan gives you ${freeCredits()} credits once. A white background main image, a cutout, a resize or a background sweep costs ${formatCredits(creditCosts.deterministic)}. A generative lifestyle scene costs ${formatCredits(creditCosts.generativeStill)}.`,
-      `A typical listing pack of still images uses about ${typicalPackCredits()} credits. You are only charged for files that pass their checks. ${rolloverSentence()} Top up credits stay usable for ${topUpMonths()} months.`,
+      `A typical listing pack of still images uses about ${typicalPackCredits()} credits. You are only charged for files that pass their checks. ${UNUSED_CREDITS_SENTENCE} Top up credits stay usable for ${topUpMonths()} months.`,
     ],
     structured: "always",
   },
