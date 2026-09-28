@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  Registry,
+  channelFileLimit,
   dimensionBounds,
   filenameFor,
   getSpec,
@@ -85,6 +87,73 @@ describe("channel spec registry", () => {
     const amazon = dimensionBounds(getSpec("amazon.main"));
     expect(amazon.minLongSide).toBe(1600);
     expect(amazon.maxLongSide).toBe(10000);
+  });
+
+  it("requires the exact size on social and banner specs (Update.md 2.8)", () => {
+    const feed = dimensionBounds(getSpec("meta.feed_4x5"));
+    expect(feed).toMatchObject({ minWidth: 1080, maxWidth: 1080, minHeight: 1350, maxHeight: 1350 });
+    // A square file is not a 4x5 feed asset.
+    const fits = (b: ReturnType<typeof dimensionBounds>, w: number, h: number): boolean =>
+      w >= b.minWidth && w <= b.maxWidth && h >= b.minHeight && h <= b.maxHeight;
+    expect(fits(feed, 1080, 1080)).toBe(false);
+    expect(fits(feed, 1080, 1350)).toBe(true);
+    for (const id of [
+      "meta.feed_1x1",
+      "meta.feed_4x5",
+      "meta.story_9x16",
+      "pinterest.pin",
+      "amazon.aplus.basic_header",
+      "amazon.aplus.premium_full",
+      "shopify.hero_banner",
+    ]) {
+      expect(getSpec(id).exactSize).toBe(true);
+    }
+  });
+
+  it("keeps ranges where the width is only the size we render at", () => {
+    // amazon.main renders at 2000 but accepts a 1600 long side.
+    const main = getSpec("amazon.main");
+    expect(main.exactSize ?? false).toBe(false);
+    const bounds = dimensionBounds(main);
+    expect(bounds.minWidth).toBe(1);
+    expect(bounds.maxWidth).toBe(2000);
+    expect(bounds.minLongSide).toBe(1600);
+    expect(getSpec("amazon.secondary").exactSize ?? false).toBe(false);
+    expect(getSpec("shopify.product").exactSize ?? false).toBe(false);
+  });
+
+  it("keeps every spec's own render size inside its bounds", () => {
+    for (const spec of listSpecs()) {
+      if (spec.width === undefined || spec.height === undefined) {
+        continue;
+      }
+      const b = dimensionBounds(spec);
+      const long = Math.max(spec.width, spec.height);
+      expect(spec.width, spec.id).toBeGreaterThanOrEqual(b.minWidth);
+      expect(spec.width, spec.id).toBeLessThanOrEqual(b.maxWidth);
+      expect(spec.height, spec.id).toBeGreaterThanOrEqual(b.minHeight);
+      expect(spec.height, spec.id).toBeLessThanOrEqual(b.maxHeight);
+      expect(long, spec.id).toBeGreaterThanOrEqual(b.minLongSide);
+      expect(long, spec.id).toBeLessThanOrEqual(b.maxLongSide);
+    }
+  });
+
+  it("rejects an exactSize spec without both dimensions", () => {
+    const parsed = Registry.safeParse({
+      version: 1,
+      specs: [{ id: "bad.spec", verified: false, width: 1000, exactSize: true }],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("limits files per product from maxCount or a naming template without a slot", () => {
+    expect(channelFileLimit(getSpec("amazon.secondary"))).toBe(8);
+    // {sku}.MAIN.jpg can name only one file.
+    expect(channelFileLimit(getSpec("amazon.main"))).toBe(1);
+    // {seoSlug}-{n}.jpg numbers its files and declares no maxCount.
+    expect(channelFileLimit(getSpec("shopify.product"))).toBeNull();
+    // No naming template: the packager numbers generic names.
+    expect(channelFileLimit(getSpec("amazon.aplus.basic_header"))).toBeNull();
   });
 
   it("classifies marketplace versus social specs", () => {

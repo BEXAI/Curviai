@@ -84,6 +84,21 @@ export function qcKindForSpec(spec: ChannelSpec): QcKind {
   return isPureWhite && spec.textAllowed !== true ? "main" : "other";
 }
 
+/**
+ * The shortest acceptable long side for this spec. The spec's own
+ * minLongSide wins when set (the registry's amazon.main says 1600); the
+ * section 5.6 constant is the fallback for main class specs that omit it.
+ * Renderers that shrink an output to fit a byte limit stop here.
+ */
+export function minLongSideFor(spec: ChannelSpec): number {
+  const bounds = dimensionBounds(spec);
+  const fromSpec = spec.minLongSide ?? (qcKindForSpec(spec) === "main" ? QC_THRESHOLDS.main.minLongSide : 1);
+  return Math.max(fromSpec, bounds.minLongSide);
+}
+
+/** Reported as the measured value of a check that needs a mask it did not get. */
+export const MASK_MISSING = "mask missing";
+
 export async function pixelChecks(
   image: RawImage,
   mask: RawMask | null,
@@ -94,8 +109,10 @@ export async function pixelChecks(
   const checks: CheckItem[] = [];
   const longestSide = Math.max(image.width, image.height);
 
-  // Dimension checks via the spec registry bounds.
+  // Dimension checks via the spec registry bounds. An exactSize spec
+  // (social feeds, pins, banners) accepts only its own width and height.
   const bounds = dimensionBounds(spec);
+  const exact = bounds.minWidth === bounds.maxWidth && bounds.minHeight === bounds.maxHeight;
   checks.push({
     name: "dimensions",
     pass:
@@ -104,13 +121,12 @@ export async function pixelChecks(
       image.width <= bounds.maxWidth &&
       image.height <= bounds.maxHeight,
     measured: `${image.width}x${image.height}`,
-    limit: `${bounds.minWidth}x${bounds.minHeight} to ${bounds.maxWidth}x${bounds.maxHeight}`,
+    limit: exact
+      ? `exactly ${bounds.maxWidth}x${bounds.maxHeight}`
+      : `${bounds.minWidth}x${bounds.minHeight} to ${bounds.maxWidth}x${bounds.maxHeight}`,
   });
-  // Main white images need at least 1600 px on the longest side. The spec's
-  // own minLongSide wins when set (the registry's amazon.main already says
-  // 1600); the constant is the fallback for main class specs that omit it.
-  const minLong =
-    spec.minLongSide ?? (kind === "main" ? QC_THRESHOLDS.main.minLongSide : bounds.minLongSide);
+  // Main white images need at least 1600 px on the longest side.
+  const minLong = minLongSideFor(spec);
   checks.push({
     name: "longestSide",
     pass: longestSide >= minLong && longestSide <= bounds.maxLongSide,
@@ -118,9 +134,26 @@ export async function pixelChecks(
     limit: `${minLong} to ${bounds.maxLongSide}`,
   });
 
+  // Fail closed: a rule that needs the product mask cannot pass without one.
+  // Main class specs always need both the background and the fill rule, so a
+  // generation that returns no mask can never ship as a main image.
+  const needsBackground = kind === "main" || (spec.background?.type === "solid" && !!spec.background.rgb);
+  const fillMin = spec.fill?.min ?? (kind === "main" ? QC_THRESHOLDS.main.fillMin : null);
+  const fillMax = spec.fill?.max ?? (kind === "main" ? QC_THRESHOLDS.main.fillMax : null);
+  const needsFill = fillMin !== null && fillMax !== null;
+  const backgroundRequired =
+    kind === "main" ? QC_THRESHOLDS.main.backgroundWhiteShareAfterForcing : 0.999;
+
   // Background white share outside the (margin dilated) mask.
   let backgroundWhiteShare: number | null = null;
-  if (mask && spec.background?.type === "solid" && spec.background.rgb) {
+  if (needsBackground && !mask) {
+    checks.push({
+      name: "backgroundWhiteShare",
+      pass: false,
+      measured: MASK_MISSING,
+      limit: `>= ${backgroundRequired}`,
+    });
+  } else if (mask && spec.background?.type === "solid" && spec.background.rgb) {
     const [br, bg2, bb] = spec.background.rgb;
     const margin = opts.edgeMarginPx ?? 0;
     const checkMask = margin > 0 ? await dilate(mask, margin) : mask;
@@ -137,13 +170,11 @@ export async function pixelChecks(
       }
     }
     backgroundWhiteShare = outside === 0 ? 1 : matching / outside;
-    const required =
-      kind === "main" ? QC_THRESHOLDS.main.backgroundWhiteShareAfterForcing : 0.999;
     checks.push({
       name: "backgroundWhiteShare",
-      pass: backgroundWhiteShare >= required,
+      pass: backgroundWhiteShare >= backgroundRequired,
       measured: backgroundWhiteShare,
-      limit: `>= ${required}`,
+      limit: `>= ${backgroundRequired}`,
     });
   }
 
@@ -156,9 +187,7 @@ export async function pixelChecks(
     } else {
       fillRatio = 0;
     }
-    const fillMin = spec.fill?.min ?? (kind === "main" ? QC_THRESHOLDS.main.fillMin : null);
-    const fillMax = spec.fill?.max ?? (kind === "main" ? QC_THRESHOLDS.main.fillMax : null);
-    if (fillMin !== null && fillMax !== null) {
+    if (needsFill) {
       checks.push({
         name: "fillRatio",
         pass: fillRatio >= fillMin && fillRatio <= fillMax,
@@ -166,6 +195,13 @@ export async function pixelChecks(
         limit: `${fillMin} to ${fillMax}`,
       });
     }
+  } else if (needsFill) {
+    checks.push({
+      name: "fillRatio",
+      pass: false,
+      measured: MASK_MISSING,
+      limit: `${fillMin} to ${fillMax}`,
+    });
   }
 
   // Encoded file checks.

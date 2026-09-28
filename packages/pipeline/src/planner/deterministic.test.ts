@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ShotList, type ProductProfile } from "../schemas";
-import { planShots } from "./deterministic";
+import { CHANNEL_LIMIT_REASON, capShotsPerChannel, channelLimitViolations, planShots } from "./deterministic";
 
 function profile(overrides: Partial<ProductProfile> = {}): ProductProfile {
   return {
@@ -169,5 +169,137 @@ describe("planShots", () => {
       baseOpts,
     );
     expect(many.shots.filter((s) => s.type === "lifestyle").length).toBeLessThanOrEqual(4);
+  });
+});
+
+const lifestyleScenes = (list: ShotList): string[] =>
+  list.shots.filter((s) => s.type === "lifestyle").map((s) => s.scene ?? "");
+
+describe("planShots lifestyle scenes by category (Update.md 2.16)", () => {
+  const GHOST = "ghost style from supplied photos";
+  const apparel = (useContexts: string[], photographedAngles: ProductProfile["photographedAngles"] = ["front", "back"]) =>
+    profile({ category: "apparel", useContexts, photographedAngles });
+
+  it("gives apparel with no contexts 2 to 4 scenes including ghost style", () => {
+    const scenes = lifestyleScenes(planShots(apparel([]), baseOpts));
+    expect(scenes.length).toBeGreaterThanOrEqual(2);
+    expect(scenes.length).toBeLessThanOrEqual(4);
+    expect(scenes).toContain(GHOST);
+  });
+
+  it("keeps ghost style when apparel has 5 contexts", () => {
+    const scenes = lifestyleScenes(planShots(apparel(["beach", "office", "gym", "park", "cafe"]), baseOpts));
+    expect(scenes).toHaveLength(4);
+    expect(scenes).toContain(GHOST);
+    expect(scenes.filter((s) => s.startsWith("flat lay, "))).toHaveLength(3);
+  });
+
+  it("dedupes repeated apparel contexts and still meets the minimum", () => {
+    const scenes = lifestyleScenes(planShots(apparel(["beach", "beach"]), baseOpts));
+    expect(new Set(scenes).size).toBe(scenes.length);
+    expect(scenes.length).toBeGreaterThanOrEqual(2);
+    expect(scenes).toContain(GHOST);
+  });
+
+  it("uses the seller's contexts without flat lay or ghost style when on model photos exist", () => {
+    const scenes = lifestyleScenes(planShots(apparel(["beach", "office"], ["front", "in_use"]), baseOpts));
+    expect(scenes).toEqual(["beach", "office"]);
+  });
+
+  it("keeps the jewelry additions when there are 4 or more contexts", () => {
+    const scenes = lifestyleScenes(
+      planShots(profile({ category: "jewelry", useContexts: ["a", "b", "c", "d", "e"] }), baseOpts),
+    );
+    expect(scenes).toHaveLength(4);
+    expect(scenes).toContain("detail macro");
+    expect(scenes).toContain("scale on hand");
+  });
+
+  it("keeps a single category addition next to 4 contexts", () => {
+    const scenes = lifestyleScenes(
+      planShots(profile({ category: "furniture", useContexts: ["a", "b", "c", "d"] }), baseOpts),
+    );
+    expect(scenes).toEqual(["a", "b", "c", "room scale scene"]);
+  });
+});
+
+/** Every angle photographed, so there are 8 alternate angles on top of the main. */
+const allAngles: ProductProfile["photographedAngles"] = [
+  "front",
+  "45",
+  "side",
+  "back",
+  "top",
+  "bottom",
+  "detail",
+  "in_use",
+  "packaging",
+];
+
+describe("planShots channel image limits (Update.md 2.10 and 2.12)", () => {
+  const richOpts = { ...baseOpts, creditBudget: 1000, hasBoxContents: true, hasComparisonFacts: true };
+  const onSpec = (list: ShotList, specId: string) => list.shots.filter((s) => s.channels.includes(specId));
+
+  it("caps a pack with 9 or more secondary shots at 8 and skips the extras", () => {
+    const list = planShots(
+      profile({ photographedAngles: allAngles, missingAnglesNeeded: [], useContexts: ["a", "b", "c", "d"] }),
+      { ...richOpts, channels: ["amazon"] },
+    );
+    expect(onSpec(list, "amazon.secondary")).toHaveLength(8);
+    const extras = list.skipped.filter((s) => s.reason === CHANNEL_LIMIT_REASON);
+    // 8 angles, cutout, 2 sweeps, 4 scenes, infographic, dimensions, in the
+    // box and comparison: 19 secondary candidates, 8 slots.
+    expect(extras).toHaveLength(11);
+    // Best priority first: the 8 kept are the alternate angles (priority 2).
+    for (const shot of onSpec(list, "amazon.secondary")) {
+      expect(shot.priority).toBe(2);
+    }
+    // Extras are not in the plan, so they are never reserved or charged.
+    const planned = new Set(list.shots.map((s) => s.id));
+    expect(list.shots.length).toBe(planned.size);
+    expect(list.shots.some((s) => s.type === "lifestyle")).toBe(false);
+    expect(channelLimitViolations(list.shots)).toEqual([]);
+    expect(() => ShotList.parse(list)).not.toThrow();
+  });
+
+  it("keeps an extra shot for its other channels instead of dropping it", () => {
+    const list = planShots(
+      profile({ photographedAngles: allAngles, missingAnglesNeeded: [], useContexts: ["a", "b", "c", "d"] }),
+      { ...richOpts, channels: ["amazon", "shopify"] },
+    );
+    expect(onSpec(list, "amazon.secondary")).toHaveLength(8);
+    const lifestyle = list.shots.filter((s) => s.type === "lifestyle");
+    expect(lifestyle).toHaveLength(4);
+    for (const shot of lifestyle) {
+      expect(shot.channels).toEqual(["shopify.product"]);
+    }
+    expect(list.skipped.some((s) => s.reason === CHANNEL_LIMIT_REASON)).toBe(false);
+  });
+
+  it("leaves a pack under the limit untouched", () => {
+    const list = planShots(profile(), baseOpts);
+    expect(onSpec(list, "amazon.secondary").length).toBeLessThanOrEqual(8);
+    expect(list.skipped.some((s) => s.reason === CHANNEL_LIMIT_REASON)).toBe(false);
+    expect(onSpec(list, "amazon.main")).toHaveLength(1);
+  });
+
+  it("flags a second amazon.main and a ninth amazon.secondary in any shot list", () => {
+    const base = planShots(profile(), baseOpts).shots;
+    const main = base.find((s) => s.type === "amazon_main")!;
+    const twoMains = [...base, { ...main, id: "s99_amazon_main" }];
+    expect(channelLimitViolations(twoMains)).toEqual([{ specId: "amazon.main", count: 2, limit: 1 }]);
+
+    const secondary = base.find((s) => s.channels.includes("amazon.secondary"))!;
+    const nine = Array.from({ length: 9 }, (_, i) => ({ ...secondary, id: `x${i}`, channels: ["amazon.secondary"] }));
+    expect(channelLimitViolations(nine)).toEqual([{ specId: "amazon.secondary", count: 9, limit: 8 }]);
+  });
+
+  it("caps a shot list directly, keeping the first main and skipping the second", () => {
+    const base = planShots(profile(), baseOpts).shots;
+    const main = base.find((s) => s.type === "amazon_main")!;
+    const skipped: ShotList["skipped"] = [];
+    const capped = capShotsPerChannel([main, { ...main, id: "second_main" }], skipped);
+    expect(capped.map((s) => s.id)).toEqual([main.id]);
+    expect(skipped).toEqual([{ type: "amazon_main", reason: CHANNEL_LIMIT_REASON }]);
   });
 });

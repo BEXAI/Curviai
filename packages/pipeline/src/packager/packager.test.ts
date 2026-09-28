@@ -130,6 +130,75 @@ describe("buildPack", () => {
   });
 });
 
+describe("buildPack channel limits and duplicate names (Update.md 2.10 and 2.12)", () => {
+  it("ships one MAIN file when two assets target amazon.main and reports the other as dropped", async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), "curvi-pack-test-"));
+    const first = { ...(await whiteMainAsset()), ref: "shot-main-1" };
+    const second = { ...(await whiteMainAsset()), ref: "shot-main-2" };
+    // Different bytes, so a silent overwrite would be visible.
+    second.buffer = Buffer.concat([second.buffer, Buffer.from([0])]);
+    const result = await buildPack([first, second], ["amazon"], { outDir, writeFiles: true });
+
+    expect(result.report.files.map((f) => f.file)).toEqual(["ABC123.MAIN.jpg"]);
+    expect(result.report.files[0].ref).toBe("shot-main-1");
+    expect(result.report.dropped).toHaveLength(1);
+    expect(result.report.dropped[0]).toMatchObject({ ref: "shot-main-2", specId: "amazon.main", file: "ABC123.MAIN.jpg" });
+    expect(result.report.dropped[0].reason).toMatch(/at most 1 image/);
+
+    // One zip entry, and the loose file is the first asset's bytes.
+    const amazonZip = result.zips.find((z) => z.channel === "amazon")!;
+    expect(amazonZip.files).toEqual(["ABC123.MAIN.jpg"]);
+    const { stdout } = await execFileAsync("unzip", ["-l", amazonZip.path]);
+    expect(stdout.match(/ABC123\.MAIN\.jpg/g)).toHaveLength(1);
+    const loose = await readFile(path.join(outDir, "files", "amazon", "ABC123.MAIN.jpg"));
+    expect(loose.equals(first.buffer)).toBe(true);
+  });
+
+  it("caps amazon.secondary at 8 files and drops the ninth", async () => {
+    const assets: PackAsset[] = [];
+    for (let i = 0; i < 9; i++) {
+      assets.push({ ...(await secondaryAsset(0)), n: undefined, ref: `shot-${i + 1}` });
+    }
+    const result = await buildPack(assets, ["amazon"]);
+    const names = result.report.files.map((f) => f.file);
+    expect(names).toHaveLength(8);
+    expect(names[0]).toBe("ABC123.PT01.jpg");
+    expect(names[7]).toBe("ABC123.PT08.jpg");
+    expect(names).not.toContain("ABC123.PT09.jpg");
+    expect(result.report.dropped.map((d) => d.ref)).toEqual(["shot-9"]);
+    expect(result.report.dropped[0].reason).toMatch(/at most 8 images/);
+    expect(result.zips[0].files).toHaveLength(8);
+  });
+
+  it("drops a second file that would reuse a numbered name", async () => {
+    const result = await buildPack(
+      [
+        { ...(await secondaryAsset(3)), ref: "a" },
+        { ...(await secondaryAsset(3)), ref: "b" },
+      ],
+      ["amazon"],
+    );
+    expect(result.report.files.map((f) => f.file)).toEqual(["ABC123.PT03.jpg"]);
+    expect(result.report.dropped).toMatchObject([{ ref: "b", reason: expect.stringMatching(/duplicate file name/) }]);
+  });
+
+  it("reports nothing dropped for a normal pack", async () => {
+    const result = await buildPack([await whiteMainAsset(), await secondaryAsset(1)], ["amazon"]);
+    expect(result.report.dropped).toEqual([]);
+    const report = JSON.parse(await readFile(result.reportPath, "utf8"));
+    expect(report.dropped).toEqual([]);
+  });
+
+  it("fails a main image checked without its mask", async () => {
+    const asset = await whiteMainAsset();
+    delete asset.mask;
+    const result = await buildPack([asset], ["amazon"]);
+    const entry = result.report.files[0];
+    expect(entry.pass).toBe(false);
+    expect(entry.checks.find((c) => c.name === "backgroundWhiteShare")?.measured).toBe("mask missing");
+  });
+});
+
 describe("withExtension", () => {
   it("names files after their real format", async () => {
     const { withExtension } = await import("./index");

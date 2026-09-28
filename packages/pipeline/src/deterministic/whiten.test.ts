@@ -8,10 +8,14 @@ import { qcKindForSpec } from "../qc/pixelChecks";
 import { rectProduct } from "../testutil";
 import {
   buildProductReference,
+  encodeUnderLimit,
   makeAmazonMain,
   makeCutoutPng,
   makeSweep,
+  MIN_JPEG_QUALITY,
+  OutputTooLargeError,
   PRODUCT_RESIZE_KERNEL,
+  stepDownSizes,
 } from "./whiten";
 
 /**
@@ -257,5 +261,111 @@ describe("product placement and rule 3 reference", () => {
         expect(reference.data[(y * 50 + x) * 4 + 3]).toBe(inside ? 255 : 0);
       }
     }
+  });
+});
+
+/**
+ * Seeded noise product (the worst case for JPEG size) on a gray photo, with
+ * its mask, as encoded buffers.
+ */
+async function noisyProduct(size = 300): Promise<{ source: Buffer; mask: Buffer }> {
+  const data = Buffer.alloc(size * size * 4, 0);
+  const maskData = Buffer.alloc(size * size, 0);
+  let seed = 987654;
+  const next = (): number => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed % 256;
+  };
+  const inset = Math.round(size * 0.05);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const o = (y * size + x) * 4;
+      const inside = x >= inset && x < size - inset && y >= inset && y < size - inset;
+      data[o] = inside ? next() : 128;
+      data[o + 1] = inside ? next() : 128;
+      data[o + 2] = inside ? next() : 128;
+      data[o + 3] = 255;
+      if (inside) maskData[y * size + x] = 255;
+    }
+  }
+  return {
+    source: await sharp(data, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer(),
+    mask: await sharp(maskData, { raw: { width: size, height: size, channels: 1 } }).png().toBuffer(),
+  };
+}
+
+/** A 600 px main spec whose smallest accepted long side is 400. */
+function limitSpec(maxBytes?: number): ChannelSpec {
+  return { ...smallSpec, width: 600, height: 600, minLongSide: 400, maxBytes };
+}
+
+/** Bytes of this raw canvas at the lowest JPEG quality. */
+async function bytesAtMinQuality(raw: RawImage): Promise<number> {
+  const result = await encodeUnderLimit(raw, 1);
+  expect(result.overLimit).toBe(true);
+  expect(result.quality).toBe(MIN_JPEG_QUALITY);
+  return result.jpeg.length;
+}
+
+describe("makeAmazonMain byte limit (Update.md wave 7 item 8)", () => {
+  it("flags a file still over the limit at the lowest quality", async () => {
+    const product = await noisyProduct();
+    const full = await makeAmazonMain(product.source, product.mask, limitSpec());
+    const tight = await encodeUnderLimit(full.raw, 1000);
+    expect(tight.overLimit).toBe(true);
+    expect(tight.jpeg.length).toBeGreaterThan(1000);
+    const roomy = await encodeUnderLimit(full.raw, 50_000_000);
+    expect(roomy).toMatchObject({ overLimit: false, quality: 90 });
+    const unlimited = await encodeUnderLimit(full.raw, undefined);
+    expect(unlimited).toMatchObject({ overLimit: false, quality: 90 });
+  });
+
+  it("steps the size down toward the spec minimum long side to fit the limit", async () => {
+    const product = await noisyProduct();
+    const full = await makeAmazonMain(product.source, product.mask, limitSpec());
+    expect(full.width).toBe(600);
+    const floor = await makeAmazonMain(product.source, product.mask, { ...limitSpec(), width: 400, height: 400 });
+    const fullBytes = await bytesAtMinQuality(full.raw);
+    const floorBytes = await bytesAtMinQuality(floor.raw);
+    expect(floorBytes).toBeLessThan(fullBytes);
+
+    // A limit the full size cannot meet at any quality but the floor size can.
+    const maxBytes = Math.floor((fullBytes + floorBytes) / 2);
+    const fitted = await makeAmazonMain(product.source, product.mask, limitSpec(maxBytes));
+    expect(fitted.jpeg.length).toBeLessThanOrEqual(maxBytes);
+    expect(fitted.width).toBeLessThan(600);
+    expect(fitted.width).toBeGreaterThanOrEqual(400);
+    expect(fitted.height).toBe(fitted.width);
+    // Everything else follows the smaller canvas.
+    expect(fitted.raw.width).toBe(fitted.width);
+    expect(fitted.mask.width).toBe(fitted.width);
+    expect(fitted.fillRatio).toBeGreaterThanOrEqual(0.85);
+    expect(fitted.fillRatio).toBeLessThanOrEqual(0.9);
+    const meta = await sharp(fitted.jpeg).metadata();
+    expect(meta.width).toBe(fitted.width);
+  });
+
+  it("throws OutputTooLargeError when even the smallest accepted size is too big", async () => {
+    const product = await noisyProduct();
+    const floor = await makeAmazonMain(product.source, product.mask, { ...limitSpec(), width: 400, height: 400 });
+    const floorBytes = await bytesAtMinQuality(floor.raw);
+    await expect(makeAmazonMain(product.source, product.mask, limitSpec(floorBytes - 1))).rejects.toBeInstanceOf(
+      OutputTooLargeError,
+    );
+  });
+
+  it("never steps below the spec floor or resizes an exact size spec", () => {
+    expect(stepDownSizes(2000, 2000, getSpec("amazon.main"))).toEqual([
+      { width: 2000, height: 2000 },
+      { width: 1700, height: 1700 },
+      { width: 1600, height: 1600 },
+    ]);
+    expect(stepDownSizes(600, 600, limitSpec())).toEqual([
+      { width: 600, height: 600 },
+      { width: 510, height: 510 },
+      { width: 434, height: 434 },
+      { width: 400, height: 400 },
+    ]);
+    expect(stepDownSizes(1080, 1350, getSpec("meta.feed_4x5"))).toEqual([{ width: 1080, height: 1350 }]);
   });
 });

@@ -112,4 +112,53 @@ describe("fidelityReport", () => {
     const mask = rectMask(64, 64, { left: 0, top: 0, width: 64, height: 64 });
     await expect(fidelityReport(a, b, mask)).rejects.toThrow(/match/);
   });
+
+  it("regression: a truncated composed buffer fails instead of passing on NaN", async () => {
+    const original = rawCanvas(64, 64, 200, 100, 60);
+    const mask = rectMask(64, 64, { left: 8, top: 8, width: 48, height: 48 });
+    // Right width and height fields, but half the bytes. Reading past the end
+    // gives undefined, the old deltaE was NaN and NaN never exceeded a limit.
+    const composed = { ...cloneRaw(original), data: cloneRaw(original).data.subarray(0, 64 * 32 * 4) };
+    const report = await fidelityReport(original, composed, mask);
+    expect(report.pass).toBe(false);
+    expect(report.issues).toEqual(["invalid_input"]);
+    expect(report.invalidReason).toMatch(/composed holds/);
+  });
+
+  it("fails a short original or mask buffer", async () => {
+    const original = rawCanvas(64, 64, 200, 100, 60);
+    const mask = rectMask(64, 64, { left: 8, top: 8, width: 48, height: 48 });
+    const shortOriginal = { ...original, data: original.data.subarray(0, 100) };
+    const a = await fidelityReport(shortOriginal, cloneRaw(original), mask);
+    expect(a.pass).toBe(false);
+    expect(a.issues).toEqual(["invalid_input"]);
+    const shortMask = { ...mask, data: mask.data.subarray(0, 64 * 10) };
+    const b = await fidelityReport(original, cloneRaw(original), shortMask);
+    expect(b.pass).toBe(false);
+    expect(b.invalidReason).toMatch(/mask holds/);
+  });
+
+  it("fails a non finite or negative erosion and deltaE limit", async () => {
+    const original = rawCanvas(64, 64, 200, 100, 60);
+    const mask = rectMask(64, 64, { left: 8, top: 8, width: 48, height: 48 });
+    for (const opts of [{ erodePx: Number.NaN }, { erodePx: -1 }, { maxDeltaELimit: Number.NaN }]) {
+      const report = await fidelityReport(original, cloneRaw(original), mask, opts);
+      expect(report.pass).toBe(false);
+      expect(report.issues).toEqual(["invalid_input"]);
+    }
+  });
+
+  it("regression: an injected NaN deltaE fails with non_finite_delta_e", async () => {
+    const original = rawCanvas(64, 64, 200, 100, 60);
+    const mask = rectMask(64, 64, { left: 8, top: 8, width: 48, height: 48 });
+    // A float backed buffer of the right length smuggles a NaN channel value
+    // deep inside the QC region, which a byte Buffer never could.
+    const floats = new Float64Array(original.data);
+    floats[(32 * 64 + 32) * 4] = Number.NaN;
+    const composed = { ...original, data: floats as unknown as Buffer };
+    const report = await fidelityReport(original, composed, mask);
+    expect(report.pass).toBe(false);
+    expect(report.issues).toEqual(["non_finite_delta_e"]);
+    expect(Number.isNaN(report.meanDeltaE)).toBe(true);
+  });
 });

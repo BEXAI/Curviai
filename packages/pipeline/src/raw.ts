@@ -26,15 +26,25 @@ export function maskToSharp(mask: RawMask): sharp.Sharp {
   return sharp(mask.data, { raw: { width: mask.width, height: mask.height, channels: 1 } });
 }
 
-/** Decode any sharp readable buffer into raw RGBA. */
+/*
+ * Every decoder below applies the EXIF orientation first (sharp's rotate()
+ * with no angle), so a phone photo stored sideways with an orientation tag
+ * decodes upright, the way viewers and marketplaces show it. Files with no
+ * orientation tag, including everything the pipeline encodes itself, decode
+ * unchanged. A source and a mask decoded from the same tagged file stay the
+ * same size.
+ */
+
+/** Decode any sharp readable buffer into raw RGBA, upright per EXIF. */
 export async function decodeToRgba(buffer: Buffer): Promise<RawImage> {
-  const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { data, info } = await sharp(buffer).rotate().ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   return { data, width: info.width, height: info.height, channels: 4 };
 }
 
-/** Decode a grayscale mask image (white means product) into a raw mask. */
+/** Decode a grayscale mask image (white means product) into a raw mask, upright per EXIF. */
 export async function decodeMask(buffer: Buffer): Promise<RawMask> {
   const { data, info } = await sharp(buffer)
+    .rotate()
     .toColourspace("b-w")
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -44,9 +54,10 @@ export async function decodeMask(buffer: Buffer): Promise<RawMask> {
   return { data, width: info.width, height: info.height };
 }
 
-/** Build a mask from the alpha channel of an RGBA image (for cutout PNGs). */
+/** Build a mask from the alpha channel of an RGBA image (for cutout PNGs), upright per EXIF. */
 export async function maskFromAlpha(buffer: Buffer): Promise<RawMask> {
   const { data, info } = await sharp(buffer)
+    .rotate()
     .ensureAlpha()
     .extractChannel("alpha")
     .raw()
@@ -56,6 +67,24 @@ export async function maskFromAlpha(buffer: Buffer): Promise<RawMask> {
 
 export async function encodePng(img: RawImage): Promise<Buffer> {
   return rawToSharp(img).png().toBuffer();
+}
+
+/**
+ * Re-encodes a photo upright: applies its EXIF orientation to the pixels and
+ * drops the tag, so a provider that ignores EXIF (a cutout service, an image
+ * model) still sees the product the right way up. Bytes with no orientation
+ * tag, or tagged as already upright, come back unchanged. PNG stays PNG;
+ * anything else becomes a high quality JPEG.
+ */
+export async function normalizeOrientation(buffer: Buffer): Promise<Buffer> {
+  const meta = await sharp(buffer).metadata();
+  if (!meta.orientation || meta.orientation === 1) {
+    return buffer;
+  }
+  const upright = sharp(buffer).rotate();
+  return meta.format === "png"
+    ? upright.png().toBuffer()
+    : upright.jpeg({ quality: 95, chromaSubsampling: "4:4:4" }).toBuffer();
 }
 
 export async function encodeJpeg(img: RawImage, quality = 90): Promise<Buffer> {

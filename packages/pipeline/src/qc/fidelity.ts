@@ -34,8 +34,10 @@ export function deriveQcErodePx(
 }
 
 export type FidelityIssue =
+  | "invalid_input"
   | "input_mask_empty"
   | "eroded_mask_empty"
+  | "non_finite_delta_e"
   | "mean_delta_e_exceeded"
   | "max_delta_e_exceeded";
 
@@ -57,6 +59,8 @@ export interface FidelityReport {
   maxDeltaELimit: number;
   /** Empty when the report passes. */
   issues: FidelityIssue[];
+  /** Why the input was rejected, present only with the invalid_input issue. */
+  invalidReason?: string;
   pass: boolean;
 }
 
@@ -90,6 +94,29 @@ export async function fidelityReport(
   const erodePx = opts.erodePx ?? deriveQcErodePx();
   const kind = opts.kind ?? "main";
   const maxDeltaELimit = opts.maxDeltaELimit ?? DEFAULT_MAX_DELTA_E_LIMIT;
+  const threshold = QC_THRESHOLDS[kind].maxMeanDeltaE;
+
+  // Fail closed on malformed input. A short buffer reads undefined bytes,
+  // which turn every deltaE into NaN, and NaN is never greater than a
+  // threshold: the old code passed such a report.
+  const invalid = invalidInputReason(original, composed, mask, erodePx, maxDeltaELimit);
+  if (invalid) {
+    return {
+      maskArea: 0,
+      inputMaskArea: 0,
+      exactByteShare: 0,
+      meanDeltaE: Number.NaN,
+      maxDeltaE: Number.NaN,
+      erodePx,
+      kind,
+      threshold,
+      maxDeltaELimit,
+      issues: ["invalid_input"],
+      invalidReason: invalid,
+      pass: false,
+    };
+  }
+
   const eroded = await erode(mask, erodePx);
 
   // Same binary convention as erode(): values at or above 128 are product.
@@ -104,6 +131,7 @@ export async function fidelityReport(
   let exact = 0;
   let sumDeltaE = 0;
   let maxDeltaE = 0;
+  let nonFinite = false;
   for (let i = 0; i < eroded.data.length; i++) {
     if (eroded.data[i] === 0) {
       continue;
@@ -121,23 +149,32 @@ export async function fidelityReport(
       continue;
     }
     const d = ciede2000(rgbToLab(r1, g1, b1), rgbToLab(r2, g2, b2));
+    if (!Number.isFinite(d)) {
+      nonFinite = true;
+      continue;
+    }
     sumDeltaE += d;
     if (d > maxDeltaE) {
       maxDeltaE = d;
     }
   }
 
-  const meanDeltaE = area === 0 ? 0 : sumDeltaE / area;
-  const threshold = QC_THRESHOLDS[kind].maxMeanDeltaE;
+  const meanDeltaE = nonFinite ? Number.NaN : area === 0 ? 0 : sumDeltaE / area;
+  if (nonFinite) {
+    maxDeltaE = Number.NaN;
+  }
 
   // A vacuous comparison must never pass: an empty QC region proves nothing
   // about product fidelity, so it fails with an explicit issue instead of
-  // reporting perfect scores.
+  // reporting perfect scores. A NaN or infinite deltaE fails explicitly,
+  // since no threshold comparison can catch it.
   const issues: FidelityIssue[] = [];
   if (inputMaskArea === 0) {
     issues.push("input_mask_empty");
   } else if (area === 0) {
     issues.push("eroded_mask_empty");
+  } else if (!Number.isFinite(meanDeltaE) || !Number.isFinite(maxDeltaE)) {
+    issues.push("non_finite_delta_e");
   } else {
     if (meanDeltaE > threshold) {
       issues.push("mean_delta_e_exceeded");
@@ -160,4 +197,35 @@ export async function fidelityReport(
     issues,
     pass: issues.length === 0,
   };
+}
+
+/** Why these buffers cannot be compared, or null when they are well formed. */
+function invalidInputReason(
+  original: RawImage,
+  composed: RawImage,
+  mask: RawMask,
+  erodePx: number,
+  maxDeltaELimit: number,
+): string | null {
+  const { width, height } = original;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    return `image size ${width}x${height} is not a positive whole number of pixels`;
+  }
+  const pixels = width * height;
+  if (original.data.length !== pixels * 4) {
+    return `original holds ${original.data.length} bytes, expected ${pixels * 4}`;
+  }
+  if (composed.data.length !== pixels * 4) {
+    return `composed holds ${composed.data.length} bytes, expected ${pixels * 4}`;
+  }
+  if (mask.data.length !== pixels) {
+    return `mask holds ${mask.data.length} bytes, expected ${pixels}`;
+  }
+  if (!Number.isFinite(erodePx) || erodePx < 0) {
+    return `erosion ${erodePx} is not a finite non negative number`;
+  }
+  if (!Number.isFinite(maxDeltaELimit) || maxDeltaELimit < 0) {
+    return `max deltaE limit ${maxDeltaELimit} is not a finite non negative number`;
+  }
+  return null;
 }
