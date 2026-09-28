@@ -34,6 +34,7 @@ vi.mock("@/lib/r2", async (importOriginal) => {
   return { ...actual, getObjectBytes: vi.fn(async (key: string) => storedObjects.get(key) ?? null) };
 });
 
+import { publicJobError } from "@/lib/job-copy";
 import { DbService, ProvisioningError } from "./db";
 
 // DbService against the real migrations in PGlite: the stale run reconciler
@@ -612,6 +613,23 @@ describe("DbService.getJob shot cards", () => {
 
     expect(job?.error).toBeTruthy();
     expect(job?.error).not.toMatch(/providers|bfl|upstream/i);
+  });
+
+  it("never serves the raw 401 chain to the pack page or the dashboard (A6)", async () => {
+    // The stored error production showed raw on a pack card.
+    const raw =
+      'All providers failed for task llm.intake: anthropic-claude: anthropic-claude responded 401: {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}';
+    const w = await makeWorkspace(0);
+    const jobId = await doneJob(w, "failed", raw);
+
+    const job = await service(w.user).getJob(w.id, jobId);
+    const recent = await service(w.user).listRecentJobs(w.id, 8);
+
+    expect(job?.error).toBe(publicJobError(raw));
+    expect(job?.error).toContain("problem on our side, not with your photo");
+    for (const surface of [JSON.stringify(job), JSON.stringify(recent)]) {
+      expect(surface).not.toMatch(/anthropic|responded|401|authentication_error|x-api-key/i);
+    }
   });
 });
 

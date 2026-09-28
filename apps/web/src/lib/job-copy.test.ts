@@ -120,10 +120,10 @@ describe("needsReviewNote", () => {
 });
 
 describe("publicJobError", () => {
-  it("hides provider names and raw details behind a generic line", () => {
+  it("hides provider names and raw details behind plain copy", () => {
     const text = publicJobError("All providers failed for task image.generate: fal: 502 Bad Gateway");
     expect(text).not.toMatch(/providers|fal|502/i);
-    expect(text).toContain("went back to your balance");
+    expect(text).toContain("Nothing was charged");
   });
 
   it("keeps known cases specific", () => {

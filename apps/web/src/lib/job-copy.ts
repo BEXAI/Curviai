@@ -136,13 +136,25 @@ export function needsReviewNote(hint: string | null | undefined): string {
     reason = "The image service had trouble with this shot, so we held it back.";
   } else if (h.includes("could not check this shot")) {
     reason = "We could not run our checks on this shot, so we held it back.";
+  } else if (h.includes("screenshot") || h.includes("screen capture")) {
+    reason = "This photo looks like a screenshot, not a photo of your product. Take a photo of the product with your camera.";
+  } else if (h.includes("separate the product from its background")) {
+    // live-runtime.ts SEGMENTATION_FAILED: the cutout kept the background.
+    reason =
+      "We could not separate the product from the background in your photo. A sharp photo on a plain background usually fixes this.";
   } else if (
     h.includes("does not point at one of this product") ||
     h.includes("source photo") ||
     h.includes("no product was found") ||
-    h.includes("found no product")
+    h.includes("found no product") ||
+    h.includes("no product to place")
   ) {
     reason = "We could not find the product clearly in your photo. A sharp photo on a plain background usually fixes this.";
+  } else if (h.includes("would be cut off")) {
+    // shot-outputs.ts: the product does not fit this channel's shape.
+    reason = "Your product would be cut off at this channel's shape, so we held this image back.";
+  } else if (h.includes("could not be prepared for")) {
+    reason = "We could not prepare this image for this channel, so we held it back.";
   } else if (h.includes("fix failed checks") || h.includes("productfidelity")) {
     reason = "It did not pass this channel's checks after several tries.";
   } else if (h.includes("spend cap") || h.includes("cost cap")) {
@@ -173,55 +185,191 @@ export function needsReviewNote(hint: string | null | undefined): string {
   return `${reason} ${NO_CHARGE}`;
 }
 
-const GENERIC_FAILURE =
-  "Something went wrong while making this pack. Credits held for it went back to your balance.";
+const HELD_RETURNED = "Credits held for it went back to your balance.";
+const HELD_RUN_AGAIN = "Credits held for it went back to your balance, so you can run it again.";
+const NOTHING_CHARGED = "Nothing was charged.";
+const CONTACT = "email hello@curvi.ai";
 
 /**
- * The failure line shown on a failed job. Known cases get their own honest
- * sentence; everything else, including provider errors, gets the generic
- * one so provider names and stack details never reach the page.
+ * Seller copy for every failure a pack can end on, by what the seller can do
+ * about it. Each line says what happened, that nothing was charged (a failed
+ * pack is never charged: the runner releases its whole hold) and what to do
+ * next. docs/phases/PHASE_12.md "A6 failure copy inventory" lists the stored
+ * message behind each one.
  */
-export function publicJobError(raw: string | null | undefined): string | null {
+export const JOB_ERROR_COPY = {
+  // The photo cannot be used.
+  screenshot: `This photo looks like a screenshot, not a photo of your product. Take a photo of the product with your camera and start a new pack. ${NOTHING_CHARGED}`,
+  noProduct: `We could not find a product to sell in your photos. Take a clear photo of just the product, then start a new pack. ${NOTHING_CHARGED}`,
+  cutout: `We could not separate the product from the background in your photo. Take a sharp photo of the product on a plain background, then start a new pack. ${NOTHING_CHARGED}`,
+  noShotPassed: `None of the shots in this pack passed our quality checks, so nothing was charged. Each shot below says why. A sharp photo of the product on a plain background often helps.`,
+  // Content blocked.
+  flagged: `Your photos were flagged for a manual review, so we did not make a pack from them. ${NOTHING_CHARGED} If you think this is a mistake, ${CONTACT}.`,
+  contentBlocked: `The image service would not make images from this photo under its content rules, so this pack stopped. ${NOTHING_CHARGED} Try a different photo of the product.`,
+  // Limits and credits.
+  credits: `There were not enough credits to start this pack. ${NOTHING_CHARGED} Top up or pick fewer channels.`,
+  packCap: `This pack hit a safety limit on generation and was stopped. ${HELD_RETURNED} Try again with fewer channels.`,
+  workspaceDayCap: `Your workspace reached its daily limit for making images, so this pack stopped. ${NOTHING_CHARGED} Try again tomorrow, or ${CONTACT} to raise the limit.`,
+  globalDayCap: `We reached our daily safety limit for making images, so this pack stopped. ${NOTHING_CHARGED} Try again tomorrow.`,
+  noShotsPlanned: `We could not plan any shots for the channels you picked, so nothing was charged. Try other channels, or ${CONTACT} if it keeps happening.`,
+  // Our side.
+  interrupted: `The run was interrupted before it finished. ${HELD_RETURNED}`,
+  notStarted: `Our server restarted before this pack could start. ${HELD_RUN_AGAIN}`,
+  restarted: `Our server restarted while this pack was running. ${HELD_RUN_AGAIN}`,
+  timedOut: `This pack took longer than our time limit, so we stopped it. ${HELD_RUN_AGAIN}`,
+  internal: `This pack stopped because of an error on our side. ${HELD_RUN_AGAIN}`,
+  notQueued: `We could not start this pack. ${HELD_RETURNED} Try again in a minute.`,
+  stopped: `This pack was stopped. ${HELD_RETURNED}`,
+  planFailed: `We could not plan the shots for this product, so nothing was charged. Try again, or contact us if it keeps happening.`,
+  readFailed: `We could not read your product from the photos because of a problem on our side. ${NOTHING_CHARGED} Try again in a few minutes.`,
+  setup: `This pack stopped because of a problem on our side, not with your photo. ${NOTHING_CHARGED} Try again later, and ${CONTACT} if it keeps happening.`,
+  serviceBusy: `A service we use to make images is busy or not responding, so this pack stopped. ${NOTHING_CHARGED} Try again in a few minutes.`,
+  noShotsMade: `None of the shots in this pack could be made because of a problem on our side. ${NOTHING_CHARGED} Try again in a few minutes.`,
+  notDelivered: `Your shots were made, but we could not put them into a pack because of a problem on our side. ${NOTHING_CHARGED} Try again in a few minutes.`,
+  generic: `Something went wrong while making this pack. ${HELD_RETURNED}`,
+} as const;
+
+export type JobErrorKind = keyof typeof JOB_ERROR_COPY;
+
+type Rule = readonly [JobErrorKind, (r: string) => boolean];
+
+const has =
+  (...needles: string[]) =>
+  (r: string): boolean =>
+    needles.some((n) => r.includes(n));
+
+/** A provider HTTP status the adapters format as "<provider> responded
+ * <status>: <body>" (packages/ai adapters shared.ts, photoroomCutout.ts). */
+function respondedStatus(r: string): number | null {
+  const match = /responded (\d{3})/.exec(r) ?? /failed with status (\d{3})/.exec(r);
+  return match ? Number(match[1]) : null;
+}
+
+/** A 4xx that is not a timeout or rate limit: our request, key or account
+ * was wrong (a bad API key answers 401), never the seller's photo. */
+function isSetupStatus(r: string): boolean {
+  const status = respondedStatus(r);
+  return status !== null && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+function isBusyStatus(r: string): boolean {
+  const status = respondedStatus(r);
+  return status !== null && (status >= 500 || status === 408 || status === 429);
+}
+
+/**
+ * Ordered: the first match wins. Our own plain messages come first, then
+ * photo and content problems, limits, and last the provider and runtime
+ * failures, whose raw text can name anything.
+ */
+const RULES: readonly Rule[] = [
+  ["screenshot", has("screenshot", "screen capture")],
+  // The web app's own settle and reconcile messages (lib/jobs/enqueue.ts
+  // SETTLED_JOB_MESSAGES, services/reconcile.ts, services/db.ts abandonJob).
+  ["interrupted", has("interrupted before finishing")],
+  ["notStarted", has("server restarted before this pack could start")],
+  ["restarted", has("server restarted while this pack was running")],
+  ["timedOut", has("longer than the time limit")],
+  ["internal", has("stopped because of an internal error")],
+  ["notQueued", has("could not be queued", "crashed before it could start")],
+  // Our own credit functions (services/db.ts ReservationError, the
+  // reserve_credits SQL exception). A provider's own "Insufficient credits"
+  // answer is our account, so it is left to the setup rule below.
+  ["credits", has("credit reservation failed", "insufficient credit balance")],
+  // Intake and analysis gates (trigger/src/pipeline-runner.ts).
+  ["flagged", (r) => r.includes("flagged for") || r.includes("manual review")],
+  ["noProduct", has("no sellable product", "found no product", "no product was found", "no product to place")],
+  ["cutout", has("separate the product from its background")],
+  ["readFailed", has("failed schema validation")],
+  ["planFailed", has("could not plan the shots")],
+  ["noShotsPlanned", has("no shots could be planned")],
+  ["noShotPassed", has("passed its checks")],
+  ["notDelivered", has("could be delivered", "could not be delivered", "storage is not configured")],
+  // Spend caps (packages/ai caps.ts keys, router.ts "Spend cap blocked call").
+  ["setup", has("reservation could not be made", "counter could not be updated")],
+  ["workspaceDayCap", has("caps:workspace:")],
+  ["globalDayCap", has("caps:global:")],
+  ["packCap", has("cost cap", "spend cap", "spending limit")],
+  // Provider safety refusals (content_blocked in packages/ai adapters).
+  [
+    "contentBlocked",
+    has("content_blocked", "declined", "blocked the prompt", "stop_reason refusal", "moderat", "safety system"),
+  ],
+  // Our configuration, keys and accounts.
+  [
+    "setup",
+    (r) =>
+      isSetupStatus(r) ||
+      [
+        "api key",
+        "api_key",
+        "x-api-key",
+        "authentication",
+        "unauthorized",
+        "forbidden",
+        "permission",
+        "not registered",
+        "does not support task",
+        "no providers routed",
+        "estimatecostmicros",
+        "cost estimate",
+        "price table",
+        "maxcostmicros",
+        "no active recipe",
+        "not configured",
+      ].some((n) => r.includes(n)),
+  ],
+  // Runner bookkeeping that should never happen (trigger/src/state.ts).
+  [
+    "internal",
+    has("illegal transition", "credits were already reserved", "reserve amount must be", "before reserving", "of the reservation is outstanding"),
+  ],
+  // Outages: timeouts, 5xx, rate limits, open breakers, empty answers.
+  [
+    "serviceBusy",
+    (r) =>
+      isBusyStatus(r) ||
+      [
+        "timed out",
+        "timeout",
+        "network error",
+        "circuit breaker",
+        "rate limit",
+        "overloaded",
+        "fetch failed",
+        "econn",
+        "all providers failed",
+      ].some((n) => r.includes(n)),
+  ],
+  ["noShotsMade", has("none of the shots in this pack could be made")],
+  ["stopped", has("already finished or failed elsewhere")],
+];
+
+/** Which seller facing case a stored job error falls in, or null for none. */
+export function jobErrorKind(raw: string | null | undefined): JobErrorKind | null {
   if (raw === null || raw === undefined || raw.trim() === "") {
     return null;
   }
   const r = raw.toLowerCase();
-  if (r.includes("interrupted before finishing")) {
-    return "The run was interrupted before it finished. Credits held for it went back to your balance.";
+  for (const [kind, test] of RULES) {
+    if (test(r)) {
+      return kind;
+    }
   }
-  // The inline runner's settled messages (lib/jobs/enqueue.ts
-  // SETTLED_JOB_MESSAGES). A settled job is only failed when no pack was
-  // delivered, and its whole hold is released.
-  if (r.includes("server restarted before this pack could start")) {
-    return "Our server restarted before this pack could start. Credits held for it went back to your balance, so you can run it again.";
-  }
-  if (r.includes("server restarted while this pack was running")) {
-    return "Our server restarted while this pack was running. Credits held for it went back to your balance, so you can run it again.";
-  }
-  if (r.includes("longer than the time limit")) {
-    return "This pack took longer than our time limit, so we stopped it. Credits held for it went back to your balance, so you can run it again.";
-  }
-  if (r.includes("stopped because of an internal error")) {
-    return "This pack stopped because of an error on our side. Credits held for it went back to your balance, so you can run it again.";
-  }
-  if (r.includes("could not be queued") || r.includes("crashed before it could start")) {
-    return "We could not start this pack. Credits held for it went back to your balance. Try again in a minute.";
-  }
-  if (r.includes("credit reservation failed") || r.includes("insufficient credit")) {
-    return "There were not enough credits to start this pack. Top up or pick fewer channels.";
-  }
-  if (r.includes("already finished or failed elsewhere")) {
-    return "This pack was stopped. Credits held for it went back to your balance.";
-  }
-  // trigger/src/pipeline-runner.ts PLAN_FAILED_MESSAGE: neither planner
-  // produced a plan, and the hold is released.
-  if (r.includes("could not plan the shots")) {
-    return "We could not plan the shots for this product, so nothing was charged. Try again, or contact us if it keeps happening.";
-  }
-  if (r.includes("cost cap") || r.includes("spend cap")) {
-    return "This pack hit a safety limit on generation and was stopped. Credits held for it went back to your balance.";
-  }
-  return GENERIC_FAILURE;
+  return "generic";
+}
+
+/**
+ * The failure line shown on a failed job. Every message the runner and the
+ * web app store gets its own honest sentence: what happened, that nothing
+ * was charged and what to do next. Anything unknown gets the generic one.
+ * The output is always one of JOB_ERROR_COPY, so provider names, HTTP
+ * statuses and response bodies never reach the page; the raw detail stays in
+ * the database and the server logs.
+ */
+export function publicJobError(raw: string | null | undefined): string | null {
+  const kind = jobErrorKind(raw);
+  return kind === null ? null : JOB_ERROR_COPY[kind];
 }
 
 export interface PackTally {
