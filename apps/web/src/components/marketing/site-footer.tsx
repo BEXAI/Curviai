@@ -25,7 +25,7 @@ export function SiteFooter() {
           <div>
             <Wordmark className="text-white" />
             <p className="mt-3 max-w-xs text-sm text-ink-400">
-              Studio product photos and videos for every marketplace, from one photo, without changing your product.
+              Studio product photos for marketplaces and social, from one photo, without changing your product.
             </p>
           </div>
           <div>

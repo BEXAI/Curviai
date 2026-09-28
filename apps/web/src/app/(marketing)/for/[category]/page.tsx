@@ -5,8 +5,10 @@ import { buttonVariants } from "@curvi/ui";
 import { JsonLd } from "@/components/json-ld";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { categories, categoryForSlug } from "@/components/marketing/categories";
+import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
 import { EmailCapture } from "@/components/marketing/email-capture";
+import { freeCredits, freeCreditsReach } from "@/lib/marketing-facts";
 import { breadcrumbJsonLd, categoryPageSeo, jsonLdGraph, pageMetadata } from "@/lib/seo";
 
 export const dynamicParams = false;
@@ -70,12 +72,12 @@ export default async function CategoryPage({
             </Link>
           </div>
         </div>
-        <BeforeAfterSlider
-          beforeSrc={beforeDemoImage}
-          afterSrc={afterDemoImage}
-          beforeLabel="Your photo"
-          afterLabel="Curvi output"
-        />
+        <div>
+          <BeforeAfterSlider beforeSrc={beforeDemoImage} afterSrc={afterDemoImage} />
+          <p className="mt-2 text-center text-xs text-ink-400">
+            Illustration of the before and after format, not a {page.name.toLowerCase()} sample.
+          </p>
+        </div>
       </div>
 
       <div className="mt-16 grid gap-10 lg:grid-cols-2">
@@ -101,6 +103,18 @@ export default async function CategoryPage({
                 {item}
               </li>
             ))}
+            {page.comingSoon.map((item) => (
+              <li
+                key={item}
+                className="flex items-start justify-between gap-3 rounded-lg border border-dashed border-ink-200 p-4 text-sm text-ink-500"
+              >
+                <span className="flex gap-3">
+                  <span className="mt-1 inline-block h-2 w-2 shrink-0 rounded-full bg-ink-300" aria-hidden="true" />
+                  {item}
+                </span>
+                <ComingSoonBadge />
+              </li>
+            ))}
           </ul>
         </div>
       </div>
@@ -110,8 +124,7 @@ export default async function CategoryPage({
           Try it on your best selling {page.name.toLowerCase()} product
         </h2>
         <p className="mx-auto mt-2 max-w-lg text-sm text-ink-600">
-          Start free with 15 credits, enough for a compliant main image, two lifestyle shots and a
-          share page.
+          Start free with {freeCredits()} credits, {freeCreditsReach()}.
         </p>
         <div className="mt-6">
           <EmailCapture />

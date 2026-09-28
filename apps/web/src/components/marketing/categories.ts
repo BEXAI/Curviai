@@ -1,12 +1,20 @@
+import { amazonMainRules, joinList, liveChannelNames } from "@/lib/marketing-facts";
+
 export interface CategoryPage {
   slug: string;
   name: string;
   headline: string;
   intro: string;
   painPoints: string[];
+  /** What a pack for this category delivers today. */
   packContents: string[];
+  /** Pack items that do not run in production yet, shown with a Coming soon label. */
+  comingSoon: string[];
   proofLine: string;
 }
+
+const amazonFillMin = amazonMainRules().fillMinPercent;
+const liveChannels = joinList(liveChannelNames());
 
 export const categories: CategoryPage[] = [
   {
@@ -14,18 +22,18 @@ export const categories: CategoryPage[] = [
     name: "Apparel",
     headline: "Product photos for apparel brands, from one photo",
     intro:
-      "Clothing listings live or die on clean main images and consistent lifestyle shots. Curvi takes one photo of your garment and returns a compliant white background main image, on model style lifestyle scenes and social crops, without repainting the fabric, the stitching or the print.",
+      "Clothing listings live or die on clean main images and consistent lifestyle shots. Curvi takes one photo of your garment and returns a compliant white background main image, flat lay lifestyle scenes and social crops, without repainting the fabric, the stitching or the print.",
     painPoints: [
       "Prints and logos warp when generic AI tools regenerate the whole image",
       "Amazon suppresses apparel listings with off white backgrounds",
       "Reshooting every colorway in a studio costs hundreds per SKU",
     ],
     packContents: [
-      "Pure white main image sized for Amazon and Walmart",
-      "Flat lay and hanger style secondary shots",
-      "Square and portrait crops for Meta and Pinterest",
-      "A short looping video for the listing gallery",
+      "Pure white main image sized for Amazon",
+      "Flat lay lifestyle scenes built around your garment",
+      "Square, portrait and story crops for Meta",
     ],
+    comingSoon: ["A short looping video for the listing gallery"],
     proofLine: "Fabric texture and printed graphics stay pixel for pixel identical to your photo.",
   },
   {
@@ -36,15 +44,15 @@ export const categories: CategoryPage[] = [
       "Jewelry is the hardest category to photograph and the easiest to ruin with AI. Curvi masks your piece and only rebuilds the background and lighting sweep, so stones, engravings and metal grain never change. You get a compliant main image plus editorial style scenes from a single phone photo.",
     painPoints: [
       "Generative tools invent extra prongs, links and reflections",
-      "Tiny products fail the Amazon 85 percent fill rule by default",
+      `Tiny products fail the Amazon ${amazonFillMin} percent fill rule by default`,
       "Macro studio photography runs 50 dollars or more per piece",
     ],
     packContents: [
       "White background main image with the fill ratio corrected",
-      "Soft shadow and velvet surface scene shots",
-      "Close crop detail images for the gallery",
-      "A slow rotation style video loop",
+      "Lifestyle scenes, including a detail close up and a scale shot",
+      "Square, portrait and story crops for Meta",
     ],
+    comingSoon: ["A slow rotation style video loop"],
     proofLine: "We never regenerate product pixels, so a customer receives exactly what the photo shows.",
   },
   {
@@ -59,11 +67,11 @@ export const categories: CategoryPage[] = [
       "Seasonal campaign shots need new creative every month",
     ],
     packContents: [
-      "Compliant white main image for Amazon and Google",
-      "Bathroom shelf, stone slab and botanical scene shots",
+      "Compliant white main image for Amazon",
+      "Lifestyle scenes matched to how your product is used, such as a bathroom shelf",
       "Story and feed crops with safe zones respected",
-      "A templated video with your brand colors",
     ],
+    comingSoon: ["A templated video with your brand colors"],
     proofLine: "Label text is untouched because label pixels are never regenerated.",
   },
   {
@@ -79,10 +87,10 @@ export const categories: CategoryPage[] = [
     ],
     packContents: [
       "Pure white main image at marketplace resolution",
-      "Kitchen counter and picnic table lifestyle scenes",
-      "Ingredient flat lay style creative for social",
-      "A short appetite appeal video",
+      "Kitchen counter and serving lifestyle scenes",
+      "Square, portrait and story crops for social",
     ],
+    comingSoon: ["A short appetite appeal video"],
     proofLine: "The package in the output is your package, down to the barcode.",
   },
   {
@@ -90,7 +98,7 @@ export const categories: CategoryPage[] = [
     name: "Electronics",
     headline: "Electronics listings with ports, buttons and logos intact",
     intro:
-      "Electronics buyers zoom in on ports and controls before they buy. Curvi preserves your device pixels exactly and swaps only the environment, producing a compliant main image, desk and hand scale scenes, and channel sized crops from a single photo.",
+      "Electronics buyers zoom in on ports and controls before they buy. Curvi preserves your device pixels exactly and swaps only the environment, producing a compliant main image, desk and everyday use scenes, and channel sized crops from a single photo.",
     painPoints: [
       "AI tools hallucinate extra ports and misprint logos",
       "Certification marks must stay legible for compliance",
@@ -98,10 +106,10 @@ export const categories: CategoryPage[] = [
     ],
     packContents: [
       "White main image with correct fill for Amazon",
-      "Desk setup and in hand scale scenes",
-      "Detail crops of ports and controls",
-      "A feature highlight templated video",
+      "Lifestyle scenes such as a desk setup, plus a ports detail scene",
+      "An infographic that calls out features and connectivity",
     ],
+    comingSoon: ["A feature highlight templated video"],
     proofLine: "Every port, button and printed mark comes straight from your photo.",
   },
   {
@@ -109,7 +117,7 @@ export const categories: CategoryPage[] = [
     name: "Home and kitchen",
     headline: "Home goods staged in rooms that sell the lifestyle",
     intro:
-      "Home and kitchen products need context to sell, but the product itself must stay honest. Curvi places your real product photo into styled interior scenes, generates the compliant white main image, and sizes everything for each marketplace and ad channel.",
+      `Home and kitchen products need context to sell, but the product itself must stay honest. Curvi places your real product photo into styled interior scenes, generates the compliant white main image, and sizes everything for ${liveChannels}.`,
     painPoints: [
       "Staging a real room for one product shot is slow and expensive",
       "Scale is hard to judge without a scene around the product",
@@ -117,10 +125,10 @@ export const categories: CategoryPage[] = [
     ],
     packContents: [
       "White background main image, correctly filled",
-      "Living room, kitchen and shelf styled scenes",
+      "Styled scenes matched to where your product is used, such as a kitchen or a shelf",
       "Banner crops for Shopify hero sections",
-      "A room reveal style video",
     ],
+    comingSoon: ["A room reveal style video"],
     proofLine: "The scene is generated. Your product inside it is not.",
   },
   {
@@ -135,19 +143,19 @@ export const categories: CategoryPage[] = [
       "Amazon suppresses listings when mains are not pure white",
     ],
     packContents: [
-      "Pure white main image for marketplaces",
-      "Living room floor and pet bed scene shots",
-      "Bright social crops for Meta and TikTok Shop",
-      "A short playful templated video",
+      "Pure white main image for Amazon",
+      "Home scenes matched to how your product is used, such as a living room floor",
+      "Bright social crops for Meta",
     ],
+    comingSoon: ["A short playful templated video", "Crops for TikTok Shop"],
     proofLine: "Feeding guides and safety text remain pixel identical to your upload.",
   },
   {
     slug: "sports",
     name: "Sports and outdoors",
-    headline: "Gear photos that perform on every marketplace",
+    headline: "Gear photos that hold up on Amazon and Shopify",
     intro:
-      "Outdoor gear gets bought on durability signals, so materials and hardware must look real. Curvi keeps your gear pixels locked, builds trail, gym and field scenes around them, and exports the exact sizes and file names each channel expects.",
+      "Outdoor gear gets bought on durability signals, so materials and hardware must look real. Curvi keeps your gear pixels locked, builds trail, gym and field scenes around them, and exports the sizes each channel expects.",
     painPoints: [
       "Location shoots for one product cost more than a month of software",
       "Technical fabrics look fake when AI repaints them",
@@ -155,10 +163,10 @@ export const categories: CategoryPage[] = [
     ],
     packContents: [
       "Compliant white main image",
-      "Trail, gym and field lifestyle scenes",
+      "Lifestyle scenes matched to where your gear is used, such as a trail or a gym",
       "Vertical story creative with safe zones",
-      "A motion teaser video for ads",
     ],
+    comingSoon: ["A motion teaser video for ads"],
     proofLine: "Stitching, straps and buckles are your real product, untouched.",
   },
 ];

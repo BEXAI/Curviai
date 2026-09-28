@@ -1,38 +1,57 @@
 import { Badge } from "@curvi/ui";
+import { amazonMainRules } from "@/lib/marketing-facts";
 
-const demoRows = [
-  {
-    rule: "Background",
-    requirement: "Pure white, RGB 255 255 255",
-    measured: "255 255 255 across 100 percent of background pixels",
-  },
-  {
-    rule: "Product fill",
-    requirement: "85 to 90 percent of the frame",
-    measured: "87.2 percent of the longest side",
-  },
-  {
-    rule: "Resolution",
-    requirement: "Longest side at least 1600 px",
-    measured: "2000 by 2000 px",
-  },
-  {
-    rule: "Text and props",
-    requirement: "None allowed on the main image",
-    measured: "None detected",
-  },
-];
+export interface ComplianceDemoRow {
+  rule: string;
+  requirement: string;
+  measured: string;
+}
 
 /**
- * Static demo of the compliance report every Curvi file ships with. The
- * numbers here mirror what the real QC stage measures per output.
+ * Rows for the example report. Requirements come from the amazon.main spec
+ * in the registry (CLAUDE.md rule 2), and the example measurements sit inside
+ * those rules. Only checks the real QC stage measures today are shown: text
+ * and prop detection is not measured yet, so it is not listed.
+ */
+export function complianceDemoRows(): ComplianceDemoRow[] {
+  const rules = amazonMainRules();
+  const rgb = rules.rgb.join(" ");
+  const exampleFill = Math.round(((rules.fillMinPercent + rules.fillMaxPercent) / 2) * 10) / 10;
+  return [
+    {
+      rule: "Background",
+      requirement: `Pure white, RGB ${rgb}`,
+      measured: `${rgb} on every background pixel`,
+    },
+    {
+      rule: "Product fill",
+      requirement: `${rules.fillMinPercent} to ${rules.fillMaxPercent} percent of the frame`,
+      measured: `${exampleFill} percent of the longest side`,
+    },
+    {
+      rule: "Resolution",
+      requirement: `Longest side at least ${rules.minLongSide} px`,
+      measured: `${rules.width} by ${rules.height} px`,
+    },
+  ];
+}
+
+/**
+ * Static example of the compliance report every Curvi file ships with. It is
+ * labeled as an example; the real report carries the numbers the QC stage
+ * measured on each output.
  */
 export function ComplianceBadgeDemo() {
   return (
     <div className="mx-auto max-w-2xl rounded-xl border border-ink-100 bg-white p-6 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold text-ink-900">SKU1.MAIN.jpg</p>
+          <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink-900">
+            SKU1.MAIN.jpg
+            <Badge variant="outline" data-testid="example-report-label">
+              Example report
+            </Badge>
+          </p>
           <p className="text-xs text-ink-500">Checked against the Amazon main image spec</p>
         </div>
         <Badge variant="success" className="px-3 py-1 text-sm">
@@ -52,7 +71,7 @@ export function ComplianceBadgeDemo() {
             </tr>
           </thead>
           <tbody>
-            {demoRows.map((row) => (
+            {complianceDemoRows().map((row) => (
               <tr key={row.rule} className="border-t border-ink-100">
                 <td className="py-2.5 pr-4 font-medium text-ink-900">{row.rule}</td>
                 <td className="py-2.5 pr-4 text-ink-600">{row.requirement}</td>
@@ -63,8 +82,8 @@ export function ComplianceBadgeDemo() {
         </table>
       </div>
       <p className="mt-4 text-xs text-ink-400">
-        Every file in a Curvi pack ships with a report like this, measured on the actual pixels of the
-        output, not a promise.
+        An example of the report each file in a pack gets. Yours shows the numbers measured on the
+        pixels of your own files.
       </p>
     </div>
   );

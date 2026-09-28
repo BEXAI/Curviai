@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { buttonVariants } from "@curvi/ui";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
+import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
 import { pageMetadata } from "@/lib/seo";
 
@@ -24,31 +25,24 @@ export async function generateMetadata({
   });
 }
 
-export default async function SharePage({ params }: { params: Promise<{ slug: string }> }) {
-  const { slug } = await params;
-
+export default function SharePage() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16">
-      <p className="text-center text-sm font-medium text-accent-600">Shared makeover</p>
+      <p className="flex items-center justify-center gap-2 text-center text-sm font-medium text-accent-600">
+        Share pages
+        <ComingSoonBadge />
+      </p>
       <h1 className="mt-2 text-center text-3xl font-bold tracking-tight text-ink-950">
         Before and after, same product pixels
       </h1>
       <p className="mx-auto mt-3 max-w-xl text-center text-ink-600">
-        This page shows a Curvi makeover. Drag the divider to compare the original photo with the
-        studio output. The product itself is never regenerated, so what you see is the real item.
+        Share pages for finished packs are coming soon. Until then, this page shows an illustration of
+        the format. Drag the divider to compare a phone photo with a studio result. The product itself
+        is never regenerated, so what a buyer sees is the real item.
       </p>
 
       <div className="mx-auto mt-10 max-w-xl">
-        <BeforeAfterSlider
-          beforeSrc={beforeDemoImage}
-          afterSrc={afterDemoImage}
-          beforeLabel="Original photo"
-          afterLabel="Curvi output"
-        />
-        <p className="mt-2 text-center text-xs text-ink-400">
-          Makeover reference {slug}. Live customer share pages render the real pair here once packs
-          ship from the app.
-        </p>
+        <BeforeAfterSlider beforeSrc={beforeDemoImage} afterSrc={afterDemoImage} />
       </div>
 
       <div className="mt-12 rounded-xl bg-ink-950 p-8 text-center">
@@ -68,7 +62,7 @@ export default async function SharePage({ params }: { params: Promise<{ slug: st
             href="/gallery"
             className="inline-flex h-11 items-center justify-center rounded-lg border border-ink-700 px-6 text-sm font-medium text-white transition-colors hover:bg-ink-800"
           >
-            See more makeovers
+            See more examples
           </Link>
         </div>
       </div>

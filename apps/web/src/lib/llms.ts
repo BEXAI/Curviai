@@ -2,6 +2,14 @@ import { creditCosts, tiers } from "@curvi/pipeline/seed";
 import { categories } from "@/components/marketing/categories";
 import { imageSpecs, specDisplayName, specSlug } from "@/components/marketing/spec-slug";
 import { isStripeConfigured, siteUrl } from "@/lib/env";
+import {
+  comingSoonChannelNames,
+  comingSoonFeatures,
+  joinList,
+  packsForCredits,
+  tierDisplayName,
+  typicalPackCredits,
+} from "@/lib/marketing-facts";
 import { SITE_DESCRIPTION, SITE_FEATURES, SITE_SUMMARY } from "@/lib/seo";
 
 /**
@@ -13,7 +21,6 @@ import { SITE_DESCRIPTION, SITE_FEATURES, SITE_SUMMARY } from "@/lib/seo";
  */
 export function buildLlmsTxt(): string {
   const url = (path: string) => new URL(path, siteUrl()).toString();
-  const tierName = (key: string) => key.charAt(0).toUpperCase() + key.slice(1);
   const free = tiers.find((tier) => tier.key === "free");
   const paid = tiers.filter((tier) => tier.monthlyUsd > 0);
 
@@ -30,22 +37,28 @@ export function buildLlmsTxt(): string {
     "",
     ...SITE_FEATURES.map((feature) => `- ${feature}`),
     "",
+    "Coming soon, not available on any plan yet:",
+    "",
+    ...comingSoonFeatures().map((feature) => `- ${feature.label}`),
+    `- Files for ${joinList(comingSoonChannelNames())}`,
+    "",
     "Pricing:",
     "",
     ...(free ? [`- Free: ${free.creditsOnce} credits once, no card needed`] : []),
     ...paid.map(
       (tier) =>
-        `- ${tierName(tier.key)}: $${tier.monthlyUsd} per month, or $${tier.annualUsdPerMonth} per month billed annually, for ${tier.creditsPerMonth} credits per month`,
+        `- ${tierDisplayName(tier.key)}: $${tier.monthlyUsd} per month, or $${tier.annualUsdPerMonth} per month billed annually, for ${tier.creditsPerMonth} credits per month, about ${packsForCredits(tier.creditsPerMonth)} listing packs`,
     ),
     ...(isStripeConfigured() ? [] : ["- Paid plans cannot be bought yet. Start on the free plan."]),
     `- Credits: ${creditCosts.deterministic} credit for a white background main image, cutout, resize or sweep; ${creditCosts.generativeStill} credit for a generative still up to 2K`,
+    `- A typical listing pack of still images uses about ${typicalPackCredits()} credits, and only files that pass their checks are charged`,
     "",
     "## Pages",
     "",
     `- [Home](${url("/")}): what Curvi is and how the pack works`,
     `- [Pricing](${url("/pricing")}): plans, credits and top ups`,
     `- [Help center](${url("/help")}): uploads, credits, compliance reports, brand kits and channels`,
-    `- [Gallery](${url("/gallery")}): before and after product photo makeovers`,
+    `- [Gallery](${url("/gallery")}): illustrated before and after examples of the pack format`,
     "",
     "## Free tools",
     "",

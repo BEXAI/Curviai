@@ -1,10 +1,24 @@
 /**
- * Inline SVG demo imagery for the marketing site. Everything is generated in
+ * Inline SVG demo imagery for the marketing site. Everything is drawn in
  * code so the site ships with zero binary assets and zero external requests.
+ * These are illustrations of the before and after format, not real results,
+ * and every page that shows them labels them as such (see
+ * isIllustrationSrc). Real sample packs replace them once there are product
+ * photos Curvi has the rights to show.
  */
 
+/** The label shown on any image drawn in code rather than produced by Curvi. */
+export const ILLUSTRATION_LABEL = "Illustration";
+
+const SVG_DATA_URI_PREFIX = "data:image/svg+xml";
+
 export function svgDataUri(svg: string): string {
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  return `${SVG_DATA_URI_PREFIX};charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+/** True for images drawn in code, which must never be presented as real outputs. */
+export function isIllustrationSrc(src: string): boolean {
+  return src.startsWith(SVG_DATA_URI_PREFIX);
 }
 
 /** The same bottle shape is used in both demo frames so the product pixels visibly match. */
@@ -47,7 +61,7 @@ export const beforeDemoImage = svgDataUri(`<svg xmlns="http://www.w3.org/2000/sv
   <rect width="600" height="600" fill="#8a6f3f" opacity="0.14"/>
 </svg>`);
 
-/** The Curvi output look: pure white sweep, soft contact shadow, same bottle. */
+/** The studio result look: pure white sweep, soft contact shadow, same bottle. */
 export const afterDemoImage = svgDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
   <rect width="600" height="600" fill="#ffffff"/>
   <ellipse cx="300" cy="484" rx="120" ry="18" fill="#131826" opacity="0.10"/>
