@@ -156,7 +156,7 @@ export function buildShotViews(steps: ShotStepRow[], assets: ShotAssetRow[]): Jo
       const hint = typeof qc?.repairHint === "string" && qc.repairHint ? qc.repairHint : group.best.error;
       view.note = needsReviewNote(hint);
     } else if (status === "skipped") {
-      const copy = skippedCopy(group.best.error);
+      const copy = skippedCopy(group.best.error, view.shotType);
       view.label = copy.label;
       view.note = copy.note;
     }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { tierByKey } from "@curvi/pipeline/seed";
+import { isShotMethodDeliverable, tierByKey } from "@curvi/pipeline/seed";
 import { isMarketplaceSpec } from "@curvi/specs";
+import { estimatePackCredits } from "@/lib/pack-estimate";
 import { DEMO_TIER, DemoService, DemoStore } from "./demo";
 import { planDemoShots } from "./demo-plan";
 import type { JobStatus, JobView } from "./types";
@@ -207,6 +208,52 @@ describe("demo products and modes (Update.md 6.7)", () => {
       expect(result.reason).toBe("mode_unavailable");
     }
     expect((await svc.listProducts(workspace.id)).length).toBe(before);
+  });
+
+  it("plans video and avatar shots only where the seed says they are in the plan and ship today", () => {
+    const channels = ["amazon.main", "meta.feed_1x1", "video.social_9x16"];
+    const VIDEO_METHODS = new Set(["video_generate", "avatar"]);
+    for (const tier of ["free", "starter", "growth", "pro", "agency"] as const) {
+      const shots = planDemoShots(channels, tier);
+      const video = shots.filter((s) => VIDEO_METHODS.has(s.method));
+      for (const shot of video) {
+        // Anything planned must be deliverable, as production's hold is.
+        expect(isShotMethodDeliverable(shot.method), `${tier} ${shot.type}`).toBe(true);
+      }
+      if (!isShotMethodDeliverable("video_generate") && !isShotMethodDeliverable("avatar")) {
+        expect(video, tier).toEqual([]);
+      }
+    }
+  });
+
+  it("holds what production's estimate holds for the same pack on every tier", () => {
+    const sets = [
+      ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"],
+      ["amazon.main", "shopify.product", "meta.feed_1x1"],
+      ["meta.feed_1x1"],
+      ["google.merchant.main", "pinterest.pin"],
+    ];
+    for (const tier of ["free", "starter", "growth", "pro", "agency"] as const) {
+      for (const channels of sets) {
+        const held = Math.ceil(planDemoShots(channels, tier).reduce((sum, shot) => sum + shot.credits, 0));
+        expect(held, `${tier} ${channels.join(",")}`).toBe(estimatePackCredits(channels, "listing", tier).total);
+      }
+    }
+  });
+
+  it("refuses video channels while video is coming soon, as db mode does", async () => {
+    const svc = service();
+    const workspace = await svc.getCurrentWorkspace();
+    const products = await svc.listProducts(workspace.id);
+    const before = workspace.creditBalance;
+    const result = await svc.createJob(workspace.id, {
+      productId: products[0].id,
+      channels: ["amazon.main", "video.social_9x16"],
+      mode: "listing",
+      idempotencyKey: "video-key",
+    });
+    expect(result).toMatchObject({ outcome: "rejected", reason: "feature_unavailable" });
+    expect((await svc.getCurrentWorkspace()).creditBalance).toBe(before);
   });
 
   it("plans no marketplace shots for a Concept pack, as the runner does", () => {

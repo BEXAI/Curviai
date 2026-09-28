@@ -7,6 +7,8 @@
  * detail stays in the database and the server logs.
  */
 
+import { isFeatureLive, shotMethodFeatures, type TierFeature } from "@curvi/pipeline/seed";
+
 export interface SkippedCopy {
   /** Chip text on the card. */
   label: string;
@@ -16,8 +18,42 @@ export interface SkippedCopy {
 
 const NO_CHARGE = "No credits were charged for it.";
 
-/** Copy for a shot the planner left out, keyed on its stored reason. */
-export function skippedCopy(reason: string | null | undefined): SkippedCopy {
+const COMING_SOON: SkippedCopy = {
+  label: "Coming soon",
+  note: `We do not make this kind of shot yet. ${NO_CHARGE}`,
+};
+
+/**
+ * The plan features that deliver each video shot type, mirroring the
+ * planner's tier gates (packages/pipeline planner, rule 3): the hero loop is
+ * generative video, the 15 second clip is lifestyle video and the UGC hook is
+ * a UGC ad. The spin has no tier gate, so any video feature delivers it.
+ * Whether a feature ships comes from the seed's featureStatus.
+ */
+const VIDEO_SHOT_FEATURES: Record<string, readonly TierFeature[]> = {
+  video_spin: shotMethodFeatures.video_generate,
+  video_hero_6s: ["generativeVideo"],
+  video_lifestyle_15s: ["lifestyleVideo"],
+  video_ugc_hook: shotMethodFeatures.avatar,
+};
+
+/** True for a video or avatar shot that no plan delivers today. */
+function isComingSoonShot(shotType: string | null | undefined): boolean {
+  const features = shotType ? VIDEO_SHOT_FEATURES[shotType] : undefined;
+  return features !== undefined && !features.some((feature) => isFeatureLive(feature));
+}
+
+/**
+ * Copy for a shot the planner left out, keyed on its stored reason. A video
+ * or avatar shot that no plan delivers yet reads Coming soon whatever the
+ * reason says: telling a seller a higher plan or another photo gets it
+ * would promise output that does not ship (Phase 10 decision 1, rule 9).
+ * "Not in your plan" stays for shots a higher plan really produces.
+ */
+export function skippedCopy(reason: string | null | undefined, shotType?: string | null): SkippedCopy {
+  if (isComingSoonShot(shotType)) {
+    return COMING_SOON;
+  }
   const r = (reason ?? "").toLowerCase();
   if (r.includes("needs photo")) {
     return { label: "Needs photo", note: `Add a photo of this angle to get this shot. ${NO_CHARGE}` };
@@ -26,7 +62,7 @@ export function skippedCopy(reason: string | null | undefined): SkippedCopy {
     return { label: "Not in your plan", note: `This shot comes with a higher plan. ${NO_CHARGE}` };
   }
   if (r.includes("provider not enabled")) {
-    return { label: "Coming soon", note: `We do not make this kind of shot yet. ${NO_CHARGE}` };
+    return COMING_SOON;
   }
   if (r.includes("concept mode")) {
     return { label: "Skipped", note: "Concept packs leave out marketplace channels." };

@@ -19,6 +19,31 @@ describe("skippedCopy", () => {
     expect(skippedCopy("something new").label).toBe("Skipped");
     expect(skippedCopy(null).note).toContain("No credits were charged");
   });
+
+  it("shows Coming soon for video and avatar shots no plan delivers, never a higher plan", () => {
+    // The planner's tier reasons for these shots (deterministic.ts), plus
+    // other reasons they can carry.
+    const cases: Array<[string, string]> = [
+      ["video_hero_6s", "not included in this plan tier"],
+      ["video_lifestyle_15s", "Pro or Agency only"],
+      ["video_ugc_hook", "Pro or Agency only"],
+      ["video_spin", "needs photo"],
+      ["video_hero_6s", "channel not selected"],
+      ["video_ugc_hook", "provider not enabled"],
+    ];
+    for (const [shotType, reason] of cases) {
+      const copy = skippedCopy(reason, shotType);
+      expect(copy.label, `${shotType}: ${reason}`).toBe("Coming soon");
+      expect(copy.note).not.toMatch(/higher plan|Add a photo/);
+      expect(copy.note).toContain("No credits were charged");
+      expect(copy.note).not.toMatch(FORBIDDEN);
+    }
+  });
+
+  it("keeps the plan and photo copy for still shots", () => {
+    expect(skippedCopy("not included in this plan tier", "lifestyle").label).toBe("Not in your plan");
+    expect(skippedCopy("needs photo", "alt_angle_white").label).toBe("Needs photo");
+  });
 });
 
 describe("needsReviewNote", () => {

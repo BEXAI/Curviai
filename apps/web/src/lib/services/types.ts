@@ -209,8 +209,9 @@ export interface SaveResult {
   ok: boolean;
   notice: string;
   /** Why a save was refused, so routes can answer with the right status:
-   * forbidden 403, unknown_product 404, foreign_key 403, conflict 409. */
-  reason?: "forbidden" | "unknown_product" | "foreign_key" | "conflict";
+   * forbidden 403, unknown_product 404, foreign_key 403, conflict 409,
+   * upgrade_required 402 (the plan does not include it). */
+  reason?: "forbidden" | "unknown_product" | "foreign_key" | "conflict" | "upgrade_required";
 }
 
 export interface Services {

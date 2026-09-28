@@ -4,8 +4,10 @@ import {
   AUTH_ERROR_MESSAGES,
   authErrorMessage,
   checkoutPath,
+  confirmationSentMessage,
   parseCheckoutIntent,
   parseSignupSource,
+  planIntentNote,
   postAuthDestination,
   postAuthParamsFrom,
   safeNextPath,
@@ -131,5 +133,38 @@ describe("authErrorMessage", () => {
     expect(authErrorMessage("unavailable")).toBe(AUTH_ERROR_MESSAGES.unavailable);
     expect(authErrorMessage("Your account is locked. Call 555 0100.")).toBe(AUTH_ERROR_MESSAGES.link_invalid);
     expect(authErrorMessage(null)).toBeNull();
+  });
+
+  it.each(["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "isPrototypeOf"])(
+    "reads the inherited key %j as an expired link, always as a string",
+    (code) => {
+      const message = authErrorMessage(code);
+      expect(typeof message).toBe("string");
+      expect(message).toBe(AUTH_ERROR_MESSAGES.link_invalid);
+    },
+  );
+});
+
+describe("plan intent copy (true with or without Stripe)", () => {
+  // Rule 9: plain spoken, no emojis, no arrows, no dashes as punctuation.
+  const FORBIDDEN = /[–—→←]| - |->|=>|\p{Extended_Pictographic}/u;
+
+  it("names the plan without promising a checkout page", () => {
+    const monthly = { plan: "growth", cadence: "monthly" } as const;
+    const annual = { plan: "pro", cadence: "annual" } as const;
+    expect(planIntentNote("signup", monthly)).toBe("Create your account to continue to the Growth plan, billed monthly.");
+    expect(planIntentNote("login", annual)).toBe("Log in to continue to the Pro plan, billed annually.");
+    const sent = confirmationSentMessage(monthly);
+    expect(sent).toContain("we will take you to the Growth plan on your billing page");
+    for (const line of [planIntentNote("signup", monthly), planIntentNote("login", annual), sent]) {
+      expect(line).not.toMatch(/checkout/i);
+      expect(line).not.toMatch(FORBIDDEN);
+    }
+  });
+
+  it("keeps the plain confirmation message when no plan was picked", () => {
+    expect(confirmationSentMessage(null)).toBe(
+      "Almost there. We sent a confirmation link to your inbox. Open it on this device and your workspace will be ready. Check spam if it does not arrive in a minute.",
+    );
   });
 });

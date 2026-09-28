@@ -7,8 +7,10 @@ import { runAuthCall, trackAuthError } from "@/lib/auth-call";
 import {
   DEFAULT_NEXT_PATH,
   authErrorMessage,
+  confirmationSentMessage,
   parseCheckoutIntent,
   parseSignupSource,
+  planIntentNote,
   postAuthDestination,
   postAuthParamsFrom,
   type CheckoutIntent,
@@ -22,10 +24,6 @@ export interface AuthFormProps {
 const supabaseConfigured = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
 );
-
-function planLabel(plan: string): string {
-  return plan.charAt(0).toUpperCase() + plan.slice(1);
-}
 
 /** Query string that carries the pricing intent and next path between the
  * signup and login pages. */
@@ -47,7 +45,8 @@ function carryQuery(intent: CheckoutIntent | null, source: string | null, nextPa
 /**
  * Signup and login form. Reads next, plan, cadence and source from the query
  * string: a plan picked on the pricing page (validated against the tiers
- * seed) sends the user to the billing checkout after signup or login, and
+ * seed) sends the user to that plan on the billing page after signup or login
+ * (a checkout with Stripe, an upgrade request without it), and
  * next is only ever a same origin path (Update.md 4.3). When Supabase is not
  * configured, which is the zero env state of this repo, it renders a
  * temporary unavailability notice so the page always works.
@@ -149,11 +148,7 @@ export function AuthForm({ mode }: AuthFormProps) {
     }
     if (mode === "signup" && !result.value.data.session) {
       setStatus("sent");
-      setMessage(
-        intent
-          ? `Almost there. We sent a confirmation link to your inbox. Open it on this device and we will take you to checkout for the ${planLabel(intent.plan)} plan. Check spam if it does not arrive in a minute.`
-          : "Almost there. We sent a confirmation link to your inbox. Open it on this device and your workspace will be ready. Check spam if it does not arrive in a minute.",
-      );
+      setMessage(confirmationSentMessage(intent));
       return;
     }
     window.location.href = nextPath;
@@ -169,8 +164,7 @@ export function AuthForm({ mode }: AuthFormProps) {
       <CardContent>
         {intent ? (
           <p className="mb-4 rounded-lg bg-ink-50 px-3 py-2 text-sm text-ink-700" data-testid="plan-intent">
-            {mode === "signup" ? "Create your account" : "Log in"} to continue to checkout for the{" "}
-            {planLabel(intent.plan)} plan, billed {intent.cadence === "annual" ? "annually" : "monthly"}.
+            {planIntentNote(mode, intent)}
           </p>
         ) : null}
         <form className="space-y-4" onSubmit={submit}>

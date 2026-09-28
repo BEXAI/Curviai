@@ -1,9 +1,17 @@
 -- One source_media row per uploaded object (Update.md 6.3). Every retry of
 -- the new pack form registered the same R2 key again, so production can
 -- already hold duplicate rows for one (workspace_id, r2_key). Before the
--- unique index can exist those groups collapse onto their earliest row:
---   1. map every duplicate to the row kept for its group (earliest created_at,
---      then lowest id, so the result is deterministic);
+-- unique index can exist each group collapses onto one row:
+--   1. map every duplicate to the row kept for its group. When every row of
+--      the group belongs to one product, the earliest row is kept (earliest
+--      created_at, then lowest id). When the group spans more than one
+--      product, the latest row is kept (latest created_at, then highest id):
+--      that is the resubmit pattern of the old flow, where the upload was
+--      first saved under a wrongly defaulted existing product, the attempt
+--      was refused after the media insert (for example for credits), and the
+--      seller resubmitted the same upload as the product the pack ran for.
+--      Keeping the latest row leaves the photo on that product. Either way
+--      the result is deterministic;
 --   2. copy any measurement or mask the kept row lacks from its duplicates;
 --   3. repoint every foreign key that references a duplicate to the kept row
 --      (share_links.before_media_id today, found through pg_constraint so a
@@ -39,9 +47,21 @@ BEGIN
       s.id,
       first_value(s.id) OVER (
         PARTITION BY s.workspace_id, s.r2_key
-        ORDER BY s.created_at, s.id
+        ORDER BY
+          -- Groups that span products: latest first. These two keys are NULL
+          -- for single product groups, which fall through to earliest first.
+          CASE WHEN g.cross_product THEN s.created_at END DESC NULLS LAST,
+          CASE WHEN g.cross_product THEN s.id END DESC NULLS LAST,
+          s.created_at,
+          s.id
       ) AS keep_id
     FROM source_media s
+    JOIN (
+      SELECT workspace_id, r2_key, count(DISTINCT product_id) > 1 AS cross_product
+      FROM source_media
+      GROUP BY workspace_id, r2_key
+      HAVING count(*) > 1
+    ) g ON g.workspace_id = s.workspace_id AND g.r2_key = s.r2_key
   ) ranked
   WHERE ranked.id <> ranked.keep_id;
 
