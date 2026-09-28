@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { tierByKey, type TierKey } from "@curvi/pipeline/seed";
 import { filenameFor, getSpec } from "@curvi/specs";
+import { beforeDemoImage } from "@/components/marketing/demo-images";
 import { checkChannelEntitlements } from "@/lib/entitlements";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { planDemoShots } from "./demo-plan";
@@ -214,6 +215,9 @@ function projectJob(record: DemoJobRecord, productTitle: string): JobView {
       channels: shot.channels,
       credits: shot.credits,
       compliance: shotStatus === "done" ? complianceFor(shot) : null,
+      // The same inline drawing the files list previews, so the before and
+      // after reveal works with zero stored files.
+      imageUrl: shotStatus === "done" ? demoShotImage(shot.type) : null,
     };
   });
   return {
@@ -227,6 +231,9 @@ function projectJob(record: DemoJobRecord, productTitle: string): JobView {
     creditsCharged: status === "done" ? record.creditsReserved : 0,
     createdAt: record.createdAt,
     shots,
+    // Demo packs have no stored photo: the reveal uses the labeled
+    // illustration the marketing site shows, never a fake seller photo.
+    sourceImageUrl: status === "done" ? beforeDemoImage : null,
   };
 }
 

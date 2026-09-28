@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { AppNav } from "@/components/app/app-nav";
 import { PastDueBanner } from "@/components/app/billing-actions";
+import { PackReadyNotice } from "@/components/app/pack-ready-notice";
 import { Wordmark } from "@/components/marketing/site-header";
 import { loadPastDueNotice } from "@/lib/billing/account";
 import { isDbMode } from "@/lib/services";
@@ -54,6 +55,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       ) : null}
       {pastDue ? <PastDueBanner message={pastDue} /> : null}
       <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+      {demo || user ? <PackReadyNotice /> : null}
     </div>
   );
 }

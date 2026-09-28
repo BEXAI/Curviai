@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge, Button, Card, CardContent, Progress, Skeleton, buttonVariants, cn } from "@curvi/ui";
 import { PackDownloads } from "@/components/app/pack-downloads";
+import { PackReveal } from "@/components/app/pack-reveal";
 import { StatusChip } from "@/components/app/status-chip";
 import { packSummaryLine } from "@/lib/job-copy";
 import { isTerminalJobStatus, nextPoll, pollStopCopy, type PollResult, type PollStopReason } from "@/lib/job-poll";
+import { canReveal, revealShots } from "@/lib/makeover";
 import { track } from "@/lib/track";
 import type { JobShotView, JobView } from "@/lib/services/types";
 
@@ -357,6 +359,10 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
           </div>
         ) : null}
       </div>
+
+      {canReveal(job) && job.sourceImageUrl ? (
+        <PackReveal jobId={job.id} sourceImageUrl={job.sourceImageUrl} shots={revealShots(job.shots)} />
+      ) : null}
 
       {planning ? (
         <Card data-testid="plan-pending">

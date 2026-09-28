@@ -88,6 +88,10 @@ export interface JobView {
   /** Plain spoken failure line when status is failed. Raw worker errors
    * never reach the client. */
   error?: string | null;
+  /** Short lived signed URL of the seller's original photo for the before
+   * and after reveal. Set only once the pack serves files and the photo is
+   * stored; null or absent hides the reveal. */
+  sourceImageUrl?: string | null;
 }
 
 export interface JobSummary {
