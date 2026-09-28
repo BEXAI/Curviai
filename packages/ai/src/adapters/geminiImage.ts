@@ -67,7 +67,7 @@ export interface GeminiImageOutput {
 interface GenerateContentResponse {
   promptFeedback?: { blockReason?: string; blockReasonMessage?: string };
   candidates?: Array<{
-    content?: { parts?: Array<{ inlineData?: { mimeType?: string; data?: string } }> };
+    content?: { parts?: Array<{ inlineData?: { mimeType?: string; data?: string }; thought?: boolean }> };
     finishReason?: string;
     finishMessage?: string;
   }>;
@@ -164,7 +164,9 @@ export class GeminiImageProvider implements CostAwareProvider {
     const images: GeminiImageOutput["images"] = [];
     for (const candidate of data.candidates ?? []) {
       for (const part of candidate.content?.parts ?? []) {
-        if (part.inlineData?.data) {
+        // Gemini 3 image models may return interim "thought" images; only
+        // the final image is the result.
+        if (part.inlineData?.data && part.thought !== true) {
           images.push({ mimeType: part.inlineData.mimeType ?? "image/png", dataBase64: part.inlineData.data });
         }
       }

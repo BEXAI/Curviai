@@ -52,6 +52,7 @@ import {
   ProductProfile,
   QCVerdict,
   ShotList,
+  strictToolSchema,
   type DigitalSourceKind,
   type FidelityReport,
   type PackAsset,
@@ -629,6 +630,8 @@ export interface LlmTaskInput {
   /** Forced structured output tool definitions, when a schema is enforced. */
   tools?: unknown[];
   toolChoice?: unknown;
+  /** Output token budget from the recipe body; the adapter default otherwise. */
+  maxTokens?: number;
 }
 
 function sniffImageMime(bytes: Buffer): string {
@@ -736,39 +739,124 @@ async function llmJson<T>(
     model: recipe.model,
     messages: [{ role: "user", content }],
   };
-  if (outputSchema) {
-    // Forced tool call per plan 5.2: the model must answer with structured
-    // data matching the schema instead of free text that may not parse.
-    input.tools = [
-      {
-        name: "emit_result",
-        description: "Return the task result as structured data matching the schema exactly.",
-        input_schema: z.toJSONSchema(outputSchema),
-      },
-    ];
-    input.toolChoice = { type: "tool", name: "emit_result" };
+  if (typeof recipe.body.maxTokens === "number") {
+    input.maxTokens = recipe.body.maxTokens;
   }
-  const result = await callWithFailover<LlmTaskInput, unknown>(
-    ai.registry,
-    ai.routing,
-    ai.meter,
-    ai.breakerStore,
-    {
-      task: recipe.key,
-      input,
-      workspaceId: ctx.workspaceId,
-      jobId: ctx.jobId,
-      stepId: ctx.stepId,
-    },
-    { caps: llmCapsHooks(ai), ...routedCallHooks(ai) },
-  );
+  const call = (strict: boolean) => {
+    if (outputSchema) {
+      // Forced tool call per plan 5.2. With strict tool use the API
+      // guarantees the tool input matches the schema (structured outputs
+      // docs, checked 2026-09-28); without it the model can emit a shape
+      // that fails safeParse, which is how intake failed in production.
+      input.tools = [
+        {
+          name: "emit_result",
+          description: "Return the task result as structured data matching the schema exactly.",
+          input_schema: strict ? strictToolSchema(outputSchema) : z.toJSONSchema(outputSchema),
+          ...(strict ? { strict: true } : {}),
+        },
+      ];
+      input.toolChoice = { type: "tool", name: "emit_result" };
+    }
+    return callWithFailover<LlmTaskInput, unknown>(
+      ai.registry,
+      ai.routing,
+      ai.meter,
+      ai.breakerStore,
+      {
+        task: recipe.key,
+        input,
+        workspaceId: ctx.workspaceId,
+        jobId: ctx.jobId,
+        stepId: ctx.stepId,
+      },
+      { caps: llmCapsHooks(ai), ...routedCallHooks(ai) },
+    );
+  };
+
+  let result: Awaited<ReturnType<typeof call>>;
+  try {
+    result = await call(Boolean(outputSchema));
+  } catch (err) {
+    // A 400 on the strict request means the API refused the schema or the
+    // strict flag for this model. Retry once as a plain forced tool call, so
+    // a schema the grammar compiler rejects never takes packs down.
+    if (!outputSchema || !isBadRequest(err)) {
+      throw err;
+    }
+    console.warn(`[runner] ${recipe.key} rejected the strict tool schema, retrying without strict:`, errorText(err));
+    result = await call(false);
+  }
+
   const raw = extractJsonOutput(result.output);
-  const parsed = schema.safeParse(raw);
+  let parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    // Some models return nested arrays or objects as JSON strings in tool
+    // input. Parse those and validate again before giving up.
+    const repaired = parseNestedJsonStrings(raw);
+    if (repaired !== raw) {
+      parsed = schema.safeParse(repaired);
+    }
+  }
+  if (!parsed.success) {
+    // Log where the answer broke the schema (paths and codes only, never the
+    // content), so a failure like "Intake response failed schema validation"
+    // is diagnosable from the host logs.
+    const issues = (parsed as { error?: { issues?: Array<{ path?: unknown[]; code?: string }> } }).error?.issues ?? [];
+    const where = issues
+      .slice(0, 8)
+      .map((i) => `${(i.path ?? []).join(".") || "(root)"}:${i.code ?? "invalid"}`)
+      .join(", ");
+    const stopReason = (result.output as { stopReason?: unknown } | null)?.stopReason;
+    console.warn(
+      `[runner] ${recipe.key} output failed schema validation for job ${ctx.jobId} (stop_reason ${String(stopReason ?? "unknown")}): ${where || "no issue detail"}`,
+    );
+  }
   return {
     value: parsed.success ? (parsed.data as T) : null,
     raw,
     costMicros: result.costMicros + result.billedFailureMicros,
   };
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** True for a provider 400 (the adapters format HTTP errors as "<provider>
+ * responded <status>: <body>"). */
+function isBadRequest(err: unknown): boolean {
+  return /responded 400\b/.test(errorText(err));
+}
+
+/** Copies a value, replacing string leaves that hold a JSON object or array
+ * with the parsed value. Returns the input itself when nothing changed. */
+export function parseNestedJsonStrings(value: unknown): unknown {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        return parseNestedJsonStrings(JSON.parse(trimmed));
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const next = value.map(parseNestedJsonStrings);
+    return next.some((v, i) => v !== value[i]) ? next : value;
+  }
+  if (value && typeof value === "object") {
+    let changed = false;
+    const next: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      next[key] = parseNestedJsonStrings(v);
+      changed ||= next[key] !== v;
+    }
+    return changed ? next : value;
+  }
+  return value;
 }
 
 /** Verdict from the deterministic checks alone, used when the LLM judge

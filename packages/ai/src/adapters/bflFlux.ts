@@ -47,7 +47,7 @@ export const BFL_DEFAULT_POLL = { pollIntervalMs: 500, pollTimeoutMs: 120_000 } 
 /** Terminal statuses where BFL's moderation declined the prompt or output. */
 const BFL_MODERATED_STATUSES = new Set(["Content Moderated", "Request Moderated"]);
 /** Terminal failure statuses. */
-const BFL_FAILED_STATUSES = new Set(["Error", "Task not found"]);
+const BFL_FAILED_STATUSES = new Set(["Error", "Failed", "Task not found"]);
 
 export interface BflFluxConfig extends AdapterCommonConfig {
   /** Model path segment from seed data, e.g. "flux-2-pro". */

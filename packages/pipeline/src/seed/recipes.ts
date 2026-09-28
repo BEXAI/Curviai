@@ -15,6 +15,7 @@ export const RecipeRow = z.object({
       system: z.string().min(1),
       escalation: z.array(z.string().min(1)).optional(),
       examples: z.array(z.unknown()).optional(),
+      maxTokens: z.number().int().positive().optional(),
     })
     .catchall(z.unknown()),
   active: z.boolean(),
@@ -68,7 +69,9 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 1,
     stage: "plan",
     model: "claude-sonnet-5",
-    body: { system: SHOT_PLANNER_SYSTEM },
+    // Up to 40 shots of tool input can pass the 4096 token adapter default,
+    // and a cut off tool call fails validation.
+    body: { system: SHOT_PLANNER_SYSTEM, maxTokens: 8192 },
     active: true,
   },
   {

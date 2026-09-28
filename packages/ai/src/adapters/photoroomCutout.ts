@@ -69,14 +69,14 @@ export class PhotoroomCutoutProvider implements CostAwareProvider {
     const input = req.input as unknown as PhotoroomCutoutInput;
     const form = new FormData();
     const bytes = new Uint8Array(input.imageBytes);
-    form.append("image_file", new Blob([bytes]), input.filename ?? "source.png");
+    form.append("image_file", new Blob([bytes], { type: sniffMime(bytes) }), input.filename ?? "source.png");
     if (input.format !== undefined) form.append("format", input.format);
 
     let res: Response;
     try {
       res = await this.fetchFn(`${this.baseUrl}/v1/segment`, {
         method: "POST",
-        headers: { "x-api-key": this.apiKey },
+        headers: { "x-api-key": this.apiKey, accept: "image/png" },
         body: form,
         signal: signalOf(req),
       });
@@ -102,4 +102,12 @@ export class PhotoroomCutoutProvider implements CostAwareProvider {
     };
     return { output: output as TOut, costMicros: this.priceTable.perCallMicros };
   }
+}
+
+/** MIME type of the upload from its magic bytes, so the multipart part is
+ * typed; PNG when unknown. */
+function sniffMime(bytes: Uint8Array): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 && bytes[9] === 0x45) return "image/webp";
+  return "image/png";
 }

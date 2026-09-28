@@ -80,3 +80,75 @@ export type IntakeResult = z.infer<typeof IntakeResult>;
 export function jsonSchemaFor(schema: z.ZodType): Record<string, unknown> {
   return z.toJSONSchema(schema) as Record<string, unknown>;
 }
+
+/** Keywords Anthropic strict tool use rejects (structured outputs docs,
+ * checked 2026-09-28, docs/verification.md). The Zod schema still enforces
+ * them client side after the call. */
+const STRICT_UNSUPPORTED_KEYWORDS = new Set([
+  "$schema",
+  "minimum",
+  "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+  "multipleOf",
+  "minLength",
+  "maxLength",
+  "pattern",
+  "maxItems",
+]);
+
+/** String formats strict tool use accepts; any other format is dropped. */
+const STRICT_STRING_FORMATS = new Set([
+  "date-time",
+  "time",
+  "date",
+  "duration",
+  "email",
+  "hostname",
+  "uri",
+  "ipv4",
+  "ipv6",
+  "uuid",
+]);
+
+function toStrict(node: unknown): unknown {
+  if (Array.isArray(node)) {
+    return node.map(toStrict);
+  }
+  if (!node || typeof node !== "object") {
+    return node;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (STRICT_UNSUPPORTED_KEYWORDS.has(key)) continue;
+    if (key === "format" && !(typeof value === "string" && STRICT_STRING_FORMATS.has(value))) continue;
+    if (key === "properties" || key === "$defs" || key === "definitions") {
+      // Property names are data: a field called "pattern" is kept.
+      out[key] = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([name, sub]) => [name, toStrict(sub)]),
+      );
+      continue;
+    }
+    // Enum lists and required lists are data, not subschemas.
+    out[key] = key === "enum" || key === "required" || key === "const" ? value : toStrict(value);
+  }
+  // minItems supports only 0 and 1.
+  if (typeof out.minItems === "number" && out.minItems > 1) {
+    out.minItems = 1;
+  }
+  if (out.type === "object" || out.properties !== undefined) {
+    out.additionalProperties = false;
+  }
+  return out;
+}
+
+/**
+ * JSON Schema for an Anthropic strict tool (`strict: true`): the Zod schema
+ * with the keywords strict mode does not support removed, minItems clamped
+ * to 1 and additionalProperties false on every object. The API then
+ * guarantees the tool input matches this shape; the dropped bounds (numeric
+ * ranges, lengths, patterns, maxItems) are still checked by safeParse.
+ */
+export function strictToolSchema(schema: z.ZodType): Record<string, unknown> {
+  return toStrict(z.toJSONSchema(schema)) as Record<string, unknown>;
+}

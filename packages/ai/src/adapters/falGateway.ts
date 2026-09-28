@@ -85,6 +85,9 @@ interface QueueResponse {
 
 interface StatusResponse {
   status?: string;
+  /** Set on a COMPLETED request that failed (fal queue docs). */
+  error?: string;
+  error_type?: string;
 }
 
 export class FalGatewayProvider implements CostAwareProvider {
@@ -202,6 +205,14 @@ export class FalGatewayProvider implements CostAwareProvider {
         headers,
         signal,
       });
+      if (state.status === "COMPLETED" && state.error) {
+        throw new ProviderError(
+          `fal request failed: ${state.error_type ? `${state.error_type}: ` : ""}${state.error}`,
+          this.name,
+          task,
+          false,
+        );
+      }
       if (state.status === "COMPLETED") {
         const result = await requestJson<unknown>(this.fetchFn, this.name, task, responseUrl, {
           method: "GET",

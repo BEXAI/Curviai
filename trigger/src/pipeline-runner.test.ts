@@ -663,6 +663,51 @@ describe("prompt injection defenses", () => {
   });
 });
 
+describe("structured LLM output", () => {
+  const toolOf = (provider: MockProvider) =>
+    ((provider.calls[0].input as LlmTaskInput).tools ?? [])[0] as {
+      strict?: boolean;
+      input_schema: Record<string, unknown>;
+    };
+
+  it("sends the intake schema as a strict tool Anthropic accepts", async () => {
+    const intake = new MockProvider({ name: "mock-intake", tasks: [intakeKey], output: intakeFixture });
+    await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
+    const tool = toolOf(intake);
+    expect(tool.strict).toBe(true);
+    const sent = JSON.stringify(tool.input_schema);
+    for (const keyword of ["$schema", "minimum", "maximum", "exclusiveMinimum", "maxLength", "pattern", "maxItems"]) {
+      expect(sent).not.toContain(`"${keyword}"`);
+    }
+  });
+
+  it("retries without strict when the API answers 400", async () => {
+    const intake = new MockProvider({
+      name: "mock-intake",
+      tasks: [intakeKey],
+      output: intakeFixture,
+      failTimes: 1,
+      failWith: () => new ProviderError("mock-intake responded 400: invalid schema", "mock-intake", intakeKey, false),
+    });
+    const deps = makeDeps({ ai: makeAi({ intake }) });
+    const summary = await runGeneratePack(baseInput, deps);
+    expect(intake.calls).toHaveLength(2);
+    const second = ((intake.calls[1].input as LlmTaskInput).tools ?? [])[0] as { strict?: boolean };
+    expect(second.strict).toBeUndefined();
+    expect(summary.error ?? "").not.toContain("schema validation");
+  });
+
+  it("accepts nested arrays the model returned as JSON strings", async () => {
+    const intake = new MockProvider({
+      name: "mock-intake",
+      tasks: [intakeKey],
+      output: { toolUse: { name: "emit_result", input: { images: JSON.stringify(intakeFixture.images) } }, text: null },
+    });
+    const summary = await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
+    expect(summary.error ?? "").not.toContain("Intake response failed schema validation");
+  });
+});
+
 describe("every selected channel gets its files (2.11)", () => {
   async function reportOf(summary: { pack: StoredPack | null }): Promise<PackFileReport[]> {
     const raw = await readFile(summary.pack!.reportPath, "utf8");
