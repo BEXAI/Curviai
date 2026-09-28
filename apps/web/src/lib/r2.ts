@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { optionalEnv, requireEnv } from "@/lib/env";
 
@@ -53,10 +53,31 @@ export async function presignSourceUpload(
   return { url, key, bucket, expiresInSeconds: UPLOAD_URL_TTL_SECONDS };
 }
 
-/** Signed GET url for a stored object, expiring in 15 minutes. */
-export async function presignDownload(key: string): Promise<string> {
-  const bucket = optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
-  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+/**
+ * Content-Disposition value that saves the object under its delivered file
+ * name. Browsers ignore the download attribute on cross origin links, so the
+ * signed url itself carries the name. The ASCII fallback drops quotes and
+ * control characters; filename* carries the exact UTF-8 name.
+ */
+export function attachmentDisposition(filename: string): string {
+  const ascii =
+    filename
+      .replace(/[^\x20-\x7e]/g, "_")
+      .replace(/["\\]/g, "_")
+      .trim() || "download";
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+/** Signed GET url for a stored object, expiring in 15 minutes. With a file
+ * name, the response downloads as an attachment under that name. Links are
+ * signed per click by the download route, so an open page never holds a
+ * stale one (Update.md 6.6). */
+export async function presignDownload(key: string, filename?: string): Promise<string> {
+  const command = new GetObjectCommand({
+    Bucket: privateBucket(),
+    Key: key,
+    ...(filename ? { ResponseContentDisposition: attachmentDisposition(filename) } : {}),
+  });
   return getSignedUrl(r2Client(), command, { expiresIn: DOWNLOAD_URL_TTL_SECONDS });
 }
 
@@ -64,6 +85,13 @@ export async function presignDownload(key: string): Promise<string> {
  * place a client reported upload may point. */
 export function isWorkspaceSourceKey(workspaceId: string, key: string): boolean {
   return key.startsWith(`ws/${workspaceId}/src/`) && !key.includes("..");
+}
+
+/** True when the key sits anywhere under the workspace's prefix. Stored keys
+ * are re-checked before they are signed or fetched, so a row that points at
+ * another tenant's object is never served (Update.md 4.1). */
+export function isWorkspaceKey(workspaceId: string, key: string): boolean {
+  return key.startsWith(`ws/${workspaceId}/`) && !key.includes("..");
 }
 
 function privateBucket(): string {
@@ -77,10 +105,37 @@ export async function putGeneratedObject(key: string, body: Buffer, contentType:
   );
 }
 
-/** Signed GET for rendering and downloading generated assets. An hour keeps
- * an open job board or brand page working without a refresh. */
+/** Signing window for preview urls: every request inside one window signs
+ * the same url, so a board that polls every two seconds hits the browser
+ * cache instead of downloading each thumbnail again. */
+export const PREVIEW_SIGNING_WINDOW_SECONDS = 1800;
+
+/** Start of the signing window that contains `now`. */
+export function previewSigningDate(now: Date = new Date()): Date {
+  const windowMs = PREVIEW_SIGNING_WINDOW_SECONDS * 1000;
+  return new Date(Math.floor(now.getTime() / windowMs) * windowMs);
+}
+
+/** Signed GET for previewing generated assets and logos. The url stays valid
+ * for at least `expiresIn` seconds from now (an hour by default), which keeps
+ * an open job board or brand page working, and is identical for every call
+ * in the same signing window. */
 export async function presignObjectGet(key: string, expiresIn = 3600): Promise<string> {
-  return getSignedUrl(r2Client(), new GetObjectCommand({ Bucket: privateBucket(), Key: key }), { expiresIn });
+  return getSignedUrl(r2Client(), new GetObjectCommand({ Bucket: privateBucket(), Key: key }), {
+    expiresIn: expiresIn + PREVIEW_SIGNING_WINDOW_SECONDS,
+    signingDate: previewSigningDate(),
+  });
+}
+
+/** True when the object exists. Any error, including a missing object,
+ * reads as false. */
+export async function objectExists(key: string): Promise<boolean> {
+  try {
+    await r2Client().send(new HeadObjectCommand({ Bucket: privateBucket(), Key: key }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Fetches an object's bytes for server side packaging. Null when missing. */

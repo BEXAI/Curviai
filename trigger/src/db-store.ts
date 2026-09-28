@@ -28,11 +28,13 @@ import {
   type Db,
 } from "@curvi/db";
 import type { PackFileReport } from "@curvi/pipeline";
+import type { Shot } from "@curvi/pipeline/schemas";
 import type {
   JobLedgerEntry,
   JobStore,
   StoredAsset,
   StoredPack,
+  StoredPlan,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
 import { assetFileKey, packFileKey, type PackUploader } from "./r2";
@@ -116,6 +118,44 @@ export class DbJobStore implements JobStore {
     );
   }
 
+  /**
+   * Writes one pending job_steps row per planned shot and one skipped row per
+   * shot the planner left out, with its reason in error, so the progress
+   * board lists the whole pack from the plan onward. saveAsset later appends
+   * the shot's final row, which the board prefers over the pending one.
+   * Display only, so a failure is logged and never fails the run.
+   */
+  async savePlan(plan: StoredPlan): Promise<void> {
+    const rows: Array<typeof jobSteps.$inferInsert> = [
+      ...plan.shots.map((shot) => ({
+        workspaceId: plan.workspaceId,
+        jobId: plan.jobId,
+        shotId: shot.id,
+        stage: shot.type,
+        provider: stageLabelFor(shot.method),
+        status: "pending",
+      })),
+      ...plan.skipped.map((skip, index) => ({
+        workspaceId: plan.workspaceId,
+        jobId: plan.jobId,
+        shotId: `skipped_${String(index + 1).padStart(2, "0")}_${skip.type}`,
+        stage: skip.type,
+        provider: "planner",
+        status: "skipped",
+        error: skip.reason.slice(0, 300),
+      })),
+    ];
+    if (rows.length === 0) {
+      return;
+    }
+    try {
+      await this.db.insert(jobSteps).values(rows);
+      await this.heartbeat(plan.jobId);
+    } catch (err) {
+      console.warn(`[db-store] could not record the plan for job ${plan.jobId}`, err);
+    }
+  }
+
   async saveAsset(asset: StoredAsset): Promise<void> {
     await this.db.insert(assets).values({
       workspaceId: asset.workspaceId,
@@ -142,7 +182,9 @@ export class DbJobStore implements JobStore {
       stage: asset.shotType,
       provider: "worker",
       attempt: asset.attempts,
-      status: asset.status === "passed" ? "done" : "failed",
+      // A shot that did not pass is released at no charge and shown as an
+      // amber Needs review card, never as a red Failed one (Update.md 3.5).
+      status: asset.status === "passed" ? "done" : "needs_review",
       costMicros: Math.round(asset.costMicros),
     });
     await this.heartbeat(asset.jobId);
@@ -235,6 +277,26 @@ export class DbJobStore implements JobStore {
   private ensureChannelSpecs(): Promise<void> {
     this.specsSeeded ??= loadChannelSpecs(this.db).then(() => undefined);
     return this.specsSeeded;
+  }
+}
+
+/** Neutral stage label for a planned shot; provider names never reach the
+ * board. */
+function stageLabelFor(method: Shot["method"]): string {
+  switch (method) {
+    case "deterministic":
+      return "pixel pipeline";
+    case "composite_generate":
+    case "edit_generate":
+      return "image model";
+    case "template":
+      return "template engine";
+    case "video_generate":
+      return "video model";
+    case "avatar":
+      return "avatar model";
+    default:
+      return "worker";
   }
 }
 

@@ -8,12 +8,20 @@
 
 import { Shot, ShotList } from "@curvi/pipeline/schemas";
 import { creditCosts, type TierKey } from "@curvi/pipeline/seed";
+import { isMarketplaceSpec } from "@curvi/specs";
 
 function hasFamily(channels: string[], family: string): boolean {
   return channels.some((c) => c === family || c.startsWith(`${family}.`));
 }
 
-export function planDemoShots(channels: string[], tier: TierKey): Shot[] {
+/** Concept packs leave marketplace channels out before planning, exactly as
+ * the runner does (plan 2.7): synthetic renders never go to a marketplace. */
+export function planDemoShots(
+  requestedChannels: string[],
+  tier: TierKey,
+  mode: "listing" | "concept" = "listing",
+): Shot[] {
+  const channels = mode === "concept" ? requestedChannels.filter((c) => !isMarketplaceSpec(c)) : requestedChannels;
   const amazon = hasFamily(channels, "amazon");
   const shopify = hasFamily(channels, "shopify");
   const google = hasFamily(channels, "google");
@@ -22,7 +30,7 @@ export function planDemoShots(channels: string[], tier: TierKey): Shot[] {
   if (amazon) secondary.push("amazon.secondary");
   if (shopify) secondary.push("shopify.product");
   if (google) secondary.push("google.merchant.lifestyle");
-  if (secondary.length === 0) secondary.push("shopify.product");
+  if (secondary.length === 0 && mode === "listing") secondary.push("shopify.product");
 
   const shots: Shot[] = [];
   const push = (
@@ -48,14 +56,17 @@ export function planDemoShots(channels: string[], tier: TierKey): Shot[] {
   if (amazon) {
     push("amazon_main", "deterministic", ["amazon.main"], creditCosts.deterministic);
   }
-  push("alt_angle_white", "deterministic", secondary, creditCosts.deterministic, "45 angle on white");
-  push("alt_angle_white", "deterministic", secondary, creditCosts.deterministic, "side angle on white");
-  push("cutout_png", "deterministic", secondary, creditCosts.deterministic);
-  push("sweep_gray", "deterministic", secondary, creditCosts.deterministic);
-  push("sweep_brand", "deterministic", secondary, creditCosts.deterministic);
-  push("lifestyle", "composite_generate", secondary, creditCosts.generativeStill, "kitchen counter");
-  push("lifestyle", "composite_generate", secondary, creditCosts.generativeStill, "office desk");
-  push("infographic", "template", secondary, creditCosts.deterministic);
+  // Product page shots need a marketplace or store channel to land in.
+  if (secondary.length > 0) {
+    push("alt_angle_white", "deterministic", secondary, creditCosts.deterministic, "45 angle on white");
+    push("alt_angle_white", "deterministic", secondary, creditCosts.deterministic, "side angle on white");
+    push("cutout_png", "deterministic", secondary, creditCosts.deterministic);
+    push("sweep_gray", "deterministic", secondary, creditCosts.deterministic);
+    push("sweep_brand", "deterministic", secondary, creditCosts.deterministic);
+    push("lifestyle", "composite_generate", secondary, creditCosts.generativeStill, "kitchen counter");
+    push("lifestyle", "composite_generate", secondary, creditCosts.generativeStill, "office desk");
+    push("infographic", "template", secondary, creditCosts.deterministic);
+  }
   if (amazon) {
     push("aplus_banner", "template", ["amazon.aplus.basic_header"], creditCosts.deterministic);
     push("aplus_banner", "template", ["amazon.aplus.basic_header"], creditCosts.deterministic);

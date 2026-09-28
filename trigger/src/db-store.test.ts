@@ -135,7 +135,10 @@ describe("DbJobStore settles a pack run end to end", () => {
     expect(assetRows.every((a) => a.workspaceId === ws)).toBe(true);
     expect(assetRows.every((a) => typeof a.qc?.shotId === "string")).toBe(true);
     const stepRows = await db.select().from(jobSteps).where(eq(jobSteps.jobId, jobId));
-    expect(stepRows.length).toBe(assetRows.length);
+    // One final row per stored asset; the plan's pending and skipped rows
+    // (savePlan) come on top of those.
+    const finalRows = stepRows.filter((s) => s.status === "done" || s.status === "needs_review");
+    expect(finalRows.length).toBe(assetRows.length);
   });
 
   it("uploads and records asset variants and pack files", async () => {
