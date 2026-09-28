@@ -113,3 +113,65 @@ Record results in docs/verification.md with the device, OS and date.
 - 20 products to photograph for the golden set, or permission to use specific public product images (B1).
 - Budget for staging provider spend (C1), suggested cap $20 a day.
 - Chosen `CURVI_SHOT_CONCURRENCY` for the paid instance, after B3.
+
+## A6 failure copy inventory
+
+Every string the runner and the web app can store as `generation_jobs.error` (job level) or as a shot's repair hint or step error (shot level), and the seller copy it maps to. Job level copy lives in `JOB_ERROR_COPY` in apps/web/src/lib/job-copy.ts (`publicJobError`, first matching rule wins); shot level copy in `needsReviewNote` and `skippedCopy`. `apps/web/src/lib/job-copy-failures.test.ts` feeds each message below, with realistic provider variants, through the mapping and fails if any output names a provider, an HTTP status, JSON or engineering words.
+
+A failed pack is never charged: the runner charges passing shots only after the pack is saved, and its failure path releases the whole hold (`releaseRemainderOnFailure` and `releaseAllHeld`); the web app's settle and reconcile paths call `release_credits`. So every job level row is "No".
+
+### Job level (`publicJobError`)
+
+| Stored message pattern | Where it is thrown or written | Seller copy (`JOB_ERROR_COPY` key) | Charged |
+| --- | --- | --- | --- |
+| contains "screenshot" or "screen capture" | ingest refusal (packages/pipeline ingest/image.ts), runner screenshot gate (in flight) | `screenshot`: looks like a screenshot, take a camera photo, start a new pack | No |
+| "Intake found no sellable product in the uploaded images" | trigger/src/pipeline-runner.ts intake gate | `noProduct`: no product found, take a clear photo of just the product | No |
+| "This upload was flagged for ... and needs a manual review before a pack can run" | pipeline-runner.ts intake moderation gate | `flagged`: flagged for manual review, email us if a mistake | No |
+| "This product was flagged for ... and needs a manual review before a pack can run" | pipeline-runner.ts analysis moderation gate | `flagged` | No |
+| "Intake response failed schema validation" | pipeline-runner.ts intake | `readFailed`: could not read your product, our side, try again in a few minutes | No |
+| "Product analysis response failed schema validation" | pipeline-runner.ts analyze | `readFailed` | No |
+| PLAN_FAILED_MESSAGE "We could not plan the shots for this product, so nothing was charged." | pipeline-runner.ts planner | `planFailed` | No |
+| "No shots could be planned for the channels you picked, so nothing was charged." | pipeline-runner.ts noShotPassedMessage | `noShotsPlanned`: try other channels | No |
+| "None of the shots in this pack passed its checks, so nothing was charged. ..." | pipeline-runner.ts noShotPassedMessage | `noShotPassed`: each shot says why, a sharp photo on a plain background helps | No |
+| "None of the shots in this pack could be made, so nothing was charged. The first error was: <raw>" | pipeline-runner.ts noShotPassedMessage | classified by the raw tail (`setup` or `serviceBusy`), else `noShotsMade` | No |
+| "None of the shots in this pack could be delivered, so nothing was charged." | pipeline-runner.ts after buildPack | `notDelivered`: our side, try again in a few minutes | No |
+| "Pack storage is not configured, so the pack/files could not be delivered." | trigger/src/db-store.ts savePack, saveFiles | `notDelivered` | No |
+| "We could not separate the product from its background ..." / "The cutout found no product ..." | trigger/src/live-runtime.ts cutout refusals (shot level; mapped at job level too) | `cutout` / `noProduct` | No |
+| "All providers failed for task ...: <p> responded 401/403/400/402/404 ..." or api key, authentication, permission, unauthorized | packages/ai AllProvidersFailedError over adapters/shared.ts requestJson, photoroomCutout.ts | `setup`: problem on our side, not with your photo, try later, email us if it keeps happening | No |
+| provider "is not registered", "does not support task", "No providers routed", "does not implement estimateCostMicros", "Cost estimate failed", "has no price table", "exceeds maxCostMicros", "needs an API key", "No active recipe seeded" | packages/ai router.ts, registry.ts, adapters; pipeline-runner.ts and recipes.ts | `setup` | No |
+| "... responded 5xx/408/429", "timed out after", "Circuit breaker open for", "Network error calling", empty outputs ("no images", "no text or tool_use block", "no polling_url", "ended with status"), any other "All providers failed" | packages/ai router.ts ProviderTimeoutError, BreakerOpenError, adapters | `serviceBusy`: a service we use is busy or not responding, try again in a few minutes | No |
+| "declined", "blocked the prompt", "stop_reason refusal", "Content Moderated" (code content_blocked) | adapters geminiImage.ts, anthropicLLM.ts, bflFlux.ts, openaiImage.ts | `contentBlocked`: would not make images from this photo under its content rules, try a different photo | No |
+| "Spend cap blocked call: ... caps:workspace:<id>:<day> ..." | packages/ai caps.ts via router.ts | `workspaceDayCap`: daily limit, try tomorrow or email us | No |
+| "Spend cap blocked call: ... caps:global:<day> ..." | caps.ts via router.ts | `globalDayCap`: our daily safety limit, try tomorrow | No |
+| "Spend cap blocked call: ... caps:pack:/caps:asset: ...", "Cost cap reached: ...", "spending limit" | caps.ts via router.ts, pipeline-runner.ts settleGenerationSpend and PACK_CAP_REACHED | `packCap`: safety limit, try fewer channels | No |
+| "Spend cap blocked call: the spend cap reservation could not be made (Spend cap counter ... could not be updated)" | packages/ai types.ts CapStoreUnavailableError, trigger/src/cap-store.ts | `setup` | No |
+| "Illegal transition ...", "Credits were already reserved ...", "Reserve amount must be positive ...", "Cannot <verb> before reserving", "... of the reservation is outstanding" | trigger/src/state.ts | `internal`: error on our side, run it again | No |
+| SETTLED_JOB_MESSAGES crashed / not_started / interrupted / timed_out | apps/web/src/lib/jobs/enqueue.ts | `internal` / `notStarted` / `restarted` / `timedOut` | No |
+| RECONCILED_JOB_ERROR "The run was interrupted before finishing ..." | apps/web/src/lib/services/reconcile.ts | `interrupted` | No |
+| "The pack could not be queued." | apps/web/src/lib/services/db.ts abandonJob | `notQueued`: try again in a minute | No |
+| "Job <id> was already finished or failed elsewhere, so this run stopped" | pipeline-runner.ts JobAbandonedError (written only if the row was not already terminal) | `stopped` | No |
+| "credit reservation failed", "insufficient credit balance for workspace ..." | services/db.ts ReservationError, reserve_credits SQL | `credits`: not enough credits, top up or pick fewer channels | No (nothing held) |
+| anything else | | `generic`: something went wrong, credits held went back | No |
+
+### Shot level (`needsReviewNote`, `skippedCopy`)
+
+Every shot note ends "No credits were charged for it." and never repeats the stored hint.
+
+| Stored hint pattern | Where | Note |
+| --- | --- | --- |
+| SHOT_PROVIDER_TROUBLE, SHOT_CONTENT_BLOCKED, SHOT_CHANNEL_FULL, SHOT_NOT_DELIVERED, HARMONIZE_SHAPE_REFUSED | pipeline-runner.ts, live-runtime.ts | own reason each (unchanged) |
+| "We could not separate the product from its background ..." (SEGMENTATION_FAILED) | live-runtime.ts segmentationRefusal | separate the product, sharp photo on a plain background (new) |
+| "The cutout found no product ...", "This image has no product to place ...", "source photo ...", "does not point at one of this product's photos" | live-runtime.ts, live-deterministic.ts, shot-outputs.ts | could not find the product clearly (no product to place is new) |
+| "The product would be cut off at this channel's shape ..." | shot-outputs.ts | cut off at this channel's shape (new) |
+| "This image could not be prepared for this/another channel ..." | pipeline-runner.ts derive, live-runtime.ts | could not prepare this image for this channel (new) |
+| contains "screenshot" | future runner or cutout hint | looks like a screenshot, take a camera photo (new) |
+| "Spend cap reached before ...", "Cost cap reached: ...", PACK_CAP_REACHED | live-runtime.ts, pipeline-runner.ts | spending or safety limit |
+| "... not produced by live providers yet", "from the product photo alone yet", "... not configured" | live-runtime.ts, live-deterministic.ts | we do not make this kind of shot yet |
+| channel rule refusals (text, plain background, laid out, rendered, format and size, larger than allowed, nothing to show, no channel to size) | live-runtime.ts, live-deterministic.ts, shot-outputs.ts | could not meet this channel's image rules |
+| "The job was stopped before this shot finished." | pipeline-runner.ts | the pack stopped before this shot finished |
+| "We could not check this shot ...", "Spend cap reached before this shot could be checked." | pipeline-runner.ts | own reason each |
+| planner skip reasons (needs photo, plan tier, provider not enabled, concept mode, shot cap, channel image limit, benefits, dimensions, contents, comparison) | packages/pipeline planner | `skippedCopy` labels (unchanged) |
+
+Not stored as a job error and so out of scope: follow up failures (trigger/src/follow-up.ts puts the job back to done and logs), "This store cannot deliver follow up files." and packages/pipeline composite, template and whitening internals, which surface only through the shot refusals above.
+
+Surfaces: the pack page (JobProgressBoard) reads `job.error` from GET /api/jobs/[id], which is `DbService.getJob` and already mapped through `publicJobError`; the dashboard and GET /api/jobs/recent list only title and status. No surface on main, or on the deployed e89d8f9, renders `generation_jobs.error` raw: both map it through `publicJobError`, which on e89d8f9 turned the 401 chain into the generic line. The raw 401 text in the production report most likely came from the row itself or the logs. db.test.ts now pins the pack page view and the dashboard list against the raw 401 chain.
