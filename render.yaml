@@ -11,15 +11,40 @@ services:
     repo: https://github.com/BEXAI/Curviai
     branch: main
     region: oregon
-    plan: free # upgrade to starter or higher for production traffic; free instances spin down when idle
-    buildCommand: pnpm install --frozen-lockfile; pnpm run build
+    # The plan is the founder's call (it costs money). Free instances spin down
+    # after 15 idle minutes, run on 0.1 CPU and 512 MB, and Render says not to
+    # use them in production. See docs/LAUNCH_CHECKLIST.md step 1.
+    plan: free
+    # && so a failed install stops the build instead of building on a broken tree.
+    buildCommand: pnpm install --frozen-lockfile && pnpm run build
     startCommand: pnpm run start
-    autoDeploy: true # deploy on every push to main
+    # Render routes traffic to a new deploy only once this returns 2xx, and
+    # restarts an instance that fails it for 60 seconds. It returns 503 when the
+    # database is down or behind this build's migrations, or while draining.
+    healthCheckPath: /api/health
+    # Seconds between SIGTERM and SIGKILL (Render default 30, max 300). The
+    # inline pack runner drains within CURVI_SHUTDOWN_GRACE_MS (default 20000)
+    # and then settles unfinished jobs, so this must stay above that grace.
+    maxShutdownDelaySeconds: 300
+    # Deploy only after the GitHub Actions CI checks pass on the commit
+    # (replaces the deprecated autoDeploy: true). The dashboard service was
+    # created by hand, so set the same thing there: Settings, Auto-Deploy,
+    # After CI Checks Pass. See docs/LAUNCH_CHECKLIST.md.
+    autoDeployTrigger: checksPass
     envVars:
       - key: NODE_VERSION
         value: "22"
       - key: NEXT_PUBLIC_SITE_URL
         value: https://curvi.ai
+      # Packs the inline runner runs at once; the rest wait in order. 1 fits a
+      # 512 MB free instance. Raise it with the plan (docs/LAUNCH_CHECKLIST.md).
+      - key: CURVI_INLINE_PACK_CONCURRENCY
+        value: "1"
+      # Optional: how long a shutdown waits for running packs before settling
+      # them. Only raise it (for example to 240000) once maxShutdownDelaySeconds
+      # is confirmed at 300 on the live service, or SIGKILL lands first.
+      # - key: CURVI_SHUTDOWN_GRACE_MS
+      #   value: "240000"
       # Values are set in the Render dashboard, never committed. sync: false makes
       # Render prompt for them on Blueprint sync.
       - key: NEXT_PUBLIC_SUPABASE_URL
