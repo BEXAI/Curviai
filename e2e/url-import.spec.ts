@@ -95,7 +95,7 @@ test("the import API answers 400 for a metadata address without fetching it", as
   expect(body.reason).toBe("blocked_host");
 });
 
-test("without R2 a picked photo shows the setup notice", async ({ page }) => {
+test("on the demo server a picked photo shows the imports are off notice", async ({ page }) => {
   await page.route("**/api/imports/product", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product: PRODUCT }) }),
   );
@@ -106,5 +106,5 @@ test("without R2 a picked photo shows the setup notice", async ({ page }) => {
   await page.getByLabel("Start from your product link").fill(PRODUCT.sourceUrl);
   await page.getByRole("button", { name: "Import", exact: true }).click();
   await page.getByRole("button", { name: "Use photo 1" }).click();
-  await expect(page.getByTestId("upload-notice")).toContainText("Photo imports need Cloudflare R2");
+  await expect(page.getByTestId("upload-notice")).toContainText("Photo imports are off on this demo server");
 });

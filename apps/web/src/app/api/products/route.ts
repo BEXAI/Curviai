@@ -1,13 +1,17 @@
 /**
  * POST /api/products
  * Creates a product to attach uploads and packs to. Client role members are
- * read only and get a 403. Rate limited by IP and by user.
+ * read only and get a 403. A cross site Origin is refused, the caller is
+ * resolved before the (capped) body is read, a workspace that could not be
+ * set up answers 503, and the route is rate limited by IP and by user.
  */
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { readJsonCapped } from "@/lib/http/json-body";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
-import { getServices } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
@@ -17,34 +21,36 @@ const ProductRequest = z.object({
 });
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
+  }
   const ipLimited = await limitByIp(request, "products.create");
   if (ipLimited) {
     return ipLimited;
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
+  const resolved = await resolveSignedIn("Sign in to add a product.", { ensure: true });
+  if ("response" in resolved) {
+    return resolved.response;
   }
-  const parsed = ProductRequest.safeParse(body);
+  const { services, workspace } = resolved;
+
+  const userLimited = await limitByUser("products.create", await userRateLimitSubject(workspace.id));
+  if (userLimited) {
+    return userLimited;
+  }
+
+  const body = await readJsonCapped(request);
+  if (!body.ok) {
+    return body.response;
+  }
+  const parsed = ProductRequest.safeParse(body.data);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid request.", issues: parsed.error.issues.map((i) => i.message) },
       { status: 400 },
     );
-  }
-
-  const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
-  if (!workspace) {
-    return NextResponse.json({ error: "Sign in to add a product." }, { status: 401 });
-  }
-
-  const userLimited = await limitByUser("products.create", await userRateLimitSubject(workspace.id));
-  if (userLimited) {
-    return userLimited;
   }
 
   const product = await services.createProduct(workspace.id, parsed.data);

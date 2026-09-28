@@ -151,4 +151,34 @@ describe("POST /api/jobs/[id]/shots/[shotId]/photo", () => {
     vi.mocked(services.addShotPhoto).mockResolvedValue({ outcome: "rejected", reason: "conflict", message: "Saved elsewhere." });
     expect((await photo(jsonRequest(url, body()), shotParams(TEST_JOB_ID, SHOT_ID))).status).toBe(409);
   });
+
+  it("maps a photo that fails the server side upload check to 422 with its reason", async () => {
+    vi.mocked(services.addShotPhoto).mockResolvedValue({
+      outcome: "rejected",
+      reason: "invalid_upload",
+      message: "That file is not a photo we can use.",
+    });
+    const response = await photo(jsonRequest(url, body()), shotParams(TEST_JOB_ID, SHOT_ID));
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: "That file is not a photo we can use.", reason: "invalid_upload" });
+  });
+
+  it("refuses a cross site Origin and an oversized body before the service", async () => {
+    const crossSite = await photo(jsonRequest(url, body(), { origin: "https://evil.example" }), shotParams(TEST_JOB_ID, SHOT_ID));
+    expect(crossSite.status).toBe(403);
+    const big = await photo(jsonRequest(url, { ...body(), pad: "x".repeat(20_000) }), shotParams(TEST_JOB_ID, SHOT_ID));
+    expect(big.status).toBe(413);
+    expect(services.addShotPhoto).not.toHaveBeenCalled();
+  });
+});
+
+describe("cross site requests on the other pack operations", () => {
+  it("refuses cancel and retry from another site before the service", async () => {
+    const cancelResponse = await cancel(jsonRequest(url, {}, { origin: "https://evil.example" }), jobParams(TEST_JOB_ID));
+    expect(cancelResponse.status).toBe(403);
+    const retryResponse = await retry(jsonRequest(url, {}, { origin: "https://evil.example" }), shotParams(TEST_JOB_ID, "s04_alt_angle_white"));
+    expect(retryResponse.status).toBe(403);
+    expect(services.cancelJob).not.toHaveBeenCalled();
+    expect(services.retryShot).not.toHaveBeenCalled();
+  });
 });

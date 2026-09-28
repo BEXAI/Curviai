@@ -17,6 +17,9 @@ const SHOT_OP_STATUS: Record<ShotOpRejection, number> = {
   conflict: 409,
   insufficient_credits: 402,
   unavailable: 503,
+  // The added photo failed the server side upload check (not a photo, over
+  // the pixel cap, unreadable).
+  invalid_upload: 422,
   demo: 400,
 };
 

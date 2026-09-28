@@ -222,7 +222,7 @@ export type CreateJobResult =
 /** Why a retry or an added photo was refused. Routes map each to a status:
  * not_found 404, role_forbidden 403, foreign_key 403, not_ready 409,
  * not_retryable 409, channel_full 409, conflict 409, insufficient_credits
- * 402, unavailable 503, demo 400. */
+ * 402, unavailable 503, invalid_upload 422, demo 400. */
 export type ShotOpRejection =
   | "not_found"
   | "role_forbidden"
@@ -233,6 +233,7 @@ export type ShotOpRejection =
   | "conflict"
   | "insufficient_credits"
   | "unavailable"
+  | "invalid_upload"
   | "demo";
 
 export type ShotOpResult =

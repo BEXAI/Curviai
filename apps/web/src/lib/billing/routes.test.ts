@@ -66,7 +66,11 @@ function jsonRequest(body: unknown): Request {
   });
 }
 
-const growthAnnual = { kind: "tier", tier: "growth", cadence: "annual", source: "pricing" };
+function portalRequest(headers: Record<string, string> = {}): Request {
+  return new Request("https://curvi.ai/api/billing/portal", { method: "POST", headers });
+}
+
+const growthAnnual ={ kind: "tier", tier: "growth", cadence: "annual", source: "pricing" };
 
 beforeEach(() => {
   state.role = "owner";
@@ -98,7 +102,7 @@ describe("client role cannot bill (Update.md 4.4)", () => {
   it("portal answers 403 for a client seat", async () => {
     state.role = "client";
     state.account = { stripeCustomerId: "cus_1", subscription: null };
-    const response = await portal();
+    const response = await portal(portalRequest());
     expect(response.status).toBe(403);
     expect(stripeMock.billingPortal.sessions.create).not.toHaveBeenCalled();
   });
@@ -193,7 +197,7 @@ describe("POST /api/billing/checkout", () => {
 
 describe("POST /api/billing/portal", () => {
   it("answers 409 with a start a plan first notice before the first payment", async () => {
-    const response = await portal();
+    const response = await portal(portalRequest());
     expect(response.status).toBe(409);
     const body = (await response.json()) as { error: string; notice: string };
     expect(body.error).toBe("no_customer");
@@ -203,13 +207,13 @@ describe("POST /api/billing/portal", () => {
 
   it("checks the role before the customer, so a client seat with no customer still gets 403", async () => {
     state.role = "client";
-    const response = await portal();
+    const response = await portal(portalRequest());
     expect(response.status).toBe(403);
   });
 
   it("opens the portal for the stored customer", async () => {
     state.account = { stripeCustomerId: "cus_saved", subscription: null };
-    const response = await portal();
+    const response = await portal(portalRequest());
     expect(await response.json()).toEqual({ url: "https://billing.stripe.test/portal" });
     expect(stripeMock.billingPortal.sessions.create).toHaveBeenCalledWith({
       customer: "cus_saved",
@@ -228,5 +232,40 @@ describe("POST /api/billing/upgrade-request", () => {
   it("rejects an unknown plan", async () => {
     const response = await upgradeRequest(jsonRequest({ kind: "tier", tier: "enterprise", cadence: "annual" }));
     expect(response.status).toBe(400);
+  });
+});
+
+describe("billing posts: origin, body cap and auth order", () => {
+  it("refuses a post from another site on checkout, portal and upgrade requests", async () => {
+    const evil = { "Content-Type": "application/json", origin: "https://evil.example" };
+    const body = JSON.stringify(growthAnnual);
+    const checkoutResponse = await checkout(new Request("https://curvi.ai/api/billing/checkout", { method: "POST", headers: evil, body }));
+    expect(checkoutResponse.status).toBe(403);
+    expect((await portal(portalRequest({ origin: "https://evil.example" }))).status).toBe(403);
+    const upgradeResponse = await upgradeRequest(
+      new Request("https://curvi.ai/api/billing/upgrade-request", { method: "POST", headers: evil, body }),
+    );
+    expect(upgradeResponse.status).toBe(403);
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(stripeMock.billingPortal.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("allows a post from the site itself", async () => {
+    const response = await checkout(
+      new Request("https://curvi.ai/api/billing/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", origin: "https://curvi.ai" },
+        body: JSON.stringify(growthAnnual),
+      }),
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("answers a signed out caller 401 without reading the body, and an oversized body 413", async () => {
+    state.signedIn = false;
+    const raw = new Request("https://curvi.ai/api/billing/checkout", { method: "POST", body: "{ not json" });
+    expect((await checkout(raw)).status).toBe(401);
+    state.signedIn = true;
+    expect((await checkout(jsonRequest({ ...growthAnnual, pad: "x".repeat(20_000) }))).status).toBe(413);
   });
 });

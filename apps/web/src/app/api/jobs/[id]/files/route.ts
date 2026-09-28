@@ -7,8 +7,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { getServices } from "@/lib/services";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
+import { resolveSignedIn } from "@/lib/http/services";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -23,11 +22,11 @@ export async function GET(
   if (!isUuid(id)) {
     return NextResponse.json({ error: NOT_FOUND }, { status: 404 });
   }
-  const services = getServices();
-  const resolved = await resolveWorkspace(services, "Sign in to see your files.");
+  const resolved = await resolveSignedIn("Sign in to see your files.");
   if ("response" in resolved) {
     return resolved.response;
   }
+  const { services } = resolved;
   const view = await services.listJobFiles(resolved.workspace.id, id);
   if (!view) {
     return NextResponse.json({ error: NOT_FOUND }, { status: 404 });

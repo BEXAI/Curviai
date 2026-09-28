@@ -9,10 +9,10 @@
 
 import { NextResponse } from "next/server";
 import { isR2Configured } from "@/lib/env";
+import { resolveSignedIn } from "@/lib/http/services";
 import { presignObjectGet } from "@/lib/r2";
-import { getServices, isDbMode } from "@/lib/services";
+import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { getSessionUser } from "@/lib/supabase/server";
 import {
   buildDbExport,
@@ -25,12 +25,11 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<NextResponse> {
-  const services = getServices();
-  const resolved = await resolveWorkspace(services, "Sign in to export your data.");
+  const resolved = await resolveSignedIn("Sign in to export your data.");
   if ("response" in resolved) {
     return resolved.response;
   }
-  const { workspace } = resolved;
+  const { services, workspace } = resolved;
   if (workspace.role !== "owner" && workspace.role !== "admin") {
     return NextResponse.json({ error: "Only owners and admins can export the workspace's data." }, { status: 403 });
   }

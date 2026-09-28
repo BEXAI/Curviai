@@ -7,9 +7,8 @@
  */
 
 import { NextResponse } from "next/server";
+import { resolveSignedIn } from "@/lib/http/services";
 import { renderComplianceReportPdf } from "@/lib/compliance-pdf";
-import { getServices } from "@/lib/services";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -24,11 +23,11 @@ export async function GET(
   if (!isUuid(id)) {
     return NextResponse.json({ error: NOT_FOUND }, { status: 404 });
   }
-  const services = getServices();
-  const resolved = await resolveWorkspace(services, "Sign in to download the compliance report.");
+  const resolved = await resolveSignedIn("Sign in to download the compliance report.");
   if ("response" in resolved) {
     return resolved.response;
   }
+  const { services } = resolved;
   const report = await services.getComplianceReport(resolved.workspace.id, id);
   if (!report) {
     return NextResponse.json({ error: NOT_FOUND }, { status: 404 });

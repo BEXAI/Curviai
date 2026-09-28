@@ -13,18 +13,24 @@ import { isStripeConfigured, siteUrl } from "@/lib/env";
 import { BILLING_FORBIDDEN_NOTICE, canManageBilling } from "@/lib/billing/access";
 import { loadBillingAccount } from "@/lib/billing/account";
 import { getStripe } from "@/lib/billing/stripe";
-import { getServices } from "@/lib/services";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
 
 export const dynamic = "force-dynamic";
 
 const NO_CUSTOMER_NOTICE =
   "Start a plan first. The customer portal opens after your first payment, for cards, invoices and plan changes.";
 
-export async function POST(): Promise<NextResponse> {
-  const workspace = await getServices().ensureWorkspace();
-  if (!workspace) {
-    return NextResponse.json({ error: "Sign in to manage billing." }, { status: 401 });
+export async function POST(request: Request): Promise<NextResponse> {
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
   }
+  const resolved = await resolveSignedIn("Sign in to manage billing.", { ensure: true });
+  if ("response" in resolved) {
+    return resolved.response;
+  }
+  const { workspace } = resolved;
   if (!canManageBilling(workspace.role)) {
     return NextResponse.json({ error: "billing_forbidden", notice: BILLING_FORBIDDEN_NOTICE }, { status: 403 });
   }

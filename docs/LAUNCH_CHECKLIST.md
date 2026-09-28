@@ -426,3 +426,17 @@ What changes for the founder:
 2. **Read the detail:** `curl -s -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/health` adds `details`: each warning in plain words, the recipe differences (model ids and body hashes, never prompts), key presence per stage (env var names only), each cron's last success, shot concurrency and memory. A wrong secret gets the public body.
 3. **Probe the provider keys after each deploy:** `curl -s -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/health/providers`. Each configured provider gets one free metadata call (model lookup for Anthropic, Gemini and OpenAI, the credit balance for BFL, account details for Photoroom), and the reply lists `ok`, the HTTP status and the latency per provider; the top level `ok` is true only when every configured key was accepted. A 401 means the key was refused; a Photoroom 403 means the key is not allowed or has no credit left. Nothing is generated and nothing is spent. This route used to be public; if an uptime monitor polled it, point that monitor at `/api/health` instead.
 4. **Clear a recipe drift warning** by running `pnpm db:seed` against the database from the deployed commit (it upserts the seed rows), or, when a table edit was deliberate, by moving the same change into packages/pipeline/src/seed/recipes.ts.
+
+## Web route hardening (fix/web-routes)
+
+No migration. One new environment variable, which must **never** be set in production:
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `ALLOW_DEMO_MODE` | `apps/web/src/lib/services/demo-mode.ts` | In production, a server missing `DATABASE_URL` or the Supabase env vars refuses to serve: API routes answer 503 with plain copy and app pages show the error page. | `1` lets a production build (`next start`) fall back to the in memory demo, where every visitor is the owner of one shared workspace. Only the e2e server sets it (playwright.config.ts). **Must not be set on Render or any production host.** Leave it out of the Render dashboard and out of `render.yaml`. |
+
+What changes for the founder:
+
+1. **Check Render does not have `ALLOW_DEMO_MODE`.** Environment tab of the Curviai service: the name must not be there. If `/api/*` routes ever answer 503 "Curvi is not available right now", the server lost `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL` or `NEXT_PUBLIC_SUPABASE_ANON_KEY`; the Render log says "refusing demo mode in production". Restore the variable; do not set `ALLOW_DEMO_MODE` to get the site back.
+2. **Cross site posts are refused.** Signed in routes that change state (packs, cancel, retry, add photo, share, uploads, products, imports, billing, sign out) answer 403 when the request carries an `Origin` header from another site. The site origin is `NEXT_PUBLIC_SITE_URL`, so it must match the address sellers use (for example `https://curvi.ai`); a request addressed to the host it came from also passes. Webhooks, the CSP report, cron and leads are not affected.
+3. **Body caps.** JSON posts are capped at 16 KB (64 KB for creating a pack) and answer 413 past that. The all files zip (`/api/jobs/:id/pack`) is limited to 30 downloads an hour per user and per IP.

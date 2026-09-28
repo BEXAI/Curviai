@@ -4,30 +4,49 @@
  * It agrees with the per channel downloads: one folder per channel, each file
  * under the exact name stored for it, and the pack's compliance report at the
  * root. Every object is checked before streaming starts, so the zip is never
- * quietly missing a file: a missing object answers 409 instead. Workspace
- * scoped through the caller's membership, db mode only, since demo jobs keep
- * no durable files.
+ * quietly missing a file: a missing object answers 409 instead. Files are
+ * streamed from storage one at a time (lib/http/zip-stream), never held in
+ * memory together, and the route is rate limited by IP and by user
+ * (jobs.pack). Workspace scoped through the caller's membership, db mode
+ * only, since demo jobs keep no durable files.
  */
 
-import { PassThrough, Readable } from "node:stream";
-import archiver from "archiver";
+import { Readable } from "node:stream";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { NextResponse } from "next/server";
 import { isR2Configured } from "@/lib/env";
+import { resolveSignedIn } from "@/lib/http/services";
+import { zipStream } from "@/lib/http/zip-stream";
 import { packZipEntries } from "@/lib/pack-zip";
-import { getObjectBytes, isWorkspaceKey, objectExists } from "@/lib/r2";
-import { getServices, isDbMode } from "@/lib/services";
+import { isWorkspaceKey, objectExists, privateBucket, r2Client } from "@/lib/r2";
+import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
+import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const NOT_FOUND = "This job does not exist in your workspace.";
 
+/** One stored object as a Node stream; null when it is missing. */
+async function openObject(key: string): Promise<Readable | null> {
+  try {
+    const res = await r2Client().send(new GetObjectCommand({ Bucket: privateBucket(), Key: key }));
+    return res.Body instanceof Readable ? res.Body : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const ipLimited = await limitByIp(request, "jobs.pack");
+  if (ipLimited) {
+    return ipLimited;
+  }
   const { id } = await params;
   if (!isUuid(id)) {
     return NextResponse.json({ error: NOT_FOUND }, { status: 404 });
@@ -35,11 +54,15 @@ export async function GET(
   if (!isDbMode() || !isR2Configured()) {
     return NextResponse.json({ error: "Pack downloads are not available on this server." }, { status: 404 });
   }
-  const resolved = await resolveWorkspace(getServices(), "Sign in to download packs.");
+  const resolved = await resolveSignedIn("Sign in to download packs.");
   if ("response" in resolved) {
     return resolved.response;
   }
   const workspaceId = resolved.workspace.id;
+  const userLimited = await limitByUser("jobs.pack", await userRateLimitSubject(workspaceId));
+  if (userLimited) {
+    return userLimited;
+  }
 
   const db = getDb();
   const job = await db.query.generationJobs.findFirst({
@@ -97,29 +120,12 @@ export async function GET(
     );
   }
 
-  const archive = archiver("zip", { zlib: { level: 6 } });
-  const out = new PassThrough();
-  archive.on("error", (err) => out.destroy(err));
-  archive.pipe(out);
-
-  void (async () => {
-    for (const entry of entries) {
-      const bytes = await getObjectBytes(entry.r2Key);
-      if (!bytes) {
-        // Vanished after the check: end the download with an error rather
-        // than hand over a zip that is silently short a file.
-        throw new Error(`pack file ${entry.r2Key} disappeared while zipping`);
-      }
-      archive.append(bytes, { name: entry.name });
-    }
-    await archive.finalize();
-  })().catch((err: unknown) => {
-    console.error(`[pack] zip for job ${job.id} failed`, err);
-    archive.abort();
-    out.destroy(err instanceof Error ? err : new Error(String(err)));
-  });
-
-  return new Response(Readable.toWeb(out) as ReadableStream, {
+  const body = zipStream(
+    entries.map((entry) => ({ name: entry.name, source: entry.r2Key })),
+    openObject,
+    (err) => console.error(`[pack] zip for job ${job.id} failed`, err),
+  );
+  return new Response(body, {
     headers: {
       "content-type": "application/zip",
       "content-disposition": `attachment; filename="curvi-pack-${job.id}.zip"`,

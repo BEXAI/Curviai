@@ -836,6 +836,17 @@ export class DbService implements Services {
     if (!isWorkspaceSourceKey(workspaceId, input.key)) {
       return { outcome: "rejected", reason: "foreign_key", message: "That upload does not belong to this workspace." };
     }
+    // The added photo gets the same server side check as any upload (magic
+    // bytes, the 80 megapixel cap, metadata stripped) before it is recorded,
+    // and the server's hash and upright size replace what the client sent.
+    const checked = await this.ingest(input.key, "image");
+    if (checked && !checked.ok) {
+      return {
+        outcome: "rejected",
+        reason: checked.retryable ? "unavailable" : "invalid_upload",
+        message: checked.notice,
+      };
+    }
     const steps = await this.db.query.jobSteps.findMany({
       where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId), eq(t.shotId, shotId)),
       orderBy: (t, { asc }) => [asc(t.createdAt)],
@@ -864,7 +875,15 @@ export class DbService implements Services {
     return this.startFollowUp(workspaceId, job, "add_angle", shots, latest.stage ?? shots[0].type, async (tx) => {
       const inserted = await tx
         .insert(sourceMedia)
-        .values({ workspaceId, productId: job.productId, r2Key: input.key, kind: "image", sha256: input.sha256 })
+        .values({
+          workspaceId,
+          productId: job.productId,
+          r2Key: input.key,
+          kind: "image",
+          sha256: (checked?.ok ? checked.sha256 : null) ?? input.sha256,
+          width: checked?.ok ? checked.width : null,
+          height: checked?.ok ? checked.height : null,
+        })
         .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
         .returning({ id: sourceMedia.id });
       if (inserted.length === 0) {

@@ -22,7 +22,9 @@ import { loadBillingAccount } from "@/lib/billing/account";
 import { CANCEL_REASON_KEYS, MAX_CANCEL_DETAIL } from "@/lib/billing/cancel-flow";
 import { applyCancelChoice, cancelOptions } from "@/lib/billing/cancel-service";
 import { liveCancelDeps } from "@/lib/billing/cancel-store";
-import { getServices } from "@/lib/services";
+import { readJsonCapped } from "@/lib/http/json-body";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
 import type { WorkspaceSummary } from "@/lib/services/types";
 import { getSessionUser } from "@/lib/supabase/server";
 
@@ -38,10 +40,11 @@ const CancelRequest = z.object({
 });
 
 async function billingWorkspace(): Promise<{ workspace: WorkspaceSummary } | { response: NextResponse }> {
-  const workspace = await getServices().ensureWorkspace();
-  if (!workspace) {
-    return { response: NextResponse.json({ error: "Sign in to manage billing." }, { status: 401 }) };
+  const resolved = await resolveSignedIn("Sign in to manage billing.", { ensure: true });
+  if ("response" in resolved) {
+    return resolved;
   }
+  const { workspace } = resolved;
   if (!canManageBilling(workspace.role)) {
     return {
       response: NextResponse.json({ error: "billing_forbidden", notice: BILLING_FORBIDDEN_NOTICE }, { status: 403 }),
@@ -65,24 +68,26 @@ export async function GET(): Promise<NextResponse> {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
-  }
-  const parsed = CancelRequest.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "invalid_request", notice: "Pick a reason and an option, and keep the note under 500 characters." },
-      { status: 400 },
-    );
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
   }
   const resolved = await billingWorkspace();
   if ("response" in resolved) {
     return resolved.response;
   }
   const { workspace } = resolved;
+  const body = await readJsonCapped(request);
+  if (!body.ok) {
+    return body.response;
+  }
+  const parsed = CancelRequest.safeParse(body.data);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "invalid_request", notice: "Pick a reason and an option, and keep the note under 500 characters." },
+      { status: 400 },
+    );
+  }
   const [account, user] = await Promise.all([loadBillingAccount(workspace.id), getSessionUser().catch(() => null)]);
   const result = await applyCancelChoice(liveCancelDeps(), {
     workspace,

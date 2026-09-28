@@ -7,7 +7,9 @@
  * key must sit in this workspace's source prefix (Update.md 4.6). Photo
  * roles, the SKU, box contents and comparison facts are validated against
  * the limits the planner prints with (@curvi/pipeline/seller-inputs). Rate
- * limited by IP and by user. Demo mode starts the in memory simulation; db
+ * limited by IP and by user. The caller is resolved before the body is
+ * read, the body is capped (413), and a cross site Origin is refused. Demo
+ * mode starts the in memory simulation; db
  * mode reserves credits through the reserve_credits SQL function.
  */
 
@@ -16,11 +18,13 @@ import { z } from "zod";
 import { hasSpec } from "@curvi/specs";
 import { InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { isWorkspaceSourceKey } from "@/lib/r2";
+import { JOB_BODY_MAX_BYTES, readJsonCapped } from "@/lib/http/json-body";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
-import { getServices } from "@/lib/services";
 import { RESTARTING_MESSAGE } from "@/lib/services/errors";
 import type { CreateJobResult } from "@/lib/services/types";
-import { RETRY_AFTER_SECONDS, resolveWorkspace } from "@/lib/services/workspace-response";
+import { RETRY_AFTER_SECONDS } from "@/lib/services/workspace-response";
 import { productIdSchema } from "@/lib/validation/ids";
 import { angleRoleSchema, sellerLinesSchema, skuSchema } from "@/lib/validation/seller-inputs";
 
@@ -28,7 +32,7 @@ export const dynamic = "force-dynamic";
 
 const JobRequest = z.object({
   productId: productIdSchema,
-  channels: z.array(z.string().min(1)).min(1).max(24),
+  channels: z.array(z.string().min(1).max(64)).min(1).max(24),
   mode: z.enum(["listing", "concept"]),
   uploads: z
     .array(
@@ -51,6 +55,10 @@ const JobRequest = z.object({
 });
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
+  }
   const ipLimited = await limitByIp(request, "jobs.create");
   if (ipLimited) {
     return ipLimited;
@@ -70,13 +78,26 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
+  // The caller is resolved before the body is read, so a signed out request
+  // never gets as far as buffering one. A signed in user whose workspace
+  // could not be set up gets a retryable 503, never a "Sign in" 401
+  // (Update.md 6.8).
+  const resolved = await resolveSignedIn("Sign in to create a pack.", { ensure: true });
+  if ("response" in resolved) {
+    return resolved.response;
   }
-  const parsed = JobRequest.safeParse(body);
+  const { services, workspace } = resolved;
+
+  const userLimited = await limitByUser("jobs.create", await userRateLimitSubject(workspace.id));
+  if (userLimited) {
+    return userLimited;
+  }
+
+  const body = await readJsonCapped(request, JOB_BODY_MAX_BYTES);
+  if (!body.ok) {
+    return body.response;
+  }
+  const parsed = JobRequest.safeParse(body.data);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid request.", issues: parsed.error.issues.map((i) => i.message) },
@@ -89,20 +110,6 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: `Unknown channels: ${unknownChannels.join(", ")}.` },
       { status: 400 },
     );
-  }
-
-  const services = getServices();
-  // A signed in user whose workspace could not be set up gets a retryable
-  // 503, never a "Sign in" 401 (Update.md 6.8).
-  const resolved = await resolveWorkspace(services, "Sign in to create a pack.", { ensure: true });
-  if ("response" in resolved) {
-    return resolved.response;
-  }
-  const { workspace } = resolved;
-
-  const userLimited = await limitByUser("jobs.create", await userRateLimitSubject(workspace.id));
-  if (userLimited) {
-    return userLimited;
   }
 
   // Uploads must live under this workspace's own source prefix, the same

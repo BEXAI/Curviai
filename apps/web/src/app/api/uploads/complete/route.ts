@@ -12,11 +12,12 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { readJsonCapped } from "@/lib/http/json-body";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
 import { isWorkspaceSourceKey } from "@/lib/r2";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
-import { getServices } from "@/lib/services";
 import type { SaveResult } from "@/lib/services/types";
-import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { uuidSchema } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -32,40 +33,23 @@ const CompleteRequest = z.object({
 });
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
+  }
   const ipLimited = await limitByIp(request, "uploads.complete");
   if (ipLimited) {
     return ipLimited;
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
-  }
-  const parsed = CompleteRequest.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Invalid request.", issues: parsed.error.issues.map((i) => i.message) },
-      { status: 400 },
-    );
-  }
-
-  const services = getServices();
-  const resolved = await resolveWorkspace(services, "Sign in to upload.");
+  const resolved = await resolveSignedIn("Sign in to upload.");
   if ("response" in resolved) {
     return resolved.response;
   }
-  const { workspace } = resolved;
+  const { services, workspace } = resolved;
   if (workspace.role === "client") {
     return NextResponse.json(
       { error: "Client seats cannot upload product photos.", reason: "forbidden" },
-      { status: 403 },
-    );
-  }
-  if (!isWorkspaceSourceKey(workspace.id, parsed.data.key)) {
-    return NextResponse.json(
-      { error: "That upload does not belong to this workspace.", reason: "foreign_key" },
       { status: 403 },
     );
   }
@@ -73,6 +57,24 @@ export async function POST(request: Request): Promise<NextResponse> {
   const userLimited = await limitByUser("uploads.complete", await userRateLimitSubject(workspace.id));
   if (userLimited) {
     return userLimited;
+  }
+
+  const body = await readJsonCapped(request);
+  if (!body.ok) {
+    return body.response;
+  }
+  const parsed = CompleteRequest.safeParse(body.data);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Invalid request.", issues: parsed.error.issues.map((i) => i.message) },
+      { status: 400 },
+    );
+  }
+  if (!isWorkspaceSourceKey(workspace.id, parsed.data.key)) {
+    return NextResponse.json(
+      { error: "That upload does not belong to this workspace.", reason: "foreign_key" },
+      { status: 403 },
+    );
   }
 
   const result = await services.registerSourceMedia(workspace.id, {

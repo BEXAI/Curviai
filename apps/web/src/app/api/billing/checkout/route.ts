@@ -22,7 +22,10 @@ import { CHECKOUT_SOURCES } from "@/lib/billing/intent";
 import { isPaidTierKey, type PaidTierKey } from "@/lib/billing/plans";
 import { priceIdForTier, priceIdForTopUp } from "@/lib/billing/price-table";
 import { getStripe, isStripeTaxEnabled } from "@/lib/billing/stripe";
-import { getServices, isDbMode } from "@/lib/services";
+import { readJsonCapped } from "@/lib/http/json-body";
+import { sameOriginOrRefuse } from "@/lib/http/same-origin";
+import { resolveSignedIn } from "@/lib/http/services";
+import { isDbMode } from "@/lib/services";
 import { getSessionUser } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -48,26 +51,29 @@ const CheckoutRequest = z.union([
 const STRIPE_ERROR_NOTICE = "Stripe could not open checkout just now. Try again in a minute.";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
+  const crossSite = sameOriginOrRefuse(request);
+  if (crossSite) {
+    return crossSite;
   }
-  const parsed = CheckoutRequest.safeParse(body);
+  const resolved = await resolveSignedIn("Sign in to manage billing.", { ensure: true });
+  if ("response" in resolved) {
+    return resolved.response;
+  }
+  const { workspace } = resolved;
+  if (!canManageBilling(workspace.role)) {
+    return NextResponse.json({ error: "billing_forbidden", notice: BILLING_FORBIDDEN_NOTICE }, { status: 403 });
+  }
+
+  const body = await readJsonCapped(request);
+  if (!body.ok) {
+    return body.response;
+  }
+  const parsed = CheckoutRequest.safeParse(body.data);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid request.", issues: parsed.error.issues.map((i) => i.message) },
       { status: 400 },
     );
-  }
-
-  const workspace = await getServices().ensureWorkspace();
-  if (!workspace) {
-    return NextResponse.json({ error: "Sign in to manage billing." }, { status: 401 });
-  }
-  if (!canManageBilling(workspace.role)) {
-    return NextResponse.json({ error: "billing_forbidden", notice: BILLING_FORBIDDEN_NOTICE }, { status: 403 });
   }
 
   if (!isStripeConfigured()) {

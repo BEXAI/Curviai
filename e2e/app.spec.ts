@@ -216,7 +216,7 @@ test("jobs api rejects unknown channels", async ({ request }) => {
   expect(response.status()).toBe(400);
 });
 
-test("upload sign validates and reports the R2 setup notice in demo mode", async ({ request }) => {
+test("upload sign validates and says uploads are off in demo mode", async ({ request }) => {
   const tooBig = await request.post("/api/uploads/sign", {
     data: { kind: "image", contentType: "image/jpeg", bytes: 26 * 1024 * 1024 },
   });
@@ -227,5 +227,15 @@ test("upload sign validates and reports the R2 setup notice in demo mode", async
   });
   expect(valid.status()).toBe(503);
   const body = await valid.json();
-  expect(String(body.notice)).toContain("R2");
+  expect(body.reason).toBe("uploads_not_configured");
+  expect(String(body.error)).toContain("demo server");
+});
+
+test("state changing api routes refuse a post from another site", async ({ request }) => {
+  const response = await request.post("/api/products", {
+    headers: { Origin: "https://evil.example" },
+    data: { title: "Cross site", mode: "listing" },
+  });
+  expect(response.status()).toBe(403);
+  expect((await response.json()).reason).toBe("cross_site");
 });
