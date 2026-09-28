@@ -1,12 +1,16 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createTestDb, readJournalEntries, type TestDb } from "@curvi/db/testing";
+import { sql } from "@curvi/db";
 import {
   compareSchema,
+  createHealthCache,
   journalMigrations,
+  readLatestAppliedMigration,
   runHealthCheck,
+  type HealthCache,
   type HealthCheckDeps,
   type MigrationMark,
-  type SchemaCache,
 } from "./service-health";
 
 const MIGRATIONS: MigrationMark[] = [
@@ -145,7 +149,7 @@ describe("runHealthCheck", () => {
   });
 
   it("remembers a current schema and stops querying it", async () => {
-    const cache: SchemaCache = { schemaCurrent: false, applied: null };
+    const cache: HealthCache = createHealthCache();
     let reads = 0;
     const counting = deps({
       cache,
@@ -162,7 +166,7 @@ describe("runHealthCheck", () => {
   });
 
   it("keeps rechecking a schema that is behind", async () => {
-    const cache: SchemaCache = { schemaCurrent: false, applied: null };
+    const cache: HealthCache = createHealthCache();
     let applied = 2000;
     const check = deps({ cache, latestAppliedMigration: async () => applied });
     expect((await runHealthCheck(check)).status).toBe(503);
@@ -182,16 +186,167 @@ describe("runHealthCheck", () => {
 
   it("reports pack runner load and returns 503 while draining", async () => {
     const accepting = await runHealthCheck(
-      deps({ runnerStats: () => ({ concurrency: 2, running: 1, waiting: 3, draining: false }) }),
+      deps({ runnerStats: () => ({ concurrency: 2, running: 1, waiting: 3, overdue: 1, draining: false }) }),
     );
     expect(accepting.status).toBe(200);
     expect(accepting.body.checks.packRunner).toBe("accepting");
-    expect(accepting.body.packs).toEqual({ running: 1, waiting: 3, concurrency: 2 });
+    expect(accepting.body.packs).toEqual({ running: 1, waiting: 3, overdue: 1, concurrency: 2 });
 
     const draining = await runHealthCheck(
-      deps({ runnerStats: () => ({ concurrency: 2, running: 1, waiting: 0, draining: true }) }),
+      deps({ runnerStats: () => ({ concurrency: 2, running: 1, waiting: 0, overdue: 0, draining: true }) }),
     );
     expect(draining.status).toBe(503);
     expect(draining.body.checks.packRunner).toBe("draining");
+  });
+});
+
+describe("runHealthCheck boot readiness gate", () => {
+  const down = async (): Promise<void> => {
+    throw new Error("connect ETIMEDOUT");
+  };
+
+  it("fails with 503 while the database has never answered on this instance", async () => {
+    const cache = createHealthCache();
+    const first = await runHealthCheck(deps({ cache, pingDatabase: down }));
+    expect(first.status).toBe(503);
+    expect(cache.passedOnce).toBe(false);
+    // Still gated on the next call: nothing has passed yet.
+    expect((await runHealthCheck(deps({ cache, pingDatabase: down }))).status).toBe(503);
+  });
+
+  it("answers 200 with ok false for a database failure once a whole check passed", async () => {
+    const cache = createHealthCache();
+    expect((await runHealthCheck(deps({ cache }))).status).toBe(200);
+    expect(cache.passedOnce).toBe(true);
+
+    const outage = await runHealthCheck(deps({ cache, pingDatabase: down }));
+    expect(outage.status).toBe(200);
+    expect(outage.body.ok).toBe(false);
+    expect(outage.body.checks).toMatchObject({ database: "failed", schema: "unknown" });
+
+    const slow = await runHealthCheck(
+      deps({ cache, timeoutMs: 20, pingDatabase: () => new Promise<void>(() => undefined) }),
+    );
+    expect(slow.status).toBe(200);
+    expect(slow.body.checks.database).toBe("failed");
+
+    const recovered = await runHealthCheck(deps({ cache }));
+    expect(recovered.status).toBe(200);
+    expect(recovered.body.ok).toBe(true);
+  });
+
+  it("keeps 503 for draining after the gate opened", async () => {
+    const cache = createHealthCache();
+    await runHealthCheck(deps({ cache }));
+    const draining = await runHealthCheck(
+      deps({
+        cache,
+        pingDatabase: down,
+        runnerStats: () => ({ concurrency: 1, running: 0, waiting: 0, overdue: 0, draining: true }),
+      }),
+    );
+    expect(draining.status).toBe(503);
+  });
+
+  it("keeps a deploy whose schema is behind gated, even through a database blip", async () => {
+    const cache = createHealthCache();
+    const behind = deps({ cache, latestAppliedMigration: async () => 2000 });
+    expect((await runHealthCheck(behind)).status).toBe(503);
+    // The database answered, but the instance never passed a whole check, so
+    // a failure now must not read as healthy and let Render route to it.
+    expect(cache.passedOnce).toBe(false);
+    expect((await runHealthCheck(deps({ cache, pingDatabase: down }))).status).toBe(503);
+    expect((await runHealthCheck(behind)).status).toBe(503);
+  });
+
+  it("does not open the gate while draining", async () => {
+    const cache = createHealthCache();
+    const draining = await runHealthCheck(
+      deps({ cache, runnerStats: () => ({ concurrency: 1, running: 0, waiting: 0, overdue: 0, draining: true }) }),
+    );
+    expect(draining.status).toBe(503);
+    expect(cache.passedOnce).toBe(false);
+  });
+
+  it("without a cache treats every call as the first after boot", async () => {
+    expect((await runHealthCheck(deps())).status).toBe(200);
+    expect((await runHealthCheck(deps({ pingDatabase: down }))).status).toBe(503);
+  });
+});
+
+describe("readLatestAppliedMigration on Postgres (PGlite)", () => {
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"];
+  let db: TestDb;
+  const shipped = journalMigrations();
+
+  beforeAll(async () => {
+    const created = await createTestDb();
+    client = created.client;
+    db = created.db;
+  });
+
+  afterAll(async () => {
+    await client.close();
+  });
+
+  function check(cache: HealthCache = createHealthCache()) {
+    return runHealthCheck(
+      deps({
+        cache,
+        migrations: shipped,
+        pingDatabase: async () => {
+          await db.execute(sql`select 1`);
+        },
+        latestAppliedMigration: () => readLatestAppliedMigration(db),
+      }),
+    );
+  }
+
+  async function recordMigration(mark: MigrationMark): Promise<void> {
+    await client.query("insert into drizzle.__drizzle_migrations (hash, created_at) values ($1, $2)", [
+      `sha256-of-${mark.tag}`,
+      mark.when,
+    ]);
+  }
+
+  it("throws while drizzle has never recorded a migration, which the check reports as unknown", async () => {
+    await expect(readLatestAppliedMigration(db)).rejects.toThrow(/__drizzle_migrations/);
+    const result = await check();
+    expect(result.status).toBe(200);
+    expect(result.body.checks).toMatchObject({ database: "ok", schema: "unknown" });
+  });
+
+  it("reads drizzle's bookkeeping table and compares it with the shipped journal", async () => {
+    // The same schema and table drizzle's migrator creates (drizzle-orm
+    // pg-core dialect migrate()): created_at holds each journal `when`.
+    await client.exec(`
+      create schema if not exists drizzle;
+      create table if not exists drizzle.__drizzle_migrations (
+        id serial primary key,
+        hash text not null,
+        created_at bigint
+      );
+    `);
+    expect(await readLatestAppliedMigration(db)).toBeNull();
+
+    // Every migration but the newest, as on a database one deploy behind.
+    expect(readJournalEntries().map((e) => e.tag)).toEqual(shipped.map((m) => m.tag));
+    for (const mark of shipped.slice(0, -1)) {
+      await recordMigration(mark);
+    }
+    const previous = shipped[shipped.length - 2];
+    expect(await readLatestAppliedMigration(db)).toBe(previous.when);
+    const behind = await check();
+    expect(behind.status).toBe(503);
+    expect(behind.body.checks.schema).toBe("behind");
+    expect(behind.body.migrations.applied).toBe(previous.tag);
+
+    const newest = shipped[shipped.length - 1];
+    await recordMigration(newest);
+    expect(await readLatestAppliedMigration(db)).toBe(newest.when);
+    const current = await check();
+    expect(current.status).toBe(200);
+    expect(current.body.checks).toMatchObject({ database: "ok", schema: "current" });
+    expect(current.body.migrations).toEqual({ expected: newest.tag, applied: newest.tag });
   });
 });

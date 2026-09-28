@@ -248,15 +248,43 @@ export function clientIp(headers: Headers): string {
 }
 
 /**
+ * Paths no limiter may ever answer with 429. Render polls /api/health every
+ * few seconds and counts anything but a 2xx or 3xx as a failure: after 15
+ * seconds it stops routing traffic and after 60 seconds it restarts the
+ * instance. The health route calls no limiter and the middleware does not
+ * match it; this list keeps it safe if either ever changes.
+ */
+export const RATE_LIMIT_EXEMPT_PATHS: readonly string[] = ["/api/health"];
+
+/** True for a path on RATE_LIMIT_EXEMPT_PATHS, with or without a trailing slash. */
+export function isRateLimitExempt(pathname: string): boolean {
+  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  return RATE_LIMIT_EXEMPT_PATHS.includes(normalized);
+}
+
+function requestPathname(request: Request): string | null {
+  try {
+    return new URL(request.url).pathname;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The IP check. Returns a 429 response when over the limit, else null. With
  * no client address at all it does nothing: one shared "unknown" bucket would
  * let a single caller lock everyone out, and the per user limit still holds.
+ * Exempt paths (the health check) are never counted.
  */
 export async function limitByIp(
   request: Request,
   policy: RateLimitPolicyName,
   options: { store?: RateLimitStore; nowMs?: number } = {},
 ): Promise<NextResponse | null> {
+  const pathname = requestPathname(request);
+  if (pathname !== null && isRateLimitExempt(pathname)) {
+    return null;
+  }
   const ip = clientIp(request.headers);
   if (ip === "unknown") {
     return null;

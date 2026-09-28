@@ -13,14 +13,21 @@ services:
     region: oregon
     # The plan is the founder's call (it costs money). Free instances spin down
     # after 15 idle minutes, run on 0.1 CPU and 512 MB, and Render says not to
-    # use them in production. See docs/LAUNCH_CHECKLIST.md step 1.
+    # use them in production. See docs/LAUNCH_CHECKLIST.md, Render plan upgrade.
     plan: free
     # && so a failed install stops the build instead of building on a broken tree.
     buildCommand: pnpm install --frozen-lockfile && pnpm run build
     startCommand: pnpm run start
     # Render routes traffic to a new deploy only once this returns 2xx, and
-    # restarts an instance that fails it for 60 seconds. It returns 503 when the
-    # database is down or behind this build's migrations, or while draining.
+    # restarts an instance that fails it for 60 seconds. It returns 503 when
+    # the database fails before the instance has passed a whole check once
+    # (boot readiness), while the database is behind this build's migrations,
+    # and while draining. After that first pass, a database failure answers
+    # 200 with "ok":false, so a database blip never restarts a running
+    # instance; the uptime monitor alerts on the body.
+    # The hand made dashboard service does not follow this file: set the path
+    # in the dashboard only after batch 1 is live (docs/LAUNCH_CHECKLIST.md,
+    # Render health check path), since older code has no /api/health.
     healthCheckPath: /api/health
     # Seconds between SIGTERM and SIGKILL (Render default 30, max 300). The
     # inline pack runner drains within CURVI_SHUTDOWN_GRACE_MS (default 20000)
@@ -40,13 +47,33 @@ services:
       # 512 MB free instance. Raise it with the plan (docs/LAUNCH_CHECKLIST.md).
       - key: CURVI_INLINE_PACK_CONCURRENCY
         value: "1"
-      # Optional: how long a shutdown waits for running packs before settling
-      # them. Only raise it (for example to 240000) once maxShutdownDelaySeconds
-      # is confirmed at 300 on the live service, or SIGKILL lands first.
-      # - key: CURVI_SHUTDOWN_GRACE_MS
-      #   value: "240000"
       # Values are set in the Render dashboard, never committed. sync: false makes
-      # Render prompt for them on Blueprint sync.
+      # Render prompt for them when a Blueprint first creates the service; it
+      # ignores them for an existing service. Every variable below is described
+      # in docs/LAUNCH_CHECKLIST.md, Environment variables added in batch 1.
+      # Optional: how long a shutdown waits for running packs before settling
+      # them (default 20000). Only raise it (for example to 240000) once
+      # maxShutdownDelaySeconds is confirmed at 300 on the live service, or
+      # SIGKILL lands first.
+      - key: CURVI_SHUTDOWN_GRACE_MS
+        sync: false
+      # Optional: wall clock cap per inline pack run in milliseconds (default
+      # 1500000, 25 minutes; at most 1740000, below the 30 minute stale run
+      # reconciler). A pack past it is settled and its slot freed.
+      - key: CURVI_INLINE_PACK_MAX_RUN_MS
+        sync: false
+      # Optional: 1 turns on Stripe Tax in Checkout, only once tax registrations
+      # exist in Stripe (docs/STRIPE_SETUP.md).
+      - key: STRIPE_TAX_ENABLED
+        sync: false
+      # Where the daily provider spend alert and hard stop notice go (needs
+      # RESEND_API_KEY). Unset: the alert only reaches the server log.
+      - key: FOUNDER_ALERT_EMAIL
+        sync: false
+      # Sender for those alerts, on a domain verified in Resend. Default
+      # "Curvi Alerts <alerts@curvi.ai>", which needs curvi.ai verified.
+      - key: FOUNDER_ALERT_FROM
+        sync: false
       - key: NEXT_PUBLIC_SUPABASE_URL
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY

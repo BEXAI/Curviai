@@ -20,7 +20,7 @@ beforeEach(() => {
   for (const name of [...Object.keys(DB_ENV), "RENDER_GIT_COMMIT", ...configNames]) {
     vi.stubEnv(name, "");
   }
-  (globalThis as { __curviHealthSchemaCache?: unknown }).__curviHealthSchemaCache = undefined;
+  (globalThis as { __curviHealthCache?: unknown }).__curviHealthCache = undefined;
 });
 
 afterEach(() => {
@@ -71,6 +71,21 @@ describe("GET /api/health", () => {
     const text = await res.text();
     expect(JSON.parse(text)).toMatchObject({ ok: false, checks: { database: "failed" } });
     expect(text).not.toContain("password");
+  });
+
+  it("after a whole check passed, reports a database failure in the body but answers 200", async () => {
+    for (const [name, value] of Object.entries(DB_ENV)) {
+      vi.stubEnv(name, value);
+    }
+    fakeDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]).mockResolvedValueOnce([{ latest: "9999999999999" }]);
+    expect((await GET()).status).toBe(200);
+
+    // A later outage: Render must not restart the instance over it (that
+    // would fail running packs), but monitors still see ok false.
+    fakeDb.execute.mockRejectedValue(new Error("connect ETIMEDOUT"));
+    const res = await GET();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: false, checks: { database: "failed", schema: "unknown" } });
   });
 
   it("returns 503 when the database is behind this build's migrations", async () => {
