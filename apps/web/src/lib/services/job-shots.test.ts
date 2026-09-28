@@ -95,4 +95,32 @@ describe("buildShotViews", () => {
     const views = buildShotViews([step({ shotId: "s01", status: "done", provider: "worker" })], []);
     expect(views[0].providerStage).toBe("");
   });
+
+  it("labels a video shot skipped for the plan as Coming soon, since no plan delivers it yet", () => {
+    // Rows as DbJobStore.savePlan writes them: stage is the shot type.
+    const views = buildShotViews(
+      [
+        step({
+          shotId: "skipped_01_video_hero_6s",
+          stage: "video_hero_6s",
+          provider: "planner",
+          status: "skipped",
+          error: "not included in this plan tier",
+        }),
+        step({
+          shotId: "skipped_02_in_the_box",
+          stage: "in_the_box",
+          provider: "planner",
+          status: "skipped",
+          error: "not included in this plan tier",
+        }),
+      ],
+      [],
+    );
+    expect(views.map((v) => [v.shotType, v.label])).toEqual([
+      ["video_hero_6s", "Coming soon"],
+      ["in_the_box", "Not in your plan"],
+    ]);
+    expect(views[0].note).not.toContain("higher plan");
+  });
 });

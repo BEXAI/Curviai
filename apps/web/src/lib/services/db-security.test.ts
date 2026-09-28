@@ -161,6 +161,26 @@ describe("DbService.saveBrandKit (Update.md 4.2)", () => {
     expect((await kitRow())?.logoR2Key).toBeNull();
   });
 
+  it("asks a Free workspace to upgrade instead of saving a kit its plan does not include", async () => {
+    const [free] = await db.insert(workspaces).values({ name: "Free shop", plan: "free" }).returning();
+    await db.insert(members).values({ workspaceId: free.id, userId: OWNER, role: "owner" });
+    const result = await service().saveBrandKit(free.id, kit());
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("upgrade_required");
+    expect(result.notice).toBe("Brand kits come with the Starter plan and above. Upgrade on the billing page to save one.");
+    expect(await db.select().from(brandKits).where(eq(brandKits.workspaceId, free.id))).toHaveLength(0);
+  });
+
+  it("keeps a downgraded workspace's kit as it is and asks for an upgrade to change it", async () => {
+    const [downgraded] = await db.insert(workspaces).values({ name: "Was Starter", plan: "free" }).returning();
+    await db.insert(members).values({ workspaceId: downgraded.id, userId: OWNER, role: "owner" });
+    await db.insert(brandKits).values({ workspaceId: downgraded.id, name: "Old kit", colors: ["#111111"] });
+    const result = await service().saveBrandKit(downgraded.id, kit({ name: "New name" }));
+    expect(result).toMatchObject({ ok: false, reason: "upgrade_required" });
+    const [row] = await db.select().from(brandKits).where(eq(brandKits.workspaceId, downgraded.id));
+    expect(row.name).toBe("Old kit");
+  });
+
   it("returns an own workspace logo key and normalizes an unknown preset", async () => {
     await db
       .update(brandKits)

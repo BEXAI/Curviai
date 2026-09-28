@@ -5,10 +5,14 @@
  * app. A feature that is not live is refused for every tier with a Coming
  * soon message, so nobody pays for or waits on output that cannot ship
  * (Phase 10 decision 1). A live feature outside the plan asks for an upgrade.
+ *
+ * The new pack form reads the same decisions through channelAvailability,
+ * so it never offers a channel that createJob would refuse.
  */
 
 import {
   channelFamilyFeatures,
+  entitlementsFor,
   isEntitled,
   isFeatureLive,
   lowestTierWith,
@@ -29,6 +33,8 @@ export type EntitlementCheck =
       ok: false;
       reason: "feature_unavailable" | "upgrade_required";
       feature: TierFeature;
+      /** The cheapest plan that includes the feature, when one does. */
+      upgradeTo: TierKey | null;
       message: string;
     };
 
@@ -40,7 +46,8 @@ function familyOf(channel: string): string {
   return channel.split(".")[0] ?? channel;
 }
 
-function tierName(key: TierKey): string {
+/** "growth" reads as "Growth" in copy. */
+export function tierName(key: TierKey): string {
   return key.charAt(0).toUpperCase() + key.slice(1);
 }
 
@@ -67,6 +74,7 @@ export function checkChannelEntitlements(
         ok: false,
         reason: "feature_unavailable",
         feature: features[0],
+        upgradeTo: null,
         message: `${name} is coming soon, so ${name.toLowerCase()} channels cannot be added to a pack yet. Remove them to start this pack.`,
       };
     }
@@ -79,6 +87,7 @@ export function checkChannelEntitlements(
         ok: false,
         reason: "upgrade_required",
         feature: live[0],
+        upgradeTo: cheapest?.key ?? null,
         message: cheapest
           ? `${name} comes with the ${tierName(cheapest.key)} plan and above. Upgrade, or remove the ${name.toLowerCase()} channels to start this pack.`
           : `${name} is not part of your plan. Remove the ${name.toLowerCase()} channels to start this pack.`,
@@ -86,4 +95,61 @@ export function checkChannelEntitlements(
     }
   }
   return { ok: true };
+}
+
+/** Whether the new pack form may offer a channel, and why not. */
+export type ChannelAvailability =
+  | { status: "available" }
+  /** The channel's feature does not ship yet on any plan. */
+  | { status: "coming_soon" }
+  /** The feature ships, but not on this plan; upgradeTo is the cheapest plan with it. */
+  | { status: "upgrade_required"; upgradeTo: TierKey | null };
+
+/**
+ * One channel judged exactly as createJob judges a pack: a channel is only
+ * offered when a pack holding it would pass checkChannelEntitlements.
+ */
+export function channelAvailability(
+  channel: string,
+  tier: TierKey,
+  isLive: (feature: TierFeature) => boolean = isFeatureLive,
+): ChannelAvailability {
+  const check = checkChannelEntitlements([channel], tier, isLive);
+  if (check.ok) {
+    return { status: "available" };
+  }
+  return check.reason === "feature_unavailable"
+    ? { status: "coming_soon" }
+    : { status: "upgrade_required", upgradeTo: check.upgradeTo };
+}
+
+export type BrandKitCheck = { ok: true } | { ok: false; reason: "upgrade_required"; message: string };
+
+/**
+ * Brand kits a workspace may hold come from the seed (entitlementsFor(tier)
+ * .brandKits: none on Free). Saving changes to a kit the workspace already
+ * holds needs a plan with at least one kit; creating one needs room under
+ * the plan's count.
+ */
+export function checkBrandKitEntitlement(tier: TierKey, kitsHeld: number, creating: boolean): BrandKitCheck {
+  const allowed = entitlementsFor(tier).brandKits;
+  const fits = creating ? kitsHeld < allowed : allowed > 0;
+  if (fits) {
+    return { ok: true };
+  }
+  if (allowed === 0) {
+    const cheapest = tiers.find((t) => entitlementsFor(t.key).brandKits > 0);
+    return {
+      ok: false,
+      reason: "upgrade_required",
+      message: cheapest
+        ? `Brand kits come with the ${tierName(cheapest.key)} plan and above. Upgrade on the billing page to save one.`
+        : "Brand kits are not part of your plan.",
+    };
+  }
+  return {
+    ok: false,
+    reason: "upgrade_required",
+    message: `Your plan includes ${allowed} brand ${allowed === 1 ? "kit" : "kits"} and this workspace already has ${allowed === 1 ? "it" : "them"}. Edit the kit you have instead.`,
+  };
 }

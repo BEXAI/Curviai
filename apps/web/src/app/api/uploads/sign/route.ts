@@ -13,6 +13,7 @@ import { isR2Configured } from "@/lib/env";
 import { presignSourceUpload } from "@/lib/r2";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
 import { getServices } from "@/lib/services";
+import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { validateUploadRequest } from "@/lib/upload-validation";
 
 export const dynamic = "force-dynamic";
@@ -59,10 +60,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const services = getServices();
-  const workspace = await services.ensureWorkspace();
-  if (!workspace) {
-    return NextResponse.json({ error: "Sign in to upload." }, { status: 401 });
+  const resolved = await resolveWorkspace(services, "Sign in to upload.", { ensure: true });
+  if ("response" in resolved) {
+    return resolved.response;
   }
+  const { workspace } = resolved;
   if (workspace.role === "client") {
     return NextResponse.json(
       { error: "Client seats can review assets but cannot upload files." },

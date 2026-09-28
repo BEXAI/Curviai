@@ -8,8 +8,10 @@ import { createTestDb, type TestDb } from "./test-helpers";
 import { products, shareLinks, sourceMedia, workspaces } from "./schema";
 
 // Migration 0013 (Update.md 6.3): one source_media row per uploaded object.
-// The dedupe step must keep the earliest row of each group, keep its links,
-// and leave other workspaces and distinct keys untouched.
+// The dedupe step keeps the earliest row of a group that sits on one
+// product, and the latest row of a group that spans products (the resubmit
+// pattern, so the photo stays on the product the pack ran for). It keeps
+// every link and leaves other workspaces and distinct keys untouched.
 
 const MIGRATION = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -81,7 +83,7 @@ describe("source_media unique (workspace_id, r2_key)", () => {
 });
 
 describe("0013 dedupe of rows that already exist", () => {
-  it("keeps the earliest row per object, repoints share links and deletes only duplicates", async () => {
+  it("keeps the right row per object, repoints share links and deletes only duplicates", async () => {
     // Recreate the pre 0013 state: drop the index, then insert duplicates.
     // Production rows written before 0011 were never checked against its
     // NOT VALID prefix constraint, so the fixture drops it while inserting
@@ -89,8 +91,10 @@ describe("0013 dedupe of rows that already exist", () => {
     await client.exec(`drop index "source_media_workspace_r2_key_uq"`);
     await client.exec(`alter table source_media drop constraint source_media_r2_key_workspace_prefix`);
 
+    // The old flow saved the upload under a wrongly defaulted product (twice,
+    // with a retry), then the seller resubmitted it as another product.
     const dupKey = key(wsA, "dup-photo");
-    const [kept] = await db
+    const [first] = await db
       .insert(sourceMedia)
       .values({
         workspaceId: wsA,
@@ -114,7 +118,7 @@ describe("0013 dedupe of rows that already exist", () => {
         createdAt: new Date("2026-09-02T00:00:00Z"),
       })
       .returning();
-    const [third] = await db
+    const [latest] = await db
       .insert(sourceMedia)
       .values({
         workspaceId: wsA,
@@ -123,6 +127,32 @@ describe("0013 dedupe of rows that already exist", () => {
         kind: "image",
         sha256: "x",
         createdAt: new Date("2026-09-03T00:00:00Z"),
+      })
+      .returning();
+    // A group on one product: retries of one pack form keep the earliest.
+    const sameKey = key(wsA, "same-product");
+    const [sameFirst] = await db
+      .insert(sourceMedia)
+      .values({
+        workspaceId: wsA,
+        productId: productA,
+        r2Key: sameKey,
+        kind: "image",
+        sha256: "s",
+        createdAt: new Date("2026-09-01T00:00:00Z"),
+      })
+      .returning();
+    const [sameRetry] = await db
+      .insert(sourceMedia)
+      .values({
+        workspaceId: wsA,
+        productId: productA,
+        r2Key: sameKey,
+        kind: "image",
+        sha256: "s",
+        width: 1200,
+        height: 900,
+        createdAt: new Date("2026-09-02T00:00:00Z"),
       })
       .returning();
     // A distinct object and a same named object in another workspace stay.
@@ -164,9 +194,10 @@ describe("0013 dedupe of rows that already exist", () => {
     );
 
     await db.insert(shareLinks).values([
+      { slug: "before-first", workspaceId: wsA, beforeMediaId: first.id },
       { slug: "before-second", workspaceId: wsA, beforeMediaId: second.id },
-      { slug: "before-third", workspaceId: wsA, beforeMediaId: third.id },
-      { slug: "before-kept", workspaceId: wsA, beforeMediaId: kept.id },
+      { slug: "before-latest", workspaceId: wsA, beforeMediaId: latest.id },
+      { slug: "before-same-retry", workspaceId: wsA, beforeMediaId: sameRetry.id },
     ]);
 
     await client.exec(readFileSync(MIGRATION, "utf8"));
@@ -175,27 +206,48 @@ describe("0013 dedupe of rows that already exist", () => {
       .select()
       .from(sourceMedia)
       .where(and(eq(sourceMedia.workspaceId, wsA), eq(sourceMedia.r2Key, dupKey)));
+    // The group spanning two products keeps its latest row, so the photo
+    // stays on the product it was resubmitted for.
     expect(group).toHaveLength(1);
-    expect(group[0].id).toBe(kept.id);
-    expect(group[0].productId).toBe(productA);
+    expect(group[0].id).toBe(latest.id);
+    expect(group[0].productId).toBe(productA2);
     // Measurements the kept row lacked are carried over from a duplicate.
     expect(group[0].width).toBe(2000);
     expect(group[0].height).toBe(1500);
 
+    // The group on one product keeps its earliest row, with the retry's
+    // measurements.
+    const same = await db
+      .select()
+      .from(sourceMedia)
+      .where(and(eq(sourceMedia.workspaceId, wsA), eq(sourceMedia.r2Key, sameKey)));
+    expect(same).toHaveLength(1);
+    expect(same[0].id).toBe(sameFirst.id);
+    expect(same[0].productId).toBe(productA);
+    expect(same[0].width).toBe(1200);
+    expect(same[0].height).toBe(900);
+
     const links = await db.select().from(shareLinks).where(eq(shareLinks.workspaceId, wsA));
-    expect(links).toHaveLength(3);
-    for (const link of links) {
-      expect(link.beforeMediaId).toBe(kept.id);
-    }
+    expect(links).toHaveLength(4);
+    const linkTarget = new Map(links.map((link) => [link.slug, link.beforeMediaId]));
+    expect(linkTarget.get("before-first")).toBe(latest.id);
+    expect(linkTarget.get("before-second")).toBe(latest.id);
+    expect(linkTarget.get("before-latest")).toBe(latest.id);
+    expect(linkTarget.get("before-same-retry")).toBe(sameFirst.id);
 
     const survivors = await db.select().from(sourceMedia);
     const ids = new Set(survivors.map((row) => row.id));
     expect(ids.has(distinct.id)).toBe(true);
     expect(ids.has(otherWs.id)).toBe(true);
+    expect(ids.has(first.id)).toBe(false);
     expect(ids.has(second.id)).toBe(false);
-    expect(ids.has(third.id)).toBe(false);
+    expect(ids.has(sameRetry.id)).toBe(false);
+    // The legacy cross tenant pair sits on one product, so its earliest row
+    // stays, skipped by the measurement carry over because its key is
+    // outside its workspace prefix, and its duplicate goes.
     expect(ids.has(legacyKept.id)).toBe(true);
     expect(ids.has(legacyDupe.id)).toBe(false);
+    expect(survivors.find((row) => row.id === legacyKept.id)?.width).toBeNull();
 
     // The index is back and enforces uniqueness again.
     await expect(

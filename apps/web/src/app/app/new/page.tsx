@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
-import { listSpecs, isMarketplaceSpec } from "@curvi/specs";
-import type { TierKey } from "@curvi/pipeline/seed";
-import { tiers } from "@curvi/pipeline/seed";
 import { NewPackForm } from "@/components/app/new-pack-form";
+import { tierKeyOf } from "@/lib/entitlements";
 import { getServices } from "@/lib/services";
+import { newPackChannelOptions } from "./channel-options";
 
 export const metadata: Metadata = { title: "New pack" };
 export const dynamic = "force-dynamic";
@@ -26,11 +25,10 @@ export default async function NewPackPage({
   const params = await searchParams;
   const requestedProduct = typeof params.product === "string" ? params.product : null;
   const products = await services.listProducts(workspace.id);
-  const channels = listSpecs().map((spec) => ({
-    id: spec.id,
-    marketplace: isMarketplaceSpec(spec.id),
-  }));
-  const tier: TierKey = tiers.find((t) => t.key === workspace.plan)?.key ?? "free";
+  const tier = tierKeyOf(workspace.plan);
+  // Channels whose feature is not live, or not in this plan, are shown but
+  // cannot be picked, matching what createJob accepts.
+  const channels = newPackChannelOptions(tier);
 
   return (
     <div>

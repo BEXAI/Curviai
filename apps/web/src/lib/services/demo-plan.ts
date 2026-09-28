@@ -7,7 +7,7 @@
  */
 
 import { Shot, ShotList } from "@curvi/pipeline/schemas";
-import { creditCosts, type TierKey } from "@curvi/pipeline/seed";
+import { creditCosts, isEntitled, isShotMethodDeliverable, type TierKey } from "@curvi/pipeline/seed";
 import { isMarketplaceSpec } from "@curvi/specs";
 
 function hasFamily(channels: string[], family: string): boolean {
@@ -79,13 +79,19 @@ export function planDemoShots(
   push("social_4x5", "template", ["meta.feed_4x5"], creditCosts.deterministic);
   push("social_9x16", "template", ["meta.story_9x16"], creditCosts.deterministic);
 
-  const generativeVideoTiers: TierKey[] = ["growth", "pro", "agency"];
-  if (generativeVideoTiers.includes(tier)) {
+  // Video and avatar shots follow the same seed gates as production: the
+  // plan must include the feature (isEntitled, as the planner checks) and
+  // the method must ship today (isShotMethodDeliverable, the list the db
+  // runtime skips and pack estimates leave out). While video is coming soon
+  // no demo pack plans or holds credits for it.
+  const videoShips = isShotMethodDeliverable("video_generate");
+  if (videoShips && isEntitled(tier, "generativeVideo")) {
     push("video_hero_6s", "video_generate", ["video.social_9x16"], 6 * creditCosts.generativeVideoPerSecondLite);
   }
-  const proTiers: TierKey[] = ["pro", "agency"];
-  if (proTiers.includes(tier)) {
+  if (videoShips && isEntitled(tier, "lifestyleVideo")) {
     push("video_lifestyle_15s", "video_generate", ["video.social_9x16"], 15 * creditCosts.generativeVideoPerSecondLite);
+  }
+  if (isShotMethodDeliverable("avatar") && isEntitled(tier, "ugcAds")) {
     push("video_ugc_hook", "avatar", ["video.social_9x16"], creditCosts.ugcAvatarAd);
   }
 

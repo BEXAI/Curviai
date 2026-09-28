@@ -7,14 +7,17 @@ import {
   jobSteps,
   members,
   packFiles,
+  platformSettings,
   products,
+  signupGrants,
   sourceMedia,
   workspaces,
   type JobStatus,
   type MemberRole,
 } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
-import { eq, loadChannelSpecs, type Db } from "@curvi/db";
+import { and, eq, loadChannelSpecs, type Db } from "@curvi/db";
+import { tierByKey } from "@curvi/pipeline/seed";
 
 const enqueued = vi.hoisted(() => [] as Array<{ jobId: string; images: Array<{ mediaId: string }> }>);
 vi.mock("@/lib/jobs/enqueue", () => ({
@@ -65,7 +68,9 @@ function service(user = userId): DbService {
 let userCounter = 100;
 
 /** A fresh workspace with its own member (so getCurrentWorkspace finds it),
- * a product and a credit grant. */
+ * a product and a credit grant. The member's signup grant is settled, as
+ * migration 0012 records for every existing member, so reads do not pay the
+ * free grant on top of the fixture's credits. */
 async function makeWorkspace(
   credits: number,
   role: MemberRole = "owner",
@@ -74,6 +79,7 @@ async function makeWorkspace(
   const user = `00000000-0000-4000-8000-${String(userCounter).padStart(12, "0")}`;
   const [w] = await db.insert(workspaces).values({ name: `WS ${userCounter}`, plan: "starter" }).returning();
   await db.insert(members).values({ workspaceId: w.id, userId: user, role });
+  await db.insert(signupGrants).values({ userId: user, workspaceId: w.id, credits: 0 });
   const [p] = await db.insert(products).values({ workspaceId: w.id, title: "Kettle", mode: "listing" }).returning();
   if (credits > 0) {
     await db.insert(creditLedger).values({ workspaceId: w.id, delta: credits, reason: "grant", source: "system" });
@@ -745,5 +751,102 @@ describe("workspace provisioning failures (Update.md 6.8)", () => {
     } finally {
       await client.exec("alter function provision_workspace_off(uuid, text, numeric) rename to provision_workspace");
     }
+  });
+});
+
+describe("signup grant settled on the first read (migration 0012 follow up)", () => {
+  const FREE_CREDITS = tierByKey("free").creditsOnce;
+
+  /** A user the auth trigger bootstrapped: workspace and owner membership,
+   * with the grant attempted through bootstrap_workspace, which passes no
+   * fallback amount. */
+  async function bootstrappedUser(): Promise<{ user: string; ws: string }> {
+    userCounter += 1;
+    const user = `00000000-0000-4000-8000-${String(userCounter).padStart(12, "0")}`;
+    const result = await client.query<{ bootstrap_workspace: string }>("select bootstrap_workspace($1, $2)", [
+      user,
+      `seller${userCounter}@example.com`,
+    ]);
+    return { user, ws: result.rows[0].bootstrap_workspace };
+  }
+
+  async function grantRows(workspaceId: string) {
+    return db
+      .select()
+      .from(creditLedger)
+      .where(and(eq(creditLedger.workspaceId, workspaceId), eq(creditLedger.reason, "grant")));
+  }
+
+  beforeEach(async () => {
+    // pnpm db:seed has not run: no free_signup_credits setting.
+    await db.delete(platformSettings);
+  });
+
+  it("pays the seed grant to a user bootstrapped before pnpm db:seed, exactly once", async () => {
+    const { user, ws: own } = await bootstrappedUser();
+    // The trigger path could not pay: nothing settled, nothing granted.
+    expect(await db.select().from(signupGrants).where(eq(signupGrants.userId, user))).toHaveLength(0);
+    expect(await balanceOf(own)).toBe(0);
+
+    const first = await service(user).getCurrentWorkspace();
+    expect(first?.id).toBe(own);
+    expect(first?.creditBalance).toBe(FREE_CREDITS);
+    const [grant] = await db.select().from(signupGrants).where(eq(signupGrants.userId, user));
+    expect(grant).toMatchObject({ workspaceId: own, credits: FREE_CREDITS, withheldReason: null });
+
+    const again = await service(user).getCurrentWorkspace();
+    expect(again?.creditBalance).toBe(FREE_CREDITS);
+    const grants = await grantRows(own);
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toMatchObject({ source: "signup", delta: FREE_CREDITS });
+  });
+
+  it("pays the seeded platform setting once it exists, not the app's fallback", async () => {
+    await db.insert(platformSettings).values({ key: "free_signup_credits", value: 12 });
+    const { user, ws: own } = await bootstrappedUser();
+    // With the setting seeded the trigger path pays; the read adds nothing.
+    const summary = await service(user).getCurrentWorkspace();
+    expect(summary?.creditBalance).toBe(12);
+    expect(await grantRows(own)).toHaveLength(1);
+  });
+
+  it("retries a grant that failed on the next read, and never fails the page for it", async () => {
+    const { user, ws: own } = await bootstrappedUser();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    await client.exec("alter function grant_signup_credits(uuid, numeric) rename to grant_signup_credits_off");
+    try {
+      const summary = await service(user).getCurrentWorkspace();
+      expect(summary?.id).toBe(own);
+      expect(summary?.creditBalance).toBe(0);
+      expect(String(errors.mock.calls[0]?.[0])).toContain("could not settle the signup grant");
+    } finally {
+      await client.exec("alter function grant_signup_credits_off(uuid, numeric) rename to grant_signup_credits");
+      errors.mockRestore();
+    }
+    const retried = await service(user).getCurrentWorkspace();
+    expect(retried?.creditBalance).toBe(FREE_CREDITS);
+    expect(await grantRows(own)).toHaveLength(1);
+  });
+
+  it("leaves a settled grant alone, including one withheld for a reused inbox", async () => {
+    const { user, ws: own } = await bootstrappedUser();
+    await db
+      .insert(signupGrants)
+      .values({ userId: user, workspaceId: own, credits: 0, withheldReason: "email_already_granted" });
+    const summary = await service(user).getCurrentWorkspace();
+    expect(summary?.creditBalance).toBe(0);
+    expect(await grantRows(own)).toHaveLength(0);
+  });
+
+  it("pays nothing to a member who owns no workspace", async () => {
+    // An invited editor: the grant only ever lands in the user's own workspace.
+    const owner = await makeWorkspace(0);
+    userCounter += 1;
+    const editor = `00000000-0000-4000-8000-${String(userCounter).padStart(12, "0")}`;
+    await db.insert(members).values({ workspaceId: owner.id, userId: editor, role: "editor" });
+    const summary = await service(editor).getCurrentWorkspace();
+    expect(summary?.id).toBe(owner.id);
+    expect(summary?.creditBalance).toBe(0);
+    expect(await db.select().from(signupGrants).where(eq(signupGrants.userId, editor))).toHaveLength(0);
   });
 });

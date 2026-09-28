@@ -5,7 +5,9 @@
  * worker has no images and Listing Mode refuses to start. The product id must
  * be a uuid (Update.md 4.7), the key must sit in this workspace's source
  * prefix, client seats cannot register uploads, and the route is rate limited
- * by IP and by user.
+ * by IP and by user. Refusals carry a typed reason: an unknown product is a
+ * 404, a key from another workspace or a client seat a 403, a photo saved to
+ * another product a 409, and a workspace that could not be set up a 503.
  */
 
 import { NextResponse } from "next/server";
@@ -13,6 +15,8 @@ import { z } from "zod";
 import { isWorkspaceSourceKey } from "@/lib/r2";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
 import { getServices } from "@/lib/services";
+import type { SaveResult } from "@/lib/services/types";
+import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { uuidSchema } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -48,15 +52,22 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const services = getServices();
-  const workspace = await services.getCurrentWorkspace();
-  if (!workspace) {
-    return NextResponse.json({ error: "Sign in to upload." }, { status: 401 });
+  const resolved = await resolveWorkspace(services, "Sign in to upload.");
+  if ("response" in resolved) {
+    return resolved.response;
   }
+  const { workspace } = resolved;
   if (workspace.role === "client") {
-    return NextResponse.json({ error: "Client seats cannot upload product photos." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Client seats cannot upload product photos.", reason: "forbidden" },
+      { status: 403 },
+    );
   }
   if (!isWorkspaceSourceKey(workspace.id, parsed.data.key)) {
-    return NextResponse.json({ error: "That upload does not belong to this workspace." }, { status: 403 });
+    return NextResponse.json(
+      { error: "That upload does not belong to this workspace.", reason: "foreign_key" },
+      { status: 403 },
+    );
   }
 
   const userLimited = await limitByUser("uploads.complete", await userRateLimitSubject(workspace.id));
@@ -74,16 +85,18 @@ export async function POST(request: Request): Promise<NextResponse> {
     height: parsed.data.height,
   });
   if (!result.ok) {
-    // Typed reasons get their real status (Update.md 6.8).
-    const status =
-      result.reason === "forbidden" || result.reason === "foreign_key"
-        ? 403
-        : result.reason === "unknown_product"
-          ? 404
-          : result.reason === "conflict"
-            ? 409
-            : 400;
-    return NextResponse.json({ error: result.notice }, { status });
+    // Typed reasons get their real status (Update.md 6.8), and the reason
+    // rides along so the client can tell them apart.
+    const status = result.reason ? REFUSED_STATUS[result.reason] : 400;
+    return NextResponse.json({ error: result.notice, reason: result.reason ?? "invalid" }, { status });
   }
   return NextResponse.json({ ok: true, notice: result.notice });
 }
+
+const REFUSED_STATUS: Record<NonNullable<SaveResult["reason"]>, number> = {
+  forbidden: 403,
+  foreign_key: 403,
+  unknown_product: 404,
+  conflict: 409,
+  upgrade_required: 402,
+};

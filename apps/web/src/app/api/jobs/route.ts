@@ -12,9 +12,13 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { hasSpec } from "@curvi/specs";
+import { InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { isWorkspaceSourceKey } from "@/lib/r2";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
 import { getServices } from "@/lib/services";
+import { RESTARTING_MESSAGE } from "@/lib/services/errors";
+import type { CreateJobResult } from "@/lib/services/types";
+import { RETRY_AFTER_SECONDS, resolveWorkspace } from "@/lib/services/workspace-response";
 import { productIdSchema } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -79,10 +83,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const services = getServices();
-  const workspace = await services.ensureWorkspace();
-  if (!workspace) {
-    return NextResponse.json({ error: "Sign in to create a pack." }, { status: 401 });
+  // A signed in user whose workspace could not be set up gets a retryable
+  // 503, never a "Sign in" 401 (Update.md 6.8).
+  const resolved = await resolveWorkspace(services, "Sign in to create a pack.", { ensure: true });
+  if ("response" in resolved) {
+    return resolved.response;
   }
+  const { workspace } = resolved;
 
   const userLimited = await limitByUser("jobs.create", await userRateLimitSubject(workspace.id));
   if (userLimited) {
@@ -97,10 +104,23 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "That upload does not belong to this workspace." }, { status: 403 });
   }
 
-  const result = await services.createJob(workspace.id, {
-    ...parsed.data,
-    idempotencyKey,
-  });
+  let result: CreateJobResult;
+  try {
+    result = await services.createJob(workspace.id, {
+      ...parsed.data,
+      idempotencyKey,
+    });
+  } catch (err) {
+    // createJob answers a draining instance itself; this covers any path
+    // where the refusal still escapes, so it is a retryable 503, not a 500.
+    if (err instanceof InlineRunnerClosedError) {
+      return NextResponse.json(
+        { error: RESTARTING_MESSAGE, reason: "unavailable" },
+        { status: 503, headers: { "Retry-After": RETRY_AFTER_SECONDS } },
+      );
+    }
+    throw err;
+  }
 
   switch (result.outcome) {
     case "created":
@@ -115,11 +135,13 @@ export async function POST(request: Request): Promise<NextResponse> {
         },
         { status: 409 },
       );
-    case "rejected":
+    case "rejected": {
+      const status = REJECTED_STATUS[result.reason];
       return NextResponse.json(
         { error: result.message, reason: result.reason },
-        { status: REJECTED_STATUS[result.reason] },
+        status === 503 ? { status, headers: { "Retry-After": RETRY_AFTER_SECONDS } } : { status },
       );
+    }
   }
 }
 

@@ -161,11 +161,42 @@ export const AUTH_ERROR_MESSAGES = {
 
 export type AuthErrorCode = keyof typeof AUTH_ERROR_MESSAGES;
 
+function isAuthErrorCode(code: string): code is AuthErrorCode {
+  // Own keys only: "constructor", "__proto__" or "toString" are inherited
+  // from Object.prototype and would hand the form a function or an object
+  // instead of a message.
+  return Object.hasOwn(AUTH_ERROR_MESSAGES, code);
+}
+
+/** The fixed message for an ?error= code; anything unknown reads as an
+ * expired link. Always a string, never a value from the prototype chain. */
 export function authErrorMessage(code: string | null | undefined): string | null {
   if (!code) {
     return null;
   }
-  return code in AUTH_ERROR_MESSAGES
-    ? AUTH_ERROR_MESSAGES[code as AuthErrorCode]
-    : AUTH_ERROR_MESSAGES.link_invalid;
+  return isAuthErrorCode(code) ? AUTH_ERROR_MESSAGES[code] : AUTH_ERROR_MESSAGES.link_invalid;
+}
+
+function planLabel(plan: string): string {
+  return plan.charAt(0).toUpperCase() + plan.slice(1);
+}
+
+/**
+ * The note above the signup and login form for a plan picked on the pricing
+ * page. It names the plan without promising a checkout page: without Stripe
+ * the billing page takes an upgrade request instead, and this stays true
+ * either way.
+ */
+export function planIntentNote(mode: "signup" | "login", intent: CheckoutIntent): string {
+  const action = mode === "signup" ? "Create your account" : "Log in";
+  const billed = intent.cadence === "annual" ? "annually" : "monthly";
+  return `${action} to continue to the ${planLabel(intent.plan)} plan, billed ${billed}.`;
+}
+
+/** The message after signup when the email still needs confirming. */
+export function confirmationSentMessage(intent: CheckoutIntent | null): string {
+  const next = intent
+    ? `we will take you to the ${planLabel(intent.plan)} plan on your billing page`
+    : "your workspace will be ready";
+  return `Almost there. We sent a confirmation link to your inbox. Open it on this device and ${next}. Check spam if it does not arrive in a minute.`;
 }

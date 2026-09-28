@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Services } from "@/lib/services/types";
 import { MemoryRateLimitStore, RATE_LIMIT_POLICIES, setRateLimitStoreForTests } from "@/lib/rate-limit";
+import { ProvisioningError } from "@/lib/services/errors";
 import {
   OTHER_WORKSPACE_ID,
   TEST_PRODUCT_ID,
@@ -61,6 +62,16 @@ describe("POST /api/uploads/sign", () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as { key: string };
     expect(body.key.startsWith(`ws/${TEST_WORKSPACE_ID}/src/`)).toBe(true);
+  });
+
+  it("answers 401 when signed out and 503 when the workspace could not be set up", async () => {
+    services = createFakeServices(null);
+    expect((await sign(jsonRequest("https://curvi.ai/api/uploads/sign", signBody))).status).toBe(401);
+    services = createFakeServices("owner");
+    vi.mocked(services.ensureWorkspace).mockRejectedValue(new ProvisioningError());
+    const response = await sign(jsonRequest("https://curvi.ai/api/uploads/sign", signBody));
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
   });
 
   it("refuses the client role (plan 4.3)", async () => {
@@ -125,6 +136,44 @@ describe("POST /api/uploads/complete", () => {
     services = createFakeServices("client");
     const response = await complete(jsonRequest("https://curvi.ai/api/uploads/complete", completeBody()));
     expect(response.status).toBe(403);
+    expect(services.registerSourceMedia).not.toHaveBeenCalled();
+  });
+
+  it("answers typed refusals: 404 for an unknown product, 403 for a foreign key, each with its reason", async () => {
+    vi.mocked(services.registerSourceMedia).mockResolvedValueOnce({
+      ok: false,
+      reason: "unknown_product",
+      notice: "That product does not exist in this workspace.",
+    });
+    const unknown = await complete(jsonRequest("https://curvi.ai/api/uploads/complete", completeBody()));
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({
+      error: "That product does not exist in this workspace.",
+      reason: "unknown_product",
+    });
+
+    vi.mocked(services.registerSourceMedia).mockResolvedValueOnce({
+      ok: false,
+      reason: "foreign_key",
+      notice: "That upload does not belong to this workspace.",
+    });
+    const foreign = await complete(jsonRequest("https://curvi.ai/api/uploads/complete", completeBody()));
+    expect(foreign.status).toBe(403);
+    expect(((await foreign.json()) as { reason: string }).reason).toBe("foreign_key");
+
+    // The route's own prefix check names the same reason.
+    const routeLevel = await complete(
+      jsonRequest("https://curvi.ai/api/uploads/complete", completeBody({ key: `ws/${OTHER_WORKSPACE_ID}/src/x.jpg` })),
+    );
+    expect(routeLevel.status).toBe(403);
+    expect(((await routeLevel.json()) as { reason: string }).reason).toBe("foreign_key");
+  });
+
+  it("answers 503 with Retry-After when the workspace could not be set up", async () => {
+    vi.mocked(services.getCurrentWorkspace).mockRejectedValue(new ProvisioningError());
+    const response = await complete(jsonRequest("https://curvi.ai/api/uploads/complete", completeBody()));
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
     expect(services.registerSourceMedia).not.toHaveBeenCalled();
   });
 

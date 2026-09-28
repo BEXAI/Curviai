@@ -2,11 +2,13 @@
  * GET /api/jobs/[id]
  * Returns the job with per shot status for the progress board. In demo mode
  * every poll advances the simulation one tick. A non uuid id is a 404, never
- * a Postgres error (Update.md 4.7).
+ * a Postgres error (Update.md 4.7). Signed out is a 401; a workspace that
+ * could not be set up is a retryable 503.
  */
 
 import { NextResponse } from "next/server";
 import { getServices } from "@/lib/services";
+import { resolveWorkspace } from "@/lib/services/workspace-response";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -20,11 +22,12 @@ export async function GET(
     return NextResponse.json({ error: "Job not found." }, { status: 404 });
   }
   const services = getServices();
-  const workspace = await services.ensureWorkspace();
-  if (!workspace) {
-    return NextResponse.json({ error: "Sign in to view jobs." }, { status: 401 });
+  // A failed workspace setup is a retryable 503, not "Sign in" (Update.md 6.8).
+  const resolved = await resolveWorkspace(services, "Sign in to view jobs.");
+  if ("response" in resolved) {
+    return resolved.response;
   }
-  const job = await services.getJob(workspace.id, id);
+  const job = await services.getJob(resolved.workspace.id, id);
   if (!job) {
     return NextResponse.json({ error: "Job not found." }, { status: 404 });
   }

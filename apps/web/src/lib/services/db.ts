@@ -24,16 +24,18 @@ import {
 } from "@curvi/db";
 import { presets, tierByKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
+import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { publicJobError } from "@/lib/job-copy";
 import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
+import { InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { buildGeneratePackInput } from "@/lib/jobs/payload";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
 import { brandKitInputSchema, brandKitIssueNotice } from "@/lib/validation/brand-kit";
 import { isUuid } from "@/lib/validation/ids";
+import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
 import { looksStale, reconcileStaleJobs } from "./reconcile";
 import type {
@@ -85,20 +87,8 @@ export interface DbServiceDeps {
  * then the product's newest stored photos. */
 const MAX_PACK_MEDIA = 6;
 
-export const PROVISIONING_ERROR_MESSAGE = "We could not set up your workspace. Try again in a minute.";
-
-/**
- * Provisioning the first workspace failed (a database error, not a signed
- * out user). Thrown instead of returning null, so a signup that could not be
- * set up surfaces as a retryable server error rather than a "Sign in" prompt
- * (Update.md 6.8). Routes map it to 503 with PROVISIONING_ERROR_MESSAGE.
- */
-export class ProvisioningError extends Error {
-  constructor(options?: { cause?: unknown }) {
-    super(PROVISIONING_ERROR_MESSAGE, options);
-    this.name = "ProvisioningError";
-  }
-}
+// Defined in ./errors so routes can map them without loading this module.
+export { PROVISIONING_ERROR_MESSAGE, ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 
 /** Thrown inside the createJob transaction when reserve_credits refuses, so
  * the transaction rolls back and the caller can answer with a rejection. */
@@ -227,6 +217,10 @@ export class DbService implements Services {
       if (!membership) {
         return null;
       }
+    } else {
+      // On Supabase the auth trigger creates the membership, so provisioning
+      // never runs; settle a grant the trigger could not pay here.
+      await this.settleSignupGrant(userId);
     }
     const workspace = await this.db.query.workspaces.findFirst({
       where: (t, { eq }) => eq(t.id, membership.workspaceId),
@@ -269,6 +263,34 @@ export class DbService implements Services {
       .set({ name: trimmed, updatedAt: new Date() })
       .where(eq(workspaces.id, workspaceId));
     return { ok: true, notice: "Workspace name saved." };
+  }
+
+  /**
+   * Pays the free signup grant for a user who has no settled grant yet
+   * (migration 0012). The auth triggers call grant_signup_credits with no
+   * fallback amount, so a signup confirmed before pnpm db:seed wrote
+   * free_signup_credits, or a grant that errored inside the confirmation
+   * trigger, would otherwise wait for someone to run the seed. The function
+   * is idempotent under a per user advisory lock, still waits for a
+   * confirmed email on Supabase, still dedupes by inbox, and pays the seeded
+   * platform setting when it exists: the seed value passed here only counts
+   * before the seed has run. Best effort: a failure is logged and retried on
+   * the next request, and the page still loads.
+   */
+  private async settleSignupGrant(userId: string): Promise<void> {
+    try {
+      const settled = await this.db.query.signupGrants.findFirst({
+        columns: { userId: true },
+        where: (t, { eq }) => eq(t.userId, userId),
+      });
+      if (settled) {
+        return;
+      }
+      const fallback = tierByKey("free").creditsOnce;
+      await this.db.execute(sql`select grant_signup_credits(${userId}::uuid, ${fallback}::numeric)`);
+    } catch (err) {
+      console.error(`[credits] could not settle the signup grant for user ${userId}; the next request retries`, err);
+    }
   }
 
   /** Creates the user's first workspace and owner membership. The free tier's
@@ -633,6 +655,17 @@ export class DbService implements Services {
     let created: { product: typeof products.$inferSelect; jobId: string };
     try {
       created = await this.db.transaction(async (tx) => {
+        // Lock the workspace row before anything else. The foreign key checks
+        // of the product, source_media and job inserts below each take FOR
+        // KEY SHARE on this row, and reserve_credits then asks for FOR UPDATE
+        // on it. Two packs created at once in one workspace would each hold
+        // KEY SHARE and wait for the other to let go: Postgres aborts one with
+        // a 40P01 deadlock and that seller's pack is refused. Taking FOR
+        // UPDATE first serializes createJob per
+        // workspace, so no transaction ever upgrades its lock. PGlite runs one
+        // connection and serializes transactions, so the unit tests can check
+        // the statement order but cannot reproduce the race itself.
+        await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
         const product =
           existingProduct ??
           (
@@ -738,9 +771,16 @@ export class DbService implements Services {
     } catch (err) {
       // The reservation must never strand when the queue is unreachable, and
       // a cleanup failure must never hide why the pack did not start.
-      console.error(`[jobs] could not queue job ${jobId} in workspace ${workspaceId}`, err);
+      const restarting = err instanceof InlineRunnerClosedError;
+      if (restarting) {
+        // This instance is draining for a restart or deploy and takes no new
+        // packs. Expected during a deploy, so a warning, not an error.
+        console.warn(`[jobs] refused job ${jobId} in workspace ${workspaceId}: this server is draining`);
+      } else {
+        console.error(`[jobs] could not queue job ${jobId} in workspace ${workspaceId}`, err);
+      }
       await this.abandonJob(workspaceId, jobId, "The pack could not be queued.");
-      return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
+      return { outcome: "rejected", reason: "unavailable", message: restarting ? RESTARTING_MESSAGE : UNAVAILABLE_MESSAGE };
     }
 
     const job = await this.getJob(workspaceId, jobId);
@@ -988,8 +1028,9 @@ export class DbService implements Services {
 
   /** Update.md 4.2: owner, admin and editor only; the kit is re validated
    * here because this is the trust boundary; a logo key must sit in this
-   * workspace's source prefix; both insert and update run over the owner
-   * connection, since migration 0011 leaves members no FOR ALL policy. */
+   * workspace's source prefix; the plan must include a brand kit
+   * (entitlementsFor(tier).brandKits); both insert and update run over the
+   * owner connection, since migration 0011 leaves members no FOR ALL policy. */
   async saveBrandKit(workspaceId: string, kit: BrandKitView): Promise<SaveResult> {
     const role = await this.currentRole(workspaceId);
     if (role === null || role === "client") {
@@ -1003,9 +1044,18 @@ export class DbService implements Services {
     if (input.logoKey && !isWorkspaceSourceKey(workspaceId, input.logoKey)) {
       return { ok: false, notice: "That logo upload does not belong to this workspace. Upload it again." };
     }
-    const existing = await this.db.query.brandKits.findFirst({
-      where: (t, { eq }) => eq(t.workspaceId, workspaceId),
-    });
+    const [workspace, kits] = await Promise.all([
+      this.db.query.workspaces.findFirst({ where: (t, { eq }) => eq(t.id, workspaceId) }),
+      this.db.query.brandKits.findMany({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) }),
+    ]);
+    const existing = kits[0];
+    // Plan entitlements, from the seed: Free holds no brand kit, so saving
+    // one asks for an upgrade instead of storing a kit the plan does not
+    // include.
+    const allowance = checkBrandKitEntitlement(tierKeyOf(workspace?.plan), kits.length, !existing);
+    if (!allowance.ok) {
+      return { ok: false, reason: allowance.reason, notice: allowance.message };
+    }
     // No new logo keeps the current one, but never a key that fails the
     // prefix check (a legacy row), which the 0011 constraint would reject.
     const keptLogo =

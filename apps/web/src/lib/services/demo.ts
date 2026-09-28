@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { tierByKey, type TierKey } from "@curvi/pipeline/seed";
 import { filenameFor, getSpec } from "@curvi/specs";
+import { checkChannelEntitlements } from "@/lib/entitlements";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { planDemoShots } from "./demo-plan";
 import type {
@@ -408,6 +409,13 @@ export class DemoService implements Services {
         reason: "mode_unavailable",
         message: "Concept Mode is not available yet. Start a Listing Mode pack from a real photo.",
       };
+    }
+
+    // The same seed entitlement check as db mode, so the demo never starts a
+    // pack production would refuse (video channels while video is coming soon).
+    const entitled = checkChannelEntitlements(input.channels, DEMO_TIER);
+    if (!entitled.ok) {
+      return { outcome: "rejected", reason: entitled.reason, message: entitled.message };
     }
 
     // Products made through /api/products live in extraProducts (Update.md 6.7).

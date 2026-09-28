@@ -1,9 +1,11 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, Card, CardContent, Input, Label, Select, Textarea, cn } from "@curvi/ui";
 import type { TierKey } from "@curvi/pipeline/seed";
+import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { estimatePackCredits, type EstimateMode } from "@/lib/pack-estimate";
 import { intentFor, type SubmitIntent } from "@/lib/submit-intent";
@@ -12,6 +14,20 @@ import { track } from "@/lib/track";
 export interface ChannelOption {
   id: string;
   marketplace: boolean;
+  /** What createJob would say about this channel on this plan (from the
+   * seed entitlements). Only "available" channels can be picked; missing
+   * means available. */
+  availability?: "available" | "coming_soon" | "upgrade_required";
+  /** The cheapest plan that includes an upgrade_required channel. */
+  upgradeTo?: TierKey | null;
+}
+
+function isPickable(channel: ChannelOption): boolean {
+  return (channel.availability ?? "available") === "available";
+}
+
+function planName(key: TierKey): string {
+  return key.charAt(0).toUpperCase() + key.slice(1);
 }
 
 export interface ProductOption {
@@ -69,14 +85,16 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
   const [newProductTitle, setNewProductTitle] = useState("");
   const [description, setDescription] = useState("");
   const [selected, setSelected] = useState<string[]>(
-    DEFAULT_CHANNELS.filter((id) => channels.some((c) => c.id === id)),
+    DEFAULT_CHANNELS.filter((id) => channels.some((c) => c.id === id && isPickable(c))),
   );
   const [mode, setMode] = useState<EstimateMode>("listing");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const marketplaceChannels = channels.filter((c) => c.marketplace);
-  const socialChannels = channels.filter((c) => !c.marketplace);
+  // Channels that can be picked first; coming soon and upgrade ones after.
+  const ordered = [...channels].sort((a, b) => Number(!isPickable(a)) - Number(!isPickable(b)));
+  const marketplaceChannels = ordered.filter((c) => c.marketplace);
+  const socialChannels = ordered.filter((c) => !c.marketplace);
   const effectiveMode: EstimateMode = CONCEPT_MODE_AVAILABLE ? mode : "listing";
   const estimate = useMemo(
     () => estimatePackCredits(selected, effectiveMode, tier),
@@ -88,8 +106,48 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
   const needsAttachConfirm = attachKey !== null && confirmedAttach !== attachKey;
 
   function toggleChannel(id: string) {
+    // A channel the server would refuse is never added to the pack.
+    if (!channels.some((c) => c.id === id && isPickable(c))) {
+      return;
+    }
     setSelected((current) =>
       current.includes(id) ? current.filter((c) => c !== id) : [...current, id],
+    );
+  }
+
+  function renderChannel(channel: ChannelOption) {
+    const pickable = isPickable(channel);
+    const label = channelLabel(channel.id);
+    return (
+      <div
+        key={channel.id}
+        className={cn(
+          "flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-sm",
+          pickable ? "text-ink-700 hover:bg-ink-50" : "text-ink-400",
+        )}
+        data-testid={`channel-${channel.id}`}
+      >
+        <label className={cn("flex items-center gap-2", pickable ? "cursor-pointer" : "cursor-not-allowed")}>
+          <input
+            type="checkbox"
+            checked={pickable && selected.includes(channel.id)}
+            disabled={!pickable}
+            onChange={() => toggleChannel(channel.id)}
+            className="h-4 w-4 rounded border-ink-300 accent-ink-900"
+          />
+          {label}
+        </label>
+        {channel.availability === "coming_soon" ? <ComingSoonBadge /> : null}
+        {channel.availability === "upgrade_required" ? (
+          <Link
+            href="/app/billing"
+            className="shrink-0 text-xs font-medium text-ink-900 underline"
+            data-testid="channel-upgrade"
+          >
+            {channel.upgradeTo ? `${planName(channel.upgradeTo)} plan` : "Upgrade"}
+          </Link>
+        ) : null}
+      </div>
     );
   }
 
@@ -373,35 +431,11 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
           <div className="mt-3 grid gap-6 sm:grid-cols-2">
             <div>
               <h3 className="text-sm font-semibold text-ink-700">Marketplaces</h3>
-              <div className="mt-2 space-y-1">
-                {marketplaceChannels.map((channel) => (
-                  <label key={channel.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-ink-700 hover:bg-ink-50">
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(channel.id)}
-                      onChange={() => toggleChannel(channel.id)}
-                      className="h-4 w-4 rounded border-ink-300 accent-ink-900"
-                    />
-                    {channelLabel(channel.id)}
-                  </label>
-                ))}
-              </div>
+              <div className="mt-2 space-y-1">{marketplaceChannels.map(renderChannel)}</div>
             </div>
             <div>
               <h3 className="text-sm font-semibold text-ink-700">Social and video</h3>
-              <div className="mt-2 space-y-1">
-                {socialChannels.map((channel) => (
-                  <label key={channel.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-ink-700 hover:bg-ink-50">
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(channel.id)}
-                      onChange={() => toggleChannel(channel.id)}
-                      className="h-4 w-4 rounded border-ink-300 accent-ink-900"
-                    />
-                    {channelLabel(channel.id)}
-                  </label>
-                ))}
-              </div>
+              <div className="mt-2 space-y-1">{socialChannels.map(renderChannel)}</div>
             </div>
           </div>
         </section>

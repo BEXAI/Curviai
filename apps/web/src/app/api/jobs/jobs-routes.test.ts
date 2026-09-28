@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobView, Services } from "@/lib/services/types";
+import { InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { MemoryRateLimitStore, RATE_LIMIT_POLICIES, setRateLimitStoreForTests } from "@/lib/rate-limit";
+import { PROVISIONING_ERROR_MESSAGE, ProvisioningError, RESTARTING_MESSAGE } from "@/lib/services/errors";
 import {
   OTHER_WORKSPACE_ID,
   TEST_JOB_ID,
@@ -122,6 +124,45 @@ describe("POST /api/jobs", () => {
     const blocked = await post(jobBody());
     expect(blocked.status).toBe(429);
   });
+
+  it("answers 401 when signed out and a retryable 503 when the workspace could not be set up (Update.md 6.8)", async () => {
+    services = createFakeServices(null);
+    expect((await post(jobBody())).status).toBe(401);
+
+    services = createFakeServices("owner");
+    vi.mocked(services.ensureWorkspace).mockRejectedValue(new ProvisioningError());
+    const response = await post(jobBody(), { "idempotency-key": "k-setup" });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect(((await response.json()) as { error: string }).error).toBe(PROVISIONING_ERROR_MESSAGE);
+    expect(services.createJob).not.toHaveBeenCalled();
+  });
+
+  it("answers a pack sent while the server drains with a 503 and plain copy", async () => {
+    vi.mocked(services.createJob).mockRejectedValue(new InlineRunnerClosedError());
+    const response = await post(jobBody());
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    const body = (await response.json()) as { error: string; reason: string };
+    expect(body).toEqual({ error: RESTARTING_MESSAGE, reason: "unavailable" });
+    expect(body.error).not.toMatch(/[–—→]| - |->|shutting down/);
+  });
+
+  it("gives an unavailable refusal a 503 with Retry-After", async () => {
+    vi.mocked(services.createJob).mockResolvedValue({
+      outcome: "rejected",
+      reason: "unavailable",
+      message: RESTARTING_MESSAGE,
+    });
+    const response = await post(jobBody());
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
+  });
+
+  it("still lets any other service error through", async () => {
+    vi.mocked(services.createJob).mockRejectedValue(new Error("boom"));
+    await expect(post(jobBody())).rejects.toThrow("boom");
+  });
 });
 
 describe("GET /api/jobs/[id] and its files and pack routes (Update.md 4.7)", () => {
@@ -133,6 +174,7 @@ describe("GET /api/jobs/[id] and its files and pack routes (Update.md 4.7)", () 
     expect(services.getJob).not.toHaveBeenCalled();
     expect(services.listJobFiles).not.toHaveBeenCalled();
     expect(services.ensureWorkspace).not.toHaveBeenCalled();
+    expect(services.getCurrentWorkspace).not.toHaveBeenCalled();
   });
 
   it("looks up a uuid id", async () => {
@@ -146,5 +188,19 @@ describe("GET /api/jobs/[id] and its files and pack routes (Update.md 4.7)", () 
     const response = await getFiles(new Request(`https://curvi.ai/api/jobs/${TEST_JOB_ID}/files`), params(TEST_JOB_ID));
     expect(response.status).toBe(404);
     expect(services.listJobFiles).toHaveBeenCalledWith(TEST_WORKSPACE_ID, TEST_JOB_ID);
+  });
+
+  it("answers 401 when signed out and 503 when the workspace could not be set up", async () => {
+    services = createFakeServices(null);
+    const signedOut = await getJob(new Request(`https://curvi.ai/api/jobs/${TEST_JOB_ID}`), params(TEST_JOB_ID));
+    expect(signedOut.status).toBe(401);
+
+    services = createFakeServices("owner");
+    vi.mocked(services.getCurrentWorkspace).mockRejectedValue(new ProvisioningError());
+    vi.mocked(services.ensureWorkspace).mockRejectedValue(new ProvisioningError());
+    const response = await getJob(new Request(`https://curvi.ai/api/jobs/${TEST_JOB_ID}`), params(TEST_JOB_ID));
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect(services.getJob).not.toHaveBeenCalled();
   });
 });
