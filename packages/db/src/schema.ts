@@ -476,6 +476,49 @@ export const events = pgTable(
   (t) => [index("events_workspace_id_idx").on(t.workspaceId)],
 );
 
+/** Why a subscriber opened the cancel flow (Stripe's cancellation feedback values). */
+export type CancelReason =
+  | "too_expensive"
+  | "unused"
+  | "missing_features"
+  | "low_quality"
+  | "switched_service"
+  | "too_complex"
+  | "customer_service"
+  | "other";
+/** What the cancel flow ended in: a save offer taken, a cancellation, or keeping the plan. */
+export type CancelOutcome = "paused" | "downgraded" | "discounted" | "canceled" | "kept";
+
+/**
+ * One pass through the cancel flow on /app/billing: the reason, the save
+ * offers shown, and the outcome. stripe_applied says whether the outcome
+ * reached Stripe (false while card payments are not open, or when Stripe
+ * refused it, with error set). Written by the owner connection only.
+ */
+export const cancelFlows = pgTable(
+  "cancel_flows",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: uuid("user_id"),
+    reason: text("reason").$type<CancelReason>().notNull(),
+    detail: text("detail"),
+    fromTier: text("from_tier"),
+    toTier: text("to_tier"),
+    offersShown: jsonb("offers_shown").$type<string[]>(),
+    outcome: text("outcome").$type<CancelOutcome>().notNull(),
+    stripeApplied: boolean("stripe_applied").notNull().default(false),
+    stripeSubscriptionId: text("stripe_subscription_id"),
+    /** When a pause ends or a cancellation takes effect. */
+    effectiveAt: timestamp("effective_at", { withTimezone: true }),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("cancel_flows_workspace_id_idx").on(t.workspaceId)],
+);
+
 export const churnScores = pgTable("churn_scores", {
   workspaceId: uuid("workspace_id")
     .primaryKey()
@@ -529,5 +572,7 @@ export type PlatformSetting = typeof platformSettings.$inferSelect;
 export type NewPlatformSetting = typeof platformSettings.$inferInsert;
 export type SignupGrant = typeof signupGrants.$inferSelect;
 export type NewSignupGrant = typeof signupGrants.$inferInsert;
+export type CancelFlow = typeof cancelFlows.$inferSelect;
+export type NewCancelFlow = typeof cancelFlows.$inferInsert;
 export type ChurnScore = typeof churnScores.$inferSelect;
 export type NewChurnScore = typeof churnScores.$inferInsert;
