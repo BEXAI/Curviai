@@ -197,6 +197,19 @@ describe("InlinePackRunner concurrency limit", () => {
     expect(h.started).toEqual(["a"]);
   });
 
+  it("queues a follow up of a job whose first run is still finishing, keyed by its run key", async () => {
+    const h = harness({ concurrency: 1 });
+    const first = h.runner.submit(h.job("a"));
+    const followUp = h.runner.submit({ jobId: "a", workspaceId: "ws", runKey: "a-followup-1" });
+    const again = h.runner.submit({ jobId: "a", workspaceId: "ws", runKey: "a-followup-1" });
+    await flush();
+    expect(h.runner.stats()).toMatchObject({ running: 1, waiting: 1 });
+    h.gate("a").resolve();
+    await Promise.all([first, followUp, again]);
+    // Two runs for the same job: the first and one follow up, never two.
+    expect(h.started).toEqual(["a", "a"]);
+  });
+
   it("settles a crashed pack and keeps the queue moving", async () => {
     const h = harness({ concurrency: 1 });
     const a = h.runner.submit(h.job("a"));

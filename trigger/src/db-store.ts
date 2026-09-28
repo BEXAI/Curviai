@@ -35,12 +35,13 @@ import {
   type JobLedgerEntry,
   type JobStore,
   type StoredAsset,
+  type StoredFollowUpFiles,
   type StoredPack,
   type StoredPlan,
   type UndeliveredShot,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
-import { assetFileKey, packFileKey, type PackUploader } from "./r2";
+import { assetFileKey, followUpFileKey, packFileKey, type PackUploader } from "./r2";
 
 export interface DbJobStoreOptions {
   /** True when the app already reserved credits at job creation, the normal
@@ -188,6 +189,9 @@ export class DbJobStore implements JobStore {
         // The progress board's green badge reads these measured values.
         fillPct: asset.measured.fillPct,
         background: asset.measured.background,
+        // The planned shot, so the seller can run a shot that needs review
+        // again exactly as planned (pack follow ups).
+        ...(asset.shot ? { shot: asset.shot } : {}),
       },
     });
     await this.db.insert(jobSteps).values({
@@ -332,6 +336,96 @@ export class DbJobStore implements JobStore {
       }
       await tx.insert(packFiles).values(packRows);
     });
+  }
+
+  /**
+   * Delivers the files of a pack follow up into a pack its first run already
+   * delivered. Each file goes to its own key under the follow up's run key,
+   * so nothing already delivered is ever overwritten. The asset_variants rows
+   * are written in one transaction that locks the workspace row and checks
+   * the job is live, the same order savePack and the web app's cancel and
+   * settle take: a job canceled or settled first records nothing, and one
+   * recorded first is charged by whoever settles it. The channel zips of the
+   * first run no longer hold every file of those channels, so their rows go;
+   * the all files zip and the single file downloads read asset_variants and
+   * stay complete. Returns the shot ids whose files were recorded.
+   */
+  async saveFollowUpFiles(batch: StoredFollowUpFiles): Promise<string[]> {
+    const uploader = this.opts.uploader ?? null;
+    if (!uploader) {
+      throw new Error("Pack storage is not configured, so the files could not be delivered.");
+    }
+    if (!(await this.heartbeat(batch.jobId))) {
+      throw new JobAbandonedError(batch.jobId);
+    }
+    const assetIdByShot = await this.latestPassedAssetIds(batch.jobId);
+    await this.ensureChannelSpecs();
+
+    const variants: Array<typeof assetVariants.$inferInsert> = [];
+    for (const file of batch.files) {
+      const assetId = assetIdByShot.get(file.ref);
+      const localPath = path.join(batch.outDir, "files", file.channel, file.file);
+      if (!assetId || !(await exists(localPath))) {
+        continue;
+      }
+      const key = followUpFileKey(batch.workspaceId, batch.jobId, batch.runKey, file.channel, file.file);
+      const { bytes } = await uploader.upload(localPath, key);
+      variants.push({
+        workspaceId: batch.workspaceId,
+        assetId,
+        channelSpecId: file.specId,
+        r2Key: key,
+        filename: file.file,
+        bytes,
+        width: file.width,
+        height: file.height,
+      });
+    }
+    if (variants.length === 0) {
+      return [];
+    }
+    const channels = [...new Set(batch.files.filter((f) => assetIdByShot.has(f.ref)).map((f) => f.channel))];
+
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`select 1 from workspaces where id = ${batch.workspaceId}::uuid for update`);
+      const live = await tx
+        .select({ id: generationJobs.id })
+        .from(generationJobs)
+        .where(and(eq(generationJobs.id, batch.jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES)));
+      if (live.length === 0) {
+        throw new JobAbandonedError(batch.jobId);
+      }
+      await tx.insert(assetVariants).values(variants);
+      await tx
+        .delete(packFiles)
+        .where(
+          and(
+            eq(packFiles.jobId, batch.jobId),
+            eq(packFiles.kind, "zip"),
+            sql`${packFiles.channel} = any(${`{${channels.join(",")}}`}::text[])`,
+          ),
+        );
+    });
+    const recorded = new Set(variants.map((v) => v.assetId));
+    return [...assetIdByShot].filter(([, assetId]) => recorded.has(assetId)).map(([shotId]) => shotId);
+  }
+
+  /** The newest approved asset row of each shot. A shot run again keeps its
+   * earlier needs review row, so the passing run's row is the one its files
+   * belong to. */
+  private async latestPassedAssetIds(jobId: string): Promise<Map<string, string>> {
+    const rows = await this.db.query.assets.findMany({
+      where: (t, { and, eq }) => and(eq(t.jobId, jobId), eq(t.approved, true)),
+      orderBy: (t, { asc }) => [asc(t.createdAt)],
+    });
+    const map = new Map<string, string>();
+    for (const row of rows) {
+      const shotId = row.qc && typeof row.qc.shotId === "string" ? row.qc.shotId : null;
+      if (shotId) {
+        map.set(shotId, row.id);
+      }
+    }
+    return map;
   }
 
   /** Asset rows may have been written by fan out subtasks on their own

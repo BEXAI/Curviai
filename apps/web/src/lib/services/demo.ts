@@ -1,9 +1,9 @@
 /**
  * DemoService: the in memory implementation that powers zero env development
- * and e2e runs. Reads are deterministic fixture data. The only mutation is
- * job creation, which starts a simulated pack that advances one state per
- * poll of getJob, so the progress board is alive without any provider or
- * database. Everything else is read only.
+ * and e2e runs. Reads are deterministic fixture data. The mutations are job
+ * creation, which starts a simulated pack that advances one state per poll
+ * of getJob, so the progress board is alive without any provider or
+ * database, and canceling that simulated pack. Everything else is read only.
  */
 
 import { createHash } from "node:crypto";
@@ -13,8 +13,11 @@ import { filenameFor, getSpec } from "@curvi/specs";
 import { checkChannelEntitlements } from "@/lib/entitlements";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { planDemoShots } from "./demo-plan";
+import { cancelNotice } from "./shot-ops";
 import type {
+  AddShotPhotoInput,
   BrandKitView,
+  CancelJobResult,
   CreateJobInput,
   CreateJobResult,
   CreateProductInput,
@@ -32,6 +35,7 @@ import type {
   SaveResult,
   Services,
   ShotCompliance,
+  ShotOpResult,
   ShotStatus,
   WorkspaceSummary,
 } from "./types";
@@ -100,6 +104,9 @@ interface DemoJobRecord {
   shots: Shot[];
   /** How many times getJob has observed this job. Drives the simulation. */
   polls: number;
+  /** The poll count at which the seller canceled it; the simulation stops
+   * there and its hold goes back to the balance. */
+  canceledAt?: number;
 }
 
 /** Shared in memory state. Lives on globalThis so every route bundle in one
@@ -188,6 +195,10 @@ function shotStatusAt(polls: number, timeline: ShotTimeline): ShotStatus {
   return "done";
 }
 
+function recordStatus(record: DemoJobRecord): JobStatus {
+  return record.canceledAt !== undefined ? "canceled" : jobStatusAt(record.polls, record.shots);
+}
+
 function jobStatusAt(polls: number, shots: Shot[]): JobStatus {
   if (polls <= 0) return "queued";
   if (polls === 1) return "analyzing";
@@ -203,9 +214,12 @@ function jobStatusAt(polls: number, shots: Shot[]): JobStatus {
 
 function projectJob(record: DemoJobRecord, productTitle: string): JobView {
   const count = record.shots.length;
-  const status = jobStatusAt(record.polls, record.shots);
+  const status = recordStatus(record);
+  const polls = record.canceledAt ?? record.polls;
   const shots: JobShotView[] = record.shots.map((shot, i) => {
-    const shotStatus = shotStatusAt(record.polls, shotTimeline(i, count));
+    const reached = shotStatusAt(polls, shotTimeline(i, count));
+    // A canceled simulation delivers nothing: unfinished shots were not made.
+    const shotStatus = record.canceledAt !== undefined && reached !== "done" ? "pending" : reached;
     return {
       shotId: shot.id,
       shotType: shot.type,
@@ -227,8 +241,13 @@ function projectJob(record: DemoJobRecord, productTitle: string): JobView {
     creditsCharged: status === "done" ? record.creditsReserved : 0,
     createdAt: record.createdAt,
     shots,
+    canManage: true,
+    followUpRunning: false,
   };
 }
+
+const DEMO_FOLLOW_UP_MESSAGE =
+  "Demo packs cannot run shots again. Connect a database and storage to use this on a real pack.";
 
 export class DemoService implements Services {
   readonly mode = "demo" as const;
@@ -242,7 +261,10 @@ export class DemoService implements Services {
     const grant = tierByKey(DEMO_TIER).creditsPerMonth;
     let held = 0;
     for (const record of this.store.jobs.values()) {
-      held += record.creditsReserved;
+      // A canceled simulation returned its hold.
+      if (record.canceledAt === undefined) {
+        held += record.creditsReserved;
+      }
     }
     return grant - held;
   }
@@ -306,7 +328,7 @@ export class DemoService implements Services {
     if (!record) {
       return null;
     }
-    const status = jobStatusAt(record.polls, record.shots);
+    const status = recordStatus(record);
     if (status !== "done") {
       return { jobId, status, files: [] };
     }
@@ -375,7 +397,7 @@ export class DemoService implements Services {
     return records.map((record) => ({
       id: record.id,
       productTitle: this.productTitle(record.productId),
-      status: jobStatusAt(record.polls, record.shots),
+      status: recordStatus(record),
       creditsReserved: record.creditsReserved,
       createdAt: record.createdAt,
     }));
@@ -386,8 +408,46 @@ export class DemoService implements Services {
     if (!record) {
       return null;
     }
-    record.polls += 1;
+    if (record.canceledAt === undefined) {
+      record.polls += 1;
+    }
     return projectJob(record, this.productTitle(record.productId));
+  }
+
+  /** Cancels the simulated pack before it finishes; its whole hold goes
+   * back, since a demo pack charges only once it is done. */
+  async cancelJob(_workspaceId: string, jobId: string): Promise<CancelJobResult> {
+    const record = this.store.jobs.get(jobId);
+    if (!record) {
+      return { outcome: "rejected", reason: "not_found", message: "This pack does not exist in your workspace." };
+    }
+    const title = this.productTitle(record.productId);
+    const status = recordStatus(record);
+    if (status === "done" || status === "failed" || status === "canceled") {
+      return { outcome: "finished", job: projectJob(record, title), notice: cancelNotice("finished", 0) };
+    }
+    record.canceledAt = record.polls;
+    return {
+      outcome: "canceled",
+      job: projectJob(record, title),
+      refundedCredits: record.creditsReserved,
+      notice: cancelNotice("canceled", record.creditsReserved),
+    };
+  }
+
+  async retryShot(_workspaceId: string, jobId: string, _shotId: string): Promise<ShotOpResult> {
+    return this.store.jobs.has(jobId)
+      ? { outcome: "rejected", reason: "demo", message: DEMO_FOLLOW_UP_MESSAGE }
+      : { outcome: "rejected", reason: "not_found", message: "This pack does not exist in your workspace." };
+  }
+
+  async addShotPhoto(
+    _workspaceId: string,
+    jobId: string,
+    _shotId: string,
+    _input: AddShotPhotoInput,
+  ): Promise<ShotOpResult> {
+    return this.retryShot(_workspaceId, jobId, _shotId);
   }
 
   async createJob(_workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {

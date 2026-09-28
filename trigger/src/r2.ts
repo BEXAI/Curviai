@@ -76,3 +76,17 @@ export function assetFileKey(
 ): string {
   return `ws/${workspaceId}/jobs/${jobId}/files/${channel}/${filename}`;
 }
+
+/** Key of a file a pack follow up delivers (a retried shot or an added
+ * angle). The run key keeps it apart from every file already delivered, so a
+ * follow up can never overwrite one, whatever name the channel convention
+ * gives it. */
+export function followUpFileKey(
+  workspaceId: string,
+  jobId: string,
+  runKey: string,
+  channel: string,
+  filename: string,
+): string {
+  return `ws/${workspaceId}/jobs/${jobId}/files/${channel}/followup-${runKey}/${filename}`;
+}

@@ -8,11 +8,17 @@
  * most advanced row, so a pending row written in the same instant never
  * hides a finished one. Compliance, credits and the needs review reason come
  * from the asset whose qc.shotId matches the card (Update.md 3.6), never from
- * a sibling of the same shot type.
+ * a sibling of the same shot type; when a shot ran more than once, the
+ * newest asset is the one that counts, so callers pass assets oldest first.
+ *
+ * A shot queued to run again (a retry, or a skipped shot whose photo was
+ * added) gets a "rerun" row: from that row on the card starts over as in
+ * progress, and the rerun's own final row settles it.
  */
 
 import { needsReviewNote, skippedCopy } from "@/lib/job-copy";
-import type { JobShotView, ShotCompliance, ShotStatus } from "./types";
+import { angleLabel, angleOfSkippedShot, isRetryable, RERUN_STEP_STATUS } from "./shot-ops";
+import type { JobShotView, JobStatus, ShotCompliance, ShotStatus } from "./types";
 
 export interface ShotStepRow {
   shotId: string | null;
@@ -34,6 +40,8 @@ export interface ShotAssetRow {
  * did not pass and were released at no charge, which is needs review. */
 export function toShotStatus(value: string | null): ShotStatus {
   switch (value) {
+    case RERUN_STEP_STATUS:
+      return "generating";
     case "generating":
     case "qc":
     case "done":
@@ -87,7 +95,23 @@ interface Group {
   firstSeenAt: number;
 }
 
-export function buildShotViews(steps: ShotStepRow[], assets: ShotAssetRow[]): JobShotView[] {
+/** Where the whole job is, so cards can offer the pack operations. */
+export interface ShotViewContext {
+  status: JobStatus;
+  mode: "listing" | "concept";
+}
+
+/** Plain copy for a shot queued to run again that never did, for example
+ * because the pack was canceled first. */
+export const RERUN_NOT_RUN_NOTE = "This shot did not run again, so nothing was charged for it.";
+
+const TERMINAL_JOB: ReadonlySet<JobStatus> = new Set(["done", "failed", "canceled"]);
+
+export function buildShotViews(
+  steps: ShotStepRow[],
+  assets: ShotAssetRow[],
+  job?: ShotViewContext,
+): JobShotView[] {
   const assetByShot = new Map<string, ShotAssetRow>();
   for (const asset of assets) {
     const shotId = qcShotId(asset);
@@ -114,12 +138,16 @@ export function buildShotViews(steps: ShotStepRow[], assets: ShotAssetRow[]): Jo
       });
       continue;
     }
-    if (RANK[status] >= RANK[group.bestStatus]) {
+    // A rerun row starts the card over; anything newer settles it.
+    if (step.status === RERUN_STEP_STATUS || RANK[status] >= RANK[group.bestStatus]) {
       group.best = step;
       group.bestStatus = status;
     }
     group.stageLabel ??= label;
   }
+  const jobTerminal = job ? TERMINAL_JOB.has(job.status) : false;
+  // Pack operations only apply to a delivered Listing Mode pack.
+  const operable = job?.status === "done" && job.mode === "listing";
 
   // Planned shots first, skipped ones last. Within each, the order the shot
   // first appeared; plan rows share one insert timestamp, so ties fall back
@@ -139,7 +167,8 @@ export function buildShotViews(steps: ShotStepRow[], assets: ShotAssetRow[]): Jo
   return entries.map(([shotId, group]) => {
     const asset = assetByShot.get(shotId);
     const qc = asset?.qc ?? null;
-    const status = group.bestStatus;
+    const rerunLeftOver = jobTerminal && group.best.status === RERUN_STEP_STATUS;
+    const status = rerunLeftOver ? "needs_review" : group.bestStatus;
     const specId = typeof qc?.specId === "string" ? qc.specId : null;
     const view: JobShotView = {
       shotId,
@@ -152,13 +181,26 @@ export function buildShotViews(steps: ShotStepRow[], assets: ShotAssetRow[]): Jo
       label: null,
       note: null,
     };
-    if (status === "needs_review") {
+    if (rerunLeftOver) {
+      view.note = RERUN_NOT_RUN_NOTE;
+      if (operable && isRetryable(qc)) {
+        view.action = "retry";
+      }
+    } else if (status === "needs_review") {
       const hint = typeof qc?.repairHint === "string" && qc.repairHint ? qc.repairHint : group.best.error;
       view.note = needsReviewNote(hint);
+      if (operable && isRetryable(qc)) {
+        view.action = "retry";
+      }
     } else if (status === "skipped") {
       const copy = skippedCopy(group.best.error, view.shotType);
       view.label = copy.label;
       view.note = copy.note;
+      const angle = copy.label === "Needs photo" ? angleOfSkippedShot(group.best.stage, group.best.error) : null;
+      if (operable && angle) {
+        view.action = "add_photo";
+        view.angle = angleLabel(angle);
+      }
     }
     return view;
   });
