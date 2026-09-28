@@ -5,7 +5,7 @@
  */
 
 import type { GeneratePackInput } from "@curvi/trigger/runner";
-import type { TierKey } from "@curvi/pipeline/seed";
+import { socialBadgeByTier, type TierKey } from "@curvi/pipeline/seed";
 
 export interface PayloadProduct {
   id: string;
@@ -60,5 +60,7 @@ export function buildGeneratePackInput(args: {
     sku: args.product.amazonSku ?? undefined,
     seoSlug: seoSlugFor(args.product.title),
     hasVideoSource: args.media.some((m) => m.kind === "video"),
+    // The "Made with Curvi" badge on social exports, by plan (seed).
+    socialBadge: socialBadgeByTier[args.tier] ?? false,
   };
 }

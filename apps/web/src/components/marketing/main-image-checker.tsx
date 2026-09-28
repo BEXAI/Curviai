@@ -2,13 +2,18 @@
 
 import { useCallback, useState } from "react";
 import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
-import { checkerVerdictCopy } from "./tool-copy";
+import {
+  checkRows,
+  flattenOnWhite,
+  measurePixels,
+  summaryLine,
+  type CheckRow,
+  type CheckerRules,
+} from "@/lib/tools/main-image-analysis";
+import { EmailGate } from "./email-gate";
+import { checkerGateCopy, checkerVerdictCopy } from "./tool-copy";
 
-interface CheckRow {
-  label: string;
-  pass: boolean;
-  measured: string;
-}
+export type { CheckerRules } from "@/lib/tools/main-image-analysis";
 
 interface Analysis {
   fileName: string;
@@ -20,18 +25,12 @@ interface Analysis {
 }
 
 const ANALYSIS_MAX_SIDE = 1000;
-const NON_WHITE_CHANNEL_THRESHOLD = 250;
-const BORDER_WHITE_PASS_SHARE = 0.97;
-
-/** The amazon.main thresholds, passed in from the spec registry (CLAUDE.md rule 2). */
-export interface CheckerRules {
-  minLongSide: number;
-  fillMinPercent: number;
-}
 
 /**
  * Runs the real Amazon main image checks in the browser: longest side,
  * pure white border share and product fill ratio from a non white pixel scan.
+ * The canvas is filled white before the photo is drawn, so transparent
+ * pixels read as white, the way a marketplace flattens them (Update.md 6.9).
  * Nothing is uploaded anywhere.
  */
 function analyzeImage(img: HTMLImageElement, fileName: string, previewUrl: string, rules: CheckerRules): Analysis {
@@ -48,70 +47,13 @@ function analyzeImage(img: HTMLImageElement, fileName: string, previewUrl: strin
   if (!ctx) {
     throw new Error("Canvas is not available in this browser");
   }
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, cw, ch);
   ctx.drawImage(img, 0, 0, cw, ch);
   const data = ctx.getImageData(0, 0, cw, ch).data;
+  flattenOnWhite(data);
 
-  const band = Math.max(2, Math.round(Math.min(cw, ch) * 0.02));
-  let borderTotal = 0;
-  let borderPureWhite = 0;
-  let minX = cw;
-  let minY = ch;
-  let maxX = -1;
-  let maxY = -1;
-
-  for (let y = 0; y < ch; y++) {
-    for (let x = 0; x < cw; x++) {
-      const i = (y * cw + x) * 4;
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      const isBorder = x < band || y < band || x >= cw - band || y >= ch - band;
-      if (isBorder) {
-        borderTotal++;
-        if (r === 255 && g === 255 && b === 255) {
-          borderPureWhite++;
-        }
-      }
-      if (
-        r < NON_WHITE_CHANNEL_THRESHOLD ||
-        g < NON_WHITE_CHANNEL_THRESHOLD ||
-        b < NON_WHITE_CHANNEL_THRESHOLD
-      ) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-
-  const longSide = Math.max(width, height);
-  const borderWhiteShare = borderTotal > 0 ? borderPureWhite / borderTotal : 0;
-  const hasProduct = maxX >= 0;
-  const fillRatio = hasProduct
-    ? Math.max((maxX - minX + 1) / cw, (maxY - minY + 1) / ch)
-    : 0;
-
-  const rows: CheckRow[] = [
-    {
-      label: `Longest side is at least ${rules.minLongSide} px so zoom works`,
-      pass: longSide >= rules.minLongSide,
-      measured: `Measured ${width} by ${height} px, longest side ${longSide} px`,
-    },
-    {
-      label: "Background at the edges is pure white, RGB 255 255 255",
-      pass: borderWhiteShare >= BORDER_WHITE_PASS_SHARE,
-      measured: `Measured ${(borderWhiteShare * 100).toFixed(1)} percent of edge pixels at exactly 255 255 255`,
-    },
-    {
-      label: `Product fills at least ${rules.fillMinPercent} percent of the frame`,
-      pass: hasProduct && fillRatio * 100 >= rules.fillMinPercent,
-      measured: hasProduct
-        ? `Measured fill ${(fillRatio * 100).toFixed(1)} percent of the longest frame side`
-        : "No product pixels found, the image is almost entirely white",
-    },
-  ];
-
+  const rows = checkRows({ width, height }, measurePixels(data, cw, ch), rules);
   return {
     fileName,
     width,
@@ -178,7 +120,7 @@ export function MainImageChecker({ rules }: { rules: CheckerRules }) {
       </Card>
 
       {analysis ? (
-        <Card>
+        <Card data-testid="checker-report">
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <CardTitle>Report for {analysis.fileName}</CardTitle>
@@ -196,34 +138,47 @@ export function MainImageChecker({ rules }: { rules: CheckerRules }) {
                 alt={`Preview of ${analysis.fileName}`}
                 className="h-40 w-40 shrink-0 rounded-lg border border-ink-100 object-contain"
               />
-              <ul className="flex-1 space-y-3">
-                {analysis.rows.map((row) => (
-                  <li key={row.label} className="flex gap-3 rounded-lg border border-ink-100 p-3">
-                    <span
-                      className={
-                        "mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white " +
-                        (row.pass ? "bg-emerald-500" : "bg-red-500")
-                      }
-                      aria-hidden="true"
-                    >
-                      {row.pass ? "P" : "F"}
-                    </span>
-                    <span>
+              <div className="flex-1 space-y-3">
+                <p data-testid="checker-summary" className="text-sm font-semibold text-ink-900">
+                  {summaryLine(analysis.rows)}
+                </p>
+                <ul className="space-y-3">
+                  {analysis.rows.map((row) => (
+                    <li key={row.key} className="flex gap-3 rounded-lg border border-ink-100 p-3">
+                      <span
+                        className={
+                          "mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white " +
+                          (row.pass ? "bg-emerald-500" : "bg-red-500")
+                        }
+                        aria-hidden="true"
+                      >
+                        {row.pass ? "P" : "F"}
+                      </span>
                       <span className="block text-sm font-medium text-ink-900">
                         {row.pass ? "Pass. " : "Fail. "}
                         {row.label}
                       </span>
-                      <span className="block text-sm text-ink-500">{row.measured}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
-            {!analysis.allPass ? (
-              <p className="mt-4 rounded-lg bg-accent-50 p-4 text-sm text-ink-700">{checkerVerdictCopy.fail}</p>
-            ) : (
-              <p className="mt-4 rounded-lg bg-emerald-50 p-4 text-sm text-ink-700">{checkerVerdictCopy.pass}</p>
-            )}
+            <div className="mt-6">
+              <EmailGate source="main-image-checker" title={checkerGateCopy.title} body={checkerGateCopy.body}>
+                <ul data-testid="checker-measurements" className="space-y-2">
+                  {analysis.rows.map((row) => (
+                    <li key={row.key} className="text-sm text-ink-600">
+                      <span className="font-medium text-ink-900">{row.label}.</span> {row.measured}.
+                    </li>
+                  ))}
+                </ul>
+                {!analysis.allPass ? (
+                  <p className="mt-4 rounded-lg bg-accent-50 p-4 text-sm text-ink-700">{checkerVerdictCopy.fail}</p>
+                ) : (
+                  <p className="mt-4 rounded-lg bg-emerald-50 p-4 text-sm text-ink-700">{checkerVerdictCopy.pass}</p>
+                )}
+              </EmailGate>
+            </div>
           </CardContent>
         </Card>
       ) : null}

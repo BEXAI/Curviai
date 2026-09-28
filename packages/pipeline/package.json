@@ -10,6 +10,7 @@
     "./planner": "./src/planner/deterministic.ts",
     "./schemas": "./src/schemas.ts",
     "./seed": "./src/seed/index.ts",
+    "./share-image": "./src/share-image.ts",
     "./testing": "./src/qc/testing.ts"
   },
   "scripts": {

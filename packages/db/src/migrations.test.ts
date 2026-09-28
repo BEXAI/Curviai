@@ -35,6 +35,7 @@ const EXPECTED_TABLES = [
   "spend_cap_counters",
   "platform_settings",
   "signup_grants",
+  "leads",
 ];
 
 const USER_A = "00000000-0000-4000-8000-00000000000a";

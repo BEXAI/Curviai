@@ -104,10 +104,14 @@ describe("buildPack", () => {
 
   it("allows a badge only where the spec says badgeAllowed", async () => {
     const raw = rawCanvas(128, 128, 250, 250, 250);
+    const box = { left: 44, top: 44, width: 40, height: 40 };
+    paintRect(raw, box, 60, 60, 160);
     const social: PackAsset = {
       specId: "meta.feed_1x1",
       buffer: await encodePng(raw),
       format: "png",
+      // The badge is drawn only where it can be kept clear of the product.
+      mask: rectMask(128, 128, box),
       badge: true,
     };
     const result = await buildPack([social], ["meta"]);

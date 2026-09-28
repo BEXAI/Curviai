@@ -3,7 +3,8 @@
  * spec compliant file names plus compliance-report.json listing, per file, the
  * spec id, checks run, pass or fail and measured values. Marketplace bound
  * files are never watermarked (badge only where badgeAllowed and never on a
- * marketplace spec). Files that carry a digitalSource kind get their IPTC
+ * marketplace spec). A requested badge is drawn onto the file in a corner
+ * clear of the product (./badge), or left off with a note. Files that carry a digitalSource kind get their IPTC
  * DigitalSourceType written before zipping, so delivered bytes are tagged
  * (plan 5.7.2). A PDF version of the report is a follow up; JSON ships now.
  *
@@ -23,8 +24,12 @@ import archiver from "archiver";
 import sharp from "sharp";
 import { channelFileLimit, filenameFor, getSpec, isMarketplaceSpec, type ChannelSpec } from "@curvi/specs";
 import { writeDigitalSourceType, type DigitalSourceKind } from "../metadata/iptc";
+import { decodeToRgba } from "../raw";
 import { pixelChecks, type CheckItem, type PixelCheckReport } from "../qc/pixelChecks";
 import type { RawImage, RawMask } from "../raw";
+import { applyBadge } from "./badge";
+
+export { applyBadge, badgeEligible, badgePlacement, renderBadge, type BadgeBox, type BadgeOutcome } from "./badge";
 
 export interface PackAsset {
   /** Channel spec this file targets, e.g. "amazon.main". */
@@ -49,7 +54,8 @@ export interface PackAsset {
   seoSlug?: string;
   /** Sequence number for {nn} and {n} naming slots. */
   n?: number;
-  /** Whether a share badge was requested for this asset. */
+  /** Whether the "Made with Curvi" badge was requested for this asset. It is
+   * drawn only on a badgeAllowed social spec, clear of the product mask. */
   badge?: boolean;
   /** Margin passed to the background check, see PixelCheckOptions. */
   edgeMarginPx?: number;
@@ -173,10 +179,31 @@ export async function buildPack(
     namesPerChannel.set(channel, taken);
     filesPerSpec.set(asset.specId, already + 1);
 
+    // The badge goes on before IPTC tagging, since drawing it re-encodes the
+    // file. Its mask comes from the asset, or from the pixel loader.
+    let buffer = asset.buffer;
+    let rawForChecks = asset.raw;
+    if (badge) {
+      let mask: RawMask | null = asset.mask ?? null;
+      if (!mask && asset.loadPixels) {
+        mask = (await asset.loadPixels(buffer).catch(() => null))?.mask ?? null;
+      }
+      const outcome = await applyBadge(buffer, format, asset.specId, mask);
+      if (outcome.applied) {
+        buffer = outcome.buffer;
+        if (rawForChecks) {
+          rawForChecks = await decodeToRgba(buffer);
+        }
+        notes.push("badge applied: Made with Curvi, clear of the product");
+      } else {
+        badge = false;
+        notes.push(`badge left off: ${outcome.reason}`);
+      }
+    }
+
     // Embed the IPTC digital source marking before any bytes leave the
     // packager, so zips, loose files and checks all see the tagged file.
     const digitalSource: DigitalSourceKind = asset.digitalSource ?? "none";
-    let buffer = asset.buffer;
     if (digitalSource !== "none") {
       const tagPath = path.join(outDir, `.tag-${randomUUID()}.${format}`);
       await writeFile(tagPath, buffer);
@@ -194,7 +221,9 @@ export async function buildPack(
     let checks: CheckItem[] = [];
     let measured: PackFileReport["measured"] = null;
     let pass = true;
-    let pixels: { raw: RawImage; mask?: RawMask } | null = asset.raw ? { raw: asset.raw, mask: asset.mask } : null;
+    let pixels: { raw: RawImage; mask?: RawMask } | null = rawForChecks
+      ? { raw: rawForChecks, mask: asset.mask }
+      : null;
     if (!pixels && asset.loadPixels) {
       try {
         pixels = await asset.loadPixels(buffer);

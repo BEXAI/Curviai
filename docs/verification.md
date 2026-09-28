@@ -254,3 +254,13 @@ Record each with its date here once done (order in docs/phases/PHASE_10.md, Befo
 - 0013: the unique index `source_media_workspace_r2_key_uq` exists.
 - `/api/health` on the new deploy returns 200 with `"schema":"current"` and a non null `commit`.
 - The Update.md Wave 0 gate (docs/LAUNCH_CHECKLIST.md step 16, full version).
+
+### Batch 2, b2/growth (recorded 2026-09-28)
+
+| Fact | Where | Source | Checked by |
+|---|---|---|---|
+| sharp output (`toBuffer`, `toFile`) removes all metadata by default, including EXIF orientation, ICC, XMP and IPTC; only `keepMetadata`, `keepExif`, `keepIccProfile`, `keepXmp` or `withMetadata` keep any. Share page images rely on this to drop the seller's EXIF (GPS, camera serial). | packages/pipeline/src/share-image.ts, apps/web/src/app/(marketing)/s/[slug]/image/[ref]/route.ts | sharp.pixelplumbing.com/api-output (fetched 2026-09-28); also asserted by packages/pipeline/src/share-image.test.ts | Implementer (b2/growth) |
+| `ImageResponse` from `next/og` can be returned from a Route Handler; options take `width` and `height` (default 1200 by 630), `status`, `statusText` and `headers`; layout is flexbox and a CSS subset (no grid); bundle limit 500 KB, so images are fetched at request time. | apps/web/src/app/(marketing)/s/[slug]/og/route.tsx | nextjs.org/docs/app/api-reference/functions/image-response (fetched 2026-09-28) | Implementer (b2/growth) |
+| Drizzle `onConflictDoUpdate` accepts `targetWhere` for a partial unique index (`ON CONFLICT (col) WHERE ... DO UPDATE`). Used for the one gallery entry per share. | apps/web/src/lib/shares/db-store.ts publish | installed drizzle-orm 0.44 pg-core types; exercised against PGlite in apps/web/src/lib/shares/db-store.test.ts | Implementer (b2/growth) |
+
+Not verified: whether Meta treats a small corner badge on a feed image as an overlay that affects delivery. The badge is drawn only on specs the registry marks `badgeAllowed` (meta.feed_1x1, meta.feed_4x5, meta.story_9x16), outside the story safe zone, and only on free plan packs.

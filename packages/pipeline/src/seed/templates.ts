@@ -75,3 +75,27 @@ export const stillStyle = {
   textHex: "#1B1F24",
   accentHex: "#FD7F11",
 } as const;
+
+/**
+ * The "Made with Curvi" badge on social exports (plan 9.6.3). Seed data per
+ * CLAUDE.md rule 2, so the packager carries no layout literals. The badge is
+ * drawn only on specs with badgeAllowed, never on a marketplace spec, and
+ * only in a corner clear of the product mask.
+ */
+export const badgeStyle = {
+  text: "Made with Curvi",
+  /** Font size as a share of the canvas shortest side. */
+  fontOfShort: 0.022,
+  /** Smallest font size in pixels, so small canvases stay legible. */
+  minFontPx: 12,
+  /** Gap from the canvas edge, or from the spec safe zone, as a share of the shortest side. */
+  marginOfShort: 0.025,
+  /** Pill padding as a share of the font size. */
+  padXOfFont: 0.75,
+  padYOfFont: 0.45,
+  /** Clearance kept between the pill and any product pixel, as a share of the font size. */
+  productClearanceOfFont: 0.5,
+  backgroundHex: "#1B1F24",
+  backgroundOpacity: 0.78,
+  textHex: "#FFFFFF",
+} as const;

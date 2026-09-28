@@ -77,6 +77,8 @@ interface PageSeoInput {
   /** Use the title as is, without the brand template. */
   absoluteTitle?: boolean;
   noIndex?: boolean;
+  /** A page's own social card, e.g. a share page's before and after. */
+  image?: { url: string; width: number; height: number; alt: string };
 }
 
 /** The title as it renders in the browser tab and search results. */
@@ -92,6 +94,7 @@ export function renderedTitle(title: string, absolute = false): string {
  */
 export function pageMetadata(input: PageSeoInput): Metadata {
   const fullTitle = renderedTitle(input.title, input.absoluteTitle);
+  const image = input.image ?? OG_IMAGE;
   return {
     title: input.absoluteTitle ? { absolute: input.title } : input.title,
     description: input.description,
@@ -104,13 +107,13 @@ export function pageMetadata(input: PageSeoInput): Metadata {
       url: input.path,
       title: fullTitle,
       description: input.description,
-      images: [OG_IMAGE],
+      images: [image],
     },
     twitter: {
       card: "summary_large_image",
       title: fullTitle,
       description: input.description,
-      images: [OG_IMAGE.url],
+      images: [image.url],
     },
     ...(input.noIndex ? { robots: { index: false, follow: true } } : {}),
   };

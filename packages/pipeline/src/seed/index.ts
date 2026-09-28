@@ -9,7 +9,7 @@ export {
   photoroomSeed,
 } from "./models";
 export type { ImageModelSeedRow, ImageProviderFamily, LlmPriceTable } from "./models";
-export { canvasDefaults, presets, sceneDefaults, stillStyle, templates } from "./templates";
+export { badgeStyle, canvasDefaults, presets, sceneDefaults, stillStyle, templates } from "./templates";
 export type { PresetKey } from "./templates";
 export {
   creditCosts,
@@ -32,6 +32,7 @@ export {
   isShotMethodDeliverable,
   undeliverableShotMethods,
   platformSettingSeedRows,
+  socialBadgeByTier,
 } from "./credits";
 export type {
   CreditCostKey,

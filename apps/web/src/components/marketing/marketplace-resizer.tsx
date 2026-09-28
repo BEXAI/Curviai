@@ -3,7 +3,9 @@
 import { useCallback, useMemo, useState } from "react";
 import { filenameFor, type ChannelSpec } from "@curvi/specs";
 import { Button, Card, CardContent, buttonVariants, cn } from "@curvi/ui";
+import { EmailGate } from "./email-gate";
 import { imageSpecs, specDisplayName, specSlug } from "./spec-slug";
+import { resizerGateCopy } from "./tool-copy";
 
 interface ResizedResult {
   specId: string;
@@ -32,7 +34,8 @@ function filenameForSpec(spec: ChannelSpec): string {
 
 /**
  * Client side resize with white padding to each selected channel spec.
- * Downloads use the spec filename convention where one exists.
+ * Downloads use the spec filename convention where one exists. Previews are
+ * free; the downloads sit behind the email gate.
  */
 export function MarketplaceResizer() {
   const specs = useMemo(() => imageSpecs(), []);
@@ -193,16 +196,26 @@ export function MarketplaceResizer() {
                   <p className="text-xs text-ink-500">
                     {result.width} by {result.height} px
                   </p>
-                  <a
-                    href={result.dataUrl}
-                    download={result.filename}
-                    className="mt-2 inline-flex h-8 items-center justify-center rounded-lg border border-ink-200 px-3 text-xs font-medium text-ink-900 hover:bg-ink-50"
-                  >
-                    Download
-                  </a>
                 </li>
               ))}
             </ul>
+            <div className="mt-6">
+              <EmailGate source="marketplace-resizer" title={resizerGateCopy.title} body={resizerGateCopy.body}>
+                <ul data-testid="resizer-downloads" className="flex flex-wrap gap-2">
+                  {results.map((result) => (
+                    <li key={result.specId}>
+                      <a
+                        href={result.dataUrl}
+                        download={result.filename}
+                        className="inline-flex h-8 items-center justify-center rounded-lg border border-ink-200 px-3 text-xs font-medium text-ink-900 hover:bg-ink-50"
+                      >
+                        Download {result.filename}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </EmailGate>
+            </div>
           </CardContent>
         </Card>
       ) : null}

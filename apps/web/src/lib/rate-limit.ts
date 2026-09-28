@@ -42,6 +42,11 @@ export const RATE_LIMIT_POLICIES = {
   "uploads.complete": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },
   "jobs.create": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
   "products.create": { user: { limit: 120, windowSeconds: HOUR }, ip: { limit: 240, windowSeconds: HOUR } },
+  // Anonymous email capture on the free tools: IP only, since there is no
+  // user. A person leaves one email; a few retries and a shared office fit.
+  "leads.create": { user: { limit: 20, windowSeconds: HOUR }, ip: { limit: 20, windowSeconds: HOUR } },
+  // Publishing and unpublishing a share page.
+  "shares.write": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitPolicyName = keyof typeof RATE_LIMIT_POLICIES;

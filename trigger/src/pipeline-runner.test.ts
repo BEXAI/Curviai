@@ -1464,6 +1464,32 @@ describe("selection is by channel spec (2.11)", () => {
   });
 });
 
+describe("the Made with Curvi badge (plan 9.6.3)", () => {
+  const DEFAULT_FORM = ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"];
+
+  it("is asked for on social files only, never on marketplace files", async () => {
+    const input: GeneratePackInput = { ...baseInput, channels: DEFAULT_FORM, creditBudget: 30, socialBadge: true };
+    const files = await packReport(await runGeneratePack(input, makeDeps()));
+    const social = files.filter((f) => f.specId === "meta.feed_1x1");
+    expect(social.length).toBeGreaterThan(0);
+    for (const file of files.filter((f) => f.specId !== "meta.feed_1x1")) {
+      expect(file.badge, file.specId).toBe(false);
+      expect(file.notes.join(" "), file.specId).not.toMatch(/badge/);
+    }
+    // The demo product leaves a corner clear, so the badge is drawn.
+    for (const file of social) {
+      expect(file.badge).toBe(true);
+      expect(file.notes.join(" ")).toMatch(/badge applied/);
+    }
+  });
+
+  it("is not asked for when the plan ships clean files", async () => {
+    const input: GeneratePackInput = { ...baseInput, channels: DEFAULT_FORM, creditBudget: 30, socialBadge: false };
+    const files = await packReport(await runGeneratePack(input, makeDeps()));
+    expect(files.every((f) => f.badge === false && !f.notes.join(" ").includes("badge"))).toBe(true);
+  });
+});
+
 describe("marketplace listing channels (2.11 regression)", () => {
   const LISTING_SPECS = ["etsy.listing", "ebay.listing", "walmart.main", "tiktokshop.main", "pinterest.pin"];
 

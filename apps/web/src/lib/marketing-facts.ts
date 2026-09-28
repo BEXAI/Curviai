@@ -199,7 +199,7 @@ export const FEATURES = {
   },
   sharePages: {
     label: "Share pages for finished packs",
-    status: "coming_soon",
+    status: "live",
     mentions: /share (pages?|links?)|share this makeover/i,
   },
   urlImport: {
