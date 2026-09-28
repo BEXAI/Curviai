@@ -18,6 +18,8 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: NEXT_PUBLIC_SITE_URL
+        value: https://curvi.ai
       # Values are set in the Render dashboard, never committed. sync: false makes
       # Render prompt for them on Blueprint sync.
       - key: NEXT_PUBLIC_SUPABASE_URL
@@ -34,7 +36,7 @@ services:
         sync: false
       - key: R2_SECRET_ACCESS_KEY
         sync: false
-      - key: R2_BUCKET
+      - key: R2_BUCKET_PRIVATE
         sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
