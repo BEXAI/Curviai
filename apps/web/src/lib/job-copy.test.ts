@@ -1,5 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { CHANNEL_LIMIT_REASON } from "@curvi/pipeline";
+import { HARMONIZE_SHAPE_REFUSED } from "@curvi/trigger/live-runtime";
+import {
+  SHOT_CHANNEL_FULL,
+  SHOT_CONTENT_BLOCKED,
+  SHOT_NOT_DELIVERED,
+  SHOT_PROVIDER_TROUBLE,
+} from "@curvi/trigger/runner";
+import { SETTLED_JOB_MESSAGES } from "@/lib/jobs/enqueue";
 import { needsReviewNote, packSummaryLine, publicJobError, skippedCopy } from "./job-copy";
+
+// enqueue.ts schedules inline packs with next/server's after(); only its
+// settled messages are read here.
+vi.mock("next/server", () => ({ after: vi.fn() }));
 
 // Rule 9: plain spoken, no emojis, no arrows, no dashes as punctuation.
 const FORBIDDEN = /[–—→←]| - |->|=>|[\u{1F300}-\u{1FAFF}]/u;
@@ -44,6 +57,14 @@ describe("skippedCopy", () => {
     expect(skippedCopy("not included in this plan tier", "lifestyle").label).toBe("Not in your plan");
     expect(skippedCopy("needs photo", "alt_angle_white").label).toBe("Needs photo");
   });
+
+  it("says a shot left out over a channel's image limit was left out for that reason", () => {
+    const copy = skippedCopy(CHANNEL_LIMIT_REASON, "alt_angle_white");
+    expect(copy.label).toBe("Skipped");
+    expect(copy.note).toContain("as many images as it allows");
+    expect(copy.note).toContain("No credits were charged");
+    expect(copy.note).not.toMatch(FORBIDDEN);
+  });
 });
 
 describe("needsReviewNote", () => {
@@ -68,6 +89,34 @@ describe("needsReviewNote", () => {
   it("points at the photo when the product could not be found", () => {
     expect(needsReviewNote("No product was found in the source photo for the lifestyle shot.")).toContain("photo");
   });
+
+  // Each runner hint gets its own true reason, never the quality bar line:
+  // several of these shots passed every check or never reached one.
+  const RUNNER_HINTS: Array<[name: string, hint: string, says: RegExp]> = [
+    ["SHOT_CHANNEL_FULL", SHOT_CHANNEL_FULL, /passed our checks.*as many images as it allows.*left out of the pack/],
+    ["SHOT_NOT_DELIVERED", SHOT_NOT_DELIVERED, /passed our checks.*could not add it to the pack/],
+    ["SHOT_CONTENT_BLOCKED", SHOT_CONTENT_BLOCKED, /image service declined to make this scene/],
+    ["HARMONIZE_SHAPE_REFUSED", HARMONIZE_SHAPE_REFUSED, /wrong shape.*placed back exactly/],
+    ["SHOT_PROVIDER_TROUBLE", SHOT_PROVIDER_TROUBLE, /image service had trouble/],
+    [
+      "pack spend cap",
+      "This pack reached its spending limit before this shot could be made, so it needs review.",
+      /pack reached its spending limit/,
+    ],
+    ["unchecked shot", "We could not check this shot, so it needs review.", /could not run our checks/],
+  ];
+
+  it.each(RUNNER_HINTS)("maps the runner's %s hint to its own plain reason", (_name, hint, says) => {
+    const note = needsReviewNote(hint);
+    expect(note).toMatch(says);
+    expect(note).not.toContain("quality bar");
+    expect(note).toMatch(/No credits were charged for it\.$/);
+    expect(note).not.toMatch(FORBIDDEN);
+  });
+
+  it("never offers a fix the seller cannot make for a blocked scene", () => {
+    expect(needsReviewNote(SHOT_CONTENT_BLOCKED)).not.toMatch(/style preset|try again/i);
+  });
 });
 
 describe("publicJobError", () => {
@@ -88,6 +137,26 @@ describe("publicJobError", () => {
   it("returns null when there is no error", () => {
     expect(publicJobError(null)).toBeNull();
     expect(publicJobError("  ")).toBeNull();
+  });
+
+  // The inline runner's settled messages, one plain line each.
+  const SETTLED: Record<keyof typeof SETTLED_JOB_MESSAGES, RegExp> = {
+    not_started: /^Our server restarted before this pack could start\./,
+    interrupted: /^Our server restarted while this pack was running\./,
+    timed_out: /^This pack took longer than our time limit, so we stopped it\./,
+    crashed: /^This pack stopped because of an error on our side\./,
+  };
+
+  it.each(Object.entries(SETTLED))("maps the inline runner's %s message to its own line", (reason, says) => {
+    const text = publicJobError(SETTLED_JOB_MESSAGES[reason as keyof typeof SETTLED_JOB_MESSAGES]);
+    expect(text).toMatch(says);
+    expect(text).toContain("Credits held for it went back to your balance");
+    expect(text).not.toContain("Something went wrong");
+    expect(text).not.toMatch(FORBIDDEN);
+  });
+
+  it("covers every settle reason the runner has", () => {
+    expect(Object.keys(SETTLED).sort()).toEqual(Object.keys(SETTLED_JOB_MESSAGES).sort());
   });
 });
 

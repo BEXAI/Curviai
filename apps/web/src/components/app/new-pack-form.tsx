@@ -48,6 +48,29 @@ interface NewPackFormProps {
 
 const DEFAULT_CHANNELS = ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"];
 
+/**
+ * Whether a failed submit used up its Idempotency-Key, so the next try is a
+ * new intent. A 409 means the key belongs to a different request. A 503 the
+ * jobs route answered with reason "unavailable" means the server refused
+ * before the pack started (a draining server writes nothing, and a job it
+ * had to abandon has its key freed), so the retry must create a fresh job.
+ * Any other failure keeps the key: the server may have started the pack,
+ * and a retry with the same key replays it instead of starting a second one.
+ */
+export function submitFailureSpendsKey(status: number, reason?: string): boolean {
+  return status === 409 || (status === 503 && reason === "unavailable");
+}
+
+/** The credit line under the estimate. A balance below zero is explained,
+ * never shown as a bare negative number. */
+export function creditBalanceLine(creditBalance: number): string {
+  if (creditBalance < 0) {
+    const owed = -creditBalance;
+    return `Your balance is ${owed.toLocaleString("en-US")} ${owed === 1 ? "credit" : "credits"} below zero because a move to a smaller plan took credits back. New packs start again once a top up or your next renewal covers it.`;
+  }
+  return `You have ${creditBalance.toLocaleString("en-US")} credits. Only assets that pass QC are charged.`;
+}
+
 export function channelLabel(id: string): string {
   const pretty = id.replaceAll(".", " ").replaceAll("_", " ");
   return pretty.charAt(0).toUpperCase() + pretty.slice(1);
@@ -252,11 +275,13 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
       const data = (await response.json().catch(() => ({}))) as {
         job?: { id: string };
         error?: string;
+        reason?: string;
         replayed?: boolean;
       };
       if (!response.ok || !data.job) {
-        if (response.status === 409) {
-          // The key was spent on a different request; the next try is a new intent.
+        if (submitFailureSpendsKey(response.status, data.reason)) {
+          // The next try is a new intent with a new key, so it creates a
+          // fresh job instead of replaying this refusal.
           intentRef.current = null;
         }
         setSubmitError(data.error ?? "The pack could not be started. Try again in a moment.");
@@ -506,8 +531,11 @@ export function NewPackForm({ products, channels, tier, creditBalance, initialPr
                   {estimate.total}
                 </span>
               </p>
-              <p className="mt-1 text-xs text-ink-400">
-                You have {creditBalance.toLocaleString("en-US")} credits. Only assets that pass QC are charged.
+              <p
+                className={cn("mt-1 text-xs", creditBalance < 0 ? "text-amber-700" : "text-ink-400")}
+                data-testid="credit-balance-line"
+              >
+                {creditBalanceLine(creditBalance)}
               </p>
             </div>
             <Button

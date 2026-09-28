@@ -19,7 +19,13 @@ import {
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, type Db } from "@curvi/db";
 import { DbService, RESTARTING_MESSAGE, isInsufficientCreditsError } from "./db";
-import { InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
+import {
+  InlinePackRunner,
+  InlineRunnerClosedError,
+  installInlinePackRunner,
+  resetInlinePackRunnerForTests,
+  type InlinePackJob,
+} from "@/lib/jobs/inline-runner";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 
 type EnqueuedPayload = { tier: string; creditBudget: number };
@@ -241,6 +247,9 @@ describe("DbService.createJob reserve error mapping (Update.md 1.8)", () => {
     const [job] = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws));
     expect(job.status).toBe("queued");
     expect(await balance(ws)).toBe(100 - job.creditsReserved);
+    // Its key is free all the same, so a retry never replays a job that
+    // will not run.
+    expect(job.idempotencyKey).toBeNull();
   });
 });
 
@@ -267,6 +276,42 @@ describe("DbService.createJob per workspace lock (deadlock fix)", () => {
 });
 
 describe("DbService.createJob on a draining server", () => {
+  const silent = { info: () => {}, warn: () => {}, error: () => {} };
+
+  /** Installs the process wide inline runner and starts its drain, as
+   * SIGTERM does during a deploy. */
+  async function drainingRunner(): Promise<void> {
+    resetInlinePackRunnerForTests();
+    const runner = installInlinePackRunner(
+      () =>
+        new InlinePackRunner<InlinePackJob>(
+          { concurrency: 1, shutdownGraceMs: 0, heartbeatMs: 60_000 },
+          { runPack: async () => {}, settle: async () => {}, logger: silent },
+        ),
+    );
+    await runner.shutdown("SIGTERM");
+  }
+
+  afterEach(() => {
+    resetInlinePackRunnerForTests();
+  });
+
+  async function productsOf(ws: string) {
+    return db.select().from(products).where(eq(products.workspaceId, ws));
+  }
+
+  async function mediaOf(ws: string) {
+    return db.select().from(sourceMedia).where(eq(sourceMedia.workspaceId, ws));
+  }
+
+  function newProductInput(ws: string, key: string) {
+    return {
+      ...jobInput("new"),
+      newProductTitle: "Lamp",
+      uploads: [{ key: `ws/${ws}/src/${key}.jpg`, sha256: "d".repeat(64), kind: "image" as const }],
+    };
+  }
+
   it("answers unavailable with plain restart copy and returns the hold", async () => {
     const { ws, productId } = await workspaceWith("starter", 100);
     const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -281,6 +326,100 @@ describe("DbService.createJob on a draining server", () => {
     // Expected during a deploy: a warning, not an error.
     expect(warnings).toHaveBeenCalled();
     expect(errors).not.toHaveBeenCalled();
+  });
+
+  it("refuses before writing anything once the runner drains, and a retry with the same key creates a new job", async () => {
+    const { ws } = await workspaceWith("starter", 100);
+    const productsBefore = await productsOf(ws);
+    const mediaBefore = await mediaOf(ws);
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await drainingRunner();
+    const input = newProductInput(ws, "drain-first");
+
+    const refused = await service().createJob(ws, input);
+
+    // The route answers this with a 503 and Retry-After.
+    expect(refused).toEqual({ outcome: "rejected", reason: "unavailable", message: RESTARTING_MESSAGE });
+    expect(await productsOf(ws)).toHaveLength(productsBefore.length);
+    expect(await mediaOf(ws)).toHaveLength(mediaBefore.length);
+    expect(await jobsOf(ws)).toHaveLength(0);
+    expect(await balance(ws)).toBe(100);
+    expect(enqueue.fn).not.toHaveBeenCalled();
+    expect(warnings).toHaveBeenCalled();
+
+    // The next instance is up: the form retries with the same key.
+    resetInlinePackRunnerForTests();
+    const retry = await service().createJob(ws, input);
+
+    expect(retry.outcome).toBe("created");
+    const jobs = await jobsOf(ws);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].idempotencyKey).toBe(input.idempotencyKey);
+    const [media] = (await mediaOf(ws)).filter((m) => m.r2Key === input.uploads[0].key);
+    expect(media?.productId).toBe(jobs[0].productId);
+    expect(enqueue.fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("frees the key of a job the queue refused, so a retry with the same key creates a new job", async () => {
+    const { ws, productId } = await workspaceWith("starter", 100);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const input = jobInput(productId);
+    enqueue.fn.mockRejectedValueOnce(new InlineRunnerClosedError());
+
+    const refused = await service().createJob(ws, input);
+    expect(refused).toMatchObject({ outcome: "rejected", reason: "unavailable" });
+    const [abandoned] = await jobsOf(ws);
+    expect(abandoned.status).toBe("failed");
+    expect(abandoned.idempotencyKey).toBeNull();
+
+    const retry = await service().createJob(ws, input);
+
+    expect(retry.outcome).toBe("created");
+    if (retry.outcome === "created") {
+      expect(retry.job.id).not.toBe(abandoned.id);
+      expect(retry.job.status).toBe("queued");
+    }
+    const jobs = await jobsOf(ws);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.find((j) => j.id !== abandoned.id)?.idempotencyKey).toBe(input.idempotencyKey);
+    // Only the new job holds credits.
+    const fresh = jobs.find((j) => j.id !== abandoned.id);
+    expect(await balance(ws)).toBe(100 - (fresh?.creditsReserved ?? 0));
+  });
+
+  it("hands the photos of an abandoned new product pack to the product the retry creates", async () => {
+    const { ws } = await workspaceWith("starter", 100);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const input = newProductInput(ws, "abandoned-new");
+    enqueue.fn.mockRejectedValueOnce(new InlineRunnerClosedError());
+
+    await service().createJob(ws, input);
+    const [abandoned] = await jobsOf(ws);
+    expect((await mediaOf(ws)).some((m) => m.r2Key === input.uploads[0].key)).toBe(false);
+
+    const retry = await service().createJob(ws, input);
+
+    expect(retry.outcome).toBe("created");
+    if (retry.outcome === "created") {
+      expect(retry.job.productId).not.toBe(abandoned.productId);
+      const [media] = (await mediaOf(ws)).filter((m) => m.r2Key === input.uploads[0].key);
+      expect(media?.productId).toBe(retry.job.productId);
+    }
+  });
+
+  it("keeps a photo added to an existing product when its pack is abandoned", async () => {
+    const { ws, productId } = await workspaceWith("starter", 100);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const key = `ws/${ws}/src/second-angle.jpg`;
+    enqueue.fn.mockRejectedValueOnce(new InlineRunnerClosedError());
+
+    await service().createJob(ws, {
+      ...jobInput(productId),
+      uploads: [{ key, sha256: "e".repeat(64), kind: "image" as const }],
+    });
+
+    const [media] = (await mediaOf(ws)).filter((m) => m.r2Key === key);
+    expect(media?.productId).toBe(productId);
   });
 });
 
@@ -307,6 +446,24 @@ describe("DbService.createJob holds and entitlements", () => {
     expect(await db.select().from(products).where(eq(products.workspaceId, ws))).toHaveLength(productsBefore.length);
     expect(await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws))).toHaveLength(0);
     expect(await balance(ws)).toBe(100);
+  });
+
+  it("refuses an image spec a pack makes no files for, before writing anything", async () => {
+    const { ws } = await workspaceWith("agency", 100);
+    const productsBefore = await db.select().from(products).where(eq(products.workspaceId, ws));
+    const result = await service().createJob(ws, {
+      ...jobInput("new", ["amazon.main", "amazon.aplus.premium_full"]),
+      newProductTitle: "Should not exist",
+    });
+    expect(result).toMatchObject({
+      outcome: "rejected",
+      reason: "feature_unavailable",
+      message: expect.stringContaining("Amazon A plus premium modules are coming soon"),
+    });
+    expect(await db.select().from(products).where(eq(products.workspaceId, ws))).toHaveLength(productsBefore.length);
+    expect(await jobsOf(ws)).toHaveLength(0);
+    expect(await balance(ws)).toBe(100);
+    expect(enqueue.fn).not.toHaveBeenCalled();
   });
 });
 

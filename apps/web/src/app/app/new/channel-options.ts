@@ -1,10 +1,12 @@
 /**
  * The channel list the new pack form shows. Every channel comes from the
  * spec registry, and each one carries the verdict createJob would give it
- * (lib/entitlements.ts, from the seed), so the form marks a channel whose
- * feature is not live as Coming soon and one outside the plan as an upgrade,
- * and never lets either be picked (Phase 10 decision 1). The server check
- * stays in createJob; this only keeps the form from offering what it refuses.
+ * (lib/entitlements.ts), so the form marks as Coming soon a channel whose
+ * plan feature is not live (from the seed) or whose spec a pack makes no
+ * files for yet (lib/marketing-facts isSpecLive, for example
+ * amazon.aplus.premium_full), marks one outside the plan as an upgrade, and
+ * never lets either be picked (Phase 10 decision 1). The server check stays
+ * in createJob; this only keeps the form from offering what it refuses.
  */
 
 import type { TierFeature, TierKey } from "@curvi/pipeline/seed";
@@ -12,13 +14,15 @@ import { isFeatureLive } from "@curvi/pipeline/seed";
 import { isMarketplaceSpec, listSpecs } from "@curvi/specs";
 import type { ChannelOption } from "@/components/app/new-pack-form";
 import { channelAvailability } from "@/lib/entitlements";
+import { isSpecLive } from "@/lib/marketing-facts";
 
 export function newPackChannelOptions(
   tier: TierKey,
   isLive: (feature: TierFeature) => boolean = isFeatureLive,
+  specLive: (specId: string) => boolean = isSpecLive,
 ): ChannelOption[] {
   return listSpecs().map((spec) => {
-    const availability = channelAvailability(spec.id, tier, isLive);
+    const availability = channelAvailability(spec.id, tier, isLive, specLive);
     return {
       id: spec.id,
       marketplace: isMarketplaceSpec(spec.id),

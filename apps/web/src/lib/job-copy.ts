@@ -70,6 +70,13 @@ export function skippedCopy(reason: string | null | undefined, shotType?: string
   if (r.includes("shot cap") || r.includes("credit budget")) {
     return { label: "Skipped", note: `The pack reached its size limit before this shot. ${NO_CHARGE}` };
   }
+  if (r.includes("channel image limit")) {
+    // The planner's CHANNEL_LIMIT_REASON (packages/pipeline planner).
+    return {
+      label: "Skipped",
+      note: `This channel already has as many images as it allows, so this shot was left out. ${NO_CHARGE}`,
+    };
+  }
   if (r.includes("benefits")) {
     return {
       label: "Needs details",
@@ -94,12 +101,39 @@ export function skippedCopy(reason: string | null | undefined, shotType?: string
   return { label: "Skipped", note: `This shot was left out of the pack. ${NO_CHARGE}` };
 }
 
-/** Why a shot ended in needs review, from its stored repair hint or
- * unavailable message. Always ends by saying it was not charged. */
+/**
+ * Why a shot ended in needs review, from its stored repair hint or
+ * unavailable message. Always ends by saying it was not charged. The runner's
+ * own plain hints (trigger/src pipeline-runner.ts and live-runtime.ts) are
+ * matched first, since several of them are not a quality problem at all: a
+ * shot left out over a channel's image limit passed every check.
+ */
 export function needsReviewNote(hint: string | null | undefined): string {
   const h = (hint ?? "").toLowerCase();
   let reason = "It did not meet our quality bar, so we held it back.";
-  if (
+  if (h.includes("as many images as it allows")) {
+    // SHOT_CHANNEL_FULL: passed QC, dropped by the packager over the limit.
+    reason = "It passed our checks, but this channel already has as many images as it allows, so it was left out of the pack.";
+  } else if (h.includes("could not be added to the pack")) {
+    // SHOT_NOT_DELIVERED: passed QC, but the packager could not deliver it.
+    reason = "It passed our checks, but we could not add it to the pack, so it was left out.";
+  } else if (h.includes("declined to make this scene")) {
+    // SHOT_CONTENT_BLOCKED: the image provider's safety system said no.
+    reason = "The image service declined to make this scene, so we held this shot back.";
+  } else if (h.includes("in the wrong shape")) {
+    // HARMONIZE_SHAPE_REFUSED: the lighting pass came back at another size,
+    // so the real product could not be placed back exactly.
+    reason =
+      "The image service returned this scene in the wrong shape, so your product could not be placed back exactly and we held it back.";
+  } else if (h.includes("spending limit")) {
+    // The runner's pack spend cap, reached before this shot ran.
+    reason = "The pack reached its spending limit before this shot could be made.";
+  } else if (h.includes("provider had trouble")) {
+    // SHOT_PROVIDER_TROUBLE: an unexpected provider or runtime error.
+    reason = "The image service had trouble with this shot, so we held it back.";
+  } else if (h.includes("could not check this shot")) {
+    reason = "We could not run our checks on this shot, so we held it back.";
+  } else if (
     h.includes("does not point at one of this product") ||
     h.includes("source photo") ||
     h.includes("no product was found") ||
@@ -151,6 +185,21 @@ export function publicJobError(raw: string | null | undefined): string | null {
   const r = raw.toLowerCase();
   if (r.includes("interrupted before finishing")) {
     return "The run was interrupted before it finished. Credits held for it went back to your balance.";
+  }
+  // The inline runner's settled messages (lib/jobs/enqueue.ts
+  // SETTLED_JOB_MESSAGES). A settled job is only failed when no pack was
+  // delivered, and its whole hold is released.
+  if (r.includes("server restarted before this pack could start")) {
+    return "Our server restarted before this pack could start. Credits held for it went back to your balance, so you can run it again.";
+  }
+  if (r.includes("server restarted while this pack was running")) {
+    return "Our server restarted while this pack was running. Credits held for it went back to your balance, so you can run it again.";
+  }
+  if (r.includes("longer than the time limit")) {
+    return "This pack took longer than our time limit, so we stopped it. Credits held for it went back to your balance, so you can run it again.";
+  }
+  if (r.includes("stopped because of an internal error")) {
+    return "This pack stopped because of an error on our side. Credits held for it went back to your balance, so you can run it again.";
   }
   if (r.includes("could not be queued") || r.includes("crashed before it could start")) {
     return "We could not start this pack. Credits held for it went back to your balance. Try again in a minute.";
