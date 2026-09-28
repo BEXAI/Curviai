@@ -63,7 +63,12 @@ BEGIN
       JOIN source_media d ON d.id = m.dupe_id
       GROUP BY m.keep_id
     ) merged
-    WHERE keep.id = merged.keep_id;
+    WHERE keep.id = merged.keep_id
+      -- 0011 added a NOT VALID prefix check. Postgres enforces it on UPDATE,
+      -- so a legacy kept row whose key sits outside its workspace is left as
+      -- is (its duplicates are still removed below) instead of failing the
+      -- whole migration.
+      AND starts_with(keep.r2_key, 'ws/' || keep.workspace_id::text || '/');
 
     FOR fk IN
       SELECT c.conrelid::regclass AS tbl, a.attname AS col

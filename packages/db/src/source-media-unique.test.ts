@@ -68,19 +68,26 @@ describe("source_media unique (workspace_id, r2_key)", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("allows the same key string in two workspaces", async () => {
-    const shared = "ws/shared/src/same";
-    await db.insert(sourceMedia).values({ workspaceId: wsA, productId: productA, r2Key: shared, sha256: "a" });
-    await db.insert(sourceMedia).values({ workspaceId: wsB, productId: productB, r2Key: shared, sha256: "b" });
-    const rows = await db.select().from(sourceMedia).where(eq(sourceMedia.r2Key, shared));
-    expect(rows).toHaveLength(2);
+  it("allows the same object name in two workspaces", async () => {
+    // Since 0011 every key carries its own workspace prefix, so the same
+    // object name uploaded to two workspaces is two distinct keys.
+    await db.insert(sourceMedia).values({ workspaceId: wsA, productId: productA, r2Key: key(wsA, "same"), sha256: "a" });
+    await db.insert(sourceMedia).values({ workspaceId: wsB, productId: productB, r2Key: key(wsB, "same"), sha256: "b" });
+    const rows = await db.select().from(sourceMedia).where(eq(sourceMedia.sha256, "a"));
+    expect(rows.some((row) => row.r2Key === key(wsA, "same"))).toBe(true);
+    const other = await db.select().from(sourceMedia).where(eq(sourceMedia.r2Key, key(wsB, "same")));
+    expect(other).toHaveLength(1);
   });
 });
 
 describe("0013 dedupe of rows that already exist", () => {
   it("keeps the earliest row per object, repoints share links and deletes only duplicates", async () => {
     // Recreate the pre 0013 state: drop the index, then insert duplicates.
+    // Production rows written before 0011 were never checked against its
+    // NOT VALID prefix constraint, so the fixture drops it while inserting
+    // legacy rows and adds it back NOT VALID, exactly as production has it.
     await client.exec(`drop index "source_media_workspace_r2_key_uq"`);
+    await client.exec(`alter table source_media drop constraint source_media_r2_key_workspace_prefix`);
 
     const dupKey = key(wsA, "dup-photo");
     const [kept] = await db
@@ -128,6 +135,34 @@ describe("0013 dedupe of rows that already exist", () => {
       .values({ workspaceId: wsB, productId: productB, r2Key: dupKey, sha256: "x" })
       .returning();
 
+    // A legacy cross tenant duplicate pair: its kept row cannot be updated
+    // under the prefix check, yet the group must still collapse.
+    const legacyKey = key(wsA, "legacy-cross");
+    const [legacyKept] = await db
+      .insert(sourceMedia)
+      .values({
+        workspaceId: wsB,
+        productId: productB,
+        r2Key: legacyKey,
+        sha256: "z",
+        createdAt: new Date("2026-09-01T00:00:00Z"),
+      })
+      .returning();
+    const [legacyDupe] = await db
+      .insert(sourceMedia)
+      .values({
+        workspaceId: wsB,
+        productId: productB,
+        r2Key: legacyKey,
+        sha256: "z",
+        width: 800,
+        createdAt: new Date("2026-09-02T00:00:00Z"),
+      })
+      .returning();
+    await client.exec(
+      `alter table source_media add constraint source_media_r2_key_workspace_prefix check (starts_with(r2_key, 'ws/' || workspace_id::text || '/')) not valid`,
+    );
+
     await db.insert(shareLinks).values([
       { slug: "before-second", workspaceId: wsA, beforeMediaId: second.id },
       { slug: "before-third", workspaceId: wsA, beforeMediaId: third.id },
@@ -159,6 +194,8 @@ describe("0013 dedupe of rows that already exist", () => {
     expect(ids.has(otherWs.id)).toBe(true);
     expect(ids.has(second.id)).toBe(false);
     expect(ids.has(third.id)).toBe(false);
+    expect(ids.has(legacyKept.id)).toBe(true);
+    expect(ids.has(legacyDupe.id)).toBe(false);
 
     // The index is back and enforces uniqueness again.
     await expect(

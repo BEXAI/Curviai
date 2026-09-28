@@ -38,20 +38,32 @@ function sqlText(query: unknown): string {
   return chunks.map((c) => (Array.isArray(c.value) ? c.value.join("") : "")).join("?");
 }
 
-/** A Db whose execute runs `hook` for statements that mention `fn`. */
+/** A Db whose execute runs `hook` for statements that mention `fn`, on the
+ * database itself and inside any transaction it opens. */
 function dbWith(fn: string, hook: (run: () => Promise<unknown>) => Promise<unknown>): Db {
-  const real = db as unknown as Db;
-  return new Proxy(real, {
-    get(target, prop, receiver) {
-      if (prop === "execute") {
-        return (query: unknown) => {
-          const run = () => (target.execute as (q: unknown) => Promise<unknown>)(query);
-          return sqlText(query).includes(fn) ? hook(run) : run();
-        };
-      }
-      return Reflect.get(target, prop, receiver);
-    },
-  });
+  const wrap = <T extends object>(inner: T): T =>
+    new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === "execute") {
+          return (query: unknown) => {
+            const run = () => ((target as { execute: (q: unknown) => Promise<unknown> }).execute)(query);
+            return sqlText(query).includes(fn) ? hook(run) : run();
+          };
+        }
+        if (prop === "transaction") {
+          return (callback: (tx: object) => Promise<unknown>, ...rest: unknown[]) =>
+            (target as { transaction: (cb: (tx: object) => Promise<unknown>, ...r: unknown[]) => Promise<unknown> })
+              .transaction((tx) => callback(wrap(tx)), ...rest);
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  return wrap(db as unknown as Db);
+}
+
+/** Jobs a workspace has, to prove a rejected pack left nothing behind. */
+async function jobsOf(ws: string) {
+  return db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws));
 }
 
 function service(database: Db = db as unknown as Db): DbService {
@@ -109,10 +121,9 @@ describe("DbService.createJob reserve error mapping (Update.md 1.8)", () => {
     const { ws, productId } = await workspaceWith("starter", 2);
     const result = await service().createJob(ws, jobInput(productId));
     expect(result).toMatchObject({ outcome: "rejected", reason: "insufficient_credits" });
-    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws));
-    expect(job.status).toBe("failed");
-    const rows = await db.select().from(creditLedger).where(eq(creditLedger.jobId, job.id));
-    expect(rows).toHaveLength(0);
+    // Product, uploads, job and hold commit together (Update.md 6.3), so a
+    // refused reservation leaves no job and no ledger row behind.
+    expect(await jobsOf(ws)).toHaveLength(0);
     expect(await balance(ws)).toBe(2);
     expect(enqueue.fn).not.toHaveBeenCalled();
   });
@@ -137,15 +148,13 @@ describe("DbService.createJob reserve error mapping (Update.md 1.8)", () => {
         alter function reserve_credits_real(uuid, numeric, uuid) rename to reserve_credits;
       `);
     }
-    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws));
-    expect(job.status).toBe("failed");
-    expect(await db.select().from(creditLedger).where(eq(creditLedger.jobId, job.id))).toHaveLength(0);
+    expect(await jobsOf(ws)).toHaveLength(0);
     expect(await balance(ws)).toBe(100);
     expect(errors).toHaveBeenCalled();
     expect(enqueue.fn).not.toHaveBeenCalled();
   });
 
-  it("gives the hold back when the reserve committed but its answer was lost", async () => {
+  it("keeps no hold when the reserve ran but its answer was lost", async () => {
     const { ws, productId } = await workspaceWith("starter", 100);
     vi.spyOn(console, "error").mockImplementation(() => {});
     const lostReply = dbWith("reserve_credits", async (run) => {
@@ -154,8 +163,8 @@ describe("DbService.createJob reserve error mapping (Update.md 1.8)", () => {
     });
     const result = await service(lostReply).createJob(ws, jobInput(productId));
     expect(result).toMatchObject({ outcome: "rejected", reason: "unavailable" });
-    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws));
-    expect(job.status).toBe("failed");
+    // The reserve ran inside the job's transaction, which rolled back.
+    expect(await jobsOf(ws)).toHaveLength(0);
     expect(await balance(ws)).toBe(100);
   });
 
