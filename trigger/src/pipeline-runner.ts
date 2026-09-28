@@ -141,6 +141,15 @@ export interface StoredAsset {
   encoded?: { buffer: Buffer; format: string };
 }
 
+/** The plan as the progress board needs it: every shot the pack will try,
+ * and every shot the planner left out with its reason. */
+export interface StoredPlan {
+  jobId: string;
+  workspaceId: string;
+  shots: Shot[];
+  skipped: Array<{ type: string; reason: string }>;
+}
+
 export interface StoredPack {
   jobId: string;
   workspaceId: string;
@@ -162,6 +171,10 @@ export interface JobStore {
   savePack(pack: StoredPack): Promise<void>;
   /** Persists the analyzed ProductProfile; stores without product rows skip it. */
   saveProfile?(jobId: string, profile: ProductProfile): Promise<void>;
+  /** Records the planned shots as pending and the skipped ones with their
+   * reasons, so the board shows the whole pack before any shot finishes.
+   * Display only: the runner never fails a pack because this failed. */
+  savePlan?(plan: StoredPlan): Promise<void>;
   /** Marks the run alive between state changes so a long generation phase
    * never looks stale to the reconciler. Returns false once the job is
    * terminal, so shots stop spending on a job nobody will settle. */
@@ -1672,6 +1685,11 @@ export async function runGeneratePack(
       })),
       ...shotList.skipped,
     ];
+    try {
+      await store.savePlan?.({ jobId: input.jobId, workspaceId: input.workspaceId, shots: shotList.shots, skipped });
+    } catch (planErr) {
+      console.warn(`[runner] could not record the plan for job ${input.jobId}`, planErr);
+    }
 
     // Fan out per shot generation, each shot carrying its own QC retry loop.
     await advance(transition(state, "plan_ready"), {

@@ -8,7 +8,11 @@ import { getServices } from "@/lib/services";
 export const metadata: Metadata = { title: "New pack" };
 export const dynamic = "force-dynamic";
 
-export default async function NewPackPage() {
+export default async function NewPackPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const services = getServices();
   const workspace = await services.ensureWorkspace();
   if (!workspace) {
@@ -19,6 +23,8 @@ export default async function NewPackPage() {
       </div>
     );
   }
+  const params = await searchParams;
+  const requestedProduct = typeof params.product === "string" ? params.product : null;
   const products = await services.listProducts(workspace.id);
   const channels = listSpecs().map((spec) => ({
     id: spec.id,
@@ -38,6 +44,7 @@ export default async function NewPackPage() {
           channels={channels}
           tier={tier}
           creditBalance={workspace.creditBalance}
+          initialProductId={requestedProduct}
         />
       </div>
     </div>

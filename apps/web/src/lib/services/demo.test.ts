@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { tierByKey } from "@curvi/pipeline/seed";
+import { isMarketplaceSpec } from "@curvi/specs";
 import { DEMO_TIER, DemoService, DemoStore } from "./demo";
+import { planDemoShots } from "./demo-plan";
 import type { JobStatus, JobView } from "./types";
 
 const FIXED_NOW = () => new Date("2026-09-27T12:00:00.000Z");
@@ -148,6 +150,84 @@ describe("demo idempotency", () => {
     if (result.outcome === "rejected") {
       expect(result.reason).toBe("unknown_product");
     }
+  });
+});
+
+describe("demo products and modes (Update.md 6.7)", () => {
+  it("accepts a product made through createProduct", async () => {
+    const svc = service();
+    const workspace = await svc.getCurrentWorkspace();
+    const product = await svc.createProduct(workspace.id, { title: "Walnut tray", mode: "listing" });
+    const result = await svc.createJob(workspace.id, {
+      productId: product.id,
+      channels: CHANNELS,
+      mode: "listing",
+      idempotencyKey: "extra-product",
+    });
+    expect(result.outcome).toBe("created");
+    if (result.outcome === "created") {
+      expect(result.job.productTitle).toBe("Walnut tray");
+    }
+  });
+
+  it("makes a new product for a new pack, once, and replays a retry", async () => {
+    const svc = service();
+    const workspace = await svc.getCurrentWorkspace();
+    const before = (await svc.listProducts(workspace.id)).length;
+    const input = {
+      productId: "new",
+      channels: CHANNELS,
+      mode: "listing" as const,
+      idempotencyKey: "new-product",
+      newProductTitle: "Copper kettle",
+    };
+    const first = await svc.createJob(workspace.id, input);
+    const retry = await svc.createJob(workspace.id, input);
+    expect(first.outcome).toBe("created");
+    expect(retry.outcome).toBe("replayed");
+    if (first.outcome === "created" && retry.outcome === "replayed") {
+      expect(retry.job.id).toBe(first.job.id);
+      expect(first.job.productTitle).toBe("Copper kettle");
+    }
+    expect((await svc.listProducts(workspace.id)).length).toBe(before + 1);
+  });
+
+  it("does not make a product when the pack is rejected", async () => {
+    const svc = service();
+    const workspace = await svc.getCurrentWorkspace();
+    const before = (await svc.listProducts(workspace.id)).length;
+    const result = await svc.createJob(workspace.id, {
+      productId: "new",
+      channels: CHANNELS,
+      mode: "concept",
+      idempotencyKey: "concept-new",
+    });
+    expect(result.outcome).toBe("rejected");
+    if (result.outcome === "rejected") {
+      expect(result.reason).toBe("mode_unavailable");
+    }
+    expect((await svc.listProducts(workspace.id)).length).toBe(before);
+  });
+
+  it("plans no marketplace shots for a Concept pack, as the runner does", () => {
+    const channels = ["amazon.main", "shopify.product", "meta.feed_1x1"];
+    const listing = planDemoShots(channels, DEMO_TIER, "listing");
+    const concept = planDemoShots(channels, DEMO_TIER, "concept");
+    expect(listing.some((s) => s.channels.some((c) => isMarketplaceSpec(c)))).toBe(true);
+    expect(concept.length).toBeGreaterThan(0);
+    expect(concept.every((s) => s.channels.every((c) => !isMarketplaceSpec(c)))).toBe(true);
+  });
+
+  it("gives demo files stable ids and no download links", async () => {
+    const svc = service();
+    const job = await createJob(svc, "files-key");
+    await drain(svc, job.id);
+    const workspace = await svc.getCurrentWorkspace();
+    const view = await svc.listJobFiles(workspace.id, job.id);
+    expect(view?.files.length).toBeGreaterThan(0);
+    expect(new Set(view?.files.map((f) => f.id)).size).toBe(view?.files.length);
+    expect(view?.files.every((f) => f.downloadUrl === null)).toBe(true);
+    expect(await svc.getJobFileDownload(workspace.id, job.id, view?.files[0].id ?? "")).toBeNull();
   });
 });
 

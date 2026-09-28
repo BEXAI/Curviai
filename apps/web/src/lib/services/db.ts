@@ -21,28 +21,30 @@ import {
   sql,
   eq,
   and,
-  lt,
-  notInArray,
 } from "@curvi/db";
 import { presets, tierByKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
+import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
+import { publicJobError } from "@/lib/job-copy";
 import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
 import { buildGeneratePackInput } from "@/lib/jobs/payload";
 import { estimatePackCredits } from "@/lib/pack-estimate";
-import { isWorkspaceObjectKey } from "@/lib/object-keys";
-import { isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
+import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
 import { brandKitInputSchema, brandKitIssueNotice } from "@/lib/validation/brand-kit";
+import { isUuid } from "@/lib/validation/ids";
+import { buildShotViews } from "./job-shots";
+import { looksStale, reconcileStaleJobs } from "./reconcile";
 import type {
   BrandKitView,
   CreateJobInput,
   CreateJobResult,
   CreateProductInput,
   IntegrationView,
+  JobFileDownload,
   JobFilesView,
   JobFileView,
-  JobShotView,
   JobStatus,
   JobSummary,
   JobView,
@@ -51,7 +53,6 @@ import type {
   RegisterSourceMediaInput,
   SaveResult,
   Services,
-  ShotStatus,
   WorkspaceRole,
   WorkspaceSummary,
 } from "./types";
@@ -80,8 +81,53 @@ export interface DbServiceDeps {
   getSupabase: () => Promise<SupabaseClient | null>;
 }
 
-const TERMINAL_JOB_STATES = new Set(["done", "failed", "canceled"]);
-const STALE_JOB_MS = 30 * 60 * 1000;
+/** Most photos a pack sends to the worker: this request's uploads first,
+ * then the product's newest stored photos. */
+const MAX_PACK_MEDIA = 6;
+
+export const PROVISIONING_ERROR_MESSAGE = "We could not set up your workspace. Try again in a minute.";
+
+/**
+ * Provisioning the first workspace failed (a database error, not a signed
+ * out user). Thrown instead of returning null, so a signup that could not be
+ * set up surfaces as a retryable server error rather than a "Sign in" prompt
+ * (Update.md 6.8). Routes map it to 503 with PROVISIONING_ERROR_MESSAGE.
+ */
+export class ProvisioningError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super(PROVISIONING_ERROR_MESSAGE, options);
+    this.name = "ProvisioningError";
+  }
+}
+
+/** Thrown inside the createJob transaction when reserve_credits refuses, so
+ * the transaction rolls back and the caller can answer with a rejection. */
+class ReservationError extends Error {
+  constructor(readonly original: unknown) {
+    super("credit reservation failed");
+    this.name = "ReservationError";
+  }
+}
+
+/** Postgres error fields, looked up through Drizzle's wrapping error. */
+function pgErrorField(err: unknown, field: "code" | "message"): string | null {
+  let current: unknown = err;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const value = (current as Record<string, unknown>)[field];
+    if (field === "code" && typeof value === "string" && /^[0-9A-Z]{5}$/.test(value)) {
+      return value;
+    }
+    if (field === "message" && typeof value === "string" && /insufficient credit/i.test(value)) {
+      return value;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return pgErrorField(err, "code") === "23505";
+}
 
 /** SQLSTATE reserve_credits raises for an insufficient balance (0012). */
 const INSUFFICIENT_CREDITS_SQLSTATE = "CU402";
@@ -120,42 +166,37 @@ export function isInsufficientCreditsError(err: unknown): boolean {
   return pg.code === "P0001" && /insufficient credit balance/.test(pg.message ?? "");
 }
 
-function toShotStatus(value: string | null): ShotStatus {
-  switch (value) {
-    case "generating":
-    case "qc":
-    case "done":
-    case "failed":
-    case "needs_review":
-      return value;
-    default:
-      return "pending";
+interface PackMedia {
+  r2Key: string;
+  kind: "image" | "video" | "frame" | null;
+}
+
+/** This request's uploads first, then stored photos, one entry per object,
+ * capped at MAX_PACK_MEDIA. */
+function mergePackMedia(uploads: PackMedia[], stored: PackMedia[]): PackMedia[] {
+  const seen = new Set<string>();
+  const merged: PackMedia[] = [];
+  for (const item of [...uploads, ...stored]) {
+    if (seen.has(item.r2Key)) {
+      continue;
+    }
+    seen.add(item.r2Key);
+    merged.push(item);
   }
+  return merged.slice(0, MAX_PACK_MEDIA);
 }
 
-interface QcRecord {
-  pass?: unknown;
-  fillPct?: unknown;
-  background?: unknown;
-}
-
-function complianceFromQc(qc: Record<string, unknown> | null): JobShotView["compliance"] {
-  if (!qc) {
+/** Parses a JobFileView id: "v_<asset variant uuid>" or "p_<pack file uuid>". */
+function parseFileId(fileId: string): { table: "variant" | "pack"; id: string } | null {
+  const match = /^([vp])_(.+)$/.exec(fileId);
+  if (!match || !isUuid(match[2])) {
     return null;
   }
-  const record = qc as QcRecord;
-  const background = Array.isArray(record.background) && record.background.length === 3
-    ? ([Number(record.background[0]), Number(record.background[1]), Number(record.background[2])] as [
-        number,
-        number,
-        number,
-      ])
-    : null;
-  return {
-    pass: record.pass === true,
-    fillPct: typeof record.fillPct === "number" ? record.fillPct : null,
-    background,
-  };
+  return { table: match[1] === "v" ? "variant" : "pack", id: match[2] };
+}
+
+function fileDownloadPath(jobId: string, fileId: string): string {
+  return `/api/jobs/${jobId}/files/${fileId}`;
 }
 
 export class DbService implements Services {
@@ -250,10 +291,12 @@ export class DbService implements Services {
         return null;
       }
       return { workspaceId, role: "owner" };
-    } catch {
-      // Provisioning is best effort at read time; the caller sees the signed
-      // out state and the next request retries.
-      return null;
+    } catch (err) {
+      // A signed in user whose workspace could not be created is a server
+      // error, not a signed out state: surface it so the page offers a retry
+      // instead of a misleading "Sign in" (Update.md 6.8).
+      console.error(`[workspace] provisioning failed for user ${userId}`, err);
+      throw new ProvisioningError({ cause: err });
     }
   }
 
@@ -272,10 +315,15 @@ export class DbService implements Services {
   }
 
   private async creditBalance(workspaceId: string): Promise<number> {
+    // Settle orphaned runs first, so a hold left by a crashed run never makes
+    // the balance look lower than it is (Update.md 3.2).
+    await reconcileStaleJobs(this.db, { workspaceId });
     try {
-      const rows = (await this.db.execute(
-        sql`select credit_balance(${workspaceId}::uuid) as balance`,
-      )) as unknown as Array<{ balance: number | string | null }>;
+      const result = (await this.db.execute(sql`select credit_balance(${workspaceId}::uuid) as balance`)) as unknown;
+      // postgres-js returns the rows array; other drivers wrap it in { rows }.
+      const rows = (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{
+        balance: number | string | null;
+      }>;
       return Number(rows[0]?.balance ?? 0);
     } catch (err) {
       // The page still renders, but a zero shown because the read failed must
@@ -317,6 +365,8 @@ export class DbService implements Services {
   }
 
   async listRecentJobs(workspaceId: string, limit = 10): Promise<JobSummary[]> {
+    // Orphaned runs show as failed here, not as running forever (Update.md 3.2).
+    await reconcileStaleJobs(this.db, { workspaceId });
     const jobs = await this.db.query.generationJobs.findMany({
       where: (t, { eq }) => eq(t.workspaceId, workspaceId),
       orderBy: (t, { desc }) => [desc(t.createdAt)],
@@ -340,157 +390,151 @@ export class DbService implements Services {
   }
 
   async getJob(workspaceId: string, jobId: string): Promise<JobView | null> {
-    let job = await this.db.query.generationJobs.findFirst({
-      where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
-    });
+    if (!isUuid(jobId)) {
+      return null;
+    }
+    const findJob = () =>
+      this.db.query.generationJobs.findFirst({
+        where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
+      });
+    let job = await findJob();
     if (!job) {
       return null;
     }
-    // Reconcile runs orphaned by an instance restart: the runner heartbeats
-    // updated_at on every state change, every shot attempt and every stored
-    // asset, so a job that has not moved in this window will never finish.
-    // The update re-checks both conditions in SQL, so a run that heartbeats
-    // or finishes between the read above and this write is never clobbered,
-    // and only the request that wins the update releases the credits. The
-    // worker refuses to leave a terminal state, so a failed job stays failed.
-    if (!TERMINAL_JOB_STATES.has(job.status) && Date.now() - job.updatedAt.getTime() > STALE_JOB_MS) {
-      const jobId = job.id;
-      const staleBefore = new Date(Date.now() - STALE_JOB_MS);
-      const reconciledError = "The run was interrupted before finishing. Reserved credits were released.";
-      const [reconciled] = await this.db
-        .update(generationJobs)
-        .set({ status: "failed", error: reconciledError, updatedAt: new Date() })
-        .where(
-          and(
-            eq(generationJobs.id, jobId),
-            notInArray(generationJobs.status, ["done", "failed", "canceled"]),
-            lt(generationJobs.updatedAt, staleBefore),
-          ),
-        )
-        .returning();
-      if (reconciled) {
-        try {
-          await this.db.execute(sql`select release_credits(${workspaceId}::uuid, ${jobId}::uuid)`);
-        } catch (err) {
-          console.error(`[jobs] could not release credits for reconciled job ${jobId}`, err);
-        }
-        job = reconciled;
-      } else {
-        // Lost the race: the run moved or finished. Show its current row.
-        const current = await this.db.query.generationJobs.findFirst({ where: (t, { eq }) => eq(t.id, jobId) });
-        if (current) {
-          job = current;
-        }
-      }
+    // Reconcile a run orphaned by an instance restart (Update.md 3.1). Only
+    // the request that wins the conditional update releases the hold; every
+    // request then reads the current row.
+    if (looksStale(job)) {
+      await reconcileStaleJobs(this.db, { workspaceId, jobId: job.id });
+      job = (await findJob()) ?? job;
     }
+    const current = job;
     const [product, steps, assetRows] = await Promise.all([
-      this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, job.productId) }),
+      this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, current.productId) }),
       this.db.query.jobSteps.findMany({
-        where: (t, { eq }) => eq(t.jobId, job.id),
+        where: (t, { eq }) => eq(t.jobId, current.id),
         orderBy: (t, { asc }) => [asc(t.createdAt)],
       }),
-      this.db.query.assets.findMany({ where: (t, { eq }) => eq(t.jobId, job.id) }),
+      this.db.query.assets.findMany({ where: (t, { eq }) => eq(t.jobId, current.id) }),
     ]);
 
-    const qcByShotType = new Map(assetRows.map((a) => [a.shotType, a.qc]));
-    const latestByShot = new Map<string, (typeof steps)[number]>();
-    for (const step of steps) {
-      if (step.shotId) {
-        latestByShot.set(step.shotId, step);
-      }
-    }
-    const shots: JobShotView[] = [...latestByShot.entries()].map(([shotId, step]) => {
-      const status = toShotStatus(step.status);
-      return {
-        shotId,
-        shotType: step.stage ?? "shot",
-        providerStage: step.provider ?? "worker",
-        status,
-        channels: [],
-        credits: 0,
-        compliance: status === "done" ? complianceFromQc(qcByShotType.get(step.stage ?? "") ?? null) : null,
-      };
-    });
+    const shots = buildShotViews(steps, assetRows);
 
-    // Signed thumbnails for shots whose generated image landed in R2.
-    // DbJobStore records each asset's shot id in its qc verdict and names
-    // variants after the channel file, so map variant to shot via its asset.
-    if (isR2Configured() && assetRows.length > 0) {
+    // Delivered variants give each finished shot its real channels, a
+    // preview and a download link. DbJobStore records each asset's shot id
+    // in its qc verdict, so a variant maps to its shot through its asset.
+    if (assetRows.length > 0) {
       const shotIdByAssetId = new Map<string, string>();
       for (const a of assetRows) {
-        const qc = a.qc as { shotId?: unknown } | null;
-        if (typeof qc?.shotId === "string") {
-          shotIdByAssetId.set(a.id, qc.shotId);
+        const shotId = a.qc && typeof a.qc.shotId === "string" ? a.qc.shotId : null;
+        if (shotId) {
+          shotIdByAssetId.set(a.id, shotId);
         }
       }
       const variantRows = await this.db.query.assetVariants.findMany({
-        where: (t, { inArray }) =>
-          inArray(
-            t.assetId,
-            assetRows.map((a) => a.id),
+        where: (t, { and, eq, inArray }) =>
+          and(
+            eq(t.workspaceId, workspaceId),
+            inArray(
+              t.assetId,
+              assetRows.map((a) => a.id),
+            ),
           ),
+        orderBy: (t, { asc }) => [asc(t.createdAt)],
       });
-      const urlByShotId = new Map<string, string>();
+      const variantsByShot = new Map<string, typeof variantRows>();
+      for (const variant of variantRows) {
+        const shotId = shotIdByAssetId.get(variant.assetId);
+        if (!shotId || !isWorkspaceKey(workspaceId, variant.r2Key)) {
+          continue;
+        }
+        variantsByShot.set(shotId, [...(variantsByShot.get(shotId) ?? []), variant]);
+      }
+      const canSign = isR2Configured();
       await Promise.all(
-        variantRows.map(async (variant) => {
-          const shotId = shotIdByAssetId.get(variant.assetId);
-          // One thumbnail per shot is enough; the first variant wins. Only
-          // this workspace's keys are signed (Update.md 4.1).
-          if (!shotId || urlByShotId.has(shotId) || !isWorkspaceObjectKey(workspaceId, variant.r2Key)) {
+        shots.map(async (shot) => {
+          const variants = variantsByShot.get(shot.shotId);
+          if (!variants || variants.length === 0) {
             return;
           }
+          shot.channels = [...new Set(variants.map((v) => v.channelSpecId))];
+          if (!canSign) {
+            return;
+          }
+          // One preview per shot is enough; the first delivered file wins.
+          const first = variants[0];
+          shot.downloadUrl = fileDownloadPath(current.id, `v_${first.id}`);
           try {
-            urlByShotId.set(shotId, await presignObjectGet(variant.r2Key));
+            shot.imageUrl = await presignObjectGet(first.r2Key);
           } catch {
-            // Missing or unsignable object: the card renders without a thumb.
+            // Unsignable object: the card renders without a preview.
+            shot.imageUrl = null;
           }
         }),
       );
-      for (const shot of shots) {
-        shot.imageUrl = urlByShotId.get(shot.shotId) ?? null;
-      }
     }
 
     return {
-      id: job.id,
-      productId: job.productId,
+      id: current.id,
+      productId: current.productId,
       productTitle: product?.title ?? "Untitled product",
-      status: job.status as JobStatus,
-      mode: job.mode ?? product?.mode ?? "listing",
-      channels: job.channels ?? [],
-      creditsReserved: job.creditsReserved,
-      creditsCharged: job.creditsCharged,
-      createdAt: job.createdAt.toISOString(),
+      status: current.status as JobStatus,
+      mode: current.mode ?? product?.mode ?? "listing",
+      channels: current.channels ?? [],
+      creditsReserved: current.creditsReserved,
+      creditsCharged: current.creditsCharged,
+      createdAt: current.createdAt.toISOString(),
       shots,
-      error: job.error ?? null,
+      // Raw worker errors can name providers; the board gets plain copy and
+      // the detail stays in the row and the logs.
+      error: current.status === "failed" ? publicJobError(current.error) : null,
     };
   }
 
-  async createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
+  /** The replay or conflict answer for a reused Idempotency-Key, or null
+   * when the key is new. A replay must match the request body (plan 4.4.1);
+   * a "new" product resolved to a real id on the first attempt, so a retry
+   * can only match on the rest. */
+  private async replayFor(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult | null> {
     const existing = await this.db.query.generationJobs.findFirst({
       where: (t, { eq }) => eq(t.idempotencyKey, input.idempotencyKey),
     });
-    if (existing) {
-      // A replay must match the whole request body (plan 4.4.1); a reused key
-      // with different channels or mode is a 409. A "new" product resolved to
-      // a real id on the first attempt, so a retry can only match on the rest.
-      const sameBody =
-        existing.workspaceId === workspaceId &&
-        (input.productId === "new" || existing.productId === input.productId) &&
-        (existing.mode ?? input.mode) === input.mode &&
-        JSON.stringify([...(existing.channels ?? input.channels)].sort()) ===
-          JSON.stringify([...input.channels].sort());
-      if (sameBody) {
-        const job = await this.getJob(workspaceId, existing.id);
-        if (job) {
-          return { outcome: "replayed", job };
-        }
+    if (!existing) {
+      return null;
+    }
+    const sameBody =
+      existing.workspaceId === workspaceId &&
+      (input.productId === "new" || existing.productId === input.productId) &&
+      (existing.mode ?? input.mode) === input.mode &&
+      JSON.stringify([...(existing.channels ?? input.channels)].sort()) ===
+        JSON.stringify([...input.channels].sort());
+    if (sameBody) {
+      const job = await this.getJob(workspaceId, existing.id);
+      if (job) {
+        return { outcome: "replayed", job };
       }
-      if (existing.workspaceId !== workspaceId) {
-        // Never leak another workspace's job id.
-        return { outcome: "conflict" };
-      }
-      return { outcome: "conflict", existingJobId: existing.id };
+    }
+    if (existing.workspaceId !== workspaceId) {
+      // Never leak another workspace's job id.
+      return { outcome: "conflict" };
+    }
+    return { outcome: "conflict", existingJobId: existing.id };
+  }
+
+  /**
+   * Creates a pack job (Update.md 6.3). Everything that can reject the
+   * request is checked before anything is written: role, mode, product,
+   * uploads, photo requirement and the credit estimate. The product (when
+   * new), the uploads, the job row and the credit hold are then written in
+   * one transaction, so a rejected or failed attempt leaves no empty product,
+   * no stray media and no job behind. Uploads insert with ON CONFLICT DO
+   * NOTHING against the (workspace_id, r2_key) unique index, so a retry never
+   * duplicates a photo.
+   */
+  async createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
+    const replay = await this.replayFor(workspaceId, input);
+    if (replay) {
+      return replay;
     }
 
     const role = await this.currentRole(workspaceId);
@@ -499,6 +543,14 @@ export class DbService implements Services {
         outcome: "rejected",
         reason: "role_forbidden",
         message: "Client seats can review assets but cannot start packs or spend credits.",
+      };
+    }
+
+    if (input.mode === "concept" && !CONCEPT_MODE_AVAILABLE) {
+      return {
+        outcome: "rejected",
+        reason: "mode_unavailable",
+        message: "Concept Mode is not available yet. Start a Listing Mode pack from a real photo.",
       };
     }
 
@@ -513,58 +565,54 @@ export class DbService implements Services {
       return { outcome: "rejected", reason: entitled.reason, message: entitled.message };
     }
 
-    let product;
-    if (input.productId === "new") {
-      const [created] = await this.db
-        .insert(products)
-        .values({
-          workspaceId,
-          title: input.newProductTitle?.trim() || "New product",
-          mode: input.mode,
-        })
-        .returning();
-      product = created;
-    } else {
-      product = await this.db.query.products.findFirst({
-        where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
-      });
-    }
-    if (!product) {
-      return { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." };
+    let existingProduct: typeof products.$inferSelect | null = null;
+    if (input.productId !== "new") {
+      existingProduct = isUuid(input.productId)
+        ? ((await this.db.query.products.findFirst({
+            where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
+          })) ?? null)
+        : null;
+      if (!existingProduct) {
+        return { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." };
+      }
     }
 
-    // Register uploads sent with the job, then collect the media this pack
-    // can draw from. Only keys inside this workspace's source prefix count.
-    const uploads = (input.uploads ?? []).filter((u) => isWorkspaceSourceKey(workspaceId, u.key));
-    if (uploads.length > 0) {
-      await this.db.insert(sourceMedia).values(
-        uploads.map((u) => ({
-          workspaceId,
-          productId: product.id,
-          r2Key: u.key,
-          kind: u.kind,
-          sha256: u.sha256,
-        })),
-      );
-    }
-    // Update.md 4.1: the worker loads every media key with owner R2
-    // credentials, so only keys in this workspace's source prefix are read,
-    // including rows written before migration 0011 closed member writes.
-    const media = (
-      await this.db.query.sourceMedia.findMany({
-        where: (t, { and, eq, like }) =>
-          and(eq(t.productId, product.id), eq(t.workspaceId, workspaceId), like(t.r2Key, `ws/${workspaceId}/src/%`)),
-        orderBy: (t, { desc }) => [desc(t.createdAt)],
-        limit: 6,
-      })
-    ).filter((m) => isWorkspaceSourceKey(workspaceId, m.r2Key));
+    // Only keys inside this workspace's source prefix count, for this
+    // request's uploads and for the photos already stored on the product.
+    // The worker loads every media key with owner R2 credentials (Update.md
+    // 4.1), so rows written before migration 0011 closed member writes are
+    // filtered in SQL too, before the limit applies.
+    const uploadRows = [
+      ...new Map(
+        (input.uploads ?? []).filter((u) => isWorkspaceSourceKey(workspaceId, u.key)).map((u) => [u.key, u]),
+      ).values(),
+    ];
+    const uploads = uploadRows.map((u) => ({ r2Key: u.key, kind: u.kind }));
+    const storedMedia = existingProduct
+      ? (
+          await this.db.query.sourceMedia.findMany({
+            where: (t, { and, eq, like }) =>
+              and(
+                eq(t.productId, existingProduct.id),
+                eq(t.workspaceId, workspaceId),
+                like(t.r2Key, `ws/${workspaceId}/src/%`),
+              ),
+            orderBy: (t, { desc }) => [desc(t.createdAt)],
+            limit: MAX_PACK_MEDIA,
+          })
+        )
+          .filter((m) => isWorkspaceSourceKey(workspaceId, m.r2Key))
+          .map((m) => ({ r2Key: m.r2Key, kind: m.kind }))
+      : [];
+    const media = mergePackMedia(uploads, storedMedia);
+
     // Plan 2.7: Listing Mode requires at least one real photo. Angles that
     // were not photographed are skipped by the planner, never invented.
     if (input.mode === "listing" && !media.some((m) => m.kind !== "video")) {
       return {
         outcome: "rejected",
         reason: "needs_photo",
-        message: "Listing Mode needs at least one real photo of this product. Upload one first, or switch to Concept Mode.",
+        message: "Listing Mode needs at least one real photo of this product. Upload one first.",
       };
     }
 
@@ -580,38 +628,82 @@ export class DbService implements Services {
       };
     }
 
-    const [inserted] = await this.db
-      .insert(generationJobs)
-      .values({
-        workspaceId,
-        productId: product.id,
-        status: "queued",
-        idempotencyKey: input.idempotencyKey,
-        channels: input.channels,
-        mode: input.mode,
-      })
-      .returning();
-
+    // Product, uploads, job and reservation commit together, so a rejected
+    // pack leaves no empty product or orphan uploads behind (Update.md 6.3).
+    let created: { product: typeof products.$inferSelect; jobId: string };
     try {
-      await this.db.execute(
-        sql`select reserve_credits(${workspaceId}::uuid, ${creditsReserved}::numeric, ${inserted.id}::uuid)`,
-      );
+      created = await this.db.transaction(async (tx) => {
+        const product =
+          existingProduct ??
+          (
+            await tx
+              .insert(products)
+              .values({
+                workspaceId,
+                title: input.newProductTitle?.trim() || "New product",
+                mode: input.mode,
+              })
+              .returning()
+          )[0];
+        if (uploadRows.length > 0) {
+          await tx
+            .insert(sourceMedia)
+            .values(
+              uploadRows.map((u) => ({
+                workspaceId,
+                productId: product.id,
+                r2Key: u.key,
+                kind: u.kind,
+                sha256: u.sha256,
+              })),
+            )
+            .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] });
+        }
+        const [inserted] = await tx
+          .insert(generationJobs)
+          .values({
+            workspaceId,
+            productId: product.id,
+            status: "queued",
+            idempotencyKey: input.idempotencyKey,
+            channels: input.channels,
+            mode: input.mode,
+          })
+          .returning({ id: generationJobs.id });
+        try {
+          await tx.execute(
+            sql`select reserve_credits(${workspaceId}::uuid, ${creditsReserved}::numeric, ${inserted.id}::uuid)`,
+          );
+        } catch (err) {
+          throw new ReservationError(err);
+        }
+        return { product, jobId: inserted.id };
+      });
     } catch (err) {
-      if (isInsufficientCreditsError(err)) {
-        // Nothing was reserved, so there is nothing to give back.
-        await this.failJob(inserted.id, "Not enough credits for this pack.");
+      if (err instanceof ReservationError && isInsufficientCreditsError(err.original)) {
+        // The transaction rolled back, so nothing was reserved or written.
         return {
           outcome: "rejected",
           reason: "insufficient_credits",
           message: "Not enough credits for this pack. Top up or pick fewer channels.",
         };
       }
-      console.error(`[jobs] credit reservation failed for job ${inserted.id} in workspace ${workspaceId}`, err);
-      // The reserve may have committed before the error reached us (a
-      // dropped connection), so give back anything the job holds.
-      await this.abandonJob(workspaceId, inserted.id, "The credit reservation could not be made.");
+      if (isUniqueViolation(err)) {
+        // A concurrent request with the same Idempotency-Key committed first.
+        const winner = await this.replayFor(workspaceId, input);
+        if (winner) {
+          return winner;
+        }
+      }
+      // Anything else is not a credit problem and must never read as one
+      // (Update.md 1.8). The transaction rolled back, so nothing is held.
+      console.error(
+        `[jobs] could not create a job in workspace ${workspaceId}`,
+        err instanceof ReservationError ? err.original : err,
+      );
       return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
     }
+    const { product, jobId } = created;
 
     // Brand colors are optional styling: a failed lookup must never fail a
     // job that already holds its credit reservation.
@@ -626,7 +718,7 @@ export class DbService implements Services {
     try {
       await enqueueGeneratePack(
         buildGeneratePackInput({
-          jobId: inserted.id,
+          jobId,
           workspaceId,
           tier,
           channels: input.channels,
@@ -638,7 +730,7 @@ export class DbService implements Services {
             mode: product.mode,
             amazonSku: product.amazonSku,
           },
-          media: media.map((m) => ({ r2Key: m.r2Key, kind: m.kind })),
+          media,
           userDescription: input.userDescription,
           brandColors,
         }),
@@ -646,14 +738,14 @@ export class DbService implements Services {
     } catch (err) {
       // The reservation must never strand when the queue is unreachable, and
       // a cleanup failure must never hide why the pack did not start.
-      console.error(`[jobs] could not queue job ${inserted.id} in workspace ${workspaceId}`, err);
-      await this.abandonJob(workspaceId, inserted.id, "The pack could not be queued.");
+      console.error(`[jobs] could not queue job ${jobId} in workspace ${workspaceId}`, err);
+      await this.abandonJob(workspaceId, jobId, "The pack could not be queued.");
       return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
     }
 
-    const job = await this.getJob(workspaceId, inserted.id);
+    const job = await this.getJob(workspaceId, jobId);
     if (!job) {
-      return { outcome: "conflict", existingJobId: inserted.id };
+      return { outcome: "conflict", existingJobId: jobId };
     }
     return { outcome: "created", job };
   }
@@ -710,30 +802,49 @@ export class DbService implements Services {
   async registerSourceMedia(workspaceId: string, input: RegisterSourceMediaInput): Promise<SaveResult> {
     const role = await this.currentRole(workspaceId);
     if (role === null || role === "client") {
-      return { ok: false, notice: "Client seats cannot upload product photos." };
+      return { ok: false, reason: "forbidden", notice: "Client seats cannot upload product photos." };
     }
     if (!isWorkspaceSourceKey(workspaceId, input.r2Key)) {
-      return { ok: false, notice: "That upload does not belong to this workspace." };
+      return { ok: false, reason: "foreign_key", notice: "That upload does not belong to this workspace." };
     }
-    const product = await this.db.query.products.findFirst({
-      where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
-    });
+    const product = isUuid(input.productId)
+      ? await this.db.query.products.findFirst({
+          where: (t, { and, eq }) => and(eq(t.id, input.productId), eq(t.workspaceId, workspaceId)),
+        })
+      : undefined;
     if (!product) {
-      return { ok: false, notice: "That product does not exist in this workspace." };
+      return { ok: false, reason: "unknown_product", notice: "That product does not exist in this workspace." };
     }
-    await this.db.insert(sourceMedia).values({
-      workspaceId,
-      productId: input.productId,
-      r2Key: input.r2Key,
-      kind: input.kind,
-      width: input.width ?? null,
-      height: input.height ?? null,
-      sha256: input.sha256,
-    });
+    // One row per uploaded object: registering the same upload again is a
+    // no op, and an upload saved to another product stays there.
+    const inserted = await this.db
+      .insert(sourceMedia)
+      .values({
+        workspaceId,
+        productId: input.productId,
+        r2Key: input.r2Key,
+        kind: input.kind,
+        width: input.width ?? null,
+        height: input.height ?? null,
+        sha256: input.sha256,
+      })
+      .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
+      .returning({ id: sourceMedia.id });
+    if (inserted.length === 0) {
+      const existing = await this.db.query.sourceMedia.findFirst({
+        where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.r2Key, input.r2Key)),
+      });
+      if (existing && existing.productId !== input.productId) {
+        return { ok: false, reason: "conflict", notice: "That photo is already saved to another product." };
+      }
+    }
     return { ok: true, notice: "Photo saved to this product." };
   }
 
   async listJobFiles(workspaceId: string, jobId: string): Promise<JobFilesView | null> {
+    if (!isUuid(jobId)) {
+      return null;
+    }
     const job = await this.db.query.generationJobs.findFirst({
       where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
     });
@@ -741,56 +852,108 @@ export class DbService implements Services {
       return null;
     }
     const assetRows = await this.db.query.assets.findMany({
-      where: (t, { eq }) => eq(t.jobId, job.id),
+      where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId)),
     });
     const assetIds = assetRows.map((a) => a.id);
     const [variantRows, packRows] = await Promise.all([
       assetIds.length > 0
         ? this.db.query.assetVariants.findMany({
-            where: (t, { and, eq, inArray }) =>
-              and(eq(t.workspaceId, workspaceId), inArray(t.assetId, assetIds)),
+            where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.assetId, assetIds)),
           })
         : Promise.resolve([]),
-      this.db.query.packFiles.findMany({ where: (t, { eq }) => eq(t.jobId, job.id) }),
+      this.db.query.packFiles.findMany({
+        where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId)),
+      }),
     ]);
 
+    // Previews are signed for an hour; every download goes through the
+    // download route, which signs a fresh, named url on each click
+    // (Update.md 6.6). Keys outside this workspace are never signed.
     const canSign = isR2Configured();
     const files: JobFileView[] = [];
-    for (const variant of variantRows) {
-      // Only this workspace's keys are signed (Update.md 4.1).
-      if (!isWorkspaceObjectKey(workspaceId, variant.r2Key)) {
-        continue;
+    const variants = variantRows
+      .filter((v) => isWorkspaceKey(workspaceId, v.r2Key))
+      .sort((a, b) => a.channelSpecId.localeCompare(b.channelSpecId) || a.filename.localeCompare(b.filename));
+    for (const variant of variants) {
+      const id = `v_${variant.id}`;
+      let url: string | null = null;
+      if (canSign) {
+        try {
+          url = await presignObjectGet(variant.r2Key);
+        } catch {
+          url = null;
+        }
       }
       files.push({
+        id,
         name: variant.filename,
         channel: variant.channelSpecId.split(".")[0],
         specId: variant.channelSpecId,
         kind: "image",
         bytes: variant.bytes,
-        url: canSign ? await presignDownload(variant.r2Key) : null,
+        url,
+        downloadUrl: canSign ? fileDownloadPath(job.id, id) : null,
       });
     }
-    for (const pack of packRows) {
+    for (const pack of packRows.filter((p) => isWorkspaceKey(workspaceId, p.r2Key))) {
+      const id = `p_${pack.id}`;
       files.push({
+        id,
         name: pack.filename,
         channel: pack.channel,
         specId: null,
         kind: pack.kind === "report" ? "report" : "zip",
         bytes: pack.bytes,
-        url: canSign ? await presignDownload(pack.r2Key) : null,
+        url: null,
+        downloadUrl: canSign ? fileDownloadPath(job.id, id) : null,
       });
     }
-    return {
-      jobId: job.id,
-      status: job.status as JobStatus,
-      files,
-      notice:
-        files.length === 0 && job.status === "done"
-          ? "This pack finished but no files were stored. Configure R2 so delivered files persist."
-          : !canSign && files.length > 0
-            ? "Files exist but R2 is not configured on this server, so download links are unavailable."
-            : undefined,
-    };
+
+    const hasImages = files.some((f) => f.kind === "image");
+    let notice: string | undefined;
+    if (job.status === "done" && !hasImages) {
+      notice =
+        files.length === 0
+          ? "This pack finished, but its files are not available. Contact us and we will sort it out."
+          : "No shot passed our checks, so this pack has no image files and nothing was charged for them.";
+    } else if (!canSign && files.length > 0) {
+      notice = "Your files are stored, but downloads are not available on this server right now. Try again later.";
+    }
+    return { jobId: job.id, status: job.status as JobStatus, files, notice };
+  }
+
+  async getJobFileDownload(workspaceId: string, jobId: string, fileId: string): Promise<JobFileDownload | null> {
+    const parsed = parseFileId(fileId);
+    if (!parsed || !isUuid(jobId) || !isR2Configured()) {
+      return null;
+    }
+    const job = await this.db.query.generationJobs.findFirst({
+      where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!job) {
+      return null;
+    }
+    let file: { r2Key: string; filename: string } | null = null;
+    if (parsed.table === "variant") {
+      const variant = await this.db.query.assetVariants.findFirst({
+        where: (t, { and, eq }) => and(eq(t.id, parsed.id), eq(t.workspaceId, workspaceId)),
+      });
+      const asset = variant
+        ? await this.db.query.assets.findFirst({
+            where: (t, { and, eq }) => and(eq(t.id, variant.assetId), eq(t.jobId, job.id)),
+          })
+        : undefined;
+      file = variant && asset ? { r2Key: variant.r2Key, filename: variant.filename } : null;
+    } else {
+      const pack = await this.db.query.packFiles.findFirst({
+        where: (t, { and, eq }) => and(eq(t.id, parsed.id), eq(t.jobId, job.id), eq(t.workspaceId, workspaceId)),
+      });
+      file = pack ? { r2Key: pack.r2Key, filename: pack.filename } : null;
+    }
+    if (!file || !isWorkspaceKey(workspaceId, file.r2Key)) {
+      return null;
+    }
+    return { url: await presignDownload(file.r2Key, file.filename), filename: file.filename };
   }
 
   async getBrandKit(workspaceId: string): Promise<BrandKitView> {

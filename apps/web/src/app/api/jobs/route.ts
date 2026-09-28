@@ -132,4 +132,5 @@ const REJECTED_STATUS = {
   upgrade_required: 402,
   feature_unavailable: 422,
   unavailable: 503,
+  mode_unavailable: 400,
 } as const;

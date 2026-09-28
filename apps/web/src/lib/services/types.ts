@@ -19,7 +19,10 @@ export type JobStatus =
   | "failed"
   | "canceled";
 
-export type ShotStatus = "pending" | "generating" | "qc" | "done" | "failed" | "needs_review";
+/** "skipped" is a shot the planner left out, shown with its reason. A shot
+ * that did not pass is "needs_review": released at no charge, never shown
+ * as failed. */
+export type ShotStatus = "pending" | "generating" | "qc" | "done" | "failed" | "needs_review" | "skipped";
 
 export type PackMode = "listing" | "concept";
 
@@ -62,6 +65,13 @@ export interface JobShotView {
   compliance: ShotCompliance | null;
   /** Short lived signed URL of the generated image, when one is stored. */
   imageUrl?: string | null;
+  /** Same origin link that downloads this shot's file under its channel
+   * file name, signing a fresh url on every click (Update.md 6.6). */
+  downloadUrl?: string | null;
+  /** Chip text that overrides the status label, e.g. "Needs photo". */
+  label?: string | null;
+  /** Plain spoken reason for a skipped or needs review shot. */
+  note?: string | null;
 }
 
 export interface JobView {
@@ -75,7 +85,8 @@ export interface JobView {
   creditsCharged: number;
   createdAt: string;
   shots: JobShotView[];
-  /** Failure detail when status is failed. */
+  /** Plain spoken failure line when status is failed. Raw worker errors
+   * never reach the client. */
   error?: string | null;
 }
 
@@ -143,7 +154,9 @@ export type CreateJobResult =
         /** A requested feature is live but not in the workspace's plan. */
         | "upgrade_required"
         /** Not a credit problem: the database or the queue failed. Retry. */
-        | "unavailable";
+        | "unavailable"
+        /** The requested mode is not offered yet (Concept Mode). */
+        | "mode_unavailable";
       message: string;
     };
 
@@ -163,15 +176,21 @@ export interface RegisterSourceMediaInput {
 }
 
 export interface JobFileView {
+  /** Stable id for the download route: "v_<asset variant id>" or
+   * "p_<pack file id>". */
+  id: string;
   name: string;
   /** Channel family, e.g. "amazon"; null for the pack level report. */
   channel: string | null;
   specId: string | null;
   kind: "image" | "zip" | "report";
   bytes: number | null;
-  /** Signed download url, valid for 15 minutes; null when files are not
-   * stored (demo mode or R2 unset). */
+  /** Preview url for images (signed for an hour, or an inline demo image);
+   * null for zips and reports, or when files are not stored. */
   url: string | null;
+  /** Same origin download link that signs a fresh url on every click and
+   * names the file; null when files are not stored (demo mode or R2 unset). */
+  downloadUrl: string | null;
 }
 
 export interface JobFilesView {
@@ -181,9 +200,17 @@ export interface JobFilesView {
   notice?: string;
 }
 
+export interface JobFileDownload {
+  url: string;
+  filename: string;
+}
+
 export interface SaveResult {
   ok: boolean;
   notice: string;
+  /** Why a save was refused, so routes can answer with the right status:
+   * forbidden 403, unknown_product 404, foreign_key 403, conflict 409. */
+  reason?: "forbidden" | "unknown_product" | "foreign_key" | "conflict";
 }
 
 export interface Services {
@@ -203,8 +230,11 @@ export interface Services {
   /** Reading a job advances the demo simulation by one tick. */
   getJob(workspaceId: string, jobId: string): Promise<JobView | null>;
   createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult>;
-  /** Delivered files for a finished job, with signed download urls. */
+  /** Delivered files for a finished job, with previews and download links. */
   listJobFiles(workspaceId: string, jobId: string): Promise<JobFilesView | null>;
+  /** A freshly signed download url for one delivered file of a job in this
+   * workspace, or null when the file does not exist or is not stored. */
+  getJobFileDownload(workspaceId: string, jobId: string, fileId: string): Promise<JobFileDownload | null>;
   createProduct(workspaceId: string, input: CreateProductInput): Promise<ProductSummary | null>;
   /** Records an uploaded source file against a product after the R2 PUT. */
   registerSourceMedia(workspaceId: string, input: RegisterSourceMediaInput): Promise<SaveResult>;

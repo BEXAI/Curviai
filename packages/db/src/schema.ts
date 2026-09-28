@@ -131,6 +131,9 @@ export const sourceMedia = pgTable(
   (t) => [
     index("source_media_workspace_id_idx").on(t.workspaceId),
     index("source_media_product_id_idx").on(t.productId),
+    // One row per uploaded object (Update.md 6.3): a retried pack submit
+    // inserts with ON CONFLICT DO NOTHING instead of duplicating the photo.
+    uniqueIndex("source_media_workspace_r2_key_uq").on(t.workspaceId, t.r2Key),
   ],
 );
 

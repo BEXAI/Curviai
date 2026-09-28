@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { tierByKey, type TierKey } from "@curvi/pipeline/seed";
 import { filenameFor, getSpec } from "@curvi/specs";
+import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { planDemoShots } from "./demo-plan";
 import type {
   BrandKitView,
@@ -17,6 +18,7 @@ import type {
   CreateJobResult,
   CreateProductInput,
   IntegrationView,
+  JobFileDownload,
   JobFilesView,
   JobFileView,
   JobShotView,
@@ -321,18 +323,38 @@ export class DemoService implements Services {
       const n = (counters.get(specId) ?? 0) + 1;
       counters.set(specId, n);
       files.push({
+        id: `demo_${shot.id}`,
         name: demoFileName(specId, n),
         channel,
         specId,
         kind: "image",
         bytes: null,
         url: demoShotImage(shot.type),
+        downloadUrl: null,
       });
     }
     for (const channel of channels) {
-      files.push({ name: `${channel}.zip`, channel, specId: null, kind: "zip", bytes: null, url: null });
+      files.push({
+        id: `demo_zip_${channel}`,
+        name: `${channel}.zip`,
+        channel,
+        specId: null,
+        kind: "zip",
+        bytes: null,
+        url: null,
+        downloadUrl: null,
+      });
     }
-    files.push({ name: "compliance-report.json", channel: null, specId: null, kind: "report", bytes: null, url: null });
+    files.push({
+      id: "demo_report",
+      name: "compliance-report.json",
+      channel: null,
+      specId: null,
+      kind: "report",
+      bytes: null,
+      url: null,
+      downloadUrl: null,
+    });
     return {
       jobId,
       status,
@@ -340,6 +362,11 @@ export class DemoService implements Services {
       notice:
         "Demo mode renders previews only. Zip and report downloads switch on once R2 and a database are configured.",
     };
+  }
+
+  /** Demo packs keep no stored files, so there is never anything to sign. */
+  async getJobFileDownload(_workspaceId: string, _jobId: string, _fileId: string): Promise<JobFileDownload | null> {
+    return null;
   }
 
   async listRecentJobs(_workspaceId: string, limit = 10): Promise<JobSummary[]> {
@@ -362,12 +389,9 @@ export class DemoService implements Services {
     return projectJob(record, this.productTitle(record.productId));
   }
 
-  async createJob(_workspaceId: string, rawInput: CreateJobInput): Promise<CreateJobResult> {
-    // The demo has a fixed product catalog; "new" maps to the first product.
-    const input: CreateJobInput =
-      rawInput.productId === "new" && DEMO_PRODUCTS[0]
-        ? { ...rawInput, productId: DEMO_PRODUCTS[0].id }
-        : rawInput;
+  async createJob(_workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
+    // A replay must match the body as sent: "new" stays "new" in the hash,
+    // so a retry of a new product pack replays instead of making another.
     const bodyHash = hashBody(input);
     const existingId = this.store.jobIdByIdempotencyKey.get(input.idempotencyKey);
     if (existingId) {
@@ -378,25 +402,48 @@ export class DemoService implements Services {
       return { outcome: "conflict", existingJobId: existingId };
     }
 
-    const product = DEMO_PRODUCTS.find((p) => p.id === input.productId);
-    if (!product) {
+    if (input.mode === "concept" && !CONCEPT_MODE_AVAILABLE) {
+      return {
+        outcome: "rejected",
+        reason: "mode_unavailable",
+        message: "Concept Mode is not available yet. Start a Listing Mode pack from a real photo.",
+      };
+    }
+
+    // Products made through /api/products live in extraProducts (Update.md 6.7).
+    const existingProduct =
+      input.productId === "new"
+        ? null
+        : ([...this.store.extraProducts, ...DEMO_PRODUCTS].find((p) => p.id === input.productId) ?? null);
+    if (input.productId !== "new" && !existingProduct) {
       return { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." };
     }
 
     const balance = this.balance();
-    const shots = planDemoShots(input.channels, DEMO_TIER);
+    const shots = planDemoShots(input.channels, DEMO_TIER, input.mode);
     const creditsReserved = Math.ceil(shots.reduce((sum, shot) => sum + shot.credits, 0));
     if (creditsReserved <= 0 || creditsReserved > balance) {
       return {
         outcome: "rejected",
         reason: "insufficient_credits",
-        message: "Not enough credits for this pack. Top up or pick fewer channels.",
+        message:
+          creditsReserved <= 0
+            ? "This selection plans no shots. Pick at least one channel."
+            : "Not enough credits for this pack. Top up or pick fewer channels.",
       };
     }
 
+    // A new product is created only once the pack is accepted, as in db mode.
+    const product =
+      existingProduct ??
+      (await this.createProduct(DEMO_WORKSPACE_ID, {
+        title: input.newProductTitle?.trim() || "New product",
+        mode: input.mode,
+      }));
+
     const record: DemoJobRecord = {
       id: this.store.nextJobId(),
-      productId: input.productId,
+      productId: product.id,
       channels: input.channels,
       mode: input.mode,
       idempotencyKey: input.idempotencyKey,

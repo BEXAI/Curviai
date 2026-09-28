@@ -74,7 +74,16 @@ export async function POST(request: Request): Promise<NextResponse> {
     height: parsed.data.height,
   });
   if (!result.ok) {
-    return NextResponse.json({ error: result.notice }, { status: 400 });
+    // Typed reasons get their real status (Update.md 6.8).
+    const status =
+      result.reason === "forbidden" || result.reason === "foreign_key"
+        ? 403
+        : result.reason === "unknown_product"
+          ? 404
+          : result.reason === "conflict"
+            ? 409
+            : 400;
+    return NextResponse.json({ error: result.notice }, { status });
   }
   return NextResponse.json({ ok: true, notice: result.notice });
 }
