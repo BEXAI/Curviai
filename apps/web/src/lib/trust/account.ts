@@ -22,9 +22,8 @@
  *   not block: with Stripe configured its live state is read, and after the
  *   data is gone it is canceled in Stripe at once (no proration, no final
  *   invoice), so no webhook keeps it alive for a deleted workspace. Without
- *   Stripe keys the cancel flow's own record of a cancellation Stripe
- *   accepted stands in, since the subscriptions table has no
- *   cancel_at_period_end column yet;
+ *   Stripe keys the stored cancel_at_period_end from the webhook, or the
+ *   cancel flow's own record of a cancellation Stripe accepted, stands in;
  * - the user owns a workspace that has other members, which would take their
  *   work with it; ownership moves by email for now.
  *
@@ -110,8 +109,8 @@ type SubscriptionCheck = { allowed: true; cancelInStripe: string[] } | { allowed
  * subscriptions to cancel at once after the data is deleted. Only open rows
  * matter. With Stripe configured, each Stripe row is read live: gone or
  * ended does not block, set to end is canceled after deletion, anything
- * else blocks. Without Stripe the recorded cancel flow pass is the only
- * sign the seller set the plan to end.
+ * else blocks. Without Stripe the stored cancel_at_period_end or the recorded
+ * cancel flow pass is the sign the seller set the plan to end.
  */
 async function checkSubscriptions(
   db: Db,
@@ -120,7 +119,7 @@ async function checkSubscriptions(
   now: Date,
 ): Promise<SubscriptionCheck> {
   const rows = await db.query.subscriptions.findMany({
-    columns: { status: true, provider: true, externalId: true },
+    columns: { status: true, provider: true, externalId: true, cancelAtPeriodEnd: true },
     where: (t, { eq }) => eq(t.workspaceId, workspaceId),
   });
   const open = rows.filter((s) => isOpenSubscription(s.status));
@@ -148,6 +147,10 @@ async function checkSubscriptions(
       return { allowed: false };
     }
     if (!stripe && stripeId) {
+      // The webhook stores Stripe's own cancel_at_period_end on the row.
+      if (row.cancelAtPeriodEnd) {
+        continue;
+      }
       if (recordedCancel === null) {
         const flows = await db.query.cancelFlows.findMany({
           columns: { outcome: true, error: true, stripeApplied: true, effectiveAt: true },

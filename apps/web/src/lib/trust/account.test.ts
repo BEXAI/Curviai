@@ -207,6 +207,15 @@ describe("deleteAccountData", () => {
         true,
       );
     });
+
+    it("without Stripe keys, goes by the cancel_at_period_end the webhook stored", async () => {
+      const me = await subscribed();
+      expect(
+        await deleteAccountData({ db: db as unknown as Db, userId: me.user, storage: null, stripe: null }),
+      ).toMatchObject({ ok: false, reason: "subscription_open" });
+      await db.update(subscriptions).set({ cancelAtPeriodEnd: true }).where(eq(subscriptions.workspaceId, me.ws));
+      expect((await deleteAccountData({ db: db as unknown as Db, userId: me.user, storage: null, stripe: null })).ok).toBe(true);
+    });
   });
 
   it("allows deletion once the plan is canceled", async () => {

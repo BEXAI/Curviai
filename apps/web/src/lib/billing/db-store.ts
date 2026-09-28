@@ -334,7 +334,13 @@ export class DbBillingStore implements BillingStore {
       if (current) {
         await tx
           .update(subscriptions)
-          .set({ tier: incoming.tier ?? current.tier, status: incoming.status, periodEnd })
+          .set({
+            tier: incoming.tier ?? current.tier,
+            status: incoming.status,
+            periodEnd,
+            // Kept when an event does not say, like the in memory store.
+            cancelAtPeriodEnd: incoming.cancelAtPeriodEnd ?? current.cancelAtPeriodEnd,
+          })
           .where(eq(subscriptions.id, current.id));
         current.tier = incoming.tier ?? current.tier;
         current.status = incoming.status;
@@ -348,6 +354,7 @@ export class DbBillingStore implements BillingStore {
             tier: incoming.tier ?? undefined,
             status: incoming.status,
             periodEnd,
+            cancelAtPeriodEnd: incoming.cancelAtPeriodEnd ?? false,
           })
           .returning();
         rows.push(inserted);
