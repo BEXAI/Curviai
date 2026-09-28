@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Badge, Card, CardContent, Progress, Skeleton } from "@curvi/ui";
-import { cn } from "@curvi/ui";
+import { Badge, Card, CardContent, Progress, Skeleton, buttonVariants, cn } from "@curvi/ui";
 import { StatusChip } from "@/components/app/status-chip";
 import type { JobShotView, JobView } from "@/lib/services/types";
 
@@ -191,10 +190,7 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
           </p>
         ) : null}
         {job.status === "done" && job.shots.some((shot) => shot.imageUrl) ? (
-          <a
-            href={`/api/jobs/${job.id}/pack`}
-            className="inline-flex h-9 items-center rounded-lg bg-ink-900 px-3 text-sm font-medium text-white transition-colors hover:bg-ink-800"
-          >
+          <a href={`/api/jobs/${job.id}/pack`} className={buttonVariants({ size: "sm" })}>
             Download pack
           </a>
         ) : null}

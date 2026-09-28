@@ -27,6 +27,7 @@ import {
   fidelityReport,
   pixelChecks,
   planRetry,
+  encodeVisionJpeg,
   planShots,
   qcKindForSpec,
   IntakeResult,
@@ -310,9 +311,13 @@ async function visionBlocks(
     if (!bytes || bytes.length === 0) {
       continue;
     }
+    // Normalize to a bounded JPEG; a raw upload can exceed the vision API's
+    // per image size limit. Fall back to the original if decoding fails.
+    const normalized = await encodeVisionJpeg(bytes).catch(() => bytes);
+    const mediaType = normalized === bytes ? sniffImageMime(bytes) : "image/jpeg";
     blocks.push({
       type: "image",
-      source: { type: "base64", media_type: sniffImageMime(bytes), data: bytes.toString("base64") },
+      source: { type: "base64", media_type: mediaType, data: normalized.toString("base64") },
     });
   }
   return blocks;

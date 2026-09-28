@@ -63,6 +63,20 @@ export async function encodeJpeg(img: RawImage, quality = 90): Promise<Buffer> {
   return rawToSharp(img).flatten({ background: "#ffffff" }).jpeg({ quality, chromaSubsampling: "4:4:4" }).toBuffer();
 }
 
+/**
+ * Downscales and re-encodes a photo for LLM vision input. Uploads may be up
+ * to 25 MB while vision APIs cap around 5 MB and gain nothing above roughly
+ * 1568 px on the long side, so everything is normalized to a bounded JPEG.
+ */
+export async function encodeVisionJpeg(bytes: Buffer, maxSide = 1568): Promise<Buffer> {
+  return sharp(bytes)
+    .rotate()
+    .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
+    .flatten({ background: "#ffffff" })
+    .jpeg({ quality: 85 })
+    .toBuffer();
+}
+
 /** Solid color RGBA canvas. */
 export function solidCanvas(width: number, height: number, r: number, g: number, b: number, a = 255): RawImage {
   const data = Buffer.alloc(width * height * 4);

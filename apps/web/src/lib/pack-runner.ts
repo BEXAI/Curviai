@@ -106,6 +106,11 @@ export class DrizzleJobStore implements JobStore {
       status: asset.status === "passed" ? "done" : "needs_review",
       costMicros: asset.costMicros,
     });
+    // Heartbeat so the stale run reconciler never trips on a long fan out.
+    await this.db
+      .update(generationJobs)
+      .set({ updatedAt: new Date() })
+      .where(eq(generationJobs.id, asset.jobId));
   }
 
   async savePack(pack: StoredPack): Promise<void> {

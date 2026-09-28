@@ -69,6 +69,9 @@ export interface DbServiceDeps {
   startRun?: (args: StartPackArgs) => void;
 }
 
+const TERMINAL_JOB_STATES = new Set(["done", "failed", "canceled"]);
+const STALE_JOB_MS = 30 * 60 * 1000;
+
 function tierKeyOf(plan: string): TierKey {
   const match = tiers.find((t) => t.key === plan);
   return match ? match.key : "free";
@@ -257,11 +260,10 @@ export class DbService implements Services {
     if (!job) {
       return null;
     }
-    // Reconcile runs orphaned by an instance restart: a job that has not
-    // moved in 15 minutes will never finish, so fail it and free the credits.
-    const TERMINAL = new Set(["done", "failed", "canceled"]);
-    const STALE_MS = 15 * 60 * 1000;
-    if (!TERMINAL.has(job.status) && Date.now() - job.updatedAt.getTime() > STALE_MS) {
+    // Reconcile runs orphaned by an instance restart: the runner heartbeats
+    // updated_at on every state change and stored asset, so a job that has
+    // not moved in this window will never finish. Fail it, free the credits.
+    if (!TERMINAL_JOB_STATES.has(job.status) && Date.now() - job.updatedAt.getTime() > STALE_JOB_MS) {
       await this.db
         .update(generationJobs)
         .set({
@@ -356,7 +358,12 @@ export class DbService implements Services {
       where: (t, { eq }) => eq(t.idempotencyKey, input.idempotencyKey),
     });
     if (existing) {
-      if (existing.workspaceId === workspaceId && existing.productId === input.productId) {
+      // A "new" product resolved to a real id on the first attempt, so a
+      // retry with the same key can only match on the workspace.
+      const sameRequest =
+        existing.workspaceId === workspaceId &&
+        (input.productId === "new" || existing.productId === input.productId);
+      if (sameRequest) {
         const job = await this.getJob(workspaceId, existing.id);
         if (job) {
           return { outcome: "replayed", job };
