@@ -1,8 +1,8 @@
 /**
- * Injectable provider health registry behind GET /api/health/providers.
- * Reports which providers have credentials configured and each circuit
- * breaker's state. With zero env everything reports not configured and
- * closed, so the endpoint is always safe to poll from uptime checks.
+ * Injectable provider health registry. Reports which providers have
+ * credentials configured and each circuit breaker's state, and which
+ * services (Supabase, database, R2, Stripe, Shopify) are configured. GET
+ * /api/health/providers returns the services part next to its key probes.
  */
 
 import {

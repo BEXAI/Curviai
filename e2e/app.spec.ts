@@ -192,17 +192,11 @@ test("a job id that is not a uuid shows the not found page", async ({ page }) =>
   expect(response?.status()).toBe(404);
 });
 
-test("health endpoint returns provider and breaker state json", async ({ request }) => {
+test("provider key probe is hidden without the cron secret", async ({ request }) => {
+  // 404 while CRON_SECRET is unset, 401 when it is set but not sent.
   const response = await request.get("/api/health/providers");
-  expect(response.status()).toBe(200);
-  const body = await response.json();
-  expect(body.mode).toBe("demo");
-  expect(Array.isArray(body.providers)).toBe(true);
-  expect(body.providers.length).toBeGreaterThan(0);
-  for (const provider of body.providers) {
-    expect(provider.configured).toBe(false);
-    expect(provider.breaker).toBe("closed");
-  }
+  expect([401, 404]).toContain(response.status());
+  expect(await response.text()).not.toContain("providers");
 });
 
 test("jobs api requires an Idempotency-Key header", async ({ request }) => {

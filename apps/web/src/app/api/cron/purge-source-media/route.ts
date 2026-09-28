@@ -9,6 +9,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { recordCronSuccess } from "@/lib/cron-health";
 import { isR2Configured } from "@/lib/env";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
@@ -31,8 +32,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
   const dryRun = new URL(request.url).searchParams.get("dryRun") === "1";
   try {
-    const report = await purgeStaleSourceMedia({ db: getDb(), storage: r2TrustStorage(), dryRun });
+    const db = getDb();
+    const report = await purgeStaleSourceMedia({ db, storage: r2TrustStorage(), dryRun });
     console.info("[purge] source media purge finished", report);
+    if (!dryRun) {
+      // Health warns when this goes stale (lib/cron-health.ts).
+      await recordCronSuccess(db, "purge-source-media");
+    }
     return NextResponse.json({ ok: true, report });
   } catch (err) {
     console.error("[purge] source media purge failed", err);

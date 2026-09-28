@@ -8,6 +8,8 @@ const fakeDb = vi.hoisted(() => ({ marker: "db" }));
 const sweep = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/services/db", () => ({ getDb: () => fakeDb }));
 vi.mock("@/lib/services/reconcile", () => ({ sweepStaleJobs: sweep }));
+const recordRun = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/cron-health", () => ({ recordCronSuccess: recordRun }));
 
 import { checkCronAuth } from "@/lib/cron-auth";
 import { POST } from "./route";
@@ -25,6 +27,7 @@ function request(headers: Record<string, string> = {}): NextRequest {
 
 beforeEach(() => {
   sweep.mockReset();
+  recordRun.mockReset();
   for (const name of ["CRON_SECRET", ...Object.keys(DB_ENV)]) {
     vi.stubEnv(name, "");
   }
@@ -82,6 +85,8 @@ describe("POST /api/cron/stale-jobs", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(await res.json()).toEqual({ ok: true, mode: "db", reconciled: 1, jobIds: ["job-1"], releaseFailures: [] });
     expect(sweep).toHaveBeenCalledWith(fakeDb);
+    // The health endpoint reads this to warn when the sweep stops running.
+    expect(recordRun).toHaveBeenCalledWith(fakeDb, "stale-jobs");
   });
 
   it("answers 500 when a release failed or the database is down, so the scheduler flags the run", async () => {
@@ -89,6 +94,7 @@ describe("POST /api/cron/stale-jobs", () => {
     for (const [name, value] of Object.entries(DB_ENV)) vi.stubEnv(name, value);
     sweep.mockResolvedValueOnce({ reconciled: [{ id: "job-1", workspaceId: "ws-1" }], releaseFailures: ["job-1"] });
     expect((await POST(request({ "x-cron-secret": SECRET }))).status).toBe(500);
+    expect(recordRun).not.toHaveBeenCalled();
 
     sweep.mockRejectedValueOnce(new Error("connection refused"));
     const res = await POST(request({ "x-cron-secret": SECRET }));

@@ -22,6 +22,7 @@
 import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
 import { requestJson, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const GEMINI_API_KEY_ENV = "GEMINI_API_KEY";
@@ -117,6 +118,20 @@ export class GeminiImageProvider implements CostAwareProvider {
     this.fetchFn = config.fetchFn ?? fetch;
     this.model = config.model;
     this.priceTable = config.priceTable;
+  }
+
+  /**
+   * Key probe: GET /v1beta/models/{model} (models.get), a metadata read
+   * that also confirms the model id exists (Gemini API reference, checked
+   * 2026-09-28). Never generates an image.
+   */
+  probe(options?: ProbeOptions): Promise<ProbeResult> {
+    return probeRequest(
+      this.fetchFn,
+      `${this.baseUrl}/v1beta/models/${encodeURIComponent(this.model)}`,
+      { method: "GET", headers: { "x-goog-api-key": this.apiKey } },
+      options,
+    );
   }
 
   supports(task: string): boolean {

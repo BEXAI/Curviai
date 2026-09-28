@@ -99,6 +99,7 @@ import {
   QC_EDGE_MARGIN_PX,
 } from "./shot-outputs";
 import { isTerminal, JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
+import { DEFAULT_SHOT_CONCURRENCY } from "./shot-concurrency";
 
 export type { JobState } from "./state";
 export { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
@@ -662,10 +663,7 @@ export interface PipelineDeps {
   onSpendAlert?: (totalMicros: number) => void;
 }
 
-/** Shots run at once by the default fan out. Two keeps a pack's peak memory
- * to about two shots' worth of raw images while still overlapping provider
- * waits; raise it with CURVI_SHOT_CONCURRENCY on larger instances. */
-export const DEFAULT_SHOT_CONCURRENCY = 2;
+export { DEFAULT_SHOT_CONCURRENCY };
 
 /** Promise.allSettled over items with at most `limit` calls in flight,
  * results in input order. */

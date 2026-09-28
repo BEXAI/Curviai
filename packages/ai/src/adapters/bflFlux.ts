@@ -25,6 +25,7 @@
 import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
+import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
 import {
   ASYNC_JOB_TIMEOUT_MARGIN_MS,
   billedFailure,
@@ -113,6 +114,14 @@ export class BflFluxProvider implements CostAwareProvider {
     this.poll = resolvePollBudget(config, BFL_DEFAULT_POLL);
     this.now = config.now ?? Date.now;
     this.minTimeoutMs = config.minTimeoutMs ?? this.poll.pollTimeoutMs + ASYNC_JOB_TIMEOUT_MARGIN_MS;
+  }
+
+  /**
+   * Key probe: GET /v1/credits, which returns the account's credit balance
+   * (BFL API reference, checked 2026-09-28). Never creates a job.
+   */
+  probe(options?: ProbeOptions): Promise<ProbeResult> {
+    return probeRequest(this.fetchFn, `${this.baseUrl}/v1/credits`, { method: "GET", headers: { "x-key": this.apiKey } }, options);
   }
 
   supports(task: string): boolean {

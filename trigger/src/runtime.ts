@@ -26,6 +26,7 @@ import { getSpec } from "@curvi/specs";
 import type { ChurnSignals } from "./churn";
 import { LiveShotGenerator, makeR2MediaLoader, wireLiveProviders } from "./live-runtime";
 import { canvasSizeFor } from "./shot-outputs";
+import { parseShotConcurrency } from "./shot-concurrency";
 import type { DropWorkspace } from "./drops";
 import { SpendAlertNotifier } from "./spend-alerts";
 import {
@@ -307,11 +308,8 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
 /** CURVI_SHOT_CONCURRENCY (1 to 8) when set to a whole number; the runner's
  * default otherwise. */
 function shotConcurrencyFromEnv(): { shotConcurrency?: number } {
-  const raw = optionalEnv("CURVI_SHOT_CONCURRENCY")?.trim();
-  if (!raw || !/^\d+$/.test(raw)) {
-    return {};
-  }
-  return { shotConcurrency: Math.min(8, Math.max(1, Number(raw))) };
+  const shotConcurrency = parseShotConcurrency(optionalEnv("CURVI_SHOT_CONCURRENCY"));
+  return shotConcurrency === undefined ? {} : { shotConcurrency };
 }
 
 /** Demo workspaces for the weekly drop cron in envless mode. */

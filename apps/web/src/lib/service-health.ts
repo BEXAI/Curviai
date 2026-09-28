@@ -27,7 +27,9 @@
  *
  * A schema that cannot be read (no drizzle bookkeeping table) is reported as
  * unknown without failing the check. Missing configuration (no R2 storage, no
- * model provider key) is listed under `warnings` without failing it either:
+ * model provider key) and drift (recipes rows unlike the seed, a cron that
+ * stopped running; lib/config-health.ts) are listed under `warnings` as
+ * stable codes without failing it either:
  * a restart cannot fix an env value, and failing would restart the instance
  * every minute and take the marketing site down with it.
  */
@@ -86,8 +88,10 @@ export interface HealthCheckDeps {
   latestAppliedMigration: () => Promise<number | null>;
   /** The inline pack runner's counters, or null when none was created yet. */
   runnerStats: () => InlineRunnerStats | null;
-  /** Configuration warning codes; consulted in db mode only. */
-  configWarnings?: () => string[];
+  /** Configuration warning codes; consulted in db mode only, after the
+   * database check, with its outcome. A throw is logged and reported as the
+   * code config_check_failed; it never fails the check. */
+  configWarnings?: (state: { database: DatabaseCheck }) => string[] | Promise<string[]>;
   /** Migrations this build ships, from the journal. */
   migrations?: MigrationMark[];
   commit?: string | null;
@@ -172,7 +176,7 @@ class TimeoutError extends Error {
   }
 }
 
-async function withTimeout<T>(work: () => Promise<T>, ms: number): Promise<T> {
+export async function withTimeout<T>(work: () => Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new TimeoutError(ms)), ms);
@@ -263,6 +267,16 @@ export async function runHealthCheck(deps: HealthCheckDeps): Promise<HealthResul
     deps.cache.passedOnce = true;
   }
 
+  let warnings: string[] = [];
+  if (deps.mode === "db" && deps.configWarnings) {
+    try {
+      warnings = await deps.configWarnings({ database });
+    } catch (err) {
+      warnings = ["config_check_failed"];
+      logger.warn("[health] configuration check failed:", describeError(err));
+    }
+  }
+
   return {
     status: failsCheck ? 503 : 200,
     body: {
@@ -273,7 +287,7 @@ export async function runHealthCheck(deps: HealthCheckDeps): Promise<HealthResul
       packs: stats
         ? { running: stats.running, waiting: stats.waiting, overdue: stats.overdue, concurrency: stats.concurrency }
         : null,
-      warnings: deps.mode === "db" ? (deps.configWarnings?.() ?? []) : [],
+      warnings,
       commit: deps.commit ? deps.commit.slice(0, 7) : null,
       uptimeSeconds: Math.round((deps.uptimeSeconds ?? (() => process.uptime()))()),
       checkedAt: (deps.now ?? (() => new Date()))().toISOString(),

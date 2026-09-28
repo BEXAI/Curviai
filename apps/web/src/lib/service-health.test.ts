@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestDb, readJournalEntries, type TestDb } from "@curvi/db/testing";
 import { sql } from "@curvi/db";
 import {
@@ -182,6 +182,35 @@ describe("runHealthCheck", () => {
 
     const demo = await runHealthCheck(deps({ mode: "demo", configWarnings: () => ["storage_not_configured"] }));
     expect(demo.body.warnings).toEqual([]);
+  });
+
+  it("passes the database outcome to the async configuration check and survives its failure", async () => {
+    const seen: string[] = [];
+    const ok = await runHealthCheck(
+      deps({
+        configWarnings: async ({ database }) => {
+          seen.push(database);
+          return ["recipe_drift"];
+        },
+      }),
+    );
+    expect(ok.body.warnings).toEqual(["recipe_drift"]);
+    expect(seen).toEqual(["ok"]);
+
+    const warn = vi.fn();
+    const failed = await runHealthCheck(
+      deps({
+        logger: { warn },
+        configWarnings: async () => {
+          throw new Error("drift read exploded");
+        },
+      }),
+    );
+    expect(failed.status).toBe(200);
+    expect(failed.body.ok).toBe(true);
+    expect(failed.body.warnings).toEqual(["config_check_failed"]);
+    expect(JSON.stringify(failed.body)).not.toContain("exploded");
+    expect(warn).toHaveBeenCalled();
   });
 
   it("reports pack runner load and returns 503 while draining", async () => {
