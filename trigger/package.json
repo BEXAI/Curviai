@@ -29,6 +29,10 @@
     "@curvi/pipeline": "workspace:*",
     "@curvi/specs": "workspace:*",
     "@expo-google-fonts/inter": "0.4.2",
+    "@expo-google-fonts/lora": "0.4.2",
+    "@expo-google-fonts/montserrat": "0.4.2",
+    "@expo-google-fonts/playfair-display": "0.4.2",
+    "@expo-google-fonts/roboto-slab": "0.4.2",
     "@trigger.dev/sdk": "^3.3.0",
     "zod": "^4.0.0"
   },

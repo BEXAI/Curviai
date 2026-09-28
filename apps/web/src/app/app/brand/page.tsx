@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { presets } from "@curvi/pipeline/seed";
+import { AUTO_STYLE_PRESET, DEFAULT_TEMPLATE_FONT, presets, templateFonts } from "@curvi/pipeline/seed";
 import { BrandKitForm } from "@/components/app/brand-kit-form";
 import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import { getServices } from "@/lib/services";
@@ -19,6 +19,17 @@ export default async function BrandPage() {
     );
   }
   const kit = await services.getBrandKit(workspace.id);
+  // The empty value is the default font; the catalog comes from the seed.
+  const fontOptions = [
+    { value: "", label: brandKitCopy.defaultFontLabel },
+    ...Object.entries(templateFonts)
+      .filter(([key]) => key !== DEFAULT_TEMPLATE_FONT)
+      .map(([key, entry]) => ({ value: key, label: entry.label })),
+  ];
+  const presetOptions = [
+    { value: AUTO_STYLE_PRESET, label: brandKitCopy.autoPresetLabel },
+    ...Object.keys(presets).map((key) => ({ value: key, label: key.replaceAll("_", " ") })),
+  ];
 
   return (
     <div className="max-w-3xl">
@@ -27,7 +38,12 @@ export default async function BrandPage() {
         {brandKitCopy.intro}
       </p>
       <div className="mt-8">
-        <BrandKitForm initial={kit} presetKeys={Object.keys(presets)} save={saveBrandKitAction} />
+        <BrandKitForm
+          initial={kit}
+          presetOptions={presetOptions}
+          fontOptions={fontOptions}
+          save={saveBrandKitAction}
+        />
       </div>
     </div>
   );

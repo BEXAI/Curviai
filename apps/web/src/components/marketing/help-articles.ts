@@ -86,7 +86,7 @@ export const helpArticles: HelpArticle[] = [
     title: "What is a brand kit?",
     body: [
       "A brand kit stores your brand colors. Once they are set, packs use your first brand color for the brand color background shot.",
-      "You can already save your logo, fonts and a style preset in the brand kit, and using them in packs is coming soon. Each workspace has one brand kit, and more brand kits on higher plans are coming soon.",
+      "Your fonts set the text on infographic and dimensions images. Your logo goes in a free corner of infographic and social images, never on the product. Your style preset sets the surface for lifestyle scenes and the backdrop for banners and social images. Each workspace has one brand kit, and more brand kits on higher plans are coming soon.",
     ],
     structured: "always",
   },

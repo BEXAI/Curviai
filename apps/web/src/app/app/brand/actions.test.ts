@@ -31,7 +31,8 @@ describe("saveBrandKitAction (Update.md 4.2)", () => {
     expect(services.saveBrandKit).toHaveBeenCalledWith(TEST_WORKSPACE_ID, {
       name: "House style",
       colors: ["#1D2433"],
-      fonts: { heading: "Inter", body: "Inter" },
+      // "Inter" is the default font's label, stored as the default ("").
+      fonts: { heading: "", body: "" },
       stylePreset: "minimal_studio",
       logoKey: `ws/${TEST_WORKSPACE_ID}/src/logo.png`,
       hasLogo: true,
@@ -45,11 +46,19 @@ describe("saveBrandKitAction (Update.md 4.2)", () => {
     [{ ...valid, name: "x".repeat(81) }, "Kit names and fonts must be 80 characters or fewer, with no special characters."],
     [{ ...valid, fonts: { heading: "<script>", body: "Inter" } }, "Kit names and fonts must be 80 characters or fewer, with no special characters."],
     [{ ...valid, logoKey: "k".repeat(513) }, "That logo upload could not be used. Upload it again."],
+    [{ ...valid, fonts: { heading: "Comic Sans", body: "" } }, "Pick a font from the list."],
     ["not an object", "Check the brand kit fields and try again."],
   ])("rejects a malformed kit without reaching the service", async (input, notice) => {
     const result = await saveBrandKitAction(input);
     expect(result).toEqual({ ok: false, notice });
     expect(services.saveBrandKit).not.toHaveBeenCalled();
+  });
+
+  it("keeps catalog font keys and accepts the automatic style preset", async () => {
+    await saveBrandKitAction({ ...valid, fonts: { heading: "playfair_display", body: "Lora" }, stylePreset: "auto" });
+    const saved = vi.mocked(services.saveBrandKit).mock.calls[0][1];
+    expect(saved.fonts).toEqual({ heading: "playfair_display", body: "lora" });
+    expect(saved.stylePreset).toBe("auto");
   });
 
   it("defaults an empty kit name", async () => {

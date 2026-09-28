@@ -83,9 +83,10 @@ test("signup states the free grant and promises no share page", async ({ page })
   await expect(page.locator("body")).not.toContainText("share page");
 });
 
-test("brand kit page says only brand colors reach packs today", async ({ page }) => {
+test("brand kit page says which parts of the kit reach packs", async ({ page }) => {
   await page.goto("/app/brand");
   await expect(page.getByTestId("brand-kit-intro")).toContainText("brand color");
-  await expect(page.getByTestId("brand-kit-intro")).toContainText("coming soon");
+  await expect(page.getByTestId("brand-kit-intro")).toContainText("fonts and logo");
+  await expect(page.getByTestId("brand-kit-intro")).not.toContainText("coming soon");
   await expect(page.locator("body")).not.toContainText("Sets the default look");
 });

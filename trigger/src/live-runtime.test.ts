@@ -273,6 +273,35 @@ describe("LiveShotGenerator", () => {
     expect(generation.encoded.buffer.length).toBeGreaterThan(0);
   });
 
+  it("loads the brand logo once per workspace and only from the workspace's own prefix", async () => {
+    const scene = new FakeSceneProvider();
+    const { ai, wiring } = liveDeps(scene, await productCutoutPng(96));
+    const logo = await encodePng(solidCanvas(120, 48, 230, 20, 20));
+    const loaded: string[] = [];
+    const generator = new LiveShotGenerator({
+      ai,
+      wiring,
+      loadMedia: async (key) => {
+        loaded.push(key);
+        return key.endsWith("logo.png") ? logo : Buffer.from("source-photo");
+      },
+    });
+    const social = (id: string, logoKey: string) => ({
+      ...argsFor({ ...compositeShotArgs, id, type: "social_1x1", method: "template", channels: ["meta.feed_1x1"] }),
+      brand: { logoKey, fonts: { body: "lora" } },
+    });
+
+    const first = await generator.generate(social("s1", "ws/ws-1/src/logo.png"));
+    await generator.generate(social("s2", "ws/ws-1/src/logo.png"));
+    expect(first.encoded.buffer.length).toBeGreaterThan(0);
+    expect(loaded.filter((key) => key === "ws/ws-1/src/logo.png")).toHaveLength(1);
+
+    // Another workspace's logo key is never read, and the still still renders.
+    const foreign = await generator.generate(social("s3", "ws/ws-2/src/logo.png"));
+    expect(loaded).not.toContain("ws/ws-2/src/logo.png");
+    expect(foreign.encoded.buffer.length).toBeGreaterThan(0);
+  });
+
   it("refuses stills that can never render before paying for the cutout", async () => {
     const scene = new FakeSceneProvider();
     const { ai, wiring, cutout } = liveDeps(scene, await productCutoutPng(96));

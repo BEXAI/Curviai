@@ -22,7 +22,7 @@ import {
   eq,
   and,
 } from "@curvi/db";
-import { presets, tierByKey } from "@curvi/pipeline/seed";
+import { AUTO_STYLE_PRESET, presets, tierByKey } from "@curvi/pipeline/seed";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
@@ -30,10 +30,10 @@ import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { publicJobError } from "@/lib/job-copy";
 import { enqueueGeneratePack } from "@/lib/jobs/enqueue";
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
-import { buildGeneratePackInput } from "@/lib/jobs/payload";
+import { buildGeneratePackInput, type PayloadBrandKit } from "@/lib/jobs/payload";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 import { isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
-import { brandKitInputSchema, brandKitIssueNotice } from "@/lib/validation/brand-kit";
+import { brandKitInputSchema, brandKitIssueNotice, normalizeFontChoice } from "@/lib/validation/brand-kit";
 import { isUuid } from "@/lib/validation/ids";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
@@ -781,12 +781,14 @@ export class DbService implements Services {
     }
     const { product, jobId, insertedMediaIds } = created;
 
-    // Brand colors are optional styling: a failed lookup must never fail a
+    // The brand kit is optional styling: a failed lookup must never fail a
     // job that already holds its credit reservation.
     let brandColors: string[] = [];
+    let brandKit: PayloadBrandKit | null = null;
     try {
       const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
       brandColors = Array.isArray(kit?.colors) ? kit.colors.filter((c): c is string => typeof c === "string") : [];
+      brandKit = kit ? { fonts: kit.fonts ?? null, logoKey: kit.logoR2Key, stylePreset: kit.stylePreset } : null;
     } catch (err) {
       console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
     }
@@ -809,6 +811,7 @@ export class DbService implements Services {
           media,
           userDescription: input.userDescription,
           brandColors,
+          brandKit,
         }),
       );
     } catch (err) {
@@ -1088,13 +1091,18 @@ export class DbService implements Services {
         logoUrl = null;
       }
     }
-    const stylePreset = row?.stylePreset && Object.hasOwn(presets, row.stylePreset) ? row.stylePreset : "minimal_studio";
+    // A kit saved before "auto" existed keeps its preset; anything unknown
+    // reads as auto, which lets the planner pick from the product.
+    const stylePreset =
+      row?.stylePreset && Object.hasOwn(presets, row.stylePreset) ? row.stylePreset : AUTO_STYLE_PRESET;
     return {
       name: row?.name ?? "Default",
       colors: row?.colors ?? [],
+      // Kits saved before the font list held free text; a name that matches
+      // a catalog font reads as that font, anything else as the default.
       fonts: {
-        heading: row?.fonts?.heading ?? "",
-        body: row?.fonts?.body ?? "",
+        heading: normalizeFontChoice(row?.fonts?.heading) ?? "",
+        body: normalizeFontChoice(row?.fonts?.body) ?? "",
       },
       stylePreset,
       hasLogo: Boolean(logoKey || row?.logoAssetId),

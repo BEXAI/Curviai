@@ -1,65 +1,93 @@
 /**
- * Bundled font for template text. Production hosts (Render Linux, the Trigger
- * worker) do not guarantee system fonts, and Pango on macOS ignores font
- * files registered with fontconfig, so text never goes through a system font
- * stack: glyph outlines are read from the Inter TTF shipped by
- * @expo-google-fonts/inter (font under SIL OFL 1.1, see docs/verification.md)
- * with opentype.js and rasterized as SVG paths. The path is resolved at
- * runtime so it works from the web app bundle, the Trigger worker and tests.
+ * Bundled fonts for template text. Production hosts (Render Linux, the
+ * Trigger worker) do not guarantee system fonts, and Pango on macOS ignores
+ * font files registered with fontconfig, so text never goes through a system
+ * font stack: glyph outlines are read from TTFs shipped by the
+ * @expo-google-fonts packages (fonts under SIL OFL 1.1 or Apache 2.0, see
+ * docs/verification.md) with opentype.js and rasterized as SVG paths. The
+ * catalog of fonts a brand kit may pick is seed data (seed/fonts.ts); Inter
+ * is the default and the fallback. Paths are resolved at runtime so they
+ * work from the web app bundle, the Trigger worker and tests.
  */
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import opentype from "opentype.js";
+import { DEFAULT_TEMPLATE_FONT, isTemplateFontKey, templateFonts, type TemplateFontKey } from "../seed/fonts";
 
-const FONT_PACKAGE = "@expo-google-fonts/inter";
-const FONT_RELATIVE = "600SemiBold/Inter_600SemiBold.ttf";
-
-/** Env override for hosts whose bundler does not ship node_modules files. */
+/** Env override for the default font on hosts whose bundler does not ship
+ * node_modules files. Brand fonts that cannot be found fall back to it. */
 export const TEMPLATE_FONT_ENV = "CURVI_TEMPLATE_FONT_FILE";
 
-let cached: string | null | undefined;
-let cachedFont: opentype.Font | null | undefined;
+const resolvedFiles = new Map<TemplateFontKey, string | null>();
+const parsedFonts = new Map<TemplateFontKey, opentype.Font | null>();
 
-/** Parsed template font, or null when the file cannot be found or parsed. */
+/** Parsed default template font, or null when the file cannot be found or parsed. */
 export function loadTemplateFont(): opentype.Font | null {
-  if (cachedFont !== undefined) {
-    return cachedFont;
-  }
-  const file = resolveTemplateFontFile();
-  if (!file) {
-    return null;
-  }
-  try {
-    const bytes = readFileSync(file);
-    cachedFont = opentype.parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-  } catch {
-    cachedFont = null;
-  }
-  return cachedFont;
+  return loadFontByKey(DEFAULT_TEMPLATE_FONT);
 }
 
 /**
- * Absolute path of the bundled template font, or null when it cannot be found.
+ * The template font a brand kit picked, or the default when the key is
+ * empty, unknown, or its file cannot be found or parsed on this host. Null
+ * only when the default is missing too.
+ */
+export function loadBrandTemplateFont(key: string | null | undefined): opentype.Font | null {
+  if (isTemplateFontKey(key) && key !== DEFAULT_TEMPLATE_FONT) {
+    const font = loadFontByKey(key);
+    if (font) {
+      return font;
+    }
+  }
+  return loadTemplateFont();
+}
+
+function loadFontByKey(key: TemplateFontKey): opentype.Font | null {
+  if (parsedFonts.has(key)) {
+    return parsedFonts.get(key) ?? null;
+  }
+  const file = resolveFontFile(key);
+  let font: opentype.Font | null = null;
+  if (file) {
+    try {
+      const bytes = readFileSync(file);
+      font = opentype.parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    } catch {
+      font = null;
+    }
+  }
+  parsedFonts.set(key, font);
+  return font;
+}
+
+/**
+ * Absolute path of the default template font, or null when it cannot be found.
  * Resolution order: the env override, module resolution from this file, then
  * a walk up from the working directory through likely node_modules layouts.
  */
 export function resolveTemplateFontFile(): string | null {
-  if (cached !== undefined) {
-    return cached;
-  }
-  cached = findFontFile();
-  return cached;
+  return resolveFontFile(DEFAULT_TEMPLATE_FONT);
 }
 
-function findFontFile(): string | null {
-  const fromEnv = process.env[TEMPLATE_FONT_ENV];
-  if (fromEnv && existsSync(fromEnv)) {
-    return fromEnv;
+/** Absolute path of a catalog font's TTF, or null when it cannot be found. */
+export function resolveFontFile(key: TemplateFontKey): string | null {
+  if (!resolvedFiles.has(key)) {
+    resolvedFiles.set(key, findFontFile(key));
   }
+  return resolvedFiles.get(key) ?? null;
+}
+
+function findFontFile(key: TemplateFontKey): string | null {
+  if (key === DEFAULT_TEMPLATE_FONT) {
+    const fromEnv = process.env[TEMPLATE_FONT_ENV];
+    if (fromEnv && existsSync(fromEnv)) {
+      return fromEnv;
+    }
+  }
+  const { packageName, file } = templateFonts[key];
 
   // The specifier is assembled at runtime so bundlers do not try to turn the
   // TTF into a module.
-  const specifier = [FONT_PACKAGE, FONT_RELATIVE].join("/");
+  const specifier = [packageName, file].join("/");
   const bases: string[] = [];
   try {
     bases.push(import.meta.url);
@@ -80,9 +108,9 @@ function findFontFile(): string | null {
   }
 
   const layouts = [
-    path.join("node_modules", FONT_PACKAGE, FONT_RELATIVE),
-    path.join("node_modules", "@curvi", "pipeline", "node_modules", FONT_PACKAGE, FONT_RELATIVE),
-    path.join("packages", "pipeline", "node_modules", FONT_PACKAGE, FONT_RELATIVE),
+    path.join("node_modules", packageName, file),
+    path.join("node_modules", "@curvi", "pipeline", "node_modules", packageName, file),
+    path.join("packages", "pipeline", "node_modules", packageName, file),
   ];
   let dir = process.cwd();
   for (;;) {

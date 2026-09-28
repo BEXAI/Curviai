@@ -80,7 +80,7 @@ export const homeFeatures: HomeFeature[] = [
   {
     key: "brandKit",
     title: "Brand kit",
-    body: "Save your brand colors once and packs use your first one for the brand color background. Your fonts, logo and scene styles in packs are coming soon.",
+    body: "Save your brand kit once. Packs use your first color for the brand color background, your fonts and logo on infographic and social images, and your style preset for lifestyle scenes.",
     status: "live",
   },
   {

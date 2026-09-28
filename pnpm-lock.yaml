@@ -56,6 +56,18 @@ importers:
       '@expo-google-fonts/inter':
         specifier: 0.4.2
         version: 0.4.2
+      '@expo-google-fonts/lora':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/montserrat':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/playfair-display':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/roboto-slab':
+        specifier: 0.4.2
+        version: 0.4.2
       '@supabase/ssr':
         specifier: ^0.7.0
         version: 0.7.0(@supabase/supabase-js@2.117.2(@opentelemetry/api@1.9.0))
@@ -174,6 +186,18 @@ importers:
         specifier: workspace:*
         version: link:../specs
       '@expo-google-fonts/inter':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/lora':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/montserrat':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/playfair-display':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/roboto-slab':
         specifier: 0.4.2
         version: 0.4.2
       archiver:
@@ -298,6 +322,18 @@ importers:
         specifier: workspace:*
         version: link:../packages/specs
       '@expo-google-fonts/inter':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/lora':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/montserrat':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/playfair-display':
+        specifier: 0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/roboto-slab':
         specifier: 0.4.2
         version: 0.4.2
       '@trigger.dev/sdk':
@@ -1363,6 +1399,18 @@ packages:
 
   '@expo-google-fonts/inter@0.4.2':
     resolution: {integrity: sha512-syfiImMaDmq7cFi0of+waE2M4uSCyd16zgyWxdPOY7fN2VBmSLKEzkfbZgeOjJq61kSqPBNNtXjggiQiSD6gMQ==}
+
+  '@expo-google-fonts/lora@0.4.2':
+    resolution: {integrity: sha512-Bnofh2mIOUKp4KUS48VjaBgug4lQOcw/ftU0NFv5OPtiutL422//G1v63xDZEMUEL6ft4fi5q94/uKcpDjbPag==}
+
+  '@expo-google-fonts/montserrat@0.4.2':
+    resolution: {integrity: sha512-Xyq7rKJhhZOE1Xk4wKSSVoUeOkFmQEMhtZ3pdFrgYckGZMs115Apmld1AI8Ju+yrl5GzDdfRCCqRr33dvEDYUA==}
+
+  '@expo-google-fonts/playfair-display@0.4.2':
+    resolution: {integrity: sha512-mWhBV59RUjSS3aYpytUb7UyHHTnXcHh7epAn7gq+M4XAEh5PuMKUrP8eiUfkJLb6UwHZCi7EhQpUzxHu5OL96w==}
+
+  '@expo-google-fonts/roboto-slab@0.4.2':
+    resolution: {integrity: sha512-dT4K0ut4Y0uU5VJJ/PQjDKO8tZZXBkhiO3/WOhxqQy7LWRFXlWFWaMlpXLi3HUSDG7nkoSD2+MJWA6lDnPk7MQ==}
 
   '@google-cloud/precise-date@4.0.0':
     resolution: {integrity: sha512-1TUx3KdaU3cN7nfCdNf+UVqA/PSX29Cjcox3fZZBtINlRrXVTmUkQnCKv2MbBUbCopbK4olAT1IHl76uZyCiVA==}
@@ -5740,6 +5788,14 @@ snapshots:
       levn: 0.4.1
 
   '@expo-google-fonts/inter@0.4.2': {}
+
+  '@expo-google-fonts/lora@0.4.2': {}
+
+  '@expo-google-fonts/montserrat@0.4.2': {}
+
+  '@expo-google-fonts/playfair-display@0.4.2': {}
+
+  '@expo-google-fonts/roboto-slab@0.4.2': {}
 
   '@google-cloud/precise-date@4.0.0': {}
 

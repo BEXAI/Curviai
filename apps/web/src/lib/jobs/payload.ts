@@ -4,8 +4,8 @@
  * generate-pack task and the inline runner both consume.
  */
 
-import type { GeneratePackInput } from "@curvi/trigger/runner";
-import type { TierKey } from "@curvi/pipeline/seed";
+import type { BrandStyle, GeneratePackInput } from "@curvi/trigger/runner";
+import { isTemplateFontKey, presets, type TierKey } from "@curvi/pipeline/seed";
 
 export interface PayloadProduct {
   id: string;
@@ -30,6 +30,40 @@ export function seoSlugFor(title: string | null): string {
   return slug.length > 0 ? slug : "product";
 }
 
+/** The brand kit row fields a pack uses beyond colors. */
+export interface PayloadBrandKit {
+  fonts: Record<string, string> | null;
+  logoKey: string | null;
+  stylePreset: string | null;
+}
+
+/**
+ * The brand style the worker receives: only catalog font keys, a logo key
+ * inside this workspace's prefix (the worker checks it again before
+ * loading), and a seeded preset key. Anything else is dropped, so a legacy
+ * or tampered row falls back to the defaults. Null when nothing is left.
+ */
+export function brandStyleFor(workspaceId: string, kit: PayloadBrandKit | null | undefined): BrandStyle | null {
+  if (!kit) {
+    return null;
+  }
+  const heading = isTemplateFontKey(kit.fonts?.heading) ? kit.fonts.heading : null;
+  const body = isTemplateFontKey(kit.fonts?.body) ? kit.fonts.body : null;
+  const logoKey =
+    typeof kit.logoKey === "string" && kit.logoKey.startsWith(`ws/${workspaceId}/`) && !kit.logoKey.includes("..")
+      ? kit.logoKey
+      : null;
+  const stylePreset = kit.stylePreset && Object.hasOwn(presets, kit.stylePreset) ? kit.stylePreset : null;
+  if (!heading && !body && !logoKey && !stylePreset) {
+    return null;
+  }
+  return {
+    ...(heading || body ? { fonts: { heading, body } } : {}),
+    ...(logoKey ? { logoKey } : {}),
+    ...(stylePreset ? { stylePreset } : {}),
+  };
+}
+
 export function buildGeneratePackInput(args: {
   jobId: string;
   workspaceId: string;
@@ -42,7 +76,10 @@ export function buildGeneratePackInput(args: {
   userDescription?: string;
   /** Brand kit colors; only valid #RRGGBB values pass through. */
   brandColors?: string[] | null;
+  /** Brand kit fonts, logo and style preset; see brandStyleFor. */
+  brandKit?: PayloadBrandKit | null;
 }): GeneratePackInput {
+  const brand = brandStyleFor(args.workspaceId, args.brandKit);
   return {
     jobId: args.jobId,
     workspaceId: args.workspaceId,
@@ -60,5 +97,6 @@ export function buildGeneratePackInput(args: {
     sku: args.product.amazonSku ?? undefined,
     seoSlug: seoSlugFor(args.product.title),
     hasVideoSource: args.media.some((m) => m.kind === "video"),
+    ...(brand ? { brand } : {}),
   };
 }

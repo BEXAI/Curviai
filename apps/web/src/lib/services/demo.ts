@@ -73,7 +73,7 @@ const DEMO_PRODUCTS: ProductSummary[] = [
 const DEMO_BRAND_KIT: BrandKitView = {
   name: "Default",
   colors: ["#1D2433", "#FD7F11", "#F6F7F9"],
-  fonts: { heading: "Inter", body: "Inter" },
+  fonts: { heading: "", body: "" },
   stylePreset: "minimal_studio",
   hasLogo: false,
 };

@@ -5,7 +5,11 @@
  * product is only scaled and placed with its own alpha,
  * never recolored or regenerated (CLAUDE.md rule 3). Colors and copy always
  * come from the caller (seed stillStyle and the shot plan); the only numbers
- * in this file are layout proportions.
+ * in this file are layout proportions. A brand kit adds its template fonts
+ * (seed/fonts.ts) and its logo, which only infographic and social stills
+ * carry, in a corner clear of the product and the text: the logo is drawn
+ * before the product is placed, and placing the product over any drawn
+ * pixel throws, so a logo can never cover product pixels.
  */
 import sharp from "sharp";
 import type { ChannelSpec } from "@curvi/specs";
@@ -16,7 +20,7 @@ import { buildProductReference, PRODUCT_RESIZE_KERNEL } from "../deterministic/w
 import { fidelityReport } from "../qc/fidelity";
 import { qcKindForSpec } from "../qc/pixelChecks";
 import type opentype from "opentype.js";
-import { loadTemplateFont } from "./font";
+import { loadBrandTemplateFont, loadTemplateFont } from "./font";
 
 export type TemplateStillType =
   | "infographic"
@@ -60,6 +64,14 @@ interface TemplateStillInput {
   backgroundHex: string;
   textHex: string;
   accentHex: string;
+  /** Brand kit template font keys (seed/fonts.ts). The dimensions label uses
+   * the heading font and infographic callouts the body font; an empty,
+   * unknown or missing font, or one without a glyph the copy needs, falls
+   * back to the default font. */
+  fonts?: { heading?: string | null; body?: string | null };
+  /** Encoded brand logo (PNG, JPEG or WebP). Drawn on infographic and social
+   * stills only, and skipped when no corner is clear of product and text. */
+  logo?: Buffer | null;
 }
 
 interface TemplateStillResult {
@@ -74,7 +86,18 @@ interface TemplateStillResult {
    * productReference, image, mask) proves the product was not recolored.
    */
   productReference: RawImage;
+  /** True when the brand logo was drawn on this still. */
+  logoPlaced: boolean;
 }
+
+/** Still types that may carry the brand logo. */
+const LOGO_STILL_TYPES: ReadonlySet<TemplateStillType> = new Set<TemplateStillType>([
+  "infographic",
+  "social_1x1",
+  "social_4x5",
+  "social_9x16",
+  "social_2x3",
+]);
 
 /** Longest callout the image will carry, matching the planner's cap. */
 const MAX_CALLOUT_CHARS = 40;
@@ -108,6 +131,13 @@ const LAYOUT = {
     minFontOfShort: 0.018,
   },
   aplus: { boxWidth: 0.86, boxHeight: 0.8 },
+  logo: {
+    /** Largest logo height and width as shares of the canvas short side. */
+    maxHeightOfShort: 0.09,
+    maxWidthOfShort: 0.26,
+    /** Clear space kept between the logo and the product or any text. */
+    gapOfShort: 0.02,
+  },
   social: { boxWidth: 0.78, boxHeight: 0.72 },
   jpegQualities: [90, 80, 70, 60, 50, 40],
   /** Higher lossy qualities tried, in order, when a still fails the rule 3 check. */
@@ -137,7 +167,9 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
     }
   }
   const format = pickFormat(spec);
-  const font = needsText ? loadTemplateFont() : null;
+  const font = needsText
+    ? pickFont(type === "dimensions" ? input.fonts?.heading : input.fonts?.body, copy)
+    : null;
   if (needsText && !font) {
     throw new TemplateUnavailableError("Template font file could not be found");
   }
@@ -172,6 +204,11 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
       break;
   }
 
+  const logoAllowed =
+    LOGO_STILL_TYPES.has(type) && spec.textAllowed !== false && spec.background?.type !== "solid";
+  const logoPlaced =
+    logoAllowed && input.logo ? await placeLogo(canvas, input.logo, content, placement) : false;
+
   const mask = await canvas.placeProduct(product, placement);
   // Rebuilt from the decoded inputs and the placement alone, never from the
   // canvas, so a recolor anywhere after placement fails fidelity.
@@ -187,7 +224,89 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
   if (image.width !== W || image.height !== H) {
     throw new Error(`Encoded template is ${image.width}x${image.height}, expected ${W}x${H}`);
   }
-  return { image, mask, encoded: { buffer: encoded.buffer, format: encoded.format }, productReference };
+  return {
+    image,
+    mask,
+    encoded: { buffer: encoded.buffer, format: encoded.format },
+    productReference,
+    logoPlaced,
+  };
+}
+
+/**
+ * The brand font for this copy, or the default when the brand font lacks a
+ * glyph the copy needs (renderText would drop it and print a wrong word).
+ */
+function pickFont(key: string | null | undefined, copy: string[]): opentype.Font | null {
+  const brand = loadBrandTemplateFont(key);
+  const fallback = loadTemplateFont();
+  if (!brand || brand === fallback || !fallback) {
+    return brand ?? fallback;
+  }
+  const chars = new Set(Array.from(copy.join("")).filter((ch) => ch.trim().length > 0));
+  for (const ch of chars) {
+    if (brand.charToGlyphIndex(ch) <= 0 && fallback.charToGlyphIndex(ch) > 0) {
+      return fallback;
+    }
+  }
+  return brand;
+}
+
+// Logo
+
+/**
+ * Draws the brand logo, scaled to fit the logo box, in the first content
+ * corner (top left, top right, bottom left, bottom right) whose box plus the
+ * clear space neither meets the product placement nor any text or line
+ * already drawn. Returns false, drawing nothing, when the logo cannot be
+ * decoded or no corner is clear: a logo is never worth a failed still.
+ */
+async function placeLogo(canvas: Canvas, logo: Buffer, content: BBox, placement: BBox): Promise<boolean> {
+  const L = LAYOUT.logo;
+  const short = Math.min(canvas.width, canvas.height);
+  const maxW = Math.max(1, Math.round(short * L.maxWidthOfShort));
+  const maxH = Math.max(1, Math.round(short * L.maxHeightOfShort));
+  const gap = Math.max(1, Math.round(short * L.gapOfShort));
+  let decoded: { data: Buffer; width: number; height: number };
+  try {
+    const { data, info } = await sharp(logo)
+      .rotate()
+      .ensureAlpha()
+      .resize({ width: maxW, height: maxH, fit: "inside" })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    if (info.channels !== 4) {
+      return false;
+    }
+    decoded = { data, width: info.width, height: info.height };
+  } catch {
+    return false;
+  }
+  const { width, height } = decoded;
+  if (width > content.width || height > content.height) {
+    return false;
+  }
+  const right = content.left + content.width - width;
+  const bottom = content.top + content.height - height;
+  const corners: Array<[number, number]> = [
+    [content.left, content.top],
+    [right, content.top],
+    [content.left, bottom],
+    [right, bottom],
+  ];
+  for (const [left, top] of corners) {
+    const padded: BBox = { left: left - gap, top: top - gap, width: width + 2 * gap, height: height + 2 * gap };
+    if (intersects(padded, placement) || !canvas.isClear(padded)) {
+      continue;
+    }
+    canvas.blendImage(decoded, left, top);
+    return true;
+  }
+  return false;
+}
+
+function intersects(a: BBox, b: BBox): boolean {
+  return a.left < b.left + b.width && b.left < a.left + a.width && a.top < b.top + b.height && b.top < a.top + a.height;
 }
 
 // Copy handling
@@ -693,6 +812,32 @@ class Canvas {
           }
         }
         this.blend(x, y, Math.round((hits * 255) / 16), c);
+      }
+    }
+  }
+
+  /** True when no text, line or logo pixel was drawn inside box. */
+  isClear(box: BBox): boolean {
+    const x0 = Math.max(0, box.left);
+    const y0 = Math.max(0, box.top);
+    const x1 = Math.min(this.width, box.left + box.width);
+    const y1 = Math.min(this.height, box.top + box.height);
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        if (this.decoration[y * this.width + x]) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /** Blends an RGBA image (a logo) with its own alpha, as decoration. */
+  blendImage(img: { data: Buffer; width: number; height: number }, left: number, top: number): void {
+    for (let y = 0; y < img.height; y++) {
+      for (let x = 0; x < img.width; x++) {
+        const o = (y * img.width + x) * 4;
+        this.blend(left + x, top + y, img.data[o + 3], { r: img.data[o], g: img.data[o + 1], b: img.data[o + 2] });
       }
     }
   }

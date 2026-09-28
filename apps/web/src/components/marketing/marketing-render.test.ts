@@ -38,8 +38,8 @@ vi.mock("@/lib/services", () => ({
     getBrandKit: async () => ({
       name: "Test kit",
       colors: ["#1D2433"],
-      fonts: { heading: "Inter", body: "Inter" },
-      stylePreset: "minimal_studio",
+      fonts: { heading: "playfair_display", body: "" },
+      stylePreset: "auto",
       hasLogo: false,
     }),
   }),
@@ -354,7 +354,7 @@ describe("signup page", () => {
 });
 
 describe("brand kit page", () => {
-  it("says packs use brand colors today and the rest is coming soon", async () => {
+  it("says which parts of the kit packs use", async () => {
     const { default: BrandPage } = await import("@/app/app/brand/page");
     const html = render(await BrandPage());
     const intro = testIdText(html, "brand-kit-intro");
@@ -368,6 +368,16 @@ describe("brand kit page", () => {
       expect(unqualifiedClaims(hint)).toEqual([]);
     }
     expect(unqualifiedClaims(intro)).toEqual([]);
+  });
+
+  it("offers the seeded fonts and the automatic style preset as choices", async () => {
+    const { default: BrandPage } = await import("@/app/app/brand/page");
+    const html = render(await BrandPage());
+    expect(html).toContain(brandKitCopy.defaultFontLabel);
+    expect(html).toContain("Playfair Display");
+    expect(html).toContain("Roboto Slab");
+    expect(html).toContain(brandKitCopy.autoPresetLabel);
+    expect(html).toContain("luxury marble");
   });
 });
 

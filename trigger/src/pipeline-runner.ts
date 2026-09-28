@@ -34,6 +34,7 @@ import {
   type SpendCaps,
 } from "@curvi/ai";
 import {
+  applyBrandStylePreset,
   buildPack,
   capShotsPerChannel,
   CHANNEL_LIMIT_REASON,
@@ -371,6 +372,19 @@ export interface ShotGenerateArgs {
   workspaceId: string;
   /** Workspace brand kit colors (hex), for brand colored stills. */
   brandColors?: string[];
+  /** Workspace brand kit fonts and logo, for template stills. */
+  brand?: BrandStyle;
+}
+
+/**
+ * The brand kit parts packs use beyond colors: template font keys
+ * (seed/fonts.ts), the logo's object key in the workspace's private bucket,
+ * and a style preset key, or "auto" to let the planner pick.
+ */
+export interface BrandStyle {
+  fonts?: { heading?: string | null; body?: string | null };
+  logoKey?: string | null;
+  stylePreset?: string | null;
 }
 
 export interface ShotGenerator {
@@ -393,6 +407,8 @@ export interface ShotContext {
   mode?: "listing" | "concept";
   /** Workspace brand kit colors (hex), passed through to the generator. */
   brandColors?: string[];
+  /** Workspace brand kit fonts and logo, passed through to the generator. */
+  brand?: BrandStyle;
 }
 
 /** IPTC digital source marking per plan 5.7.2: composited scenes carry
@@ -600,6 +616,8 @@ export interface GeneratePackInput {
   hasVideoSource?: boolean;
   /** Workspace brand kit colors (hex), for brand colored stills. */
   brandColors?: string[];
+  /** Workspace brand kit fonts, logo and style preset. */
+  brand?: BrandStyle;
 }
 
 export interface GeneratePackSummary {
@@ -1027,6 +1045,7 @@ async function runOutput(
         jobId: ctx.jobId,
         workspaceId: ctx.workspaceId,
         brandColors: ctx.brandColors,
+        ...(ctx.brand ? { brand: ctx.brand } : {}),
       });
     } catch (err) {
       // Whatever ended the attempt, the provider spend it made stays on the
@@ -1199,6 +1218,7 @@ async function deriveOutput(
     jobId: ctx.jobId,
     workspaceId: ctx.workspaceId,
     brandColors: ctx.brandColors,
+    ...(ctx.brand ? { brand: ctx.brand } : {}),
   };
   let generation: ShotGeneration;
   try {
@@ -1999,7 +2019,9 @@ export async function runGeneratePack(
       chosen = fallback;
       plannerSource = "deterministic";
     }
-    const shotList: ShotList = chosen;
+    // The brand kit's style preset, when it names one, replaces the
+    // planner's category pick on every shot that uses a preset.
+    const shotList: ShotList = applyBrandStylePreset(chosen, input.brand?.stylePreset, profile);
     plannedShots = shotList.shots.length;
     skipped = [
       ...conceptExcluded.map((channel) => ({
@@ -2026,6 +2048,7 @@ export async function runGeneratePack(
       seoSlug: input.seoSlug,
       mode,
       brandColors: input.brandColors,
+      ...(input.brand ? { brand: input.brand } : {}),
     };
     // Pack level spend cap: a shared tracker gates every generation attempt
     // across the parallel fan out, so a runaway pack stops mid flight. The
