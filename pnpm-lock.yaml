@@ -255,6 +255,9 @@ importers:
 
   trigger:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.700.0
+        version: 3.1141.0
       '@curvi/ai':
         specifier: workspace:*
         version: link:../packages/ai

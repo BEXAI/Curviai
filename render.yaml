@@ -48,6 +48,18 @@ services:
         sync: false
       - key: TRIGGER_SECRET_KEY
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: BFL_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PHOTOROOM_API_KEY
+        sync: false
+      - key: FAL_KEY
+        sync: false
       - key: SENTRY_DSN
         sync: false
       - key: NEXT_PUBLIC_POSTHOG_KEY

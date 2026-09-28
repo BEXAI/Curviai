@@ -70,7 +70,7 @@ A read only security review of wave 1 executed exploit probes against the repo's
 - Half open probe state for the circuit breaker; Upstash backed breaker and cap stores; DB backed cost meter.
 - Badge pixel overlay for social exports (flag is tracked, pixels not composited yet).
 - Wire SpendCaps reservations inside the trigger runner's per shot loop once real costMicros flow.
-- Real provider routing table and price table seeds for buildRuntimeDeps in trigger (in memory demo runtime ships now).
+- DONE 2026-09-27: live provider wiring shipped in trigger/src/live-runtime.ts. Model IDs and prices seeded in packages/pipeline/src/seed/models.ts verbatim from CURVI_BUILD_PLAN.md sections 2.4 and 5.1 (research pass dated July to September 2026). Adapters still carry VERIFY AT FIRST LIVE CALL notes for request shapes; recheck model IDs, prices and response shapes against official provider docs on the first real key setup before enabling paid traffic.
 - Write workspaces.stripe_customer_id back from checkout.session.completed so the customer portal works without backfill.
 - Ingest side revalidation of uploads (presigned PUT cannot enforce byte caps server side; caps are enforced at sign time only).
 - Workspace switcher and per request workspace scoping for agency accounts (DbService currently resolves the first membership).
