@@ -189,6 +189,13 @@ User-facing copy passes rule 9 today; keep it that way in every fix above.
 8. **Smaller items:** deterministic/whiten.ts:323 returns a JPEG still over `maxBytes` without flagging it, and packages/pipeline/src/raw.ts:31 ignores EXIF rotation (only eval uses these today).
 9. **iCloud:** the repo lives on an iCloud synced Desktop, which keeps creating `name 2.ext` duplicates in `.next`, `test-results` and even `.git`. Move the working copy off iCloud, or exclude the folder from sync.
 
+## Before moving pack jobs to Trigger.dev cloud
+
+Production runs packs on the inline runner inside the Next.js server on Render today. If pack jobs move to Trigger.dev cloud later, two things change:
+
+1. **The deploy must include the font file.** Template text (infographic, dimensions) is drawn from the Inter TTF in `@expo-google-fonts/inter`, which a Trigger.dev bundle may not ship. Set `CURVI_TEMPLATE_FONT_FILE` to the font's path in that environment, or add the file to the Trigger build. Otherwise text templates go to needs review at no charge. The resolver is in packages/pipeline/src/templates/font.ts.
+2. **The Photoroom cutout would be paid once per shot instead of once per job.** Each generate-shot task builds its own `LiveShotGenerator`, so the per-job cutout cache in trigger/src/live-runtime.ts does not carry across tasks. Spend stays inside the caps, but a pack pays roughly one cutout per shot. To keep it once per job, save the cutout to R2 keyed by job and source photo, and load it from there in each shot task.
+
 ## Suggested order and gates
 
 | Order | Wave | Gate before moving on |
