@@ -8,7 +8,6 @@
  * runtime so it works from the web app bundle, the Trigger worker and tests.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import opentype from "opentype.js";
 
@@ -68,9 +67,10 @@ function findFontFile(): string | null {
     // import.meta is unavailable in some CommonJS bundles.
   }
   bases.push(path.join(process.cwd(), "package.json"));
-  for (const base of bases) {
+  const createRequire = runtimeCreateRequire();
+  for (const base of createRequire ? bases : []) {
     try {
-      const resolved = createRequire(base).resolve(specifier);
+      const resolved = createRequire!(base).resolve(specifier);
       if (existsSync(resolved)) {
         return resolved;
       }
@@ -98,4 +98,17 @@ function findFontFile(): string | null {
     }
     dir = parent;
   }
+}
+
+/**
+ * node:module createRequire, looked up at runtime. A static import lets
+ * webpack see createRequire(base).resolve(specifier) with runtime values and
+ * warn "Critical dependency" on every Next.js build; process.getBuiltinModule
+ * (Node 20.16 and later) is opaque to the bundler. When it is missing, the
+ * directory walk in findFontFile still finds the font.
+ */
+function runtimeCreateRequire(): ((base: string) => NodeJS.Require) | null {
+  const getBuiltinModule = (process as { getBuiltinModule?: (id: string) => unknown }).getBuiltinModule;
+  const nodeModule = getBuiltinModule?.("node:module") as typeof import("node:module") | undefined;
+  return nodeModule?.createRequire ?? null;
 }
