@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { ImageResponse } from "next/og";
 import { OG_IMAGE } from "@/lib/seo";
 
@@ -5,8 +7,29 @@ export const alt = OG_IMAGE.alt;
 export const size = { width: OG_IMAGE.width, height: OG_IMAGE.height };
 export const contentType = "image/png";
 
-/** Social share card matching the dark cinematic marketing theme. */
-export default function OpenGraphImage() {
+/** The logo mark as a data URL. The card is rendered at build time from
+ * apps/web, so the public folder is next to the working directory; the
+ * monorepo root is tried too for builds started from there. */
+async function logoDataUrl(): Promise<string> {
+  const candidates = [
+    join(process.cwd(), "public", "brand", "curvi-mark-512.png"),
+    join(process.cwd(), "apps", "web", "public", "brand", "curvi-mark-512.png"),
+  ];
+  for (const file of candidates) {
+    try {
+      const bytes = await readFile(file);
+      return `data:image/png;base64,${bytes.toString("base64")}`;
+    } catch {
+      // Try the next location.
+    }
+  }
+  throw new Error("Curvi logo mark not found for the social card");
+}
+
+/** Social share card (Open Graph, Twitter and iMessage link previews): the
+ * logo mark beside the tagline, in the logo's teal and pink. */
+export default async function OpenGraphImage() {
+  const logo = await logoDataUrl();
   return new ImageResponse(
     (
       <div
@@ -14,36 +37,26 @@ export default function OpenGraphImage() {
           width: "100%",
           height: "100%",
           display: "flex",
-          flexDirection: "column",
-          justifyContent: "center",
-          padding: "80px",
-          backgroundColor: "#0b0d14",
-          backgroundImage: "radial-gradient(800px 400px at 80% 0%, rgba(253,127,17,0.25), transparent)",
+          alignItems: "center",
+          padding: "72px",
+          backgroundColor: "#000000",
+          backgroundImage:
+            "radial-gradient(700px 420px at 90% 0%, rgba(236,72,153,0.22), transparent), radial-gradient(600px 400px at 0% 100%, rgba(45,212,191,0.18), transparent)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "baseline" }}>
-          <span style={{ fontSize: 72, fontWeight: 700, color: "#ffffff" }}>Curvi</span>
-          <div
-            style={{
-              width: 18,
-              height: 18,
-              borderRadius: 9,
-              marginLeft: 8,
-              backgroundColor: "#fd7f11",
-            }}
-          />
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", marginTop: 48 }}>
-          <span style={{ fontSize: 96, fontWeight: 700, color: "#ffffff", textTransform: "uppercase" }}>
+        <img src={logo} width={380} height={380} alt="" style={{ borderRadius: 48 }} />
+        <div style={{ display: "flex", flexDirection: "column", marginLeft: 64, flex: 1 }}>
+          <span style={{ fontSize: 64, fontWeight: 700, color: "#ffffff" }}>Curvi.ai</span>
+          <span style={{ fontSize: 72, fontWeight: 700, color: "#2dd4bf", textTransform: "uppercase", marginTop: 24 }}>
             Shot once.
           </span>
-          <span style={{ fontSize: 96, fontWeight: 700, color: "#fd7f11", textTransform: "uppercase" }}>
+          <span style={{ fontSize: 72, fontWeight: 700, color: "#ec4899", textTransform: "uppercase" }}>
             Ready everywhere.
           </span>
+          <span style={{ fontSize: 30, color: "#aeb9cb", marginTop: 32 }}>
+            AI e-commerce images for Shopify and Amazon from one photo, product pixels untouched.
+          </span>
         </div>
-        <span style={{ fontSize: 32, color: "#aeb9cb", marginTop: 40 }}>
-          AI e-commerce images for Shopify and Amazon from one photo, product pixels untouched.
-        </span>
       </div>
     ),
     size,

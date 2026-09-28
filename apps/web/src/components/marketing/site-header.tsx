@@ -13,12 +13,12 @@ export function Wordmark({ className }: { className?: string }) {
   return (
     <span
       className={cn(
-        "inline-flex items-baseline font-display text-xl font-bold tracking-tight text-ink-950",
+        "inline-flex items-center gap-2 font-display text-xl font-bold tracking-tight text-ink-950",
         className,
       )}
     >
+      <img src="/brand/curvi-mark-256.png" alt="" width={32} height={32} className="h-8 w-8 rounded-lg" />
       Curvi
-      <span className="ml-0.5 inline-block h-2 w-2 translate-y-[-1px] rounded-full bg-accent-500" aria-hidden="true" />
     </span>
   );
 }
