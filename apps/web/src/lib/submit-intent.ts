@@ -13,6 +13,9 @@ export interface SubmitIntentFields {
   uploadKey: string | null;
   newProductTitle: string;
   description: string;
+  /** Anything else the submit sends (photo roles, SKU, box contents,
+   * comparison facts), already serialized by the form. */
+  details?: string;
 }
 
 /** Stable fingerprint of what a submit would send; channel order does not
@@ -25,6 +28,7 @@ export function intentFingerprint(fields: SubmitIntentFields): string {
     fields.uploadKey ?? "",
     fields.productId === "new" ? fields.newProductTitle.trim() : "",
     fields.description.trim(),
+    fields.details ?? "",
   ]);
 }
 

@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -21,6 +22,9 @@ import {
 export type MemberRole = "owner" | "admin" | "editor" | "client";
 export type ProductMode = "listing" | "concept";
 export type SourceMediaKind = "image" | "video" | "frame";
+/** The role the seller gave a photo (packages/pipeline seller-inputs
+ * ANGLE_ROLES; a check constraint keeps the column to these values). */
+export type SourceMediaAngle = "front" | "back" | "side" | "detail" | "in_the_box" | "scale";
 export type JobStatus =
   | "queued"
   | "analyzing"
@@ -104,6 +108,12 @@ export const products = pgTable(
     mode: text("mode").$type<ProductMode>().notNull(),
     shopifyProductGid: text("shopify_product_gid"),
     amazonSku: text("amazon_sku"),
+    // Seller inputs the planner uses (migration 0014): the seller's own SKU
+    // for file names, what is in the box and comparison facts, one printable
+    // line each, as typed. The in_the_box and comparison shots print these.
+    sku: text("sku"),
+    boxContents: jsonb("box_contents").$type<string[]>(),
+    comparisonFacts: jsonb("comparison_facts").$type<string[]>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -126,9 +136,15 @@ export const sourceMedia = pgTable(
     height: integer("height"),
     sha256: text("sha256").notNull(),
     maskR2Key: text("mask_r2_key"),
+    /** Which angle the photo shows, when the seller said (migration 0014). */
+    angle: text("angle").$type<SourceMediaAngle>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check(
+      "source_media_angle_check",
+      sql`${t.angle} is null or ${t.angle} in ('front', 'back', 'side', 'detail', 'in_the_box', 'scale')`,
+    ),
     index("source_media_workspace_id_idx").on(t.workspaceId),
     index("source_media_product_id_idx").on(t.productId),
     // One row per uploaded object (Update.md 6.3): a retried pack submit

@@ -10,6 +10,7 @@
 
 import { Shot, ShotList } from "@curvi/pipeline/schemas";
 import { isShotMethodDeliverable, type TierKey } from "@curvi/pipeline/seed";
+import type { AngleRole } from "@curvi/pipeline/seller-inputs";
 import { referencePackShots } from "@/lib/pack-estimate";
 
 const DEMO_SOURCE_MEDIA_ID = "demo_source_1";
@@ -20,15 +21,20 @@ const DEMO_SOURCE_MEDIA_ID = "demo_source_1";
  * must include the feature (the planner checks isEntitled) and the method
  * must ship today (isShotMethodDeliverable, the list the db runtime skips and
  * pack estimates leave out). While video is coming soon no demo pack plans
- * or holds credits for it. */
+ * or holds credits for it. Seller inputs add what they add in production:
+ * photo roles add angles, and box contents and comparison facts add the
+ * in_the_box and comparison images. */
 export function planDemoShots(
   requestedChannels: string[],
   tier: TierKey,
   mode: "listing" | "concept" = "listing",
+  seller: { angles?: AngleRole[]; boxContents?: string[]; comparisonFacts?: string[] } = {},
 ): Shot[] {
-  const shots = referencePackShots(requestedChannels, mode, tier, DEMO_SOURCE_MEDIA_ID).filter((shot) =>
-    isShotMethodDeliverable(shot.method),
-  );
+  const shots = referencePackShots(requestedChannels, mode, tier, DEMO_SOURCE_MEDIA_ID, {
+    angles: seller.angles,
+    hasBoxContents: (seller.boxContents?.length ?? 0) > 0,
+    hasComparisonFacts: (seller.comparisonFacts?.length ?? 0) > 0,
+  }).filter((shot) => isShotMethodDeliverable(shot.method));
   // Validate against the source of truth schema before handing the plan out.
   return ShotList.parse({ shots, skipped: [] }).shots;
 }

@@ -19,6 +19,7 @@
 
 import { planShots } from "@curvi/pipeline/planner";
 import type { ProductProfile, Shot } from "@curvi/pipeline/schemas";
+import { withSellerAngles, type AngleRole } from "@curvi/pipeline/seller-inputs";
 import { isShotMethodDeliverable, type TierKey } from "@curvi/pipeline/seed";
 import { isMarketplaceChannel } from "@curvi/specs";
 
@@ -68,6 +69,25 @@ export const ESTIMATE_REFERENCE_PRODUCT: ProductProfile = {
 const REFERENCE_MEDIA_ID = "reference_front";
 
 /**
+ * What the seller told us about the product, so the estimate and the hold
+ * cover the shots those inputs unlock: every photo role adds its angle to
+ * the reference product's, and box contents and comparison facts add the
+ * in_the_box and comparison images. Without these the worker's budget trim
+ * would drop the very images the seller filled the form in for.
+ */
+export interface EstimateSellerInputs {
+  angles?: readonly AngleRole[];
+  hasBoxContents?: boolean;
+  hasComparisonFacts?: boolean;
+}
+
+function referenceProductFor(inputs: EstimateSellerInputs | undefined): ProductProfile {
+  return inputs?.angles && inputs.angles.length > 0
+    ? withSellerAngles(ESTIMATE_REFERENCE_PRODUCT, inputs.angles)
+    : ESTIMATE_REFERENCE_PRODUCT;
+}
+
+/**
  * The shots the deterministic planner plans for the reference product and
  * this channel pick, with no budget limit, video included where the plan
  * tier has it. Concept packs leave marketplace channels out first, exactly
@@ -79,16 +99,19 @@ export function referencePackShots(
   mode: EstimateMode,
   tier: TierKey,
   primaryMediaId: string = REFERENCE_MEDIA_ID,
+  inputs?: EstimateSellerInputs,
 ): Shot[] {
   const picked = mode === "concept" ? channels.filter((c) => !isMarketplaceChannel(c)) : [...channels];
   if (picked.length === 0) {
     return [];
   }
-  return planShots(ESTIMATE_REFERENCE_PRODUCT, {
+  return planShots(referenceProductFor(inputs), {
     channels: picked,
     tier,
     creditBudget: Number.MAX_SAFE_INTEGER,
     primaryMediaId,
+    hasBoxContents: inputs?.hasBoxContents === true,
+    hasComparisonFacts: inputs?.hasComparisonFacts === true,
   }).shots;
 }
 
@@ -149,9 +172,14 @@ function lineFor(shot: Shot): { key: string; name: LineName } {
   }
 }
 
-export function estimatePackCredits(channels: string[], mode: EstimateMode, tier: TierKey): PackEstimate {
+export function estimatePackCredits(
+  channels: string[],
+  mode: EstimateMode,
+  tier: TierKey,
+  inputs?: EstimateSellerInputs,
+): PackEstimate {
   const groups = new Map<string, { name: LineName; count: number; credits: number; deliverable: boolean }>();
-  for (const shot of referencePackShots(channels, mode, tier)) {
+  for (const shot of referencePackShots(channels, mode, tier, REFERENCE_MEDIA_ID, inputs)) {
     const { key, name } = lineFor(shot);
     const deliverable = isShotMethodDeliverable(shot.method);
     const group = groups.get(key) ?? { name, count: 0, credits: 0, deliverable };

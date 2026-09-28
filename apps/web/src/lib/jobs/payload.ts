@@ -6,18 +6,25 @@
 
 import type { GeneratePackInput } from "@curvi/trigger/runner";
 import type { TierKey } from "@curvi/pipeline/seed";
+import { isAngleRole, printableSellerLines } from "@curvi/pipeline/seller-inputs";
 
 export interface PayloadProduct {
   id: string;
   title: string | null;
   mode: "listing" | "concept";
   amazonSku: string | null;
+  /** The seller's own SKU; wins over amazonSku for file names. */
+  sku?: string | null;
+  boxContents?: string[] | null;
+  comparisonFacts?: string[] | null;
 }
 
 export interface PayloadMedia {
   /** Object key in the private bucket; the worker's media loader reads it. */
   r2Key: string;
   kind: "image" | "video" | "frame" | null;
+  /** The role the seller gave the photo, when they gave one. */
+  angle?: string | null;
 }
 
 export function seoSlugFor(title: string | null): string {
@@ -50,15 +57,20 @@ export function buildGeneratePackInput(args: {
     mode: args.mode,
     channels: args.channels,
     creditBudget: args.creditBudget,
+    // The seller's front photo goes first: the worker treats the first photo
+    // as the primary one, and the analyzer looks at the first few.
     images: args.media
       .filter((m) => m.kind !== "video")
-      .map((m) => ({ mediaId: m.r2Key })),
+      .map((m) => (isAngleRole(m.angle) ? { mediaId: m.r2Key, angle: m.angle } : { mediaId: m.r2Key }))
+      .sort((a, b) => Number(b.angle === "front") - Number(a.angle === "front")),
     userDescription: args.userDescription,
     brandColors: (Array.isArray(args.brandColors) ? args.brandColors : [])
       .filter((c) => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c))
       .slice(0, 6),
-    sku: args.product.amazonSku ?? undefined,
+    sku: args.product.sku || args.product.amazonSku || undefined,
     seoSlug: seoSlugFor(args.product.title),
     hasVideoSource: args.media.some((m) => m.kind === "video"),
+    boxContents: printableSellerLines(args.product.boxContents),
+    comparisonFacts: printableSellerLines(args.product.comparisonFacts),
   };
 }

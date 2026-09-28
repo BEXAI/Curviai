@@ -38,12 +38,37 @@ export interface WorkspaceSummary {
   role: WorkspaceRole;
 }
 
+/** The role a seller gave a photo (@curvi/pipeline/seller-inputs). */
+export type PhotoAngle = "front" | "back" | "side" | "detail" | "in_the_box" | "scale";
+
 export interface ProductSummary {
   id: string;
   title: string;
   mode: PackMode;
   category: string;
   createdAt: string;
+  /** The seller's SKU, used to name delivered files. */
+  sku: string | null;
+  /** What is in the box, one printable line per item. */
+  boxContents: string[];
+  /** Comparison facts the seller can back up, one printable line each. */
+  comparisonFacts: string[];
+}
+
+/** One pack in a product's history. */
+export interface ProductPackView {
+  id: string;
+  status: JobStatus;
+  channels: string[];
+  createdAt: string;
+  creditsReserved: number;
+  creditsCharged: number;
+}
+
+/** A product in the library with its photos and its packs, newest first. */
+export interface ProductLibraryEntry extends ProductSummary {
+  photoCount: number;
+  packs: ProductPackView[];
 }
 
 export interface ShotCompliance {
@@ -128,12 +153,18 @@ export interface CreateJobInput {
   channels: string[];
   mode: PackMode;
   idempotencyKey: string;
-  /** R2 objects uploaded for this pack; registered as source media in db mode. */
-  uploads?: Array<{ key: string; sha256: string; kind: "image" | "video" }>;
+  /** R2 objects uploaded for this pack; registered as source media in db
+   * mode. angle is the role the seller picked for a photo. */
+  uploads?: Array<{ key: string; sha256: string; kind: "image" | "video"; angle?: PhotoAngle }>;
   /** Title for the product created when productId is "new". */
   newProductTitle?: string;
   /** Seller notes passed to the analyzer as untrusted description text. */
   userDescription?: string;
+  /** Saved on the product. Undefined keeps what the product has; an empty
+   * string or list clears it. */
+  sku?: string;
+  boxContents?: string[];
+  comparisonFacts?: string[];
 }
 
 export type CreateJobResult =
@@ -226,6 +257,9 @@ export interface Services {
   /** Renames the workspace. Owner and admin only in db mode. */
   renameWorkspace(workspaceId: string, name: string): Promise<SaveResult>;
   listProducts(workspaceId: string): Promise<ProductSummary[]>;
+  /** The products library: every product with its photo count and pack
+   * history, newest product first. */
+  listProductLibrary(workspaceId: string): Promise<ProductLibraryEntry[]>;
   getProduct(workspaceId: string, productId: string): Promise<ProductSummary | null>;
   listRecentJobs(workspaceId: string, limit?: number): Promise<JobSummary[]>;
   /** Reading a job advances the demo simulation by one tick. */

@@ -56,6 +56,41 @@ describe("buildGeneratePackInput", () => {
     expect(input.sku).toBeUndefined();
     expect(input.hasVideoSource).toBe(false);
   });
+
+  it("carries photo roles, front first, and the seller's lines and SKU", () => {
+    const input = buildGeneratePackInput({
+      ...base,
+      product: {
+        ...base.product,
+        sku: "MUG-SELLER",
+        boxContents: ["Mug", " ", "Lid"],
+        comparisonFacts: ["Holds 12 oz, most hold 8 oz"],
+      },
+      media: [
+        { r2Key: "m_back", kind: "image", angle: "back" },
+        { r2Key: "m_front", kind: "image", angle: "front" },
+        { r2Key: "m_odd", kind: "image", angle: "top" },
+        { r2Key: "m_none", kind: "image" },
+      ],
+    });
+    expect(input.images).toEqual([
+      { mediaId: "m_front", angle: "front" },
+      { mediaId: "m_back", angle: "back" },
+      // A value that is not a role is dropped, never passed to the planner.
+      { mediaId: "m_odd" },
+      { mediaId: "m_none" },
+    ]);
+    // The seller's SKU wins over the Amazon one.
+    expect(input.sku).toBe("MUG-SELLER");
+    expect(input.boxContents).toEqual(["Mug", "Lid"]);
+    expect(input.comparisonFacts).toEqual(["Holds 12 oz, most hold 8 oz"]);
+  });
+
+  it("sends empty lists when the product has no seller lines", () => {
+    const input = buildGeneratePackInput(base);
+    expect(input.boxContents).toEqual([]);
+    expect(input.comparisonFacts).toEqual([]);
+  });
 });
 
 describe("buildGeneratePackInput brand colors", () => {

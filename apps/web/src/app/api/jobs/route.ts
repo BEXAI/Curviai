@@ -4,7 +4,9 @@
  * is a 400, a replay with the same body returns the original job, and a reuse
  * with a different body is a 409. Channels are validated against the spec
  * registry, productId is "new" or a uuid (Update.md 4.7), and every upload
- * key must sit in this workspace's source prefix (Update.md 4.6). Rate
+ * key must sit in this workspace's source prefix (Update.md 4.6). Photo
+ * roles, the SKU, box contents and comparison facts are validated against
+ * the limits the planner prints with (@curvi/pipeline/seller-inputs). Rate
  * limited by IP and by user. Demo mode starts the in memory simulation; db
  * mode reserves credits through the reserve_credits SQL function.
  */
@@ -20,6 +22,7 @@ import { RESTARTING_MESSAGE } from "@/lib/services/errors";
 import type { CreateJobResult } from "@/lib/services/types";
 import { RETRY_AFTER_SECONDS, resolveWorkspace } from "@/lib/services/workspace-response";
 import { productIdSchema } from "@/lib/validation/ids";
+import { angleRoleSchema, sellerLinesSchema, skuSchema } from "@/lib/validation/seller-inputs";
 
 export const dynamic = "force-dynamic";
 
@@ -33,12 +36,18 @@ const JobRequest = z.object({
         key: z.string().min(1).max(512),
         sha256: z.string().regex(/^[0-9a-f]{64}$/),
         kind: z.enum(["image", "video"]),
+        angle: angleRoleSchema.optional(),
       }),
     )
     .max(8)
     .optional(),
   newProductTitle: z.string().trim().min(1).max(120).optional(),
   userDescription: z.string().trim().max(2000).optional(),
+  // Seller inputs saved on the product; the planner prints box contents and
+  // comparison facts exactly as sent, so they are checked here first.
+  sku: skuSchema.optional(),
+  boxContents: sellerLinesSchema.optional(),
+  comparisonFacts: sellerLinesSchema.optional(),
 });
 
 export async function POST(request: Request): Promise<NextResponse> {

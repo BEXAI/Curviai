@@ -24,6 +24,7 @@ export function createFakeServices(role: WorkspaceRole | null = "owner"): Servic
     ensureWorkspace: vi.fn(async () => workspace),
     renameWorkspace: vi.fn(async () => ({ ok: true, notice: "ok" })),
     listProducts: vi.fn(async () => []),
+    listProductLibrary: vi.fn(async () => []),
     getProduct: vi.fn(async () => null),
     listRecentJobs: vi.fn(async () => []),
     getJob: vi.fn(async () => null),
@@ -36,6 +37,9 @@ export function createFakeServices(role: WorkspaceRole | null = "owner"): Servic
       mode: input.mode,
       category: "other",
       createdAt: new Date(0).toISOString(),
+      sku: null,
+      boxContents: [],
+      comparisonFacts: [],
     })),
     registerSourceMedia: vi.fn(async () => ({ ok: true, notice: "Photo saved to this product." })),
     getBrandKit: vi.fn(async () => ({

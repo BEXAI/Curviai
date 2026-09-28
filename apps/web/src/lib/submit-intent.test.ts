@@ -44,6 +44,7 @@ describe("intentFor (Update.md 6.1)", () => {
       { uploadKey: null },
       { newProductTitle: "Kettle" },
       { description: "Glass" },
+      { details: "{\"sku\":\"MUG-2\"}" },
     ];
     for (const change of changes) {
       const next = counter();

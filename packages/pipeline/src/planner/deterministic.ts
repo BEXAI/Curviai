@@ -23,6 +23,7 @@ import {
 } from "@curvi/specs";
 import { creditCosts, isEntitled, type TierKey } from "../seed/credits";
 import { ProductProfile, Shot, ShotList, type ShotMethod } from "../schemas";
+import { printableSellerLines } from "../seller-inputs";
 
 export interface PlanOptions {
   /** Selected channels or channel families, e.g. ["amazon", "shopify.product"]. */
@@ -33,6 +34,12 @@ export interface PlanOptions {
   hasBoxContents?: boolean;
   /** Seller supplied comparison facts. */
   hasComparisonFacts?: boolean;
+  /** What is in the box, one line per item, printed as the in_the_box
+   * shot's callouts. A non empty list also counts as hasBoxContents. */
+  boxContents?: readonly string[];
+  /** Comparison facts the seller can back up, printed as the comparison
+   * shot's callouts. A non empty list also counts as hasComparisonFacts. */
+  comparisonFacts?: readonly string[];
   /** Seller uploaded a video. */
   hasVideoSource?: boolean;
   /** Media id per photographed angle. Falls back to primaryMediaId. */
@@ -65,6 +72,12 @@ export const CHANNEL_NOT_SELECTED_REASON = "channel not selected";
 
 /** Reason recorded for a shot trimmed to stay within the credit budget. */
 export const CREDIT_BUDGET_REASON = "credit budget";
+
+/** Reason recorded for the in_the_box shot when the seller listed no contents. */
+export const NO_BOX_CONTENTS_REASON = "seller did not list contents";
+
+/** Reason recorded for the comparison shot when the seller supplied no facts. */
+export const NO_COMPARISON_FACTS_REASON = "seller did not supply comparison facts";
 
 /**
  * What a planned image looks like, for matching it to a spec's rules:
@@ -408,36 +421,43 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     );
   }
 
-  if (opts.hasBoxContents) {
+  // in_the_box only if the seller listed contents, comparison only if the
+  // seller supplied comparison facts. Only the seller's own lines are
+  // printed; a model never writes a claim onto these images.
+  const boxLines = printableSellerLines(opts.boxContents);
+  if (opts.hasBoxContents || boxLines.length > 0) {
     planGallery(
       {
         type: "in_the_box",
         sourceMediaId: mediaFor("packaging"),
         method: "template",
         stylePreset: "none",
+        ...(boxLines.length > 0 ? { callouts: boxLines } : {}),
         credits: creditCosts.deterministic,
         priority: 5,
       },
       "text",
     );
   } else {
-    skip("in_the_box", "template", "seller did not list contents");
+    skip("in_the_box", "template", NO_BOX_CONTENTS_REASON);
   }
 
-  if (opts.hasComparisonFacts) {
+  const comparisonLines = printableSellerLines(opts.comparisonFacts);
+  if (opts.hasComparisonFacts || comparisonLines.length > 0) {
     planGallery(
       {
         type: "comparison",
         sourceMediaId: mediaFor("front"),
         method: "template",
         stylePreset: "none",
+        ...(comparisonLines.length > 0 ? { callouts: comparisonLines } : {}),
         credits: creditCosts.deterministic,
         priority: 6,
       },
       "text",
     );
   } else {
-    skip("comparison", "template", "seller did not supply comparison facts");
+    skip("comparison", "template", NO_COMPARISON_FACTS_REASON);
   }
 
   if (familyPicked("amazon")) {
