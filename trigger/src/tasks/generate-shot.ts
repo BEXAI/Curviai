@@ -32,6 +32,6 @@ export const generateShot = task({
   run: async (payload: GenerateShotPayload): Promise<SerializableShotOutcome> => {
     const deps = resolveRuntimeDeps();
     const outcome = await runShot(payload.shot, payload, deps);
-    return serializeShotOutcome(outcome);
+    return await serializeShotOutcome(outcome);
   },
 });

@@ -6,6 +6,7 @@
  */
 
 import type { RawImage, RawMask } from "@curvi/pipeline";
+import type { QcErosion } from "./shot-outputs";
 
 export interface LiveProduct {
   /** Cutout RGBA at the cutout's native size (alpha 0 outside the product). */
@@ -33,4 +34,10 @@ export interface StillRender {
    * mask) proves the shipped product pixels were not regenerated.
    */
   productReference: RawImage;
+  /**
+   * Fidelity check region the encoding was verified with: the erosion the
+   * runner must apply to the mask, and the lowest it may go when the image is
+   * re-framed. Thin products get a smaller erosion instead of an empty region.
+   */
+  fidelityErosion?: QcErosion;
 }

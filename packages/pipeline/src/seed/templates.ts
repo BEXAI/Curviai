@@ -15,11 +15,43 @@ export const presets = {
 export type PresetKey = keyof typeof presets;
 
 export const templates = {
-  lifestyle_plate_flux2: ({ scene, preset }: { scene: string; preset: PresetKey }) =>
-    `Professional commercial product photograph, empty ${scene} set prepared for a product placed at center, ${presets[preset].surface}, softbox key light at 45 degrees camera left, white fill card camera right, subtle rim light, shot on 100mm macro lens at f/8, focus stacked, color accurate, natural contact area on the surface at center, no text, no people, no other products.`,
+  /** Scene plate prompt. A repair hint from the QC judge is appended on
+   * retries so the next plate fixes what the previous attempt got wrong. */
+  lifestyle_plate_flux2: ({ scene, preset, repairHint }: { scene: string; preset: PresetKey; repairHint?: string }) => {
+    const base = `Professional commercial product photograph, empty ${scene} set prepared for a product placed at center, ${presets[preset].surface}, softbox key light at 45 degrees camera left, white fill card camera right, subtle rim light, shot on 100mm macro lens at f/8, focus stacked, color accurate, natural contact area on the surface at center, no text, no people, no other products.`;
+    const hint = repairHint?.trim();
+    return hint ? `${base} Repair instruction from the previous attempt: ${hint}` : base;
+  },
   harmonize_nano_banana2: () =>
     `Keep the product exactly as it is: do not change its label, logo, text, shape, color or size. Only adjust the surrounding light so the scene matches the product, and add a soft realistic contact shadow beneath it.`,
+  /** Scene used when a composite shot arrives without one, e.g. "lifestyle setting". */
+  scene_fallback: ({ shotLabel }: { shotLabel: string }) => `${shotLabel} setting`,
 };
+
+/** Defaults the scene plate compiler falls back to (CLAUDE.md rule 2). */
+export const sceneDefaults = {
+  /** Style preset when a shot names none or an unknown one. */
+  preset: "minimal_studio",
+} as const satisfies { preset: PresetKey };
+
+/**
+ * Canvas and placement defaults for live renders when a channel spec leaves
+ * them open (for example Google Merchant sets only a minimum size). Seed data
+ * per CLAUDE.md rule 2, so no renderer carries its own layout literals.
+ */
+export const canvasDefaults = {
+  /** Canvas width, and height for square canvases, when the spec fixes none;
+   * raised to the spec minimum when that is larger. */
+  width: 2000,
+  /** Product longest side over the canvas shortest side for composites when
+   * the spec sets no fill rule. */
+  compositeFill: 0.55,
+  /** Product longest side over the canvas longest side for the transparent
+   * cutout when the spec sets no fill rule. */
+  cutoutFillTarget: 0.875,
+  /** Largest share of either canvas axis the placed product may cover. */
+  maxAxisShare: 0.98,
+} as const;
 
 /**
  * Colors for deterministic and template stills (gray sweep, brand sweep

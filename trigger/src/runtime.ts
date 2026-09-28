@@ -22,6 +22,7 @@ import { recipeSeedRows } from "@curvi/pipeline/seed";
 import { getSpec } from "@curvi/specs";
 import type { ChurnSignals } from "./churn";
 import { LiveShotGenerator, makeR2MediaLoader, wireLiveProviders } from "./live-runtime";
+import { canvasSizeFor } from "./shot-outputs";
 import type { DropWorkspace } from "./drops";
 import {
   activeRecipe,
@@ -152,8 +153,7 @@ export class DemoShotGenerator implements ShotGenerator {
 
   private async render(specId: string, needsReference: boolean): Promise<ShotGeneration> {
     const spec = getSpec(specId);
-    const width = spec.width ?? spec.minWidth ?? 1200;
-    const height = spec.height ?? spec.minHeight ?? width;
+    const { width, height } = canvasSizeFor(spec);
     const longest = Math.max(width, height);
     const fillFraction = spec.fill ? (spec.fill.min + spec.fill.max) / 2 : 0.6;
     const rectLong = Math.round(fillFraction * longest);

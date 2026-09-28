@@ -6,7 +6,8 @@
  *
  * The task itself does not retry: a failed pack releases its credit
  * reservation, and blindly retrying the whole job would double account.
- * Per shot retries live in generate-shot and inside the QC loop.
+ * Per shot retries live in generate-shot and inside the QC loop, and a shot
+ * that still fails becomes needs review instead of failing the pack.
  */
 
 import { task } from "@trigger.dev/sdk/v3";
@@ -14,6 +15,7 @@ import type { Shot } from "@curvi/pipeline";
 import { resolveRuntimeDeps } from "../db-runtime";
 import {
   deserializeShotOutcome,
+  recordShotFailure,
   runGeneratePack,
   type GeneratePackInput,
   type GeneratePackSummary,
@@ -37,12 +39,13 @@ export const generatePack = task({
       const batch = await generateShot.batchTriggerAndWait(
         shots.map((shot) => ({ payload: { shot, ...ctx } })),
       );
-      return batch.runs.map((run, i) => {
-        if (!run.ok) {
-          throw new Error(`Shot ${shots[i].id} failed after subtask retries: ${String(run.error)}`);
-        }
-        return deserializeShotOutcome(run.output, ctx);
-      });
+      // A shot whose subtask failed after its retries goes to needs review
+      // with its credits released; its siblings still ship (Update.md 3.3).
+      return Promise.all(
+        batch.runs.map((run, i) =>
+          run.ok ? deserializeShotOutcome(run.output, ctx) : recordShotFailure(deps.store, shots[i], ctx, run.error),
+        ),
+      );
     };
 
     const summary = await runGeneratePack(payload, { ...deps, runShots });

@@ -10,9 +10,28 @@ import {
   type ProviderResponse,
 } from "@curvi/ai";
 import { coverage, encodePng, solidCanvas, type ImageOutput } from "@curvi/pipeline";
-import { CUTOUT_TASK, SCENE_PLATE_TASK, recipeSeedRows } from "@curvi/pipeline/seed";
+import {
+  CUTOUT_TASK,
+  HARMONIZE_TASK,
+  SCENE_PLATE_TASK,
+  canvasDefaults,
+  recipeSeedRows,
+  sceneDefaults,
+  templates,
+} from "@curvi/pipeline/seed";
+import { GeminiImageProvider } from "@curvi/ai";
 import type { Shot } from "@curvi/pipeline";
-import { alphaMask, LiveShotGenerator, upscaleErodePx, wireLiveProviders, type LiveWiring } from "./live-runtime";
+import {
+  alphaMask,
+  LiveShotGenerator,
+  MAX_CUTOUT_COVERAGE,
+  nearestGeminiAspectRatio,
+  ScenePlateBridge,
+  segmentationRefusal,
+  upscaleErodePx,
+  wireLiveProviders,
+  type LiveWiring,
+} from "./live-runtime";
 import { buildRuntimeDeps, demoRoutingTable } from "./runtime";
 import { runGeneratePack, runShot, ShotUnavailableError, type PipelineDeps } from "./pipeline-runner";
 
@@ -103,14 +122,19 @@ class FakeSceneProvider implements Provider {
   readonly name = "gemini-image";
   readonly kind = "image" as const;
   calls = 0;
+  /** Scene plate prompts in call order. */
+  readonly prompts: string[] = [];
   supports(task: string): boolean {
     return task === SCENE_PLATE_TASK || task === "harmonize";
   }
   estimateCostMicros(): number {
     return 67_000;
   }
-  async invoke<TIn, TOut>(_req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
+  async invoke<TIn, TOut>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
     this.calls += 1;
+    if (req.task === SCENE_PLATE_TASK) {
+      this.prompts.push((req.input as unknown as { prompt: string }).prompt);
+    }
     const plate = await encodePng(solidCanvas(64, 64, 245, 244, 240));
     return { output: { png: plate } as ImageOutput as TOut, costMicros: 67_000 };
   }
@@ -437,9 +461,18 @@ describe("a live pack end to end (fake providers, real renderers)", () => {
     expect(passedTypes).toContain("amazon_main");
     // One Photoroom call for the whole pack: every shot shares the cutout.
     expect(cutout.calls).toBe(1);
-    expect(summary.pack?.files).toBe(summary.passed);
+    // Secondary shots ship to both Amazon and Shopify, so there are more
+    // files than charged shots.
+    expect(summary.pack?.files).toBeGreaterThan(summary.passed);
     expect(summary.chargedCredits).toBeGreaterThan(0);
-  });
+    // Each lifestyle scene was generated once (scene plate plus harmonize)
+    // and derived for its other channel without another provider call.
+    const lifestyleShots = store.assets.filter((a) => a.shotType === "lifestyle" && a.status === "passed").length;
+    const heroShots = store.assets.filter((a) => a.shotType === "shopify_hero" && a.status === "passed").length;
+    expect(scene.calls).toBe(2 * (lifestyleShots + heroShots));
+    // Every channel output renders and is checked at full size, so this pack
+    // needs more than the default per test budget.
+  }, 120_000);
 });
 
 /** Small textured cutout: seeded noise and gradients inside an ellipse. */
@@ -493,5 +526,185 @@ describe("rule 3 on live stills", () => {
     expect(upscaleErodePx(mask(100, 100), mask(100, 100))).toBeUndefined();
     expect(upscaleErodePx(mask(100, 100), mask(50, 50))).toBeUndefined();
     expect(upscaleErodePx(mask(100, 100), mask(1200, 1200))).toBe(37);
+  });
+});
+
+describe("segmentation guard (2.13)", () => {
+  /** A cutout where the background came back as product: fully opaque. */
+  async function opaqueCutoutPng(size: number): Promise<Buffer> {
+    return encodePng(solidCanvas(size, size, 120, 90, 60, 255));
+  }
+  const maskOf = (width: number, height: number, on: (x: number, y: number) => boolean) => {
+    const data = Buffer.alloc(width * height, 0);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (on(x, y)) data[y * width + x] = 255;
+    return { data, width, height };
+  };
+
+  it("refuses empty, near full and four border masks, and accepts a normal product", () => {
+    expect(segmentationRefusal(maskOf(40, 40, () => false))).toContain("found no product");
+    expect(segmentationRefusal(maskOf(40, 40, () => true))).toContain("could not separate the product");
+    expect(MAX_CUTOUT_COVERAGE).toBe(0.95);
+    // A cross touching every border covers far less than 95 percent.
+    const cross = maskOf(40, 40, (x, y) => Math.abs(x - 20) < 3 || Math.abs(y - 20) < 3);
+    expect(segmentationRefusal(cross)).toContain("could not separate the product");
+    // Touching three borders is a product cropped by the frame, not a failure.
+    const threeSides = maskOf(40, 40, (x, y) => y > 10 && x > 5 && x < 34 ? true : y > 30);
+    expect(segmentationRefusal(threeSides)).toBeNull();
+    expect(segmentationRefusal(maskOf(40, 40, (x, y) => x > 8 && x < 30 && y > 8 && y < 30))).toBeNull();
+  });
+
+  it("sends every shot of a photo whose cutout failed to review, paying for the cutout once", async () => {
+    const scene = new FakeSceneProvider();
+    const { ai, wiring, cutout } = liveDeps(scene, await opaqueCutoutPng(64));
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+    const main = { ...compositeShotArgs, id: "m", type: "amazon_main" as const, method: "deterministic" as const, channels: ["amazon.main"], stylePreset: "none" };
+    const args = (shot: Shot) => ({ shot, attempt: 1, useFallbackProvider: false, jobId: "job-seg", workspaceId: "ws-1" });
+
+    const first = await generator.generate(args(main)).catch((err: unknown) => err);
+    expect(first).toBeInstanceOf(ShotUnavailableError);
+    expect((first as ShotUnavailableError).message).toBe(
+      "We could not separate the product from its background in this photo, so this shot needs review.",
+    );
+    expect((first as ShotUnavailableError).costMicros).toBe(20_000);
+    const second = await generator.generate(args(compositeShotArgs)).catch((err: unknown) => err);
+    expect(second).toBeInstanceOf(ShotUnavailableError);
+    expect((second as ShotUnavailableError).costMicros).toBe(0);
+    expect(cutout.calls).toBe(1);
+    expect(scene.calls).toBe(0);
+  });
+
+  it("never ships or charges the photo rectangle as the product", async () => {
+    const deps = buildRuntimeDeps();
+    const scene = new FakeSceneProvider();
+    const cutout = new FakeCutoutProvider(await opaqueCutoutPng(64));
+    deps.ai.registry.register(scene);
+    deps.ai.registry.register(cutout);
+    deps.ai.routing[SCENE_PLATE_TASK] = ["gemini-image"];
+    deps.ai.routing.harmonize = ["gemini-image"];
+    deps.ai.routing[CUTOUT_TASK] = ["photoroom"];
+    const generator = new LiveShotGenerator({
+      ai: deps.ai,
+      wiring: { llmLive: false, imageProviders: ["gemini-image"], cutoutLive: true },
+      loadMedia: async () => Buffer.from("source-photo"),
+    });
+
+    const summary = await runGeneratePack(
+      {
+        jobId: "job-seg-pack",
+        workspaceId: "ws1",
+        tier: "starter",
+        channels: ["amazon"],
+        creditBudget: 20,
+        images: [{ mediaId: "ws/ws1/src/photo" }],
+        sku: "SKU",
+      },
+      { ...deps, generator, excludeShotMethods: ["video_generate", "avatar"] },
+    );
+
+    expect(summary.passed).toBe(0);
+    expect(summary.chargedCredits).toBe(0);
+    expect(summary.releasedCredits).toBe(20);
+    expect(summary.state).toBe("failed");
+    expect(cutout.calls).toBe(1);
+    expect(scene.calls).toBe(0);
+    const store = deps.store as unknown as { assets: Array<{ status: string; verdict: { repairHint: string } }> };
+    expect(store.assets.length).toBeGreaterThan(0);
+    expect(store.assets.every((a) => a.status === "needs_review")).toBe(true);
+    expect(store.assets.some((a) => a.verdict.repairHint.includes("could not separate the product"))).toBe(true);
+  });
+});
+
+describe("Gemini plate shape (2.14)", () => {
+  it("maps canvases onto the nearest aspect ratio Gemini accepts", () => {
+    expect(nearestGeminiAspectRatio(2000, 2000)).toBe("1:1");
+    expect(nearestGeminiAspectRatio(2400, 1000)).toBe("21:9");
+    expect(nearestGeminiAspectRatio(1080, 1350)).toBe("4:5");
+    expect(nearestGeminiAspectRatio(1080, 1920)).toBe("9:16");
+    expect(nearestGeminiAspectRatio(1000, 1500)).toBe("2:3");
+    expect(nearestGeminiAspectRatio(970, 600)).toBe("3:2");
+  });
+
+  it("sends the aspect ratio in generationConfig.imageConfig for plates and harmonization", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const png = await encodePng(solidCanvas(8, 8, 200, 200, 200));
+    const fetchFn = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: png.toString("base64") } }] } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const inner = new GeminiImageProvider({
+      name: "gemini-image-api",
+      tasks: [SCENE_PLATE_TASK, HARMONIZE_TASK],
+      apiKey: "test-key",
+      model: "test-model",
+      priceTable: { perImageMicros: 1 },
+      fetchFn,
+    });
+    const bridge = new ScenePlateBridge(inner, "gemini", "gemini-image");
+
+    await bridge.invoke({ task: SCENE_PLATE_TASK, input: { prompt: "plate", width: 2400, height: 1000 } });
+    const square = await encodePng(solidCanvas(64, 64, 10, 10, 10));
+    await bridge.invoke({ task: HARMONIZE_TASK, input: { prompt: "light", png: square } });
+
+    const configs = bodies.map((b) => b.generationConfig as { responseModalities: string[]; imageConfig?: { aspectRatio?: string } });
+    expect(configs[0]).toEqual({ responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "21:9" } });
+    expect(configs[1].imageConfig?.aspectRatio).toBe("1:1");
+  });
+});
+
+describe("scene prompts come from the seeded templates (7.4)", () => {
+  const argsFor = (shot: Shot, repairHint?: string) => ({
+    shot,
+    attempt: repairHint ? 2 : 1,
+    repairHint,
+    useFallbackProvider: false,
+    jobId: "job-prompts",
+    workspaceId: "ws-1",
+  });
+
+  it("appends the repair hint through the lifestyle template", async () => {
+    const scene = new FakeSceneProvider();
+    const { ai, wiring } = liveDeps(scene, await productCutoutPng(96));
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+
+    await generator.generate(argsFor(compositeShotArgs, "Soften the shadow under the mug"));
+
+    expect(scene.prompts).toEqual([
+      templates.lifestyle_plate_flux2({
+        scene: "morning kitchen counter",
+        preset: "kitchen_lifestyle",
+        repairHint: "Soften the shadow under the mug",
+      }),
+    ]);
+    expect(scene.prompts[0]).toContain("Soften the shadow under the mug");
+  });
+
+  it("falls back to the seeded scene and preset, and adds no repair text on a first attempt", async () => {
+    const scene = new FakeSceneProvider();
+    const { ai, wiring } = liveDeps(scene, await productCutoutPng(96));
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+    const bare: Shot = { ...compositeShotArgs, scene: undefined, stylePreset: "not_a_preset" };
+
+    await generator.generate(argsFor(bare));
+
+    const expected = templates.lifestyle_plate_flux2({
+      scene: templates.scene_fallback({ shotLabel: "lifestyle" }),
+      preset: sceneDefaults.preset,
+    });
+    expect(scene.prompts).toEqual([expected]);
+    expect(expected).not.toContain("Repair instruction");
+  });
+
+  it("sizes open channel canvases from the seeded default", async () => {
+    const scene = new FakeSceneProvider();
+    const { ai, wiring } = liveDeps(scene, await productCutoutPng(96));
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+    const generation = await generator.generate(
+      argsFor({ ...compositeShotArgs, channels: ["google.merchant.lifestyle"] }),
+    );
+    expect(generation.image.width).toBe(canvasDefaults.width);
+    expect(generation.image.height).toBe(canvasDefaults.width);
   });
 });
