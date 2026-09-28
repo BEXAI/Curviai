@@ -11,7 +11,7 @@
     "start": "pnpm --filter @curvi/web start",
     "test": "pnpm -r --workspace-concurrency=1 run test",
     "lint": "eslint .",
-    "typecheck": "pnpm -r run typecheck",
+    "typecheck": "pnpm -r run typecheck && tsc -p tsconfig.json",
     "e2e": "playwright test",
     "eval": "pnpm --filter @curvi/pipeline run eval",
     "db:generate": "pnpm --filter @curvi/db db:generate",

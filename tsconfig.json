@@ -1,0 +1,11 @@
+// Type checks the root level Playwright files: the e2e specs and
+// playwright.config.ts. Workspace packages keep their own tsconfig files, and
+// the root typecheck script runs both (Update.md 7.7).
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["e2e/**/*.ts", "playwright.config.ts"]
+}
