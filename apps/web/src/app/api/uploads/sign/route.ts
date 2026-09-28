@@ -2,13 +2,16 @@
  * POST /api/uploads/sign
  * Validates the upload request (kind, content type, size caps) and returns a
  * presigned R2 PUT URL. Without R2 env it answers 503 with a setup notice so
- * the demo flow can fall back to the bundled demo photo.
+ * the demo flow can fall back to the bundled demo photo. Client seats cannot
+ * mint uploads (plan 4.3), and signing is rate limited by IP and by user
+ * because every URL lets the caller write to storage.
  */
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isR2Configured } from "@/lib/env";
 import { presignSourceUpload } from "@/lib/r2";
+import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
 import { getServices } from "@/lib/services";
 import { validateUploadRequest } from "@/lib/upload-validation";
 
@@ -21,6 +24,11 @@ const SignRequest = z.object({
 });
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const ipLimited = await limitByIp(request, "uploads.sign");
+  if (ipLimited) {
+    return ipLimited;
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -54,6 +62,17 @@ export async function POST(request: Request): Promise<NextResponse> {
   const workspace = await services.ensureWorkspace();
   if (!workspace) {
     return NextResponse.json({ error: "Sign in to upload." }, { status: 401 });
+  }
+  if (workspace.role === "client") {
+    return NextResponse.json(
+      { error: "Client seats can review assets but cannot upload files." },
+      { status: 403 },
+    );
+  }
+
+  const userLimited = await limitByUser("uploads.sign", await userRateLimitSubject(workspace.id));
+  if (userLimited) {
+    return userLimited;
   }
 
   const presigned = await presignSourceUpload(workspace.id, parsed.data.contentType, parsed.data.bytes);

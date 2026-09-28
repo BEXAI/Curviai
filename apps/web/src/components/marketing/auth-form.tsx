@@ -3,6 +3,16 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "@curvi/ui";
+import { runAuthCall, trackAuthError } from "@/lib/auth-call";
+import {
+  DEFAULT_NEXT_PATH,
+  authErrorMessage,
+  parseCheckoutIntent,
+  parseSignupSource,
+  postAuthDestination,
+  postAuthParamsFrom,
+  type CheckoutIntent,
+} from "@/lib/safe-next";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export interface AuthFormProps {
@@ -13,17 +23,43 @@ const supabaseConfigured = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
 );
 
+function planLabel(plan: string): string {
+  return plan.charAt(0).toUpperCase() + plan.slice(1);
+}
+
+/** Query string that carries the pricing intent and next path between the
+ * signup and login pages. */
+function carryQuery(intent: CheckoutIntent | null, source: string | null, nextPath: string): string {
+  const params = new URLSearchParams();
+  if (intent) {
+    params.set("plan", intent.plan);
+    params.set("cadence", intent.cadence);
+  } else if (nextPath !== DEFAULT_NEXT_PATH) {
+    params.set("next", nextPath);
+  }
+  if (source) {
+    params.set("source", source);
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
 /**
- * Signup and login form. When Supabase is not configured, which is the zero
- * env state of this repo, it renders a temporary unavailability notice so
- * the page always works.
+ * Signup and login form. Reads next, plan, cadence and source from the query
+ * string: a plan picked on the pricing page (validated against the tiers
+ * seed) sends the user to the billing checkout after signup or login, and
+ * next is only ever a same origin path (Update.md 4.3). When Supabase is not
+ * configured, which is the zero env state of this repo, it renders a
+ * temporary unavailability notice so the page always works.
  */
 export function AuthForm({ mode }: AuthFormProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState<"idle" | "busy" | "sent" | "error">("idle");
   const [message, setMessage] = useState<string | null>(null);
-  const [nextPath, setNextPath] = useState("/app");
+  const [nextPath, setNextPath] = useState(DEFAULT_NEXT_PATH);
+  const [intent, setIntent] = useState<CheckoutIntent | null>(null);
+  const [source, setSource] = useState<string | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -31,11 +67,10 @@ export function AuthForm({ mode }: AuthFormProps) {
     if (fromQuery) {
       setEmail(fromQuery);
     }
-    const next = params.get("next");
-    if (next && next.startsWith("/") && !next.startsWith("//")) {
-      setNextPath(next);
-    }
-    const error = params.get("error");
+    setIntent(parseCheckoutIntent(params.get("plan"), params.get("cadence")));
+    setSource(parseSignupSource(params.get("source")));
+    setNextPath(postAuthDestination(postAuthParamsFrom(params), window.location.origin));
+    const error = authErrorMessage(params.get("error"));
     if (error) {
       setStatus("error");
       setMessage(error);
@@ -89,22 +124,42 @@ export function AuthForm({ mode }: AuthFormProps) {
     const callback = `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`;
     const result =
       mode === "signup"
-        ? await supabase.auth.signUp({ email, password, options: { emailRedirectTo: callback } })
-        : await supabase.auth.signInWithPassword({ email, password });
-    if (result.error) {
+        ? await runAuthCall(() =>
+            supabase.auth.signUp({
+              email,
+              password,
+              options: {
+                emailRedirectTo: callback,
+                // Clickwrap record: the signup button sits above the Terms
+                // and Privacy notice, so submitting is the acceptance.
+                data: {
+                  terms_accepted_at: new Date().toISOString(),
+                  ...(source ? { signup_source: source } : {}),
+                  ...(intent ? { plan_intent: intent.plan, cadence_intent: intent.cadence } : {}),
+                },
+              },
+            }),
+          )
+        : await runAuthCall(() => supabase.auth.signInWithPassword({ email, password }));
+    if (!result.ok) {
       setStatus("error");
-      setMessage(result.error.message);
+      setMessage(result.message);
+      trackAuthError(mode, result.kind);
       return;
     }
-    if (mode === "signup" && !result.data.session) {
+    if (mode === "signup" && !result.value.data.session) {
       setStatus("sent");
       setMessage(
-        "Almost there. We sent a confirmation link to your inbox. Open it on this device and your workspace will be ready. Check spam if it does not arrive in a minute.",
+        intent
+          ? `Almost there. We sent a confirmation link to your inbox. Open it on this device and we will take you to checkout for the ${planLabel(intent.plan)} plan. Check spam if it does not arrive in a minute.`
+          : "Almost there. We sent a confirmation link to your inbox. Open it on this device and your workspace will be ready. Check spam if it does not arrive in a minute.",
       );
       return;
     }
     window.location.href = nextPath;
   }
+
+  const switchQuery = carryQuery(intent, source, nextPath);
 
   return (
     <Card>
@@ -112,6 +167,12 @@ export function AuthForm({ mode }: AuthFormProps) {
         <CardTitle>{mode === "signup" ? "Create your account" : "Welcome back"}</CardTitle>
       </CardHeader>
       <CardContent>
+        {intent ? (
+          <p className="mb-4 rounded-lg bg-ink-50 px-3 py-2 text-sm text-ink-700" data-testid="plan-intent">
+            {mode === "signup" ? "Create your account" : "Log in"} to continue to checkout for the{" "}
+            {planLabel(intent.plan)} plan, billed {intent.cadence === "annual" ? "annually" : "monthly"}.
+          </p>
+        ) : null}
         <form className="space-y-4" onSubmit={submit}>
           <div className="space-y-1.5">
             <Label htmlFor="auth-email">Email</Label>
@@ -141,8 +202,26 @@ export function AuthForm({ mode }: AuthFormProps) {
           <Button type="submit" variant="secondary" className="w-full" disabled={status === "busy"}>
             {status === "busy" ? "Working" : mode === "signup" ? "Start free" : "Log in"}
           </Button>
+          {mode === "signup" ? (
+            <p className="text-xs text-ink-500" data-testid="terms-notice">
+              By creating an account you agree to the{" "}
+              <Link href="/terms" className="font-medium text-ink-900 underline">
+                Terms of service
+              </Link>{" "}
+              and{" "}
+              <Link href="/privacy" className="font-medium text-ink-900 underline">
+                Privacy policy
+              </Link>
+              .
+            </p>
+          ) : null}
           {message ? (
-            <p className={"text-sm " + (status === "error" ? "text-red-600" : "text-emerald-700")}>{message}</p>
+            <p
+              role={status === "error" ? "alert" : "status"}
+              className={"text-sm " + (status === "error" ? "text-red-600" : "text-emerald-700")}
+            >
+              {message}
+            </p>
           ) : null}
         </form>
         <div className="mt-4 flex items-center justify-between text-sm text-ink-500">
@@ -150,14 +229,14 @@ export function AuthForm({ mode }: AuthFormProps) {
             {mode === "signup" ? (
               <>
                 Already have an account?{" "}
-                <Link href="/login" className="font-medium text-ink-900 underline">
+                <Link href={`/login${switchQuery}`} className="font-medium text-ink-900 underline">
                   Log in
                 </Link>
               </>
             ) : (
               <>
                 New to Curvi?{" "}
-                <Link href="/signup" className="font-medium text-ink-900 underline">
+                <Link href={`/signup${switchQuery}`} className="font-medium text-ink-900 underline">
                   Create an account
                 </Link>
               </>

@@ -1,11 +1,12 @@
 /**
  * POST /api/products
  * Creates a product to attach uploads and packs to. Client role members are
- * read only and get a 403.
+ * read only and get a 403. Rate limited by IP and by user.
  */
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
 import { getServices } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,11 @@ const ProductRequest = z.object({
 });
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const ipLimited = await limitByIp(request, "products.create");
+  if (ipLimited) {
+    return ipLimited;
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -34,6 +40,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   const workspace = await services.getCurrentWorkspace();
   if (!workspace) {
     return NextResponse.json({ error: "Sign in to add a product." }, { status: 401 });
+  }
+
+  const userLimited = await limitByUser("products.create", await userRateLimitSubject(workspace.id));
+  if (userLimited) {
+    return userLimited;
   }
 
   const product = await services.createProduct(workspace.id, parsed.data);
