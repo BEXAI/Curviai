@@ -3,7 +3,13 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { creditCosts } from "@curvi/pipeline/seed";
 import { buildLlmsTxt } from "@/lib/llms";
-import { freeCredits, specAvailability, typicalPackCredits, unqualifiedClaims } from "@/lib/marketing-facts";
+import {
+  freeCredits,
+  specAvailability,
+  typicalPackCredits,
+  unqualifiedClaims,
+  UNUSED_CREDITS_SENTENCE,
+} from "@/lib/marketing-facts";
 import { SITE_FEATURES, channelPageSeo } from "@/lib/seo";
 import { brandKitCopy } from "./brand-kit-copy";
 import { categories } from "./categories";
@@ -25,6 +31,12 @@ import { checkerVerdictCopy, toolPackCta } from "./tool-copy";
 // CLAUDE.md rule 9: no emojis, no arrows, no dashes as punctuation. Hyphens
 // inside words such as "e-commerce" are fine.
 const FORBIDDEN_COPY = /[‒-―←-⇿⟵-⟿]|\s-\s|--|\p{Extended_Pictographic}/u;
+
+// The seed's rollover policy (one cycle, up to one month of allowance) is not
+// enforced: subscription credits never expire today. Copy states
+// UNUSED_CREDITS_SENTENCE instead and must never bring the cap back.
+const CAPPED_ROLLOVER =
+  /carr(?:y|ies|ied) over|roll(?:s|ed)? ?over|up to (?:one|a|\d+) months? of (?:your|the) allowance|capped at (?:one|a|\d+) months?/i;
 
 function whatCurviDoes(): string[] {
   const text = buildLlmsTxt();
@@ -117,6 +129,30 @@ describe("marketing claims", () => {
     ];
     for (const text of all) {
       expect(text).not.toMatch(FORBIDDEN_COPY);
+    }
+  });
+});
+
+describe("unused credits", () => {
+  it("never promise the capped rollover that nothing enforces", () => {
+    for (const { where, text } of liveCopy()) {
+      expect(text, where).not.toMatch(CAPPED_ROLLOVER);
+    }
+  });
+
+  it("say what happens to unused credits with the one shared sentence", () => {
+    const help = helpArticles.find((article) => article.slug === "how-credits-work");
+    expect(help?.body.join(" ")).toContain(UNUSED_CREDITS_SENTENCE);
+    expect(UNUSED_CREDITS_SENTENCE).not.toMatch(CAPPED_ROLLOVER);
+  });
+
+  it("recognize the retired capped wording", () => {
+    for (const retired of [
+      "Unused subscription credits carry over to the next billing cycle, up to one month of your allowance.",
+      "Unused credits roll over one cycle, capped at one month.",
+      "Credits rollover, up to 2 months of your allowance.",
+    ]) {
+      expect(retired).toMatch(CAPPED_ROLLOVER);
     }
   });
 });
@@ -247,6 +283,7 @@ describe("owned marketing sources", () => {
       for (const literal of LITERALS) {
         expect(source.match(literal.pattern)?.[0], `${literal.name} literal`).toBeUndefined();
       }
+      expect(source.match(CAPPED_ROLLOVER)?.[0], "capped rollover wording").toBeUndefined();
       // marketing-facts.ts holds the patterns that detect these claims.
       if (!relative.endsWith("marketing-facts.ts")) {
         for (const claim of RETIRED_CLAIMS) {

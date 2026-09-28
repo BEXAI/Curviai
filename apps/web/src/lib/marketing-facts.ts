@@ -1,5 +1,5 @@
 import { getSpec, listSpecs } from "@curvi/specs";
-import { rolloverPolicy, tierByKey, tiers, topUps, type TierKey } from "@curvi/pipeline/seed";
+import { tierByKey, tiers, topUps, type TierKey } from "@curvi/pipeline/seed";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 
 /**
@@ -90,14 +90,15 @@ export function topUpMonths(): number {
   return Math.min(...topUps.map((topUp) => topUp.expiresMonths));
 }
 
-/** Plain sentence for the rollover policy in the seed. */
-export function rolloverSentence(): string {
-  const cycles =
-    rolloverPolicy.cycles === 1 ? "the next billing cycle" : `the next ${rolloverPolicy.cycles} billing cycles`;
-  const factor = rolloverPolicy.capFactorOfMonthlyAllowance;
-  const cap = factor === 1 ? "one month" : `${factor} months`;
-  return `Unused subscription credits carry over to ${cycles}, up to ${cap} of your allowance.`;
-}
+/**
+ * What happens to credits a plan does not use, the one line /pricing,
+ * /app/billing and help all show. Subscription grants never expire (the
+ * webhook writes them with no expiry), so there is no cap to state. The seed
+ * rolloverPolicy is not enforced anywhere; promise a cap only in the change
+ * that enforces it, capped by months paid so annual plans keep their year.
+ */
+export const UNUSED_CREDITS_SENTENCE =
+  "Credits you do not use stay in your balance from one billing period to the next.";
 
 /** "enough for a full listing pack of stills", computed from the seeds. */
 export function freeCreditsReach(): string {

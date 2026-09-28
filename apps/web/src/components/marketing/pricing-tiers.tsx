@@ -27,6 +27,7 @@ import {
   packsForCredits,
   topUpMonths,
   typicalPackCredits,
+  UNUSED_CREDITS_SENTENCE,
   type Availability,
 } from "@/lib/marketing-facts";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -270,9 +271,7 @@ export function PricingTiers() {
                 Buy credits
               </Link>
             </li>
-            <li className="rounded-lg border border-ink-100 p-4">
-              Credits you do not use stay in your balance from one billing period to the next.
-            </li>
+            <li className="rounded-lg border border-ink-100 p-4">{UNUSED_CREDITS_SENTENCE}</li>
             <li className="rounded-lg border border-ink-100 p-4">
               Annual plans add the whole year of credits when the annual invoice is paid.
             </li>

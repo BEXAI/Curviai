@@ -5,7 +5,6 @@ import { planShots, TEMPLATE_STILL_TYPES, type ProductProfile, type Shot } from 
 import {
   creditCosts,
   isShotMethodDeliverable,
-  rolloverPolicy,
   tierByKey,
   tiers,
   topUps,
@@ -41,7 +40,6 @@ import {
   packsForCredits,
   paidTiers,
   registryImageSpecIds,
-  rolloverSentence,
   specAvailability,
   specFilesName,
   specFilesNameFor,
@@ -49,6 +47,7 @@ import {
   topUpMonths,
   typicalPackCredits,
   unqualifiedClaims,
+  UNUSED_CREDITS_SENTENCE,
 } from "./marketing-facts";
 
 describe("typical pack size", () => {
@@ -122,15 +121,15 @@ describe("annual savings", () => {
 });
 
 describe("credit policy sentences", () => {
-  it("state the seed rollover policy and top up lifetime", () => {
+  it("state the top up lifetime from the seed", () => {
     expect(topUpMonths()).toBe(Math.min(...topUps.map((topUp) => topUp.expiresMonths)));
-    const sentence = rolloverSentence();
-    if (rolloverPolicy.capFactorOfMonthlyAllowance === 1) {
-      expect(sentence).toContain("up to one month of your allowance");
-    }
-    if (rolloverPolicy.cycles === 1) {
-      expect(sentence).toContain("the next billing cycle");
-    }
+  });
+
+  it("promise no rollover cap, since subscription credits never expire today", () => {
+    expect(UNUSED_CREDITS_SENTENCE).toBe(
+      "Credits you do not use stay in your balance from one billing period to the next.",
+    );
+    expect(UNUSED_CREDITS_SENTENCE).not.toMatch(/carr(y|ies) over|up to|cap/i);
   });
 
   it("formats credit amounts", () => {

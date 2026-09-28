@@ -29,7 +29,7 @@ import {
 } from "@/lib/billing/plans";
 import { isStripeTaxEnabled } from "@/lib/billing/stripe";
 import { needsCardUpdate, pastDueMessage } from "@/lib/billing/subscription-status";
-import { topUpMonths } from "@/lib/marketing-facts";
+import { topUpMonths, UNUSED_CREDITS_SENTENCE } from "@/lib/marketing-facts";
 import { getServices } from "@/lib/services";
 
 export const metadata: Metadata = { title: "Billing" };
@@ -175,7 +175,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
         <p className="mt-1 text-sm text-ink-500">
           {subscribed
             ? "Changing plans opens the Stripe customer portal, where you confirm the new plan and any prorated charge."
-            : "Every plan buys credits. Credits you do not use stay in your balance from one billing period to the next."}
+            : `Every plan buys credits. ${UNUSED_CREDITS_SENTENCE}`}
         </p>
         <div className="mt-4">
           <PlanPicker
