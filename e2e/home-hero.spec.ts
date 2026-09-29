@@ -175,12 +175,17 @@ test.describe("reduced motion", () => {
   test("keeps the static metal, never mounts the shader and shows every item at once", async ({ page }) => {
     await page.goto("/");
     await expect(hero(page).getByTestId("hero-metal-fallback")).toBeVisible();
-    // Nothing in the hero animates or waits at opacity 0 through a delay.
+    // Nothing in the hero animates or waits at opacity 0 through a delay. The
+    // logo color layer over the metal is a static overlay at partial opacity.
     const hidden = await hero(page)
       .locator("*")
       .evaluateAll((elements) =>
         elements
-          .filter((element) => element.getAnimations().length > 0 || getComputedStyle(element).opacity !== "1")
+          .filter(
+            (element) =>
+              element.getAnimations().length > 0 ||
+              (getComputedStyle(element).opacity !== "1" && element.getAttribute("data-testid") !== "hero-metal-hue"),
+          )
           .map((element) => element.className.toString().slice(0, 60)),
       );
     expect(hidden).toEqual([]);
@@ -377,7 +382,7 @@ test.describe("the WebGL shader", () => {
     await expect.poll(() => aborted, { timeout: 10000 }).toBe(true);
     await expect(backdrop(page)).toHaveAttribute("data-shader", "off", { timeout: 10000 });
     await expect(page.getByRole("heading", { level: 1, name: HEADLINE })).toBeVisible();
-    await expect(page.getByTestId("illustration-label").first()).toBeVisible();
+    await expect(page.locator('img[src="/home/before-car.jpg"]')).toBeVisible();
     expect(errors).toEqual([]);
   });
 });
@@ -444,6 +449,6 @@ test("hero copy follows the copy rules", async ({ page }) => {
   expect(text).not.toMatch(FORBIDDEN_COPY);
   expect(text).toContain("Start free");
   // The before and after demo stays right under the hero.
-  await expect(page.getByTestId("illustration-label").first()).toBeVisible();
+  await expect(page.locator('img[src="/home/before-car.jpg"]')).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Guides" }).getByRole("link")).toHaveCount(4);
 });
