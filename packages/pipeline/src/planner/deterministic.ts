@@ -19,7 +19,6 @@ import {
   hasSpec,
   isSpecSelected,
   listSpecs,
-  type ChannelSpec,
 } from "@curvi/specs";
 import { GALLERY_SLOTS, specAcceptsImage, type PlannedImageKind } from "../output-options";
 import { creditCosts, isEntitled, type TierKey } from "../seed/credits";
