@@ -75,9 +75,10 @@ Sellers decide what Curvi does to their photos:
 | P0 | Channels that need white | Automatic, with Leave it out | Nothing: a server rule |
 | P0 | Extra images (five families) | Follow the switch | `extras` |
 | P0 | Photo shape (kept photos) | Keep my photo's shape | `fit: auto \| pad` |
+| P0 | Already white photos stay as they are | On | Nothing: a server rule |
 | P1 | Trim to the channel's shape | Off | `fit: crop` |
 | P1 | Background per photo | Pack setting | `uploads[].background` |
-| P1 | Number of scenes | 2 | `sceneCount` |
+| P1 | Number of scenes | 3 | `sceneCount` |
 | P1 | Scene style | Auto | `scenePreset` |
 | P1 | Logo on graphics | On | `logo` |
 | P1 | Product size in the frame | Standard | `productSize` |
@@ -162,7 +163,7 @@ Not a toggle, and the API has no value for it. The server always makes white req
 - **Planner with Keep:**
   - The white front shot (amazon_main, or the priority 1 alt_angle_white when amazon.main is not picked) is planned from the front photo and narrowed to the picked white required specs. It renders exactly as today, with isolation and extraItemsFailure.
   - For the other photos, alt_angle_white is narrowed to the picked white required gallery specs: `GALLERY_SLOTS` entries whose spec requires white (walmart.main and tiktokshop.main today), never a literal list.
-  - Separate walmart.secondary and tiktokshop.secondary specs are a founder decision (rule 7).
+  - No walmart.secondary or tiktokshop.secondary specs (founder decision 3): every Walmart and TikTok Shop file is white.
 - **Price:** each made white shot is its own shot at creditCosts.deterministic, with its own estimate line "Made white for channels that require it".
 
 ### 5. Extra images
@@ -207,13 +208,24 @@ Not a toggle, and the API has no value for it. The server always makes white req
 - **Too small:** a kept photo that cannot reach a non exact spec within the cap is left out of that spec at plan time with `SOURCE_TOO_SMALL_REASON` "source too small for this channel". Kept photos never block the form for size (see UI).
 - **Price:** none.
 
+### 7. Already white photos stay as they are
+
+Founder decision 8 moved this from P1 into P0, so studio photos on white keep their own pixels on Amazon main and every other white required spec from day one.
+
+- **When it applies:** a kept photo feeding a white required spec, whose pixels outside the cached preflight mask (dilated by QC_EDGE_MARGIN_PX) already pass the main class white background check, and where crop and white pad alone reach spec.fill.
+- **What it does:** the white required file is made by crop, resize and white pad only, with no composite and no cutout pixels, through the same original.ts pipeline and the same rule 3 proof as original_photo (placed rectangle mask, fidelityKind "main").
+- **Otherwise:** the made white path runs as in control 4. The main class checks still gate every file either way.
+- **Needs:** the preflight cutout mask from the upload cache (founder decision 5 keeps that cutout paid at upload), read cache first; a cache miss falls back to the made white path, never to a new provider call just for detection.
+- **Copy and notes:** note `original: already white`; copy "Your photo already had a pure white background, so we only resized it."
+- **Price:** the same as a made white file, one shot at creditCosts.deterministic. The estimate cannot know in advance which path runs, and both cost the same.
+
 ## P1 (fast follow, same phase)
 
 | Control | Default | What it does | Why |
 | --- | --- | --- | --- |
 | Trim to the channel's shape (`fit: crop`) | Off | The largest window of the target aspect that contains the product box plus seed `originalFit.cropMarginShare` (0.05). The box comes from `source_media.target_box`, then a `productBox` the preflight adds to `upload_preflights.result` (jsonb, no migration). meta.story_9x16 also needs the box inside the safe zone. No box, or a box that does not fit, falls back to pad with a note. Copy: "We never trim your product." | Sellers dislike bars on social posts. Safe only because the box is known. |
 | Background per photo | Pack setting | "Pack setting / Remove / Keep as is" next to the angle Select, sent as `uploads[].background` and resolved to `keepMediaIds`. A kept front photo still feeds a white amazon_main when amazon.main is picked. | A clean studio front and a messy back need different treatment. |
-| Number of scenes | 2 | A Select, "Off, 1, 2, 3, 4". Bounds move to seed `sceneCountOptions`; `lifestyleScenesFor(profile, n)` fills category required scenes first; the lifestyle reservation becomes min(2, n). | Fixes today's hold drift (the reference product holds 2 scenes while jewelry plans 4). Scenes are the largest cost lever. |
+| Number of scenes | 3 | A Select, "Off, 1, 2, 3, 4". Bounds move to seed `sceneCountOptions`; `lifestyleScenesFor(profile, n)` plans exactly n scenes for every category, filling category required scenes first; the lifestyle gallery reservation (RESERVED_GALLERY_SLOTS) becomes n. The default is 3, the midpoint of today's 2 to 4 (founder decision 4), so once this lands a default pack holds and plans 3 scenes: the reference product goes from 11 shots, 6.5 charged, hold 7 to 12 shots, 7.5 charged, hold 8, and one more plate and harmonize call. | Fixes today's hold drift (the reference product holds 2 scenes while jewelry plans 4). Scenes are the largest cost lever. |
 | Scene style | Auto | "Auto, picked for your product", Minimal studio, Marble, Kitchen, Outdoor, Holiday. Overrides brand.stylePreset per pack in applyBrandStylePreset. Reflective or transparent products still force minimal_studio. | One tap look for scenes with no prompt writing; presets are seeded. |
 | Logo on graphics | On | Shown only when the kit has a logo. Off makes logoFor return null. | Some sellers want clean graphics. |
 | Product size in the frame | Standard | Standard, Larger, Smaller from seed `canvasDefaults.productSizeFill` {standard 0.875, larger 0.93, smaller 0.75}, clamped to spec.fill and maxAxisShare. Remove only; amazon.main stays between 0.85 and 0.9. | Catalog uniformity; tall thin products look small today. |
@@ -223,7 +235,6 @@ Not a toggle, and the API has no value for it. The server always makes white req
 | Cutout preview | Shown | The preflight writes a 640 px alpha PNG from the cutout it already made to `ws/{id}/cache/preview/...` in R2 (same retention as the cutout cache, served through a signed URL, never bytes in jsonb). The preview strip shows the real product on the chosen color. | See the result before any credits are held. |
 | Graphics follow your color | Off | Template cards use the chosen color instead of presetBackgroundHex. Text flips to seed `stillStyle.textOnDarkHex` below seed `darkBackgroundLuminance`. | Brand look reaches the graphics. |
 | "Background matches your color" check | On | CIEDE2000 at most `QC_THRESHOLDS.backdropMaxDeltaE` 2.0 between measured and requested background on colored outputs. | The report can prove the color. |
-| Already white photos stay as they are | On | For a kept photo whose pixels outside the cached preflight mask (dilated by QC_EDGE_MARGIN_PX) already pass the main class white background check, and where crop and white pad alone reach spec.fill, the white required file is made by crop, resize and white pad only, with no composite. Note `original: already white`, copy "Your photo already had a pure white background, so we only resized it." The main class checks still gate it; otherwise the cutout path runs. | Sellers with studio photos on white keep them everywhere. Founder decision 8. |
 | Added text on kept photos | On | A new intake_normalizer version adds a per image `addedOverlays` flag (recipe row, pnpm eval, re-seed). A flagged kept photo is left out of specs with textAllowed or overlaysAllowed false, with a heads up. | eBay and Google refuse added text, borders and watermarks. |
 | "Keep my background" hint | On | A seeded phrase list (`keepBackgroundPhrases`) matched against the note in the form. When it matches and the switch is on: "It sounds like you want to keep your background. Turn off Remove the background?" | Today that note is parsed and ignored. |
 | Free resizer alignment | | The marketing resizer uses `@curvi/pipeline/output-options` (specAcceptsImage with `original`, originalFitFor) and drops white required specs, with "Amazon's main image needs the background removed. Make a pack to get one." | The free tool pads photos with white for amazon.main, which does not meet Amazon's rule. |
@@ -316,7 +327,6 @@ Not a toggle, and the API has no value for it. The server always makes white req
 - `w * h` is at most `originalFit.maxMegapixels` and spec.maxMegapixels.
 - sharp metadata says space srgb, depth uchar, no CMYK, and either no alpha channel or an alpha that stats show is fully opaque.
 - The ICC profile is absent, or its description is in seed `originalFit.srgbProfileNames`.
-- No badge will be drawn (the badge re-encodes the file).
 
 The runner proves it: the delivered sha256 must equal the stored sha256, and a mismatch fails the output as a fidelity failure. That proof replaces the RGBA fidelity decode, and the pixel checks for these files read the header only (dimensions, megapixels, format, bytes).
 
@@ -338,7 +348,7 @@ The runner proves it: the delivered sha256 must equal the stored sha256, and a m
 - The runner drops such photos from `selection.ambiguous`, so MULTIPLE_PRODUCTS_MESSAGE only fires for a photo that feeds a cutout shot (for example a kept front photo that feeds amazon_main).
 - The report adds "Other items in this photo stay in the picture because you kept the background."
 
-**The badge (free tier, social specs only).** For original_photo the packager passes the full placed rectangle mask to applyBadge, so the badge can only land in added space. When the added space cannot hold it, the badge is left off with today's "badge left off" note. It never covers any pixel of the seller's photo.
+**The badge (free tier, social specs only).** Kept photos never carry the free tier badge (founder decision 6): the packager skips applyBadge for original_photo assets and for already white files, with no note. Made white files, scenes and every other output keep today's badge rule. Passthrough therefore never waits on a badge.
 
 **Privacy.** Stored uploads carry no EXIF or GPS. A test asserts no delivered file carries a GPS tag.
 
@@ -346,10 +356,9 @@ The runner proves it: the delivered sha256 must equal the stored sha256, and a m
 
 ## Pricing, holds and cost
 
-**Recommended price: a kept photo is one deterministic shot, creditCosts.deterministic (0.5), per pack, however many channels it serves.** Founder decision 1.
+**Price: a kept photo is one deterministic shot, creditCosts.deterministic (0.5), per pack, however many channels it serves.** Founder decision 1, decided 2026-09-29.
 - CURVI_BUILD_PLAN.md 9.1 already prices a resize at 0.5 credit, and the seed comment on creditCosts.deterministic says "White main, cutout, resize or sweep". original_photo has method deterministic, so creditsForShot needs no new branch.
 - Every price stays a multiple of 0.5, which binary floats hold exactly. A seed test asserts this for every creditCosts value.
-- **If the founder picks 0.2 instead:** add seed `creditCosts.originalPhoto`, a type branch in creditsForShot, and a mandatory Slice A step "credit arithmetic in integer tenths": `creditTenths(c) = Math.round(c * 10)` beside creditCosts, used for every sum, ceil and comparison in estimatePackCredits, trimToBudget, trimShotsToBudget, validateLlmShotList, JobLedgerPlan (reserved, charged and released kept in tenths, converted only at the SQL boundary), followUpCredits and the demo hold. Tests: 5 originals then 2 scenes on a hold of 3 charge all 7 without throwing; a property test over random mixes shows the hold equals the ceiling of the exact tenths sum; outstanding reaches exactly 0. Update 9.1 and any pricing or FAQ copy.
 
 **Unchanged:** a made white file is its own shot, the background color is free, scenes stay at creditCosts.generativeStill (1), and a shot is charged once when any of its outputs passes.
 
@@ -435,7 +444,7 @@ OutputOptionsInput = z.object({
 - `backgroundSwatches`: white #FFFFFF, light_gray #F4F4F5, studio_gray #D9DADC, warm_white #F3F1ED, sand #EADFCF, sage #DDE4D8, slate #3A4556, charcoal #1B1F24. Every value except white reuses a seeded hex. Slate and charcoal follow the dark swatch gate in control 3.
 - `stillStyle.whiteHex` #FFFFFF replaces the four white literals (whiten.ts 207, 224 to 226, 397, 536) and raw.ts encodeJpeg. White required specs still take white from `spec.background.rgb`. `spec.width ?? 2000` becomes `canvasDefaults.width`.
 - `originalFit`: `{ maxMegapixels: 16, srgbProfileNames: [...] }` in P0; `cropMarginShare` 0.05 and `edgeRingPx` 2 in P1. No JPEG start quality: originals use the encodeForSpec ladder.
-- P1: `canvasDefaults.productSizeFill`, `sceneCountOptions` {min 1, max 4, default 2}, `lifestyleFallbackScenes` (moved from planner literals), `stillStyle.textOnDarkHex` and `darkBackgroundLuminance`, `keepBackgroundPhrases`.
+- P1: `canvasDefaults.productSizeFill`, `sceneCountOptions` {min 1, max 4, default 3}, `lifestyleFallbackScenes` (moved from planner literals), `stillStyle.textOnDarkHex` and `darkBackgroundLuminance`, `keepBackgroundPhrases`.
 
 **packages/pipeline/src/seed/recipes.ts:** `qcJudgePolicy = { exemptShotTypes: ["original_photo"] }`, next to the qc_judge recipe (seed/credits.ts has no QC policy today).
 
@@ -504,8 +513,8 @@ ALTER TABLE source_media ADD CONSTRAINT source_media_ingest_object
 8. **qc/pixelChecks.ts.** backgroundWhiteOrClear and megapixels. P1 adds backgroundMatchesChoice.
 9. **packager/index.ts.**
    - PackAsset gains `treatment?: { kind: "original" | "original_unchanged" | "background", reencodedAtUpload?, padHex?, cropped?, scale?, forcedWhite?, colorConverted?, alphaFilledHex?, otherItems? }`.
-   - A shared `treatmentNotes(treatment)` builds the machine notes, used by the packager and by the web demo: `background: kept at seller request`, `original: unchanged file`, `original: stored copy, turned upright at upload`, `original: resized from WxH`, `original: padded #RRGGBB`, `original: cropped around product`, `original: enlarged N.Nx`, `original: color converted to srgb`, `original: transparent areas filled #RRGGBB`, `original: other items kept`, `original: already white` (P1), `background: white required`, `background: color #RRGGBB`.
-   - The badge for original_photo uses the full placed rectangle mask.
+   - A shared `treatmentNotes(treatment)` builds the machine notes, used by the packager and by the web demo: `background: kept at seller request`, `original: unchanged file`, `original: stored copy, turned upright at upload`, `original: resized from WxH`, `original: padded #RRGGBB`, `original: cropped around product`, `original: enlarged N.Nx`, `original: color converted to srgb`, `original: transparent areas filled #RRGGBB`, `original: other items kept`, `original: already white`, `background: white required`, `background: color #RRGGBB`.
+   - applyBadge skips original_photo assets and already white files (founder decision 6).
 10. **ingest/image.ts.** ImageIngestResult gains `reencoded`.
 
 **trigger**
@@ -695,7 +704,7 @@ All figures in copy (credits, the enlarge limit, plan names, channel names) come
   - P1 crop: property test over random boxes and aspects shows the box plus margin always inside the window, or a fallback to pad.
 - live-rule3.test.ts: original_photo passes fidelity with kind "main" on every spec it may target, in auto and pad; mutation doubles applying sharpen(), modulate({ brightness: 1.02 }) or a 1 px shift fail; renderOnBackground with #1F2A44 keeps product pixels identical to the white render inside the eroded mask; amazon_main stays exactly 255 white under every color.
 - qc/pixelChecks.test.ts: backgroundWhiteOrClear fails a gray file on google.merchant.main and tiktokshop.main, passes today's white renders and alpha, fails closed without a mask; the megapixels check fails over the limit.
-- packager tests: badge pixels never intersect the placed photo rectangle; treatmentNotes covers every treatment.
+- packager tests: a free tier pack with Keep on a social spec ships original_photo and already white files with no badge, and a passthrough file keeps its sha256; made white files and scenes still get the badge; treatmentNotes covers every treatment.
 - Golden set: every seeded swatch plus one dark custom color (fringe review), and a set of Keep photos with zero fidelity failures.
 
 **Pricing, holds and idempotency**
@@ -729,8 +738,8 @@ All figures in copy (credits, the enlarge limit, plan names, channel names) come
 Phase 15 branches from main as `p15/output-options` after rechecking `git worktree list` and `ls packages/db/migrations`.
 
 0. **Plan and verification.** This file, written in plan mode (rule 1). Dated docs/verification.md entries: eBay's no added borders, text or watermarks rule; TikTok Shop's pure white main and no borders rule; Google Merchant's white or transparent main, its overlay rule, and its image size and byte limits; sharp's ICC and sRGB behavior and fastShrinkOnLoad; the Trigger.dev task output size limit.
-1. **Slice A, foundations with no visible change.** Seed, specs helpers and registry flags, output-options.ts, migration 0023, ingest record, Shot enum with LlmShot, planner (originals, extras, reservations, sizes, seller off cover), estimate, API (refusing non default options while the flag is off), createJob, replay, payload, follow ups, demo, runner parse and fail closed, validateLlmShotList and fitShotsToChannels changes. The tenths arithmetic step joins this slice only if the founder picks 0.2. A snapshot proves the default plan is unchanged. pnpm eval.
-2. **Slice B, rendering.** original.ts, live-original.ts, the runtime branch, the cutout cache option, the cache only inventory, the ambiguity filter, the judge exemption, fidelityKind, passthrough proof, the subtask boundary, originals concurrency, packager notes and badge mask, report and skipped copy, backgroundWhiteOrClear and megapixels (enabled after a golden set run), the fringe review. Deploy the worker.
+1. **Slice A, foundations with no visible change.** Seed, specs helpers and registry flags, output-options.ts, migration 0023, ingest record, Shot enum with LlmShot, planner (originals, extras, reservations, sizes, seller off cover), estimate, API (refusing non default options while the flag is off), createJob, replay, payload, follow ups, demo, runner parse and fail closed, validateLlmShotList and fitShotsToChannels changes. A snapshot proves the default plan is unchanged. pnpm eval.
+2. **Slice B, rendering.** original.ts, live-original.ts, the runtime branch, the cutout cache option, the cache only inventory, the ambiguity filter, the judge exemption, fidelityKind, passthrough proof, the subtask boundary, originals concurrency, the already white path, packager notes and the badge skip, report and skipped copy, backgroundWhiteOrClear and megapixels (enabled after a golden set run), the fringe review. Deploy the worker.
 3. **Slice C, UI.** The Switch, section 3, looks, color, chips and heads up, extras, the preview strip (Keep frames), estimate lines, the pause reconciliation, the job card and previews, reveal, downloads and share. Deploy the web app, then flip OUTPUT_OPTIONS_AVAILABLE in staging, then production. e2e.
 4. **Slice D, P1**, each control with its schema field, renderer and tests, worker deployed first.
 5. The backlog moves to PHASE_16.
@@ -756,14 +765,16 @@ Measured in PostHog (pack_created properties) and generation_jobs.output_options
 
 ## Founder decisions
 
-1. **Price of a kept photo:** 0.5 credits per photo per pack, creditCosts.deterministic (recommended: matches CURVI_BUILD_PLAN.md 9.1 "resize: 0.5 credit", needs no new price and no ledger change), or 0.2 (cheaper Resize only packs: the fixtures become 1.1, 0.6, 3.1 and 2.1 credits charged, and the integer tenths arithmetic step becomes mandatory Slice A work touching the ledger).
-2. **White required channels with Keep:** remove the background for those files only, with Leave it out one tap away (recommended), or refuse to submit until the seller unticks them.
-3. **Walmart and TikTok Shop secondary specs:** whether to add walmart.secondary and tiktokshop.secondary so additional images can keep their background. Each needs policy verification under rule 7. Until then every Walmart and TikTok Shop file is white.
-4. **Default number of scenes (P1):** 2, matching the hold and fixing today's drift, or today's 2 to 4 by category.
-5. **The upload cutout when Keep is chosen before upload:** keep paying it (recommended: it feeds the inventory warning, the cutout preview, already white detection and an instant switch back to Remove), or skip it and lose those.
-6. **The free tier badge on kept photos:** only in added space, otherwise left off, never over the photo (recommended), or no badge on kept photos at all.
-7. **Remembering choices per product (P1):** automatic prefill (recommended, like SKU today, and never applied server side), or an explicit checkbox.
-8. **Already white photos:** P1 (recommended), or pulled into P0 so studio photos on white keep their own pixels on Amazon main from day one.
+Decided 2026-09-29.
+
+1. **Price of a kept photo:** 0.5 credits per photo per pack (creditCosts.deterministic). No new price, no ledger change, and the integer tenths step stays unscheduled.
+2. **White required channels with Keep:** the background is removed for those files only, with Leave it out one tap away (control 4).
+3. **Walmart and TikTok Shop secondary specs:** not added. Every Walmart and TikTok Shop file stays white.
+4. **Default number of scenes (P1):** 3, the midpoint of today's 2 to 4 by category, planned exactly for every category. A default pack gains one scene (1 credit) when sceneCount lands (see the P1 table).
+5. **The upload cutout when Keep is chosen before upload:** kept. It feeds the inventory warning, the cutout preview, already white detection and an instant switch back to Remove.
+6. **The free tier badge on kept photos:** none. Kept photos never carry the badge; other outputs keep today's rule.
+7. **Remembering choices per product (P1):** automatic prefill, like SKU today, and never applied server side.
+8. **Already white photos:** P0 (control 7).
 
 ## Done when
 
@@ -771,12 +782,13 @@ Measured in PostHog (pack_created properties) and generation_jobs.output_options
 - Every P0 control works end to end in demo and live: form, API, job row, runner, follow ups, job page, report, reveal and share.
 - A pack with no options plans and delivers exactly today's pack (snapshot).
 - Zero fidelity failures on the golden set of Keep photos; the swatch fringe review is recorded.
+- The already white path passes the main class checks and fidelity on its golden photos (studio shots on white), and a photo with an off white or shadowed background takes the made white path.
 - The docs/verification.md rows from step 0 are dated.
 - Every test above passes, `pnpm lint && pnpm typecheck && pnpm test && pnpm e2e` passes, and `pnpm eval` shows no regression (rule 6).
 
 **P1 (slice D):**
 - Each P1 control has its schema field, renderer, copy, estimate effect and tests, landed worker first.
-- Crop never cuts the product box (property test); per photo backgrounds plan correctly with mixed packs; scene count and style change the hold exactly; memory prefill never applies server side; the already white path passes the main class checks on its golden photos; the added text flag passes pnpm eval.
+- Crop never cuts the product box (property test); per photo backgrounds plan correctly with mixed packs; scene count and style change the hold exactly; memory prefill never applies server side; the default pack snapshot moves to 3 scenes in the same pull request as sceneCount, with the pack-estimate fixtures updated; the added text flag passes pnpm eval.
 - The rule 6 gate and pnpm eval pass.
 
 ## Review log
@@ -786,7 +798,7 @@ Two reviews checked the draft against the code. Every factual claim below was co
 **Taken:** float drift with a 0.2 price (answered by recommending 0.5, with the tenths step mandatory for 0.2); disabled families filtered instead of rejected on the LLM path, with cover shared by both plans and no `output` in the plan input; kept photos with several items no longer blocked; the passthrough megapixel cap, a reference built from encoded bytes and originals run one at a time; R2 keys as media ids and real photo counts; photo sizes in the payload and no size blocks for kept photos; treatment carried across the subtask boundary; honest runner call counts; seller off cover limited to seller removals and never white required specs; e2e aimed at the web demo services; the badge only in added space; cache first cutout reads; the main fidelity row and alpha handling for originals; an env flag, a kill switch, fail closed parsing and worker first deploys; corrected file references; premium_full marked coming soon; the in flight worktree; share, reveal and download previews; the stored ingest record; CMYK, 16 bit, alpha and ICC rules; Google size limits and a megapixels check; the existing encode ladder instead of a new one; the added text heads up; a P0 only schema; already white photos (P1); originals ahead of extras on Amazon; copy numbers from the seed and registry; the free resizer; server derived look, brand entitlement and prefill only memory; edge blending toward the chosen color; ICC claims and the Keep card copy; the P2 list moved to a backlog with new candidates; the note hint.
 
 **Not taken, or changed:**
-- Integer tenths arithmetic across the ledger is not scheduled now, because the recommended price keeps every value a multiple of 0.5. It becomes mandatory Slice A work if the founder picks 0.2.
+- Integer tenths arithmetic across the ledger is not scheduled, because the founder picked 0.5 and every value stays a multiple of 0.5.
 - The suggested copy "turn on Remove the background for these channels" for added text on eBay and Google was changed: removing the background does not remove text or a watermark printed on the photo, and product logos are always allowed (PHASE_14 founder decision), so the copy says leave the channel out or upload a clean photo, and that product logos and labels are fine.
 - The "8 kept photos" test uses 6: JobRequest accepts 8 uploads, but mergePackMedia caps a pack at MAX_PACK_PHOTOS (6).
 - Separate render and delivery megapixel caps were merged into one seed value, `originalFit.maxMegapixels`, applied to every kept output.
