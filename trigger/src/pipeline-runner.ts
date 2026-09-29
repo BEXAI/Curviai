@@ -45,6 +45,9 @@ import {
   AplusCopyResult,
   badgeEligible,
   capAplusModules,
+  dropIncompleteCarousels,
+  isAdsShotType,
+  packGroupFor,
   isAplusModuleType,
   needsAplusCopy,
   NO_ENDORSEMENT_REASON,
@@ -2605,6 +2608,7 @@ async function packAssetFor(
     ref: shot.id,
     digitalSource: digitalSourceFor(shot.method, ctx.mode),
     ...(treatment ? { treatment } : {}),
+    ...(packGroupFor(shot) ? { group: packGroupFor(shot) } : {}),
     ...(generation.passthrough ? { passthroughSha256: generation.passthrough.sha256 } : {}),
   };
 }
@@ -3302,6 +3306,8 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
   shots = coverSellerOffSpecs(shots, skipped, opts.output, { frontMediaId: opts.primaryMediaId, frontUsable });
   shots = capShotsPerChannel(shots, skipped, reservedSlotsFor(shots, sceneCountOf(opts.output)));
   shots = trimShotsToBudget(shots, opts.budget, skipped);
+  // A carousel ships whole or not at all (PHASE_16 workstream 3).
+  shots = dropIncompleteCarousels(shots, skipped);
 
   // Shot ids key the ledger charges; a duplicate would hold credits forever.
   const seen = new Set<string>();
@@ -3443,6 +3449,56 @@ export function withAplusModules(plan: RunnerPlan, fallback: ShotList | null): R
     shots: [...plan.shots.slice(0, at), ...modules.map((shot) => ({ ...shot })), ...plan.shots.slice(at)],
     skipped: [...plan.skipped, ...moduleSkips],
   };
+}
+
+/**
+ * Adds the deterministic plan's ads formats (PHASE_16 workstream 3: the
+ * moodboard pin, the carousel slides and the ad variants) to an LLM plan,
+ * at its end, with their skipped entries. The shot planner recipe never
+ * plans them (LlmShot leaves them out), so without this a pack's ads would
+ * depend on which planner ran. fitShotsToChannels makes the ids unique. Pure.
+ */
+export function withAdsShots(plan: RunnerPlan, fallback: ShotList | null): RunnerPlan {
+  if (!fallback) {
+    return plan;
+  }
+  const ads = fallback.shots.filter((shot) => isAdsShotType(shot.type));
+  const adsSkips = fallback.skipped.filter((entry) => isAdsShotType(entry.type.split(":")[0] ?? ""));
+  if (ads.length === 0 && adsSkips.length === 0) {
+    return plan;
+  }
+  return {
+    shots: [...plan.shots, ...ads.map((shot) => ({ ...shot }))],
+    skipped: [...plan.skipped, ...adsSkips],
+  };
+}
+
+/**
+ * The order the fan out runs a pack's shots in (founder decision 4): a
+ * carousel with a scene layer makes that layer once, on its first slide, so
+ * its other slides wait for a second pass; every other shot runs in the
+ * first. Returns the passes, the second empty for a pack without one.
+ */
+export function carouselRunOrder(shots: readonly Shot[]): [Shot[], Shot[]] {
+  const later = (shot: Shot): boolean =>
+    shot.type === "carousel_slide" && COMPOSITE_METHODS.has(shot.method) && (shot.slideIndex ?? 1) > 1;
+  return [shots.filter((shot) => !later(shot)), shots.filter(later)];
+}
+
+/** Runs shots through the fan out in carouselRunOrder and returns the
+ * outcomes in the shots' own order. */
+export async function runInCarouselOrder(
+  shots: Shot[],
+  ctx: ShotContext,
+  runShots: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>,
+): Promise<ShotOutcome[]> {
+  const [first, second] = carouselRunOrder(shots);
+  if (second.length === 0) {
+    return runShots(shots, ctx);
+  }
+  const outcomes = [...(await runShots(first, ctx)), ...(await runShots(second, ctx))];
+  const byId = new Map(outcomes.map((outcome) => [outcome.shotId, outcome]));
+  return shots.map((shot) => byId.get(shot.id)).filter((outcome): outcome is ShotOutcome => outcome !== undefined);
 }
 
 /**
@@ -4029,7 +4085,10 @@ export async function runGeneratePack(
       : { ok: false, reason: KEPT_PHOTO_PLAN_REJECTION };
     let chosen: ShotList | null = null;
     if (check.ok) {
-      const fitted = fitShotsToChannels(fillSceneCount(withAplusModules(check.shotList, fallback), profile, flags), fit);
+      const fitted = fitShotsToChannels(
+        fillSceneCount(withAdsShots(withAplusModules(check.shotList, fallback), fallback), profile, flags),
+        fit,
+      );
       const fittedSpecs = coveredSpecs(fitted.shots);
       const uncovered = fallback ? [...coveredSpecs(fallback.shots)].filter((specId) => !fittedSpecs.has(specId)) : [];
       if (uncovered.length === 0) {
@@ -4187,8 +4246,10 @@ export async function runGeneratePack(
           ),
         );
       });
-    const firstPass = await runShots(shotList.shots, ctx);
-    const outcomes = await retryTransientShots(firstPass, shotList.shots, ctx, runShots, deps, runStartedAt);
+    // A carousel's scene layer is made by its first slide before the others run.
+    const ordered = (shots: Shot[], c: ShotContext) => runInCarouselOrder(shots, c, runShots);
+    const firstPass = await ordered(shotList.shots, ctx);
+    const outcomes = await retryTransientShots(firstPass, shotList.shots, ctx, ordered, deps, runStartedAt);
     costMicros += outcomes.reduce((sum, o) => sum + o.costMicros, 0);
 
     // QC accounting, part one: release every shot that needs review now.

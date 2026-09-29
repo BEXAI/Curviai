@@ -8,6 +8,7 @@ export * from "./qc/pixelChecks";
 export * from "./qc/fidelity";
 export * from "./composite/index";
 export * from "./planner/deterministic";
+export * from "./planner/ads";
 export * from "./planner/brand";
 export * from "./brand/palette";
 export * from "./metadata/iptc";
