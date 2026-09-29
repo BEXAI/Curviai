@@ -2497,6 +2497,33 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     });
   }
 
+  it("fails before spending when intake counts several products but returns no boxes", async () => {
+    const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+    const noBoxes = {
+      images: [{ ...intakeFixture.images[0], distinctProducts: 2, screenshot: false }],
+    };
+    const summary = await runGeneratePack(
+      { ...baseInput, userDescription: "Blue Gatorade only, remove the red one" },
+      makeDeps({ ai: makeAi({ intake: intakeWith(noBoxes), analyze }) }),
+    );
+    expect(summary.state).toBe("failed");
+    expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+    expect(analyze.calls).toHaveLength(0);
+    expect(summary.chargedCredits).toBe(0);
+  });
+
+  it("sends intake a tool schema that requires products, screenshot and sellerIntent", async () => {
+    const intake = intakeWith(intakeFixture);
+    await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
+    const tool = ((intake.calls[0].input as LlmTaskInput).tools ?? [])[0] as {
+      input_schema: { required: string[]; properties: { images: { items: { required: string[] } } } };
+    };
+    expect(tool.input_schema.required).toContain("sellerIntent");
+    expect(tool.input_schema.properties.images.items.required).toEqual(
+      expect.arrayContaining(["products", "screenshot"]),
+    );
+  });
+
   it("leaves several products in an in the box photo alone", async () => {
     const summary = await runGeneratePack(
       { ...baseInput, images: [{ mediaId: "m1", angle: "in_the_box" }] },
@@ -2537,15 +2564,15 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     expect(before.targets.every((t) => t === undefined)).toBe(true);
   });
 
-  it("runs intake version 2 answers, which list no products, exactly as before", async () => {
+  it("runs a single product answer with no products list exactly as before", async () => {
     const before = await outcomeOf(intakeFixture);
-    // A version 2 answer that saw two products still carries no products list.
+    // A version 2 style answer for one product carries no products list.
     const v2 = await outcomeOf({
       images: [
         {
           ...intakeFixture.images[0],
           screenshot: false,
-          distinctProducts: 2,
+          distinctProducts: 1,
           boundingBoxes: [
             { label: "red bottle", x: 40, y: 50, width: 150, height: 200 },
             { label: "blue bottle", x: 200, y: 50, width: 150, height: 200 },

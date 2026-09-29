@@ -119,6 +119,26 @@ export const IntakeResult = z.object({
   sellerIntent: SellerIntent.optional(),
 });
 
+/**
+ * The intake answer shape sent to the model as its strict tool schema. The
+ * version 3 fields are required here: under strict tool use the model may
+ * leave an optional property out, and on 2026-09-29 it did, so a pack with
+ * two bottles and a note naming one ran with no product boxes and no parsed
+ * intent. Answers are still validated with the lenient IntakeResult, so a
+ * version 1 or 2 answer (or a mock) keeps parsing.
+ */
+export const IntakeToolResult = z.object({
+  images: z
+    .array(
+      IntakeImageResult.extend({
+        screenshot: z.boolean(),
+        products: z.array(IntakeProduct).max(12),
+      }),
+    )
+    .min(1),
+  sellerIntent: SellerIntent,
+});
+
 export type Hex = z.infer<typeof Hex>;
 export type ProductProfile = z.infer<typeof ProductProfile>;
 export type Shot = z.infer<typeof Shot>;

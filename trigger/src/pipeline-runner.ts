@@ -57,6 +57,7 @@ import {
   trimToBudget,
   withSellerAngles,
   IntakeResult,
+  IntakeToolResult,
   ProductProfile,
   QCVerdict,
   ShotList,
@@ -971,7 +972,11 @@ export function selectTargets(
   jobId: string,
 ): TargetSelection {
   const selection: TargetSelection = { targets: {}, ambiguous: [] };
-  if (!intake.images.some((image) => (image.products?.length ?? 0) > 0)) {
+  // A photo with several products and no product boxes can never be
+  // isolated, so it counts as ambiguous instead of shipping every product.
+  const unboxedMulti = (image: IntakeResult["images"][number]) =>
+    image.screenshot !== true && (image.products?.length ?? 0) === 0 && image.distinctProducts > 1;
+  if (!intake.images.some((image) => (image.products?.length ?? 0) > 0 || unboxedMulti(image))) {
     return selection;
   }
   if (intake.images.length !== judged.length) {
@@ -983,6 +988,10 @@ export function selectTargets(
   intake.images.forEach((image, i) => {
     const photo = judged[i];
     const products = image.products ?? [];
+    if (unboxedMulti(image) && !(photo.angle && MULTI_ITEM_ANGLES.has(photo.angle))) {
+      selection.ambiguous.push(photo.mediaId);
+      return;
+    }
     if (image.screenshot === true || products.length === 0) {
       return;
     }
@@ -2460,7 +2469,7 @@ export async function runGeneratePack(
         { images: judgedImages, userDescription: wrapUserDescription(input.userDescription) },
         { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
         photos,
-        IntakeResult,
+        IntakeToolResult,
       ),
     );
     if (!intake.value) {
