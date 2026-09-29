@@ -217,6 +217,10 @@ export const FEATURES = {
     status: "coming_soon",
     mentions: /product URL|paste a (product )?(URL|link)/i,
   },
+  // PHASE_16 workstreams 1 to 3, live in the new pack form.
+  packBundles: { label: "Pack sets that choose how much a pack makes", status: "live" },
+  aplusModules: { label: "Amazon A+ content modules", status: "live" },
+  adsFormats: { label: "Moodboard pins, social carousels and static ad packs", status: "live" },
   // PHASE_16 workstream 5. Flip each flag in the change that ships it: the
   // v1 API and the MCP server together, the CLI and the skill once the CLI
   // is published and the skill has a public home.

@@ -295,6 +295,36 @@ describe("POST /api/v1/packs", () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
+  it("takes the question step's answers as seed values and refuses any other value", async () => {
+    const ok = await createDemoPack("answers-1", { channels: ["amazon.main"], answers: { mood: "kitchen", channels: "amazon" } });
+    expect(ok.status).toBe(201);
+    await expectContract(ok, "/api/v1/packs", "post", PackResponse);
+    for (const answers of [{ mood: "neon" }, { target: "item:1" }, { channels: "myspace" }]) {
+      const bad = await createDemoPack(`answers-bad-${JSON.stringify(answers).length}`, { channels: ["amazon.main"], answers });
+      expect(bad.status, JSON.stringify(answers)).toBe(400);
+      expect((await expectContract(bad, "/api/v1/packs", "post", PackResponse)).reason).toBe("invalid_request");
+    }
+
+    const services = createFakeServices("owner");
+    vi.mocked(services.createJob).mockResolvedValue({ outcome: "conflict" });
+    const ctx: ApiContext = {
+      caller: {
+        keyId: DEMO_KEY_ID,
+        prefix: "cv_live_000000000000",
+        scopes: ["packs:write"],
+        principal: { workspaceId: OTHER_WORKSPACE_ID, workspaceName: "W", plan: "growth", role: "owner", userId: "u" },
+        services,
+        rateSubject: "user:u",
+      },
+      headers: new Headers(),
+    };
+    await createPack(ctx, { channels: ["amazon.main"], answers: { mood: "gym" } }, "k-answers");
+    expect(services.createJob).toHaveBeenCalledWith(
+      OTHER_WORKSPACE_ID,
+      expect.objectContaining({ answers: { mood: "gym" } }),
+    );
+  });
+
   it("refuses a key whose maker holds a client seat before fetching any photo", async () => {
     const fetchPhoto = vi.fn();
     const services = createFakeServices("client");

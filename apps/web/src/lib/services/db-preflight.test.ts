@@ -315,4 +315,23 @@ describe("createJob with seller answers", () => {
       expect(payload.sellerAnswers).toBeUndefined();
     }
   });
+
+  it("resolves an API caller's answers against the seed's choices, with no preflight", async () => {
+    const { ws, productId } = await workspace();
+    const key = `ws/${ws}/src/api-answers.jpg`;
+    const svc = service(OWNER, async () => runOf({ questions }));
+    const result = await svc.createJob(ws, {
+      ...jobInput(productId, [{ key, sha256: "f".repeat(64), kind: "image", angle: "front" }]),
+      answers: { mood: "cozy", channels: "all" },
+    });
+    expect(result.outcome).toBe("created");
+    const expected = {
+      version: 1,
+      channels: { value: "all", label: "All of them" },
+      mood: { value: "cozy", label: "Cozy holiday" },
+    };
+    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws));
+    expect(job.sellerAnswers).toEqual(expected);
+    expect(enqueue.fn.mock.calls[0][0].sellerAnswers).toEqual(expected);
+  });
 });

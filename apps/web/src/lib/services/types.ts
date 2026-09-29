@@ -267,6 +267,11 @@ export interface CreateJobInput {
    * against the questions stored for that upload; absent or skipped means
    * the note alone. */
   sellerAnswers?: { key: string; picks: Record<string, string> };
+  /** The question step's answers from a caller with no upload preflight
+   * (the v1 API and MCP, PHASE_16 workstream 5): seed choice values by
+   * question kind, resolved against the seed's full choices. Used only
+   * when sellerAnswers is absent. */
+  answers?: { channels?: string; mood?: string };
 }
 
 export type CreateJobResult =

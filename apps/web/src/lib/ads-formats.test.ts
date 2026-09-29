@@ -18,7 +18,8 @@ import {
   CAROUSEL_TOO_SHORT_REASON,
 } from "@curvi/pipeline/ads";
 import { rule9Problems } from "@curvi/pipeline";
-import { creditCosts } from "@curvi/pipeline/seed";
+import { planShots } from "@curvi/pipeline/planner";
+import { adsFormats, creditCosts } from "@curvi/pipeline/seed";
 import { outputOptionsSummary, skippedCopy } from "@/lib/job-copy";
 import { EXTRA_FAMILY_NAMES } from "@/lib/output-options-copy";
 import {
@@ -30,7 +31,7 @@ import {
   outputFormReducer,
 } from "@/lib/output-options-form";
 import { boardSections } from "@/lib/output-preview";
-import { estimatePackCredits, referencePackShots } from "@/lib/pack-estimate";
+import { ESTIMATE_REFERENCE_PRODUCT, estimatePackCredits, referencePackShots } from "@/lib/pack-estimate";
 import type { JobShotView } from "@/lib/services/types";
 
 const SNAPSHOT = { colorHex: "#FFFFFF", brandSweepHex: "#3A4556", keepMediaIds: [] };
@@ -94,6 +95,48 @@ describe("the estimate with the ads formats", () => {
       expect(rule9Problems(line.label), line.label).toEqual([]);
     }
   });
+});
+
+describe("the hold covers the largest carousel and ad pack a product can make", () => {
+  // A product the analyzer read richly: more benefits and features than the
+  // reference product, so the runner's story and ad pack run longest.
+  const rich = {
+    ...ESTIMATE_REFERENCE_PRODUCT,
+    name: "Stoneware mug",
+    benefits: ["keeps tea warm", "comfortable handle", "easy to wash", "sits flat"],
+    features: ["thick rim", "glossy glaze", "wide base", "deep bowl"],
+  };
+  const count = (shots: readonly { type: string }[], type: string) => shots.filter((s) => s.type === type).length;
+  const adsCredits = (shots: readonly { type: string; credits: number }[]) =>
+    shots.filter((s) => s.type === "carousel_slide" || s.type === "ad_variant").reduce((sum, s) => sum + s.credits, 0);
+
+  for (const scenes of [false, true]) {
+    for (const box of [false, true]) {
+      it(`holds at least what the runner plans (scenes ${scenes ? "on" : "off"}, box contents ${box ? "typed" : "empty"})`, () => {
+        const output = flags({ extras: { ads: true, scenes } });
+        const channels = ["meta.feed_4x5", "meta.feed_1x1", "tiktok.ad_9x16"];
+        const real = planShots(rich, {
+          channels,
+          tier: "growth",
+          creditBudget: Number.MAX_SAFE_INTEGER,
+          primaryMediaId: "m1",
+          hasBoxContents: box,
+          ...(box ? { boxContents: ["Mug", "Gift box"] } : {}),
+          output: { ...output, photos: [{ id: "m1", angle: "front" }] },
+        }).shots;
+        const held = referencePackShots(channels, "listing", "growth", undefined, { output, hasBoxContents: box });
+        expect(count(real, "carousel_slide")).toBeGreaterThan(0);
+        expect(count(held, "carousel_slide")).toBeGreaterThanOrEqual(count(real, "carousel_slide"));
+        expect(count(held, "ad_variant")).toBe(adsFormats.adPack.maxVariants);
+        expect(adsCredits(held)).toBeGreaterThanOrEqual(adsCredits(real));
+        const hold = estimatePackCredits(channels, "listing", "growth", { output, hasBoxContents: box });
+        expect(hold.total).toBeGreaterThanOrEqual(Math.ceil(adsCredits(real)));
+        // The in the box slide is held whenever the seller typed box contents.
+        expect(count(held, "carousel_slide") - count(real, "carousel_slide")).toBe(0);
+        expect(held.some((s) => s.type === "carousel_slide" && s.callouts?.includes("Mug") === true)).toBe(box);
+      });
+    }
+  }
 });
 
 describe("copy for the ads formats", () => {
