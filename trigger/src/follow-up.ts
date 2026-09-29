@@ -25,10 +25,13 @@
 import type { JobRecipeVariant } from "@curvi/db";
 import { badgeEligible, buildPack, type Shot } from "@curvi/pipeline";
 import { channelFileLimit, getSpec, hasSpec } from "@curvi/specs";
+import type { ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 import {
   allSettledWithLimit,
   DEFAULT_SHOT_CONCURRENCY,
   JobAbandonedError,
+  OUTPUT_OPTIONS_UNREADABLE,
+  parseRunOutput,
   recordShotFailure,
   runShot,
   selectedFamilies,
@@ -81,6 +84,14 @@ export interface PackFollowUpInput {
   /** The job's provider spend before this follow up, in USD micros. The
    * job's COGS only ever grows, so the follow up reports the sum. */
   baseCostMicros: number;
+  /** The job's stored output options (generation_jobs.output_options), with
+   * the hexes createJob snapshotted, so a retried or added shot gets the
+   * pack's colors and never a live kit read (PHASE_15 follow ups). Absent
+   * means the defaults; anything the shared schema refuses stops the follow
+   * up before any spend. */
+  output?: ResolvedOutputOptions;
+  /** Media ids of photos whose stored copy was written again at upload. */
+  reencoded?: string[];
 }
 
 export interface PackFollowUpSummary {
@@ -211,6 +222,10 @@ export async function runPackFollowUp(
   await applyLedger(ledger.reserveOnQueue(input.creditBudget));
 
   try {
+    const parsedOutput = parseRunOutput(input.output);
+    if (!parsedOutput.ok) {
+      throw new Error(OUTPUT_OPTIONS_UNREADABLE);
+    }
     await assertLive();
     const recipes = await followUpRecipes(input, deps);
     const ctx: ShotContext = {
@@ -223,6 +238,8 @@ export async function runPackFollowUp(
       runKey: input.runKey,
       ...(recipes ? { recipes } : {}),
       ...(input.brand ? { brand: input.brand } : {}),
+      ...(parsedOutput.output ? { output: parsedOutput.output } : {}),
+      ...(input.reencoded && input.reencoded.length > 0 ? { reencoded: [...input.reencoded] } : {}),
     };
     // One shot failing never takes its siblings down, as in a first run, and
     // an added angle's shots share the first run's concurrency limit.

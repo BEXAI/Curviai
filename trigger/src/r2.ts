@@ -7,7 +7,8 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import type { PackFileHandoff } from "./pipeline-runner";
 import { optionalEnv } from "./runtime";
 
 export interface PackUploader {
@@ -60,6 +61,40 @@ export function buildR2Uploader(): PackUploader | null {
         }),
       );
       return { bytes: body.length };
+    },
+  };
+}
+
+/**
+ * The R2 handoff for delivered files too large to cross the generate-shot
+ * subtask boundary inline (PHASE_15 item 15), in the private bucket. Null
+ * when R2 env is absent; every file then stays inline.
+ */
+export function buildR2Handoff(): PackFileHandoff | null {
+  const accountId = optionalEnv("R2_ACCOUNT_ID");
+  const accessKeyId = optionalEnv("R2_ACCESS_KEY_ID");
+  const secretAccessKey = optionalEnv("R2_SECRET_ACCESS_KEY");
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    return null;
+  }
+  const bucket = optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
+  const client = new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey },
+  });
+  return {
+    async put(key, bytes, contentType) {
+      await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes, ContentType: contentType }));
+    },
+    async get(key) {
+      try {
+        const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        const body = await res.Body?.transformToByteArray();
+        return body ? Buffer.from(body) : null;
+      } catch {
+        return null;
+      }
     },
   };
 }

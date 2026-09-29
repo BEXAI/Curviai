@@ -18,12 +18,20 @@ import { DbJobStore } from "./db-store";
 import { ShotUnavailableError } from "./errors";
 import { numberFollowUpFiles, runPackFollowUp, type PackFollowUpInput } from "./follow-up";
 import {
+  normalizeOutputOptions,
+  resolveColorHex,
+  resolveOutputOptions,
+  type ResolvedOutputOptions,
+} from "@curvi/pipeline/output-options";
+import {
   InMemoryJobStore,
+  OUTPUT_OPTIONS_UNREADABLE,
   runGeneratePack,
   shotFailureOutcome,
   systemClock,
   type JobLedgerEntry,
   type ShotContext,
+  type ShotGenerateArgs,
   type ShotGenerator,
   type ShotOutcome,
   type ShotPackAsset,
@@ -128,6 +136,40 @@ describe("runPackFollowUp with an in memory store", () => {
     // Numbered after the two files amazon.secondary already holds.
     expect(store.followUps[0].files[0]).toMatchObject({ ref: shot.id, specId: "amazon.secondary", file: expect.stringMatching(/^MUG1\.PT03\./) });
     expect(store.states.at(-1)?.state).toBe("done");
+  });
+
+  it("hands the stored output options to every shot and stops before any spend on unreadable ones", async () => {
+    const white = resolveColorHex({ kind: "swatch", key: "white" }, []) as string;
+    const output = resolveOutputOptions(normalizeOutputOptions({ color: { kind: "swatch", key: "sage" } }), {
+      colorHex: "#DDE4D8",
+      brandSweepHex: white,
+      keepMediaIds: [],
+    });
+    const seen: ShotGenerateArgs[] = [];
+    const base = buildRuntimeDeps();
+    const recording: ShotGenerator = {
+      generate: async (args) => {
+        seen.push(args);
+        return base.generator.generate(args);
+      },
+    };
+    const store = new InMemoryJobStore();
+    const summary = await runPackFollowUp(input({ output, reencoded: ["m1"] }), { ...base, store, generator: recording });
+    expect(summary.state).toBe("done");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((args) => args.output?.colorHex === "#DDE4D8" && args.reencodedAtUpload === true)).toBe(true);
+
+    const unreadable = new InMemoryJobStore();
+    seen.length = 0;
+    const stopped = await runPackFollowUp(
+      input({ output: { ...output, v: 2 } as unknown as ResolvedOutputOptions }),
+      { ...base, store: unreadable, generator: recording },
+    );
+    expect(stopped.state).toBe("stopped");
+    expect(stopped.error).toBe(OUTPUT_OPTIONS_UNREADABLE);
+    expect(seen).toHaveLength(0);
+    expect(stopped.chargedCredits).toBe(0);
+    expect(stopped.releasedCredits).toBe(0.5);
   });
 
   it("releases a shot that needs review again and charges nothing", async () => {
