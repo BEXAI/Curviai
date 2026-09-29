@@ -580,3 +580,11 @@ The MCP pages below were fetched again on 2026-09-29 for the exact message shape
 | OpenAPI 3.1 takes JSON Schema 2020-12 schemas as they are; the document's component schemas are generated with zod 4 `z.toJSONSchema` (target draft-2020-12), request bodies with `io: "input"`. | lib/api-v1/openapi.ts | zod 4.6.5 in the workspace (`z.toJSONSchema` present, run 2026-09-29); the OpenAPI 3.1.0 Schema Object being a JSON Schema 2020-12 superset is from the spec as known, not fetched in this pass | Implementer (p16/api), 2026-09-29 |
 
 Not verified: MCP directory listing requirements (the skill and the directory entries wait for the curvi-ai org, founder decision 6); how Claude Code, Cursor and other clients behave against the dual era endpoint in practice (tested only against the spec shapes above).
+
+## PHASE_16 workstream 5: the curvi CLI (checked 2026-09-29)
+
+| Fact used | Where | Source | Checked by |
+|---|---|---|---|
+| Node.js runs TypeScript files with no flag from v22.18.0 (type stripping unflagged; release notes, commit 8d1f5df313) and from v23.6.0 on the current lines. Relative imports must name the `.ts` file; enums, runtime namespaces, parameter properties, import aliases and decorators are refused (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX). Node does not strip types in files under node_modules. | `packages/cli/bin/curvi.js` imports `src/main.ts` directly; `packages/cli/tsconfig.json` sets `allowImportingTsExtensions` and `erasableSyntaxOnly`; `engines.node` is `>=22.18` | nodejs.org/en/blog/release/v22.18.0, nodejs.org/api/typescript.html | Implementer (p16/cli), 2026-09-29 |
+
+Not verified yet: the higgsfield-ai/skills SKILL.md front matter fields beyond name, description and license (the skill uses only those three, which the Agent Skills format requires); skill directory listing requirements (none exist until the curvi-ai GitHub org does, founder decision 6).

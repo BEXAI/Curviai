@@ -1,6 +1,6 @@
 import { creditCosts, tiers } from "@curvi/pipeline/seed";
 import { categories } from "@/components/marketing/categories";
-import { structuredHelpArticles } from "@/components/marketing/help-articles";
+import { AGENT_HELP_SLUG, structuredHelpArticles } from "@/components/marketing/help-articles";
 import { homeFaqs } from "@/components/marketing/home-copy";
 import { answerFaqs, pillarPages, type PillarPage } from "@/components/marketing/pillar-copy";
 import { imageSpecs, specDisplayName, specSlug } from "@/components/marketing/spec-slug";
@@ -9,6 +9,7 @@ import {
   amazonMainRules,
   comingSoonFeatures,
   comingSoonFileNames,
+  isLive,
   joinList,
   liveChannelNames,
   packsForCredits,
@@ -37,6 +38,25 @@ function url(path: string): string {
 
 /** The short FAQ both files carry: the questions people ask assistants. */
 const assistantFaqs = Object.values(answerFaqs);
+
+/**
+ * The API, MCP server, CLI and skill line (PHASE_16 workstream 5), worded
+ * from their availability flags so it says coming soon until each ships.
+ */
+function agentAccessSummary(): string {
+  const parts = [
+    { key: "agentApi", text: "the Curvi API" },
+    { key: "agentApi", text: "the MCP server" },
+    { key: "agentSkill", text: "the curvi command line tool" },
+    { key: "agentSkill", text: "the Curvi skill" },
+  ] as const;
+  const live = parts.filter((part) => isLive(part.key)).map((part) => part.text);
+  const soon = parts.filter((part) => !isLive(part.key)).map((part) => part.text);
+  return [
+    ...(live.length > 0 ? [`make packs from AI agents with ${joinList(live)}`] : []),
+    ...(soon.length > 0 ? [`${joinList(soon)} are coming soon`] : []),
+  ].join("; ");
+}
 
 /** Everything before the first H2: summary, positioning, facts, pricing and FAQ. */
 function introLines(): string[] {
@@ -103,6 +123,7 @@ export function buildLlmsTxt(): string {
     `- [Pricing](${url("/pricing")}): plans, credits and top ups`,
     `- [Help center](${url("/help")}): uploads, credits, compliance reports, brand kits and channels`,
     `- [Gallery](${url("/gallery")}): illustrated before and after examples of the pack format`,
+    `- [Curvi for AI agents](${url(`/help#${AGENT_HELP_SLUG}`)}): ${agentAccessSummary()}`,
     "",
     "## Free tools",
     "",

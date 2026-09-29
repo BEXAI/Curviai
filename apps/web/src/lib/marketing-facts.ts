@@ -217,6 +217,19 @@ export const FEATURES = {
     status: "coming_soon",
     mentions: /product URL|paste a (product )?(URL|link)/i,
   },
+  // PHASE_16 workstream 5. Flip each flag in the change that ships it: the
+  // v1 API and the MCP server together, the CLI and the skill once the CLI
+  // is published and the skill has a public home.
+  agentApi: {
+    label: "A public API and an MCP server for AI agents",
+    status: "coming_soon",
+    mentions: /Curvi API|public API|API keys?\b|\bMCP\b/i,
+  },
+  agentSkill: {
+    label: "The curvi command line tool and a Curvi skill for AI coding agents",
+    status: "coming_soon",
+    mentions: /command line|\bCLI\b|agent skill|Curvi skill/i,
+  },
 } as const satisfies Record<string, Feature>;
 
 export type FeatureKey = keyof typeof FEATURES;
