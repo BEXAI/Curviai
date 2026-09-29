@@ -1,6 +1,13 @@
 import Stripe from "stripe";
 import { describe, expect, it, vi } from "vitest";
-import { createStripeLookup, isStripeMissingResource, STRIPE_LOOKUP_OPTIONS, STRIPE_LOOKUP_TIMEOUT_MS } from "./stripe";
+import {
+  createStripeBillingActions,
+  createStripeLookup,
+  duplicateRefundKey,
+  isStripeMissingResource,
+  STRIPE_LOOKUP_OPTIONS,
+  STRIPE_LOOKUP_TIMEOUT_MS,
+} from "./stripe";
 
 /** A real SDK client whose every request fails at the network, counting
  * the attempts it makes. */
@@ -77,5 +84,69 @@ describe("createStripeLookup", () => {
     expect(isStripeMissingResource({ statusCode: 429 })).toBe(false);
     expect(isStripeMissingResource(null)).toBe(false);
     expect(isStripeMissingResource("resource_missing")).toBe(false);
+  });
+});
+
+describe("createStripeBillingActions", () => {
+  function actionsStripe() {
+    const subscriptionsList = vi.fn(async (..._args: unknown[]) => ({
+      data: [{ id: "sub_1", status: "active", created: 100, customer: "cus_1", latest_invoice: { id: "in_1" } }],
+    }));
+    const invoicePaymentsList = vi.fn(async (..._args: unknown[]) => ({
+      data: [
+        { currency: "usd", amount_paid: 7900, payment: { type: "payment_intent", payment_intent: "pi_1" } },
+        { currency: "usd", amount_paid: 100, payment: { type: "charge", charge: { id: "ch_2" } } },
+      ],
+    }));
+    const refundsCreate = vi.fn(async (params: { payment_intent?: string; charge?: string }, ..._rest: unknown[]) => ({
+      id: `re_${params.payment_intent ?? params.charge}`,
+      amount: params.payment_intent ? 7900 : 100,
+    }));
+    const cancel = vi.fn(async (..._args: unknown[]) => ({ id: "sub_1", status: "canceled" }));
+    const stripe = {
+      subscriptions: { list: subscriptionsList, cancel },
+      invoicePayments: { list: invoicePaymentsList },
+      refunds: { create: refundsCreate },
+    } as unknown as Stripe;
+    return { stripe, subscriptionsList, invoicePaymentsList, refundsCreate, cancel };
+  }
+
+  it("lists every subscription of the customer, whatever its status", async () => {
+    const { stripe, subscriptionsList } = actionsStripe();
+    await expect(createStripeBillingActions(stripe).listCustomerSubscriptions("cus_1")).resolves.toEqual([
+      { id: "sub_1", status: "active", created: 100, customerId: "cus_1", latestInvoiceId: "in_1" },
+    ]);
+    expect(subscriptionsList).toHaveBeenCalledWith({ customer: "cus_1", status: "all", limit: 20 }, STRIPE_LOOKUP_OPTIONS);
+  });
+
+  it("refunds each paid payment of the invoice in full with a key per subscription", async () => {
+    const { stripe, invoicePaymentsList, refundsCreate } = actionsStripe();
+    const refund = await createStripeBillingActions(stripe).refundInvoice("sub_dup", "in_dup");
+    expect(refund).toEqual({ amount: 8000, currency: "usd", refundIds: ["re_pi_1", "re_ch_2"] });
+    expect(invoicePaymentsList).toHaveBeenCalledWith({ invoice: "in_dup", status: "paid", limit: 10 }, STRIPE_LOOKUP_OPTIONS);
+    const [first, second] = refundsCreate.mock.calls;
+    expect(first?.[0]).toMatchObject({ payment_intent: "pi_1", reason: "duplicate" });
+    expect(first?.[0]).not.toHaveProperty("amount");
+    expect(first?.[1]).toMatchObject({ idempotencyKey: "curvi-dup-refund-sub_dup", timeout: STRIPE_LOOKUP_TIMEOUT_MS });
+    expect(second?.[0]).toMatchObject({ charge: "ch_2" });
+    expect(second?.[1]).toMatchObject({ idempotencyKey: "curvi-dup-refund-sub_dup-1" });
+    expect(duplicateRefundKey("sub_dup")).toBe("curvi-dup-refund-sub_dup");
+  });
+
+  it("counts a payment already refunded instead of failing the delivery", async () => {
+    const { stripe, refundsCreate } = actionsStripe();
+    refundsCreate.mockRejectedValueOnce(Object.assign(new Error("already refunded"), { code: "charge_already_refunded" }));
+    const refund = await createStripeBillingActions(stripe).refundInvoice("sub_dup", "in_dup");
+    expect(refund.amount).toBe(8000);
+    expect(refund.refundIds).toEqual(["re_ch_2"]);
+
+    refundsCreate.mockRejectedValueOnce(new Error("Stripe is down"));
+    await expect(createStripeBillingActions(stripe).refundInvoice("sub_dup", "in_dup")).rejects.toThrow("Stripe is down");
+  });
+
+  it("cancels at once with no final invoice and no proration", async () => {
+    const { stripe, cancel } = actionsStripe();
+    await createStripeBillingActions(stripe).cancelSubscription("sub_dup");
+    expect(cancel).toHaveBeenCalledWith("sub_dup", { invoice_now: false, prorate: false }, STRIPE_LOOKUP_OPTIONS);
   });
 });

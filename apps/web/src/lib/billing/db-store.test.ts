@@ -3,10 +3,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tierByKey } from "@curvi/pipeline/seed";
 import { creditLedger, events, generationJobs, products, subscriptions, workspaces } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
-import { eq, type Db } from "@curvi/db";
+import { and, eq, type Db } from "@curvi/db";
 import { DbBillingStore, SUBSCRIPTION_SYNC_ATTEMPTS, SubscriptionSyncConflictError } from "./db-store";
 import { buildPriceTable, tierPriceEnvName, topUpPriceEnvName } from "./price-table";
-import { processStripeEvent, UnroutableBillingEventError } from "./stripe-webhook";
+import {
+  DUPLICATE_SUBSCRIPTION_EVENT,
+  processStripeEvent,
+  UnroutableBillingEventError,
+  type StripeBillingActions,
+} from "./stripe-webhook";
 
 // Billing on a real Postgres (PGlite) with every migration applied: grant
 // atomicity (Update.md 1.3), annual grants (1.2), workspaces.plan (1.1),
@@ -399,7 +404,7 @@ describe("workspaces.plan follows the subscription (Update.md 1.1)", () => {
     expect(await planOf(ws)).toBe("growth");
   });
 
-  it("does not throw when a second subscription becomes active (Update.md 1.5)", async () => {
+  it("does not throw when a second subscription becomes active in payload only mode (Update.md 1.5)", async () => {
     const ws = await newWorkspace();
     await processStripeEvent(
       subscriptionEvent("evt_first", "customer.subscription.created", {
@@ -876,5 +881,174 @@ describe("unroutable events", () => {
         expiresMonths: null,
       }),
     ).resolves.toBe(true);
+  });
+});
+
+describe("duplicate subscriptions against Stripe (fix/duplicate-subscriptions)", () => {
+  interface LiveSub {
+    id: string;
+    status: string;
+    created: number;
+    price: string;
+    invoice: string;
+  }
+
+  function stripeWorld(workspaceId: string, customer: string, subs: LiveSub[]) {
+    const calls: string[] = [];
+    const toStripe = (sub: LiveSub) =>
+      ({
+        id: sub.id,
+        object: "subscription",
+        customer,
+        status: sub.status,
+        metadata: { workspaceId },
+        items: { data: [{ id: `si_${sub.id}`, current_period_end: T0, price: { id: sub.price } }] },
+      }) as unknown as Stripe.Subscription;
+    const lookup = {
+      invoiceIdForPaymentIntent: async (paymentIntentId: string) =>
+        subs.find((sub) => `pi_${sub.invoice}` === paymentIntentId)?.invoice ?? null,
+      retrieveSubscription: async (id: string) => {
+        const sub = subs.find((entry) => entry.id === id);
+        return sub ? toStripe(sub) : null;
+      },
+    };
+    const actions: StripeBillingActions = {
+      listCustomerSubscriptions: async (customerId) => {
+        calls.push(`list:${customerId}`);
+        return customerId === customer
+          ? subs.map((sub) => ({ id: sub.id, status: sub.status, created: sub.created, customerId: customer, latestInvoiceId: sub.invoice }))
+          : [];
+      },
+      refundInvoice: async (subscriptionId, invoiceId) => {
+        calls.push(`refund:${subscriptionId}:${invoiceId}`);
+        return { amount: 14900, currency: "usd", refundIds: [`re_${invoiceId}`] };
+      },
+      cancelSubscription: async (subscriptionId) => {
+        calls.push(`cancel:${subscriptionId}`);
+        const sub = subs.find((entry) => entry.id === subscriptionId);
+        if (sub) {
+          sub.status = "canceled";
+        }
+      },
+    };
+    return { lookup, actions, calls, toStripe };
+  }
+
+  async function rowsOf(workspaceId: string) {
+    return db.select().from(subscriptions).where(eq(subscriptions.workspaceId, workspaceId));
+  }
+
+  async function duplicateEvents(workspaceId: string) {
+    return db
+      .select()
+      .from(events)
+      .where(and(eq(events.workspaceId, workspaceId), eq(events.name, DUPLICATE_SUBSCRIPTION_EVENT)));
+  }
+
+  it("keeps the older subscription, refunds and cancels the newer one, and never supersedes a billed row", async () => {
+    const ws = await newWorkspace("free", "cus_dup");
+    const subs: LiveSub[] = [
+      { id: "sub_tab_1", status: "active", created: 100, price: "price_growth_monthly", invoice: "in_tab_1" },
+      { id: "sub_tab_2", status: "incomplete", created: 200, price: "price_pro_monthly", invoice: "in_tab_2" },
+    ];
+    const world = stripeWorld(ws, "cus_dup", subs);
+    const deps = { lookup: world.lookup, actions: world.actions };
+
+    // The first subscription's event lands before the second one exists.
+    await processStripeEvent(
+      subscriptionEvent("evt_tab_1", "customer.subscription.created", { id: "sub_tab_1", workspaceId: ws, status: "active", price: "price_growth_monthly" }),
+      table,
+      store(),
+      deps,
+    );
+    // Both invoices were paid and granted credits.
+    await processStripeEvent(invoice("in_tab_1", ws, "subscription_create", [line("price_growth_monthly", 7900)], "cus_dup"), table, store());
+    await processStripeEvent(invoice("in_tab_2", ws, "subscription_create", [line("price_pro_monthly", 14900)], "cus_dup"), table, store());
+    expect(await balance(ws)).toBe(growth.creditsPerMonth + pro.creditsPerMonth);
+
+    // The second tab's payment goes through.
+    subs[1].status = "active";
+    const second = subscriptionEvent("evt_tab_2", "customer.subscription.created", {
+      id: "sub_tab_2",
+      workspaceId: ws,
+      status: "active",
+      price: "price_pro_monthly",
+    });
+    await expect(processStripeEvent(second, table, store(), deps)).resolves.toMatchObject({
+      action: "duplicate_subscription_refunded",
+    });
+    expect(world.calls.filter((call) => !call.startsWith("list:"))).toEqual(["refund:sub_tab_2:in_tab_2", "cancel:sub_tab_2"]);
+    // The event's customer and the workspace's stored customer are both read.
+    expect(world.calls).toContain("list:cus_sub");
+    expect(world.calls).toContain("list:cus_dup");
+
+    const rows = await rowsOf(ws);
+    expect(rows.find((row) => row.externalId === "sub_tab_1")?.status).toBe("active");
+    expect(rows.find((row) => row.externalId === "sub_tab_2")?.status).toBe("canceled");
+    expect(rows.some((row) => row.status === "superseded")).toBe(false);
+    expect(await planOf(ws)).toBe("growth");
+
+    const [record] = await duplicateEvents(ws);
+    expect(record?.props).toMatchObject({
+      workspaceId: ws,
+      keptSubscriptionId: "sub_tab_1",
+      duplicateSubscriptionId: "sub_tab_2",
+      amount: 14900,
+      currency: "usd",
+    });
+
+    // A retried delivery refunds nothing more.
+    await processStripeEvent(second, table, store(), deps);
+    expect(world.calls.filter((call) => call.startsWith("refund:"))).toHaveLength(1);
+    expect(await duplicateEvents(ws)).toHaveLength(1);
+
+    // Stripe's charge.refunded for that refund takes back the credits it granted.
+    await processStripeEvent(
+      event("evt_refund_tab_2", "charge.refunded", {
+        id: "ch_tab_2",
+        object: "charge",
+        amount: 14900,
+        amount_refunded: 14900,
+        payment_intent: "pi_in_tab_2",
+      }),
+      table,
+      store(),
+      { lookup: world.lookup },
+    );
+    expect(await balance(ws)).toBe(growth.creditsPerMonth);
+  });
+
+  it("refuses to supersede an active row Stripe still bills, so the delivery is retried", async () => {
+    const ws = await newWorkspace();
+    await processStripeEvent(
+      subscriptionEvent("evt_billed_1", "customer.subscription.created", { id: "sub_billed_old", workspaceId: ws, status: "active", price: "price_growth_monthly" }),
+      table,
+      store(),
+    );
+    await expect(
+      store().upsertSubscription({
+        workspaceId: ws,
+        stripeCustomerId: "cus_sub",
+        externalId: "sub_billed_new",
+        tier: "pro",
+        status: "active",
+        periodEnd: null,
+        stillBilled: ["sub_billed_old"],
+      }),
+    ).rejects.toThrow(/still bills sub_billed_old/);
+    const rows = await rowsOf(ws);
+    expect(rows.map((row) => [row.externalId, row.status])).toEqual([["sub_billed_old", "active"]]);
+  });
+
+  it("linkCustomer keeps the first customer and billingLink reports it", async () => {
+    const ws = await newWorkspace("free", "cus_original");
+    await store().linkCustomer(ws, "cus_newer");
+    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, ws));
+    expect(row.stripeCustomerId).toBe("cus_original");
+    await expect(store().billingLink(null, "cus_original")).resolves.toEqual({ workspaceId: ws, stripeCustomerId: "cus_original" });
+
+    const empty = await newWorkspace();
+    await store().linkCustomer(empty, "cus_first_link");
+    await expect(store().billingLink(empty, null)).resolves.toEqual({ workspaceId: empty, stripeCustomerId: "cus_first_link" });
   });
 });

@@ -8,6 +8,7 @@ import {
   floorCredits,
   HANDLED_STRIPE_EVENTS,
   InMemoryBillingStore,
+  type StripeBillingActions,
   planInvoiceGrant,
   processStripeEvent,
   prorationShare,
@@ -1144,5 +1145,163 @@ describe("unhandled events", () => {
     );
     expect(result).toEqual({ handled: false, action: "ignored" });
     expect(store.grants).toHaveLength(0);
+  });
+});
+
+describe("duplicate subscription backstop", () => {
+  interface FakeSub {
+    id: string;
+    status: string;
+    created: number;
+    customerId: string;
+    latestInvoiceId: string | null;
+  }
+
+  function fakeActions(subs: FakeSub[]) {
+    const calls: string[] = [];
+    const actions: StripeBillingActions = {
+      listCustomerSubscriptions: async (customerId) => {
+        calls.push(`list:${customerId}`);
+        return subs.filter((sub) => sub.customerId === customerId).map((sub) => ({ ...sub }));
+      },
+      refundInvoice: async (subscriptionId, invoiceId) => {
+        calls.push(`refund:${subscriptionId}:${invoiceId}`);
+        return { amount: 7900, currency: "usd", refundIds: [`re_${subscriptionId}`] };
+      },
+      cancelSubscription: async (subscriptionId) => {
+        calls.push(`cancel:${subscriptionId}`);
+        const sub = subs.find((entry) => entry.id === subscriptionId);
+        if (sub) {
+          sub.status = "canceled";
+        }
+      },
+    };
+    return { actions, calls };
+  }
+
+  function subscriptionEvent(
+    id: string,
+    sub: { id: string; customer: string; status?: string },
+    type = "customer.subscription.updated",
+  ): Stripe.Event {
+    return {
+      id,
+      type,
+      object: "event",
+      data: {
+        object: {
+          id: sub.id,
+          object: "subscription",
+          customer: sub.customer,
+          status: sub.status ?? "active",
+          metadata: { workspaceId: "ws_dup" },
+          items: { data: [{ id: `si_${sub.id}`, current_period_end: T0, price: { id: "price_growth_monthly" } }] },
+        },
+      },
+    } as unknown as Stripe.Event;
+  }
+
+  it("refunds and cancels the newer subscription when it becomes active, keeping the older one", async () => {
+    const store = new InMemoryBillingStore();
+    await store.linkCustomer("ws_dup", "cus_a");
+    const { actions, calls } = fakeActions([
+      { id: "sub_old", status: "active", created: 100, customerId: "cus_a", latestInvoiceId: "in_old" },
+      { id: "sub_new", status: "active", created: 200, customerId: "cus_a", latestInvoiceId: "in_new" },
+    ]);
+    const result = await processStripeEvent(subscriptionEvent("evt_dup_1", { id: "sub_new", customer: "cus_a" }), table, store, {
+      actions,
+    });
+    expect(result).toEqual({ handled: true, action: "duplicate_subscription_refunded" });
+    expect(calls).toEqual(["list:cus_a", "refund:sub_new:in_new", "cancel:sub_new"]);
+    expect(store.duplicates).toEqual([
+      {
+        workspaceId: "ws_dup",
+        keptSubscriptionId: "sub_old",
+        duplicateSubscriptionId: "sub_new",
+        stripeCustomerId: "cus_a",
+        amount: 7900,
+        currency: "usd",
+        refundIds: ["re_sub_new"],
+      },
+    ]);
+  });
+
+  it("never refunds twice when the delivery is retried", async () => {
+    const store = new InMemoryBillingStore();
+    const subs: FakeSub[] = [
+      { id: "sub_old", status: "active", created: 100, customerId: "cus_a", latestInvoiceId: "in_old" },
+      { id: "sub_new", status: "active", created: 200, customerId: "cus_a", latestInvoiceId: "in_new" },
+    ];
+    const { actions, calls } = fakeActions(subs);
+    const event = subscriptionEvent("evt_dup_retry", { id: "sub_new", customer: "cus_a" });
+    await processStripeEvent(event, table, store, { actions });
+    // The cancel reached Stripe, the answer did not: Stripe still shows it live.
+    subs[1].status = "active";
+    await processStripeEvent(event, table, store, { actions });
+    await processStripeEvent(event, table, store, { actions });
+    expect(calls.filter((call) => call.startsWith("refund:"))).toHaveLength(1);
+    expect(calls.filter((call) => call.startsWith("cancel:"))).toEqual(["cancel:sub_new", "cancel:sub_new"]);
+    expect(store.duplicates).toHaveLength(1);
+  });
+
+  it("an event for the older subscription retires a newer duplicate too", async () => {
+    const store = new InMemoryBillingStore();
+    const { actions, calls } = fakeActions([
+      { id: "sub_old", status: "active", created: 100, customerId: "cus_a", latestInvoiceId: "in_old" },
+      { id: "sub_new", status: "active", created: 200, customerId: "cus_a", latestInvoiceId: "in_new" },
+    ]);
+    const result = await processStripeEvent(subscriptionEvent("evt_dup_old", { id: "sub_old", customer: "cus_a" }), table, store, {
+      actions,
+    });
+    expect(result.action).toBe("subscription_synced");
+    expect(calls).toEqual(["list:cus_a", "refund:sub_new:in_new", "cancel:sub_new"]);
+    expect(store.subscriptions.get("sub_old")?.status).toBe("active");
+  });
+
+  it("checks the customer stored on the workspace as well as the event's, so a second customer is caught", async () => {
+    const store = new InMemoryBillingStore();
+    await store.linkCustomer("ws_dup", "cus_first");
+    const { actions, calls } = fakeActions([
+      { id: "sub_first", status: "active", created: 100, customerId: "cus_first", latestInvoiceId: "in_first" },
+      { id: "sub_second", status: "active", created: 200, customerId: "cus_second", latestInvoiceId: "in_second" },
+    ]);
+    await processStripeEvent(subscriptionEvent("evt_two_customers", { id: "sub_second", customer: "cus_second" }), table, store, {
+      actions,
+    });
+    expect(calls).toEqual(["list:cus_second", "list:cus_first", "refund:sub_second:in_second", "cancel:sub_second"]);
+    expect(store.duplicates[0]).toMatchObject({ keptSubscriptionId: "sub_first", duplicateSubscriptionId: "sub_second" });
+  });
+
+  it("leaves a single subscription, canceled ones and deletions alone", async () => {
+    const store = new InMemoryBillingStore();
+    const { actions, calls } = fakeActions([
+      { id: "sub_gone", status: "canceled", created: 100, customerId: "cus_a", latestInvoiceId: "in_gone" },
+      { id: "sub_only", status: "active", created: 200, customerId: "cus_a", latestInvoiceId: "in_only" },
+    ]);
+    await processStripeEvent(subscriptionEvent("evt_single", { id: "sub_only", customer: "cus_a" }), table, store, { actions });
+    await processStripeEvent(
+      subscriptionEvent("evt_deleted", { id: "sub_gone", customer: "cus_a", status: "canceled" }, "customer.subscription.deleted"),
+      table,
+      store,
+      { actions },
+    );
+    expect(calls).toEqual(["list:cus_a"]);
+    expect(store.duplicates).toHaveLength(0);
+  });
+
+  it("does nothing extra in payload only mode (no Stripe key)", async () => {
+    const store = new InMemoryBillingStore();
+    const result = await processStripeEvent(subscriptionEvent("evt_payload", { id: "sub_payload", customer: "cus_a" }), table, store);
+    expect(result.action).toBe("subscription_synced");
+    expect(store.duplicates).toHaveLength(0);
+  });
+});
+
+describe("linkCustomer keeps the first customer", () => {
+  it("does not overwrite a different stored customer", async () => {
+    const store = new InMemoryBillingStore();
+    await store.linkCustomer("ws_keep", "cus_first");
+    await store.linkCustomer("ws_keep", "cus_second");
+    expect(store.customerLinks.get("ws_keep")).toBe("cus_first");
   });
 });

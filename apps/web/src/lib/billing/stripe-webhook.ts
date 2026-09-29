@@ -45,7 +45,7 @@ import Stripe from "stripe";
 import type { TierKey } from "@curvi/pipeline/seed";
 import { allowanceCredits, type BillingCadence } from "./plans";
 import type { PriceMapping, PriceTable } from "./price-table";
-import { acceptsSubscriptionStatus } from "./subscription-status";
+import { acceptsSubscriptionStatus, keepsPaidPlan } from "./subscription-status";
 
 export interface GrantPaymentRef {
   invoiceId?: string | null;
@@ -94,6 +94,12 @@ export interface SubscriptionUpdate extends SubscriptionState {
    * subscription; the event's own state is used.
    */
   refresh?: () => Promise<SubscriptionState | null>;
+  /**
+   * Other subscriptions of the workspace that Stripe still bills, as read
+   * from Stripe after duplicates were retired. A row for one of them is
+   * never marked superseded. Unset in payload only mode (no Stripe key).
+   */
+  stillBilled?: string[];
 }
 
 export type SubscriptionSyncOutcome =
@@ -153,6 +159,28 @@ export interface BillingNote {
   props: Record<string, unknown>;
 }
 
+/** Where a workspace's billing lives: the workspace and its stored customer. */
+export interface BillingLink {
+  workspaceId: string;
+  stripeCustomerId: string | null;
+}
+
+/** The founder facing record of a duplicate subscription that was refunded
+ * and canceled. */
+export interface DuplicateSubscriptionRecord {
+  workspaceId: string;
+  keptSubscriptionId: string;
+  duplicateSubscriptionId: string;
+  stripeCustomerId: string | null;
+  /** Refunded, in the currency's smallest unit. */
+  amount: number;
+  currency: string | null;
+  refundIds: string[];
+}
+
+/** events.name of a DuplicateSubscriptionRecord. */
+export const DUPLICATE_SUBSCRIPTION_EVENT = "billing_duplicate_subscription_refunded";
+
 export interface BillingStore {
   /** Writes the grant unless key was already processed. Returns true when written. */
   recordGrantOnce(key: string, grant: CreditGrant): Promise<boolean>;
@@ -160,6 +188,13 @@ export interface BillingStore {
   /** Stores the Stripe customer id on the workspace, so the customer portal
    * and customer-id-only events resolve without a backfill. */
   linkCustomer(workspaceId: string, stripeCustomerId: string): Promise<void>;
+  /** The workspace an event belongs to (its metadata, or the customer's
+   * workspace) and the customer stored on it, or null when neither routes. */
+  billingLink(workspaceId: string | null, stripeCustomerId: string | null): Promise<BillingLink | null>;
+  /** Whether a duplicate subscription was already refunded and canceled. */
+  duplicateRetired(subscriptionId: string): Promise<boolean>;
+  /** Records a refunded and canceled duplicate subscription. */
+  recordDuplicateRetired(record: DuplicateSubscriptionRecord): Promise<void>;
   /** Reverses the credits a refunded or disputed payment granted, once per
    * key (the event id for refunds, dispute:<id> for disputes). */
   clawbackOnce(key: string, clawback: CreditClawback): Promise<ClawbackOutcome>;
@@ -224,6 +259,7 @@ export class InMemoryBillingStore implements BillingStore {
   /** Credits spent on packs, the in memory stand in for reserve and charge. */
   readonly spends: Array<{ workspaceId: string; credits: number }> = [];
   readonly notes: Array<{ eventId: string; note: BillingNote }> = [];
+  readonly duplicates: DuplicateSubscriptionRecord[] = [];
   private readonly processed = new Set<string>();
 
   /** requireRouting makes a grant with no resolvable workspace throw, like
@@ -312,7 +348,34 @@ export class InMemoryBillingStore implements BillingStore {
   }
 
   async linkCustomer(workspaceId: string, stripeCustomerId: string): Promise<void> {
+    const existing = this.customerLinks.get(workspaceId);
+    if (existing && existing !== stripeCustomerId) {
+      // Like the database store: the first customer stays, so the portal
+      // and the cancel flow keep seeing the subscription it holds.
+      console.warn(
+        JSON.stringify({
+          msg: "billing: workspace already has another Stripe customer, kept the first",
+          workspaceId,
+          kept: existing,
+          ignored: stripeCustomerId,
+        }),
+      );
+      return;
+    }
     this.customerLinks.set(workspaceId, stripeCustomerId);
+  }
+
+  async billingLink(workspaceId: string | null, stripeCustomerId: string | null): Promise<BillingLink | null> {
+    const resolved = this.resolveWorkspace(workspaceId, stripeCustomerId);
+    return resolved ? { workspaceId: resolved, stripeCustomerId: this.customerLinks.get(resolved) ?? null } : null;
+  }
+
+  async duplicateRetired(subscriptionId: string): Promise<boolean> {
+    return this.duplicates.some((record) => record.duplicateSubscriptionId === subscriptionId);
+  }
+
+  async recordDuplicateRetired(record: DuplicateSubscriptionRecord): Promise<void> {
+    this.duplicates.push(record);
   }
 
   /** Taken back from a grant and not given back yet. */
@@ -446,8 +509,40 @@ export interface StripeLookup {
   retrieveSubscription?(subscriptionId: string): Promise<Stripe.Subscription | null>;
 }
 
+/** A subscription as a Stripe list returns it, reduced to what the
+ * duplicate check needs. */
+export interface StripeSubscriptionSummary {
+  id: string;
+  status: string;
+  /** Unix seconds. */
+  created: number;
+  customerId: string | null;
+  latestInvoiceId: string | null;
+}
+
+export interface DuplicateRefund {
+  /** Refunded, in the currency's smallest unit. */
+  amount: number;
+  currency: string | null;
+  refundIds: string[];
+}
+
+/** Stripe writes the webhook makes to retire a duplicate subscription,
+ * injected so tests run without the network. */
+export interface StripeBillingActions {
+  /** Every subscription of the customer, whatever its status. */
+  listCustomerSubscriptions(customerId: string): Promise<StripeSubscriptionSummary[]>;
+  /** Refunds every paid payment of the invoice in full, idempotently. */
+  refundInvoice(subscriptionId: string, invoiceId: string): Promise<DuplicateRefund>;
+  /** Cancels at once, with no final invoice and no proration credit. */
+  cancelSubscription(subscriptionId: string): Promise<void>;
+}
+
 export interface StripeProcessDeps {
   lookup?: StripeLookup;
+  /** Set only when Stripe is configured; without it the webhook works from
+   * the payload alone and cannot retire duplicates. */
+  actions?: StripeBillingActions;
 }
 
 export interface StripeProcessResult {
@@ -804,6 +899,85 @@ function subscriptionState(
   };
 }
 
+/**
+ * Keeps one live subscription per workspace, checked against Stripe rather
+ * than our rows. Every live subscription (active, trialing or past_due) of
+ * the event's customer and of the customer stored on the workspace is read
+ * from Stripe; the oldest one is kept and every newer one has its latest
+ * invoice refunded in full and is canceled at once. The refund comes first,
+ * so a failure between the two leaves the duplicate live and the retried
+ * delivery finishes the job; the refund's idempotency key and the already
+ * refunded check keep it from paying twice. charge.refunded then takes back
+ * the credits the refunded invoice granted.
+ *
+ * Returns the duplicates retired and the other subscriptions Stripe still
+ * bills, which the store must never mark superseded.
+ */
+async function retireDuplicateSubscriptions(
+  subscription: Stripe.Subscription,
+  store: BillingStore,
+  actions: StripeBillingActions,
+): Promise<{ retired: string[]; stillBilled: string[] }> {
+  const eventCustomer = idOf(subscription.customer);
+  const link = await store.billingLink(metadataValue(subscription.metadata, "workspaceId"), eventCustomer);
+  if (!link) {
+    // The store's own routing check decides what an unroutable event does.
+    return { retired: [], stillBilled: [] };
+  }
+  const customers = [
+    ...new Set([eventCustomer, link.stripeCustomerId].filter((id): id is string => Boolean(id))),
+  ];
+  const byId = new Map<string, StripeSubscriptionSummary>();
+  for (const customer of customers) {
+    for (const summary of await actions.listCustomerSubscriptions(customer)) {
+      byId.set(summary.id, summary);
+    }
+  }
+  const live = [...byId.values()]
+    .filter((summary) => keepsPaidPlan(summary.status))
+    .sort((a, b) => a.created - b.created || a.id.localeCompare(b.id));
+  const [kept, ...duplicates] = live;
+  if (!kept || duplicates.length === 0) {
+    return { retired: [], stillBilled: live.map((summary) => summary.id).filter((id) => id !== subscription.id) };
+  }
+
+  const retired: string[] = [];
+  for (const duplicate of duplicates) {
+    if (await store.duplicateRetired(duplicate.id)) {
+      // Refunded and recorded earlier, yet still live: the cancel after the
+      // refund failed. Cancel again; the refund is not repeated.
+      await actions.cancelSubscription(duplicate.id);
+      retired.push(duplicate.id);
+      continue;
+    }
+    const refund = duplicate.latestInvoiceId
+      ? await actions.refundInvoice(duplicate.id, duplicate.latestInvoiceId)
+      : { amount: 0, currency: null, refundIds: [] };
+    await store.recordDuplicateRetired({
+      workspaceId: link.workspaceId,
+      keptSubscriptionId: kept.id,
+      duplicateSubscriptionId: duplicate.id,
+      stripeCustomerId: duplicate.customerId,
+      amount: refund.amount,
+      currency: refund.currency,
+      refundIds: refund.refundIds,
+    });
+    await actions.cancelSubscription(duplicate.id);
+    console.warn(
+      JSON.stringify({
+        msg: "billing: duplicate subscription refunded and canceled",
+        workspaceId: link.workspaceId,
+        kept: kept.id,
+        duplicate: duplicate.id,
+        amount: refund.amount,
+        currency: refund.currency,
+      }),
+    );
+    retired.push(duplicate.id);
+  }
+  return { retired, stillBilled: kept.id === subscription.id ? [] : [kept.id] };
+}
+
 /** Inquiries (warning_*) never move money, so they never move credits. */
 function isInquiry(status: string): boolean {
   return status.startsWith("warning_");
@@ -910,6 +1084,11 @@ export async function processStripeEvent(
       const subscription = event.data.object;
       const deleted = event.type === "customer.subscription.deleted";
       const retrieve = deps.lookup?.retrieveSubscription?.bind(deps.lookup);
+      // Before the row is written, so a duplicate is refunded and canceled
+      // in Stripe first and the refreshed state the store writes for it is
+      // already canceled.
+      const duplicates =
+        !deleted && deps.actions ? await retireDuplicateSubscriptions(subscription, store, deps.actions) : null;
       const outcome = await store.upsertSubscription({
         workspaceId: metadataValue(subscription.metadata, "workspaceId"),
         stripeCustomerId: idOf(subscription.customer),
@@ -924,7 +1103,11 @@ export async function processStripeEvent(
               return current ? subscriptionState(current, table, deleted) : null;
             }
           : undefined,
+        ...(duplicates ? { stillBilled: duplicates.stillBilled } : {}),
       });
+      if (duplicates?.retired.includes(subscription.id)) {
+        return { handled: true, action: "duplicate_subscription_refunded" };
+      }
       return {
         handled: true,
         action: outcome.status === "stale" ? "subscription_stale_ignored" : "subscription_synced",

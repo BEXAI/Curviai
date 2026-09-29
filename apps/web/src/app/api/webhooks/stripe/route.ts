@@ -15,7 +15,7 @@ import { readBodyLimited, WEBHOOK_MAX_BYTES } from "@/lib/http/read-body";
 import { NextResponse } from "next/server";
 import { isStripeConfigured, optionalEnv } from "@/lib/env";
 import { buildPriceTable } from "@/lib/billing/price-table";
-import { createStripeLookup, getStripe } from "@/lib/billing/stripe";
+import { createStripeBillingActions, createStripeLookup, getStripe } from "@/lib/billing/stripe";
 import {
   getInMemoryBillingStore,
   processStripeEvent,
@@ -38,7 +38,11 @@ function billingStore(): BillingStore {
 }
 
 function processDeps(): StripeProcessDeps {
-  return isStripeConfigured() ? { lookup: createStripeLookup(getStripe()) } : {};
+  if (!isStripeConfigured()) {
+    return {};
+  }
+  const stripe = getStripe();
+  return { lookup: createStripeLookup(stripe), actions: createStripeBillingActions(stripe) };
 }
 
 export async function POST(request: Request): Promise<NextResponse> {

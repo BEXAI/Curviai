@@ -7,8 +7,7 @@ const base: CheckoutParamsInput = {
   workspaceId: "ws_1",
   siteUrl: "https://curvi.ai",
   source: "pricing",
-  customerId: null,
-  customerEmail: "owner@example.com",
+  customerId: "cus_ws_1",
   taxEnabled: false,
 };
 
@@ -23,7 +22,7 @@ describe("buildCheckoutParams", () => {
       client_reference_id: "ws_1",
       allow_promotion_codes: true,
       consent_collection: { terms_of_service: "required" },
-      customer_email: "owner@example.com",
+      customer: "cus_ws_1",
       metadata: {
         workspaceId: "ws_1",
         priceId: "price_growth_annual",
@@ -36,15 +35,18 @@ describe("buildCheckoutParams", () => {
     });
     const acceptance = params.custom_text?.terms_of_service_acceptance;
     expect(acceptance && typeof acceptance === "object" ? acceptance.message : "").toContain("https://curvi.ai/terms");
-    expect(params.customer).toBeUndefined();
     expect(params.automatic_tax).toBeUndefined();
     expect(params.customer_creation).toBeUndefined();
+    expect(params.customer_email).toBeUndefined();
   });
 
-  it("reuses the workspace customer instead of the email", () => {
-    const params = buildCheckoutParams({ ...base, customerId: "cus_existing" });
-    expect(params.customer).toBe("cus_existing");
-    expect(params.customer_email).toBeUndefined();
+  it("always passes the workspace customer and never lets Checkout make one, for tiers and top ups", () => {
+    for (const purchase of [base.purchase, { kind: "topup" as const, credits: 100 }]) {
+      const params = buildCheckoutParams({ ...base, purchase, customerId: "cus_existing" });
+      expect(params.customer).toBe("cus_existing");
+      expect(params.customer_email).toBeUndefined();
+      expect(params.customer_creation).toBeUndefined();
+    }
   });
 
   it("turns on tax only behind the flag, saving address and name for existing customers", () => {
@@ -55,8 +57,8 @@ describe("buildCheckoutParams", () => {
       tax_id_collection: { enabled: true },
       customer_update: { address: "auto", name: "auto" },
     });
-    const newCustomer = buildCheckoutParams({ ...base, taxEnabled: true });
-    expect(newCustomer.customer_update).toBeUndefined();
+    const withoutTax = buildCheckoutParams({ ...base, customerId: "cus_existing" });
+    expect(withoutTax.customer_update).toBeUndefined();
   });
 
   it("builds a top up as a one time payment with a customer, an invoice and tagged payment", () => {
@@ -68,7 +70,7 @@ describe("buildCheckoutParams", () => {
     });
     expect(params).toMatchObject({
       mode: "payment",
-      customer_creation: "always",
+      customer: "cus_ws_1",
       invoice_creation: { enabled: true },
       payment_intent_data: { metadata: { workspaceId: "ws_1", credits: "100" } },
       metadata: { kind: "topup", plan: "topup", cadence: "one_time", credits: "100", priceId: "price_topup_100" },

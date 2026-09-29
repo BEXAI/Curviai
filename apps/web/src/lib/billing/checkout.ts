@@ -3,7 +3,9 @@
  * the exact parameters are unit tested without the network.
  *
  * Checkout always:
- * - reuses the workspace's Stripe customer, or prefills the signed in email,
+ * - uses the workspace's one Stripe customer, created before Checkout when
+ *   the workspace has none (checkout-guard.ts), so Checkout never makes a
+ *   second customer for the same workspace,
  * - accepts promotion codes,
  * - requires agreement to the terms (the terms URL must be set in the
  *   Stripe Dashboard public details, see docs/STRIPE_SETUP.md),
@@ -26,10 +28,8 @@ export interface CheckoutParamsInput {
   workspaceId: string;
   siteUrl: string;
   source: CheckoutSource;
-  /** workspaces.stripe_customer_id when the workspace already has one. */
-  customerId: string | null;
-  /** The signed in user's email, used only when there is no customer yet. */
-  customerEmail: string | null;
+  /** workspaces.stripe_customer_id, created first when it was missing. */
+  customerId: string;
   taxEnabled: boolean;
 }
 
@@ -43,7 +43,7 @@ export function checkoutReturnUrls(siteUrl: string, purchase: CheckoutPurchase):
 }
 
 export function buildCheckoutParams(input: CheckoutParamsInput): Stripe.Checkout.SessionCreateParams {
-  const { purchase, priceId, workspaceId, siteUrl, source, customerId, customerEmail, taxEnabled } = input;
+  const { purchase, priceId, workspaceId, siteUrl, source, customerId, taxEnabled } = input;
   const isSubscription = purchase.kind === "tier";
   const urls = checkoutReturnUrls(siteUrl, purchase);
 
@@ -65,6 +65,9 @@ export function buildCheckoutParams(input: CheckoutParamsInput): Stripe.Checkout
     success_url: urls.success,
     cancel_url: urls.cancel,
     client_reference_id: workspaceId,
+    // Always the workspace's own customer: never customer_email or
+    // customer_creation, which would let Checkout make another customer.
+    customer: customerId,
     metadata,
     allow_promotion_codes: true,
     consent_collection: { terms_of_service: "required" },
@@ -74,12 +77,6 @@ export function buildCheckoutParams(input: CheckoutParamsInput): Stripe.Checkout
       },
     },
   };
-
-  if (customerId) {
-    params.customer = customerId;
-  } else if (customerEmail) {
-    params.customer_email = customerEmail;
-  }
 
   if (isSubscription) {
     params.subscription_data = {
@@ -91,11 +88,7 @@ export function buildCheckoutParams(input: CheckoutParamsInput): Stripe.Checkout
       },
     };
   } else {
-    // A top up gets a customer so the portal and the next checkout reuse it,
-    // and an invoice so business buyers have a document for their books.
-    if (!customerId) {
-      params.customer_creation = "always";
-    }
+    // An invoice so business buyers have a document for their books.
     params.invoice_creation = {
       enabled: true,
       invoice_data: { metadata: { workspaceId, credits: metadata.credits ?? "" } },
@@ -107,11 +100,9 @@ export function buildCheckoutParams(input: CheckoutParamsInput): Stripe.Checkout
     params.automatic_tax = { enabled: true };
     params.billing_address_collection = "required";
     params.tax_id_collection = { enabled: true };
-    if (customerId) {
-      // Existing customers must let Checkout save the address and business
-      // name it collects, or Stripe rejects tax and tax id collection.
-      params.customer_update = { address: "auto", name: "auto" };
-    }
+    // An existing customer must let Checkout save the address and business
+    // name it collects, or Stripe rejects tax and tax id collection.
+    params.customer_update = { address: "auto", name: "auto" };
   }
 
   return params;
