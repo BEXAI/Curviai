@@ -9,6 +9,7 @@ import { hexToRgb } from "../color";
 import { boundingBoxOfMask, nonZeroMask, type BBox } from "../mask";
 import { minLongSideFor } from "../qc/pixelChecks";
 import { decodeMask, decodeToRgba, type RawImage, type RawMask } from "../raw";
+import { canvasDefaults, stillStyle } from "../seed/templates";
 
 /** Resize kernel every deterministic helper scales the product with. */
 export const PRODUCT_RESIZE_KERNEL = "lanczos3" as const;
@@ -74,11 +75,26 @@ export interface WhitenResult {
 
 const DEFAULT_FILL_TARGET = 0.875;
 
+/** An RGB color as three bytes. */
+export type Rgb = readonly [number, number, number];
+
+/** Seed white as bytes, for callers that pass no color. */
+function seedWhite(): Rgb {
+  const { r, g, b } = hexToRgb(stillStyle.whiteHex);
+  return [r, g, b];
+}
+
+function rgbHex(rgb: Rgb): string {
+  return `#${rgb.map((c) => c.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+}
+
 /**
  * Build a channel compliant white background main image:
  * force every pixel outside the mask to pure 255 white, trim to the product
  * bounding box, pad so the product longest side hits the spec fill target,
  * resize with lanczos3 and export an sRGB JPEG at quality 90 under maxBytes.
+ * The white comes from spec.background.rgb, or seed white when the spec
+ * names none. A wrapper over makeOnBackground.
  *
  * When the JPEG is still over spec.maxBytes at the lowest quality, the
  * canvas steps down in size (same aspect, same fill) toward the smallest
@@ -92,6 +108,27 @@ export async function makeAmazonMain(
   maskBuffer: Buffer,
   spec: ChannelSpec,
 ): Promise<WhitenResult> {
+  const rgb = spec.background?.rgb ?? seedWhite();
+  return makeOnBackground(sourceBuffer, maskBuffer, spec, { rgb: [rgb[0], rgb[1], rgb[2]] });
+}
+
+export interface OnBackgroundOptions {
+  /** The background color every pixel outside the mask gets. */
+  rgb: Rgb;
+}
+
+/**
+ * The cut out product placed on one flat color, sized for spec: the same
+ * geometry, fill target, safe zone and byte limit ladder as the white main
+ * image. Semi transparent edge pixels blend toward rgb, never toward white,
+ * and pixels inside the mask are never changed.
+ */
+export async function makeOnBackground(
+  sourceBuffer: Buffer,
+  maskBuffer: Buffer,
+  spec: ChannelSpec,
+  opts: OnBackgroundOptions,
+): Promise<WhitenResult> {
   const source = await decodeToRgba(sourceBuffer);
   const mask = await decodeMask(maskBuffer);
   assertSameSize(source, mask);
@@ -101,7 +138,7 @@ export async function makeAmazonMain(
     throw new Error("Mask is empty, cannot build a main image");
   }
 
-  const canvasW = spec.width ?? 2000;
+  const canvasW = spec.width ?? canvasDefaults.width;
   const canvasH = spec.height ?? canvasW;
   const fillTarget = spec.fill
     ? clamp(DEFAULT_FILL_TARGET, spec.fill.min, spec.fill.max)
@@ -109,8 +146,13 @@ export async function makeAmazonMain(
 
   let smallest = { bytes: 0, width: canvasW, height: canvasH };
   for (const size of stepDownSizes(canvasW, canvasH, spec)) {
-    const placed = await placeOnWhite(source, mask, bbox, size.width, size.height, fillTarget);
-    const encoded = await encodeUnderLimit(placed.raw, spec.maxBytes);
+    const safeZone = spec.safeZone ? scaleSafeZone(spec.safeZone, size.height / canvasH) : undefined;
+    const placed = await placeOnBackground(source, mask, bbox, size.width, size.height, {
+      rgb: opts.rgb,
+      fill: fillTarget,
+      ...(safeZone ? { safeZone } : {}),
+    });
+    const encoded = await encodeUnderLimit(placed.raw, spec.maxBytes, rgbHex(opts.rgb));
     if (!encoded.overLimit) {
       return { ...placed, jpeg: encoded.jpeg, jpegQuality: encoded.quality };
     }
@@ -122,6 +164,11 @@ export async function makeAmazonMain(
     smallest.bytes,
     maxBytes,
   );
+}
+
+/** A spec safe zone scaled to a smaller canvas of the same aspect. */
+function scaleSafeZone(zone: { top: number; bottom: number }, scale: number): { top: number; bottom: number } {
+  return { top: Math.ceil(zone.top * scale), bottom: Math.ceil(zone.bottom * scale) };
 }
 
 /**
@@ -160,31 +207,53 @@ export function stepDownSizes(
   return sizes;
 }
 
-/** The white main image at one canvas size, before encoding. */
-async function placeOnWhite(
+export interface BackgroundPlacementOptions {
+  /** Background color; semi transparent edges blend toward it. */
+  rgb: Rgb;
+  /** Product longest side over the canvas longest side. */
+  fill: number;
+  /** Rows at the top and bottom the product must stay clear of (meta.story_9x16). */
+  safeZone?: { top: number; bottom: number };
+}
+
+/** A product placed on a flat background at one canvas size, before encoding. */
+export type PlacedOnBackground = Omit<WhitenResult, "jpeg" | "jpegQuality">;
+
+/**
+ * The product on a flat color at one canvas size, before encoding. Every
+ * pixel outside the mask is exactly rgb; a pixel where the mask is 255 is the
+ * scaled product, unchanged; an edge pixel blends the product toward rgb by
+ * the mask value, so the blend itself never adds a light fringe on a dark
+ * background. The product is centered horizontally and, inside the safe
+ * zone when one is given, vertically.
+ */
+export async function placeOnBackground(
   source: RawImage,
   mask: RawMask,
   bbox: BBox,
   canvasW: number,
   canvasH: number,
-  fillTarget: number,
-): Promise<Omit<WhitenResult, "jpeg" | "jpegQuality">> {
+  opts: BackgroundPlacementOptions,
+): Promise<PlacedOnBackground> {
   const canvasLong = Math.max(canvasW, canvasH);
+  const zoneTop = opts.safeZone?.top ?? 0;
+  const zoneH = Math.max(1, canvasH - zoneTop - (opts.safeZone?.bottom ?? 0));
+  const [bgR, bgG, bgB] = opts.rgb;
 
   // Scale so the product longest side hits the fill target, but never overflow
-  // either canvas axis.
+  // either canvas axis (or the safe zone).
   const bboxLong = Math.max(bbox.width, bbox.height);
   const scale = Math.min(
-    (fillTarget * canvasLong) / bboxLong,
-    (canvasW * 0.98) / bbox.width,
-    (canvasH * 0.98) / bbox.height,
+    (opts.fill * canvasLong) / bboxLong,
+    (canvasW * canvasDefaults.maxAxisShare) / bbox.width,
+    (zoneH * canvasDefaults.maxAxisShare) / bbox.height,
   );
   const targetW = Math.max(1, Math.round(bbox.width * scale));
   const targetH = Math.max(1, Math.round(bbox.height * scale));
 
   // Crop image and mask to the product bounding box, then resize both with
   // lanczos3. The mask picks up anti aliased edges that blend the product into
-  // the white background smoothly.
+  // the background smoothly.
   const region = { left: bbox.left, top: bbox.top, width: bbox.width, height: bbox.height };
   const productCrop = await sharp(source.data, {
     raw: { width: source.width, height: source.height, channels: 4 },
@@ -202,12 +271,19 @@ async function placeOnWhite(
     .raw()
     .toBuffer();
 
-  // Manual composite over pure white so the background is white by
+  // Manual composite over the flat color so the background is exact by
   // construction, not by trusting a codec or a blend mode.
-  const outData = Buffer.alloc(canvasW * canvasH * 4, 255);
+  const outData = Buffer.alloc(canvasW * canvasH * 4);
+  for (let i = 0; i < canvasW * canvasH; i++) {
+    const o = i * 4;
+    outData[o] = bgR;
+    outData[o + 1] = bgG;
+    outData[o + 2] = bgB;
+    outData[o + 3] = 255;
+  }
   const outMaskData = Buffer.alloc(canvasW * canvasH, 0);
   const offsetX = Math.floor((canvasW - targetW) / 2);
-  const offsetY = Math.floor((canvasH - targetH) / 2);
+  const offsetY = zoneTop + Math.max(0, Math.floor((zoneH - targetH) / 2));
   for (let y = 0; y < targetH; y++) {
     for (let x = 0; x < targetW; x++) {
       const m = maskCrop[y * targetW + x];
@@ -221,9 +297,9 @@ async function placeOnWhite(
         outData[dst + 1] = productCrop[src + 1];
         outData[dst + 2] = productCrop[src + 2];
       } else {
-        outData[dst] = Math.round((m * productCrop[src] + (255 - m) * 255) / 255);
-        outData[dst + 1] = Math.round((m * productCrop[src + 1] + (255 - m) * 255) / 255);
-        outData[dst + 2] = Math.round((m * productCrop[src + 2] + (255 - m) * 255) / 255);
+        outData[dst] = Math.round((m * productCrop[src] + (255 - m) * bgR) / 255);
+        outData[dst + 1] = Math.round((m * productCrop[src + 1] + (255 - m) * bgG) / 255);
+        outData[dst + 2] = Math.round((m * productCrop[src + 2] + (255 - m) * bgB) / 255);
       }
       outMaskData[(y + offsetY) * canvasW + (x + offsetX)] = 255;
     }
@@ -314,7 +390,7 @@ export async function makeSweep(
     throw new Error("Mask is empty, cannot build a sweep");
   }
 
-  const canvasW = opts.width ?? 2000;
+  const canvasW = opts.width ?? canvasDefaults.width;
   const canvasH = opts.height ?? canvasW;
   const fill = opts.fill ?? 0.8;
   const { r, g, b } = hexToRgb(bgColor);
@@ -394,7 +470,7 @@ export async function makeSweep(
 
   const raw: RawImage = { data: outData, width: canvasW, height: canvasH, channels: 4 };
   const jpeg = await sharp(raw.data, { raw: { width: canvasW, height: canvasH, channels: 4 } })
-    .flatten({ background: "#ffffff" })
+    .flatten({ background: stillStyle.whiteHex })
     .jpeg({ quality: opts.jpegQuality ?? 90, chromaSubsampling: "4:4:4" })
     .toBuffer();
   return {
@@ -484,6 +560,85 @@ export async function buildProductReference(
   return { data: out, width: canvasWidth, height: canvasHeight, channels: 4 };
 }
 
+/**
+ * The rule 3 reference for a kept photo (PHASE_15 fidelity section), built
+ * straight from the stored upload's encoded bytes with its own sharp
+ * pipeline: upright per EXIF, the same ICC to sRGB transform the renderer
+ * applies (only when the file embeds a profile), placement.crop extracted
+ * when it is not the whole frame, resized to placement.width x
+ * placement.height with placement.kernel and fastShrinkOnLoad off when the
+ * size changes, then 8 bit sRGB. It shares no code with
+ * deterministic/original.ts, so a drift in the renderer shows up in
+ * fidelityReport, and libvips streams the source, so the full frame is never
+ * decoded into JS memory; only the placed rectangle is.
+ *
+ * Alpha is 255 inside the placed rectangle and 0 elsewhere; for a photo with
+ * an alpha channel it is the photo's own (resized) alpha instead.
+ */
+export async function buildProductReferenceFromEncoded(
+  sourceBytes: Buffer,
+  placement: ProductPlacement,
+  canvas: { width: number; height: number },
+): Promise<RawImage> {
+  const meta = await sharp(sourceBytes).metadata();
+  const swapped = (meta.orientation ?? 1) >= 5;
+  const fullW = (swapped ? meta.height : meta.width) ?? 0;
+  const fullH = (swapped ? meta.width : meta.height) ?? 0;
+  const { crop, width, height } = placement;
+  let pipeline = sharp(sourceBytes).rotate();
+  if (meta.icc) {
+    pipeline = pipeline.withIccProfile("srgb");
+  }
+  const whole = crop.left === 0 && crop.top === 0 && crop.width === fullW && crop.height === fullH;
+  if (!whole) {
+    pipeline = pipeline.extract({ left: crop.left, top: crop.top, width: crop.width, height: crop.height });
+  }
+  if (width !== crop.width || height !== crop.height) {
+    pipeline = pipeline.resize(width, height, { fit: "fill", kernel: placement.kernel, fastShrinkOnLoad: false });
+  }
+  const { data: scaled, info } = await pipeline
+    .toColourspace("srgb")
+    .ensureAlpha()
+    .raw({ depth: "uchar" })
+    .toBuffer({ resolveWithObject: true });
+  if (info.channels !== 4 || info.width !== width || info.height !== height) {
+    throw new Error(`Reference decode gave ${info.width}x${info.height}x${info.channels}, expected ${width}x${height}x4`);
+  }
+  const keepAlpha = meta.hasAlpha === true;
+
+  // The photo fills the canvas (a kept photo in its own shape): the scaled
+  // pixels are the reference, with no second canvas sized copy.
+  if (placement.left === 0 && placement.top === 0 && width === canvas.width && height === canvas.height) {
+    if (!keepAlpha) {
+      for (let o = 3; o < scaled.length; o += 4) {
+        scaled[o] = 255;
+      }
+    }
+    return { data: scaled, width, height, channels: 4 };
+  }
+
+  const out = Buffer.alloc(canvas.width * canvas.height * 4, 0);
+  for (let y = 0; y < height; y++) {
+    const cy = placement.top + y;
+    if (cy < 0 || cy >= canvas.height) {
+      continue;
+    }
+    for (let x = 0; x < width; x++) {
+      const cx = placement.left + x;
+      if (cx < 0 || cx >= canvas.width) {
+        continue;
+      }
+      const src = (y * width + x) * 4;
+      const dst = (cy * canvas.width + cx) * 4;
+      out[dst] = scaled[src];
+      out[dst + 1] = scaled[src + 1];
+      out[dst + 2] = scaled[src + 2];
+      out[dst + 3] = keepAlpha ? scaled[src + 3] : 255;
+    }
+  }
+  return { data: out, width: canvas.width, height: canvas.height, channels: 4 };
+}
+
 function drawContactShadow(
   data: Buffer,
   width: number,
@@ -523,17 +678,20 @@ export interface EncodeUnderLimitResult {
  * JPEG at quality 90, stepping down by 10 to MIN_JPEG_QUALITY until the file
  * fits maxBytes. With no limit the first encode is final. The result says
  * whether it fits, so a caller can never ship an oversized file by accident.
+ * Any transparency is flattened onto flattenHex (seed white by default): the
+ * color the canvas was placed on.
  */
 export async function encodeUnderLimit(
   raw: RawImage,
   maxBytes: number | undefined,
+  flattenHex: string = stillStyle.whiteHex,
 ): Promise<EncodeUnderLimitResult> {
   let quality = 90;
   for (;;) {
     const jpeg = await sharp(raw.data, {
       raw: { width: raw.width, height: raw.height, channels: 4 },
     })
-      .flatten({ background: "#ffffff" })
+      .flatten({ background: flattenHex })
       .jpeg({ quality, chromaSubsampling: "4:4:4" })
       .toBuffer();
     if (maxBytes === undefined || jpeg.length <= maxBytes) {
