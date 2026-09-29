@@ -105,6 +105,17 @@ export function preflightProductBoxOf(
   return inside ? { x: bx, y: by, width: bw, height: bh } : undefined;
 }
 
+/**
+ * True when the preflight's intake saw text, borders or watermarks added on
+ * top of an upload (upload_preflights.result addedOverlays, intake version
+ * 5), so a kept copy is left out of the channels that refuse them (PHASE_15
+ * P1). Any age, like the box: it describes the stored photo. A row without
+ * the flag reads as a clean photo, as on a first run.
+ */
+export function preflightAddedOverlaysOf(row: UploadPreflight | undefined): boolean {
+  return (row?.result as { addedOverlays?: unknown } | null | undefined)?.addedOverlays === true;
+}
+
 export async function preflightUpload(
   deps: PreflightServiceDeps,
   workspaceId: string,

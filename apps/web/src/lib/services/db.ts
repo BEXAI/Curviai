@@ -26,7 +26,13 @@ import {
   and,
   type SourceMediaTargetBox,
 } from "@curvi/db";
-import { outputOptionsKey, packNeedsCutout, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
+import {
+  keepMediaIdsFor,
+  normalizeOutputOptions,
+  outputOptionsKey,
+  packNeedsCutout,
+  type ResolvedOutputOptions,
+} from "@curvi/pipeline/output-options";
 import type { IngestImageFormat, SourceMediaIngest } from "@curvi/pipeline/ingest";
 import type { Shot } from "@curvi/pipeline/schemas";
 import type { PackFollowUpInput, PackFollowUpReason } from "@curvi/trigger/follow-up";
@@ -55,7 +61,7 @@ import {
   outputOptionsSwitchOn,
 } from "@/lib/features";
 import { inventoryView } from "@/lib/inventory-copy";
-import { outputOptionsSummary, publicJobError } from "@/lib/job-copy";
+import { outputOptionsSummary, publicJobError, shotCopyContextOf } from "@/lib/job-copy";
 import { OPTIONS_UNREADABLE_COPY } from "@/lib/output-options-copy";
 import { PACKS_PAUSED_COPY, providerPreflight, type PreflightVerdict } from "@/lib/provider-preflight";
 import { enqueueGeneratePack, enqueuePackFollowUp, settleJob } from "@/lib/jobs/enqueue";
@@ -72,6 +78,7 @@ import {
   putGeneratedObject,
 } from "@/lib/r2";
 import {
+  preflightAddedOverlaysOf,
   preflightProductBoxOf,
   preflightRowsFor,
   preflightUpload as runPreflightUpload,
@@ -242,12 +249,31 @@ type ProductRow = typeof products.$inferSelect;
  * choices (PHASE_15 item 25): no options and explicit defaults match, a
  * concept request always reads as the defaults, and anything unreadable on
  * either side does not match, so the key gets the conflict answer.
+ *
+ * The per photo backgrounds (P1) are not in outputOptionsKey, so the
+ * uploads are compared through the stored keep list: each upload the
+ * request keeps (its own choice, else the pack's switch) must be kept in
+ * the stored job, and no other upload may be.
  */
-function sameOutputOptions(stored: unknown, input: Pick<CreateJobInput, "mode" | "outputOptions">): boolean {
+function sameOutputOptions(
+  stored: unknown,
+  input: Pick<CreateJobInput, "mode" | "outputOptions" | "uploads">,
+): boolean {
   try {
-    const storedKey = outputOptionsKey(parseStoredOutputOptions(stored));
-    const inputKey = outputOptionsKey(input.mode === "concept" ? null : (input.outputOptions ?? null));
-    return storedKey === inputKey;
+    const parsed = parseStoredOutputOptions(stored);
+    const storedKey = outputOptionsKey(parsed);
+    const request = input.mode === "concept" ? null : (input.outputOptions ?? null);
+    if (storedKey !== outputOptionsKey(request)) {
+      return false;
+    }
+    const uploadKeys = (input.uploads ?? []).map((upload) => upload.key);
+    const storedKept = new Set(parsed?.keepMediaIds ?? []);
+    const wanted =
+      input.mode === "concept"
+        ? []
+        : keepMediaIdsFor(normalizeOutputOptions(request), uploadKeys, photoBackgroundsOf(input.uploads));
+    const wantedSet = new Set(wanted);
+    return uploadKeys.every((key) => wantedSet.has(key) === storedKept.has(key));
   } catch {
     return false;
   }
@@ -787,7 +813,12 @@ export class DbService implements Services {
     ]);
     const mode = current.mode ?? product?.mode ?? "listing";
 
-    const shots = buildShotViews(steps, assetRows, { status: current.status as JobStatus, mode });
+    const storedOutput = readStoredOutputOptions(current.outputOptions);
+    const shots = buildShotViews(steps, assetRows, {
+      status: current.status as JobStatus,
+      mode,
+      copy: shotCopyContextOf(storedOutput),
+    });
 
     // Delivered variants give each finished shot its real channels, a
     // preview and a download link. DbJobStore records each asset's shot id
@@ -888,22 +919,32 @@ export class DbService implements Services {
       canManage: role !== null && role !== "client",
       followUpRunning: Boolean(report) && !["done", "failed", "canceled"].includes(current.status),
       inventory: inventoryView(current.inventory),
-      ...this.outputOptionsView(current),
+      ...this.outputOptionsView(current, storedOutput, assetRows),
     };
   }
 
   /** The "Your choices" card for a job row. A row with no options reads as
-   * today's pack; one the schema refuses shows no card and is logged. */
-  private outputOptionsView(job: typeof generationJobs.$inferSelect): Pick<JobView, "outputOptions"> {
-    const stored = readStoredOutputOptions(job.outputOptions);
+   * today's pack; one the schema refuses shows no card and is logged. The
+   * pack's photos are the source photos its shots used plus the kept ones;
+   * before any shot is saved the count is unknown and the pack's switch
+   * decides whether "Background removed" shows. */
+  private outputOptionsView(
+    job: typeof generationJobs.$inferSelect,
+    stored: ResolvedOutputOptions | null | undefined,
+    assetRows: readonly { qc: Record<string, unknown> | null }[],
+  ): Pick<JobView, "outputOptions"> {
     if (stored === undefined) {
       console.warn(`[jobs] job ${job.id} has output options that could not be read`);
       return {};
     }
+    const sources = assetRows
+      .map((a) => storedShot(a.qc)?.sourceMediaId)
+      .filter((key): key is string => typeof key === "string" && key.length > 0);
+    const photos = new Set([...sources, ...(stored?.keepMediaIds ?? [])]);
     return {
       outputOptions: outputOptionsSummary(stored, {
         specIds: job.channels ?? [],
-        photoCount: stored?.keepMediaIds.length ?? 0,
+        ...(sources.length > 0 ? { photoCount: photos.size } : {}),
       }),
     };
   }
@@ -1126,6 +1167,9 @@ export class DbService implements Services {
     // follow up keeps the added photo too, since keepMediaIds is what the
     // runner reads.
     const output = stored.output ? withAddedPhoto(stored.output, input.key) : null;
+    const addedOverlays = output?.keepMediaIds.includes(input.key)
+      ? await this.addedOverlaysOf(workspaceId, input.key)
+      : false;
     const shots = planAngleShots({
       angle,
       mediaKey: input.key,
@@ -1135,6 +1179,7 @@ export class DbService implements Services {
       existingFilesBySpec: await this.filesBySpec(workspaceId, job.id),
       output,
       photoSize: width && height ? { width, height } : null,
+      addedOverlays,
     });
     if (shots.length === 0) {
       return {
@@ -1431,6 +1476,17 @@ export class DbService implements Services {
       console.warn(`[jobs] could not read the product boxes of workspace ${workspaceId}`, err);
       return {};
     }
+  }
+
+  /** True when the upload preflight's intake saw added text, borders or
+   * watermarks on a photo added to a Keep pack, so its kept copy skips the
+   * channels that refuse them (PHASE_15 P1), as on a first run. A photo
+   * with no preflight row reads as clean, as a first run without intake
+   * version 5 does. A failed read stops the follow up rather than risk a
+   * refused file. */
+  private async addedOverlaysOf(workspaceId: string, key: string): Promise<boolean> {
+    const rows = await preflightRowsFor(this.db, workspaceId, [key]);
+    return preflightAddedOverlaysOf(rows.get(key));
   }
 
   /** The follow up shots' source photos whose stored copy was written again

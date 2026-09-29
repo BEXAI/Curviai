@@ -205,6 +205,25 @@ describe("DbService.createJob with output options", () => {
     expect(none.outcome).toBe("conflict");
   });
 
+  it("answers a conflict for the same key when only an upload's own background differs (P1)", async () => {
+    const { ws, productId } = await workspaceWith("starter");
+    const upload = { key: `ws/${ws}/src/new.jpg`, sha256: "c".repeat(64), kind: "image" as const, angle: "back" as const };
+    const input = jobInput(productId, { uploads: [upload] });
+    expect((await service().createJob(ws, input)).outcome).toBe("created");
+    expect((await service().createJob(ws, { ...input, uploads: [{ ...upload, background: "pack" }] })).outcome).toBe(
+      "replayed",
+    );
+    const kept = await service().createJob(ws, { ...input, uploads: [{ ...upload, background: "keep" }] });
+    expect(kept.outcome).toBe("conflict");
+
+    // And the other way: a photo kept on its own replays only as itself.
+    const keptInput = jobInput(productId, { uploads: [{ ...upload, key: `ws/${ws}/src/kept.jpg`, background: "keep" }] });
+    expect((await service().createJob(ws, keptInput)).outcome).toBe("created");
+    expect((await service().createJob(ws, keptInput)).outcome).toBe("replayed");
+    const removed = await service().createJob(ws, { ...keptInput, uploads: [{ ...keptInput.uploads![0], background: "pack" }] });
+    expect(removed.outcome).toBe("conflict");
+  });
+
   it("answers invalid_options for a brand color the kit does not have", async () => {
     const { ws, productId } = await workspaceWith("starter", { kit: ["#112233"] });
     const result = await service().createJob(ws, jobInput(productId, { outputOptions: { color: { kind: "brand", index: 3 } } }));
@@ -392,12 +411,19 @@ describe("DbService.listProducts and getJob", () => {
   });
 
   it("shows the Your choices card, and none for options it cannot read", async () => {
-    const { ws, productId } = await workspaceWith("starter");
+    const { ws, productId, keys } = await workspaceWith("starter");
     const created = await service().createJob(ws, jobInput(productId, { outputOptions: KEEP }));
     const jobId = created.outcome === "created" ? created.job.id : "";
     const view = await service().getJob(ws, jobId);
     expect(view?.outputOptions?.look).toBe("keep_photo");
     expect(view?.outputOptions?.lines[0]).toBe("Background kept as you took it, on 1 photo.");
+
+    // A Remove pack whose only photo was kept on its own (P1): the card
+    // follows the keep list, and the shots' photos show nothing was removed.
+    const ownKept = await deliveredPack(ws, productId, { ...storedOptions("remove", keys), keepMediaIds: [keys[0]] });
+    const ownView = await service().getJob(ws, ownKept);
+    expect(ownView?.outputOptions?.lines[0]).toBe("Background kept as you took it, on 1 photo.");
+    expect(ownView?.outputOptions?.lines.join(" ")).not.toContain("Background removed on your other photos");
 
     vi.spyOn(console, "warn").mockImplementation(() => {});
     await db.update(generationJobs).set({ outputOptions: { v: 9 } }).where(eq(generationJobs.id, jobId));
@@ -407,10 +433,15 @@ describe("DbService.listProducts and getJob", () => {
 
 /** A delivered pack with stored options: one white angle needs review with
  * its planned shot stored, and a back angle waits for a photo. */
-async function deliveredPack(ws: string, productId: string, outputOptions: Record<string, unknown>): Promise<string> {
+async function deliveredPack(
+  ws: string,
+  productId: string,
+  outputOptions: Record<string, unknown>,
+  channels: string[] = CHANNELS,
+): Promise<string> {
   const [job] = await db
     .insert(generationJobs)
-    .values({ workspaceId: ws, productId, status: "done", mode: "listing", channels: CHANNELS, outputOptions })
+    .values({ workspaceId: ws, productId, status: "done", mode: "listing", channels, outputOptions })
     .returning();
   const shot: Shot = {
     id: "s04_sweep_brand",
@@ -508,6 +539,24 @@ describe("follow ups read the stored options", () => {
       sourceMediaId: key,
     });
     expect(payload.output?.keepMediaIds).toEqual([...keys, key]);
+  });
+
+  it("leaves an added kept photo with added text out of the channels that refuse it (P1)", async () => {
+    const { ws, productId, keys } = await workspaceWith("starter");
+    const jobId = await deliveredPack(ws, productId, storedOptions("keep", keys), ["ebay.listing", "shopify.product"]);
+    const key = `ws/${ws}/src/back.jpg`;
+    await db.insert(uploadPreflights).values({
+      workspaceId: ws,
+      r2Key: key,
+      noteKey: "",
+      status: "ready",
+      result: { status: "ready", addedOverlays: true },
+    });
+    const result = await service().addShotPhoto(ws, jobId, "skipped_01_alt_angle_white:back", { key, sha256: "b".repeat(64) });
+    expect(result.outcome).toBe("started");
+    const payload = queue.followUp.mock.calls[0][0] as PackFollowUpInput;
+    const original = payload.shots.find((s) => s.type === "original_photo");
+    expect(original?.channels).toEqual(["shopify.product"]);
   });
 
   it("refuses a follow up when the stored options cannot be read, holding nothing", async () => {
