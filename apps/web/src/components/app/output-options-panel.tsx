@@ -10,7 +10,6 @@ import {
   EXTRAS_WITH_KEEP_NOTE,
   LISTING_MODE_LINE,
   LOOK_CARD_COPY,
-  PHOTO_SHAPE_OPTIONS,
   SWITCH_LABEL,
   brandLookAvailability,
   customChipText,
@@ -24,6 +23,7 @@ import {
   type PreviewFrame,
 } from "@/lib/output-options-form";
 import { BackgroundColorSelect } from "./background-color-select";
+import { MoreOptionsControls } from "./more-options-controls";
 import { OutputPreviewStrip } from "./output-preview-strip";
 
 export interface OutputOptionsPanelProps {
@@ -41,7 +41,11 @@ export interface OutputOptionsPanelProps {
   addedSpace: boolean;
   frames: readonly PreviewFrame[];
   photoUrl?: string | null;
+  /** Signed url of the preflight's cutout preview, shown on removed frames (P1). */
+  cutoutUrl?: string | null;
   hasPhoto: boolean;
+  /** The brand kit has a logo, so Logo on graphics shows. */
+  hasLogo?: boolean;
   /** Set while scenes are paused: the scenes row is off, disabled and says
    * this instead of its cost (the page passes SCENES_PAUSED_COPY, which
    * lives in a server module). */
@@ -70,7 +74,9 @@ export function OutputOptionsPanel({
   addedSpace,
   frames,
   photoUrl,
+  cutoutUrl = null,
   hasPhoto,
+  hasLogo = false,
   scenesPausedNote = null,
   conceptMode = false,
   onColorProblem,
@@ -191,6 +197,7 @@ export function OutputOptionsPanel({
                 background={choices.background}
                 brandColors={brandColors}
                 brandKitsAllowed={brandKitsAllowed}
+                edgeMatch={keep && state.more.edgeMatch}
                 onChange={(color) => onAction({ type: "color", color })}
                 onProblem={onColorProblem}
               />
@@ -204,7 +211,9 @@ export function OutputOptionsPanel({
         background={conceptMode ? "remove" : choices.background}
         colorHex={colorHex}
         photoUrl={photoUrl}
+        cutoutUrl={cutoutUrl}
         hasPhoto={hasPhoto}
+        edgeMatch={!conceptMode && keep && state.more.edgeMatch}
       />
 
       {headsUp.length > 0 ? (
@@ -268,31 +277,14 @@ export function OutputOptionsPanel({
         </fieldset>
       )}
 
-      {keep && !conceptMode ? (
+      {conceptMode ? null : (
         <details className="rounded-xl border border-ink-200 bg-white" data-testid="more-options">
           <summary className="flex min-h-11 cursor-pointer items-center px-4 text-sm font-medium text-ink-900">
             {moreOptionsSummary(changed)}
           </summary>
-          <fieldset className="px-4 pb-4">
-            <legend className="text-sm font-medium text-ink-800">Photo shape</legend>
-            <div className="mt-1 space-y-1">
-              {PHOTO_SHAPE_OPTIONS.map((option) => (
-                <label key={option.value} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2">
-                  <input
-                    type="radio"
-                    name="photo-shape"
-                    value={option.value}
-                    checked={choices.fit === option.value}
-                    onChange={() => onAction({ type: "fit", fit: option.value })}
-                    className="h-5 w-5 shrink-0 accent-accent-600"
-                  />
-                  <span className="text-sm text-ink-800">{option.label}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
+          <MoreOptionsControls state={state} onAction={onAction} hasLogo={hasLogo} scenesPaused={scenesPausedNote !== null} />
         </details>
-      ) : null}
+      )}
 
       <p className="text-xs text-ink-500" data-testid="listing-mode-line">
         {LISTING_MODE_LINE}

@@ -5,6 +5,7 @@ import {
   TOP_PRODUCTS_PER_DROP,
   dropEligible,
   planWeeklyDrops,
+  remembersScenesOff,
   weekNumber,
   type DropWorkspace,
 } from "./drops";
@@ -97,5 +98,39 @@ describe("planWeeklyDrops", () => {
     });
     const result = planWeeklyDrops([ws], { now: MONDAY });
     expect(result.plans[0].items.every((i) => i.scene === "everyday use scene")).toBe(true);
+  });
+});
+
+describe("remembered choices in the drop (PHASE_15 P1)", () => {
+  it("reads scenes off from the remembered choices, leniently", () => {
+    expect(remembersScenesOff(undefined)).toBe(false);
+    expect(remembersScenesOff(null)).toBe(false);
+    expect(remembersScenesOff("keep")).toBe(false);
+    expect(remembersScenesOff({ v: 1 })).toBe(false);
+    expect(remembersScenesOff({ background: "remove", extras: { scenes: false } })).toBe(true);
+    // Keep defaults every extra to off unless the record turned scenes on.
+    expect(remembersScenesOff({ background: "keep", extras: {} })).toBe(true);
+    expect(remembersScenesOff({ background: "keep", extras: { scenes: true } })).toBe(false);
+    // Fields newer than this worker never stop it reading the record.
+    expect(remembersScenesOff({ background: "remove", sceneCount: 2, extras: { scenes: true } })).toBe(false);
+  });
+
+  it("skips scene variants for a product whose remembered choices turn scenes off", () => {
+    const base = workspace();
+    const ws = workspace({
+      products: base.products.map((p) => (p.id === "p1" ? { ...p, outputDefaults: { background: "keep", extras: {} } } : p)),
+    });
+    const result = planWeeklyDrops([ws], { now: MONDAY });
+    const ids = new Set(result.plans[0].items.map((i) => i.productId));
+    expect(ids.has("p1")).toBe(false);
+    expect(ids).toEqual(new Set(["p3", "p2"]));
+  });
+
+  it("skips the workspace when every top product turned scenes off", () => {
+    const off = { background: "remove", extras: { scenes: false } };
+    const ws = workspace({ products: [{ id: "p1", name: "Mug", performanceScore: 90, outputDefaults: off }] });
+    const result = planWeeklyDrops([ws], { now: MONDAY });
+    expect(result.plans).toEqual([]);
+    expect(result.skipped).toEqual([{ workspaceId: "ws1", reason: "scenes turned off" }]);
   });
 });

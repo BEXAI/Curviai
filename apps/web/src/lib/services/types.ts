@@ -68,6 +68,9 @@ export interface ProductSummary {
    * MAX_PACK_PHOTOS. Set by listProducts, so the form can estimate a Keep
    * pack that sends no new uploads. */
   storedPhotoCount?: number;
+  /** The seller's last choices for this product (products.output_defaults,
+   * PHASE_15 P1), for the form's prefill only. Set by listProducts. */
+  outputDefaults?: Record<string, unknown> | null;
 }
 
 /** One pack in a product's history. */

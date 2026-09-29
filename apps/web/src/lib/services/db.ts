@@ -87,6 +87,7 @@ import { ingestUpload, type IngestOutcome } from "@/lib/trust/ingest";
 import { r2TrustStorage } from "@/lib/trust/storage";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
+import { readOutputDefaults, saveOutputDefaults } from "./output-defaults";
 import {
   hasPhotoBackgroundOverride,
   isNonDefaultOutput,
@@ -648,6 +649,7 @@ export class DbService implements Services {
     return rows.map((row) => ({
       ...productSummaryOf(row),
       storedPhotoCount: Math.min(photoCounts.get(row.id) ?? 0, MAX_PACK_MEDIA),
+      outputDefaults: readOutputDefaults(row.outputDefaults),
     }));
   }
 
@@ -1821,6 +1823,9 @@ export class DbService implements Services {
                 })
                 .returning()
             )[0];
+        // The seller's choice, remembered on the product for the form's
+        // next prefill (PHASE_15 P1). Never read back by createJob.
+        await saveOutputDefaults(tx, workspaceId, product.id, input);
         // The rows this request really inserted (a photo already saved is
         // skipped by ON CONFLICT), so an abandoned new product pack can hand
         // its photos back for the retry.

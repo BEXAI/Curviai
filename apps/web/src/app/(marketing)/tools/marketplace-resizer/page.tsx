@@ -7,7 +7,7 @@ import { breadcrumbJsonLd, jsonLdGraph, pageMetadata, webApplicationJsonLd } fro
 const seo = {
   title: "Free product image resizer for Shopify and Amazon",
   description:
-    "Resize one product photo for Amazon, Shopify, Google, Meta and more, with white padding and the file names each marketplace expects. Free, in your browser.",
+    "Resize one product photo for Amazon, Shopify, Google, Meta and more, keeping its shape where each channel allows it and with the file names each marketplace expects. Free, in your browser.",
   path: "/tools/marketplace-resizer",
 };
 
@@ -28,7 +28,7 @@ export default function MarketplaceResizerPage() {
       <ToolPageShell
         currentPath="/tools/marketplace-resizer"
         title="Marketplace Resizer"
-        description="Pick your channels and get one photo resized to each spec with clean white padding, exported as jpg with the file name each marketplace expects. Everything runs in your browser."
+        description="Pick your channels and get one photo resized to each spec, with white space added only where a channel needs a set shape, exported as jpg with the file name each marketplace expects. Everything runs in your browser."
       >
         <MarketplaceResizer />
       </ToolPageShell>

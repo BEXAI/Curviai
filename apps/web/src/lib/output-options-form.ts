@@ -23,7 +23,9 @@ import {
   conflictsFor,
   cutoutMediaIds,
   keptPhotoSpecIds,
+  LOOK_KEYS,
   lookOf,
+  normalizeOutputOptions,
   originalFitFor,
   outputOptionsKey,
   packNeedsCutout,
@@ -41,11 +43,16 @@ import {
 } from "@curvi/pipeline/output-options";
 import { showsLightEdge } from "@curvi/pipeline/edge";
 import {
+  AUTO_STYLE_PRESET,
   backgroundSwatches,
   creditCosts,
   entitlementsFor,
+  keepBackgroundPhrases,
+  presets,
+  sceneCountOptions,
   stillStyle,
   tiers,
+  type PresetKey,
   type TierKey,
 } from "@curvi/pipeline/seed";
 import type { AngleRole } from "@curvi/pipeline/seller-inputs";
@@ -63,12 +70,72 @@ import { MAX_BRAND_COLORS } from "@/lib/validation/brand-kit";
 // ---------------------------------------------------------------------------
 // State and reducer
 
+// ---------------------------------------------------------------------------
+// P1 choices (PHASE_15 "P1 (fast follow, same phase)")
+
+/** "Product size in the frame" (seed canvasDefaults.productSizeFill keys). */
+export const PRODUCT_SIZES = ["standard", "larger", "smaller"] as const;
+export type ProductSize = (typeof PRODUCT_SIZES)[number];
+
+/** "Scene style": the planner's pick, or a seeded preset. */
+export type ScenePresetChoice = typeof AUTO_STYLE_PRESET | PresetKey;
+
+/** Photo shape with Trim to the channel's shape (fit crop). */
+export type FormFit = OutputChoices["fit"] | "crop";
+
+/** A color choice, or Match my photo's edges (Keep only). */
+export type FormColorChoice = ColorChoice | { kind: "edge_match" };
+
+/** The per photo Background Select: the pack's switch, or this photo's own. */
+export const PHOTO_BACKGROUNDS = ["pack", "remove", "keep"] as const;
+export type PhotoBackground = (typeof PHOTO_BACKGROUNDS)[number];
+
+/**
+ * The P1 controls. They sit next to the P0 choices, so the P0 look presets
+ * and lookOf stay exactly as they are, and each one reaches the POST body
+ * only when it differs from its default (outputOptionsBody): an unchanged
+ * form sends the same body, and the same Idempotency-Key, as before P1.
+ */
+export interface MoreChoices {
+  /** Trim to the channel's shape (fit crop), for kept photos. */
+  trim: boolean;
+  /** Match my photo's edges (color edge_match), for the space added to kept photos. */
+  edgeMatch: boolean;
+  /** Number of scenes while the scenes family is on (seed sceneCountOptions). */
+  sceneCount: number;
+  scenePreset: ScenePresetChoice;
+  /** Logo on graphics. */
+  logo: boolean;
+  productSize: ProductSize;
+  /** False is "Never enlarge my photo". */
+  enlarge: boolean;
+  /** Graphics follow your color. */
+  graphicsColor: boolean;
+}
+
+export const DEFAULT_MORE_CHOICES: Readonly<MoreChoices> = {
+  trim: false,
+  edgeMatch: false,
+  sceneCount: sceneCountOptions.default,
+  scenePreset: AUTO_STYLE_PRESET,
+  logo: true,
+  productSize: "standard",
+  enlarge: true,
+  graphicsColor: false,
+};
+
+function defaultMore(): MoreChoices {
+  return { ...DEFAULT_MORE_CHOICES };
+}
+
 /** What the seller has picked in section 3. */
 export interface OutputFormState {
   /** The look card the choices started from (the Custom chip and analytics). */
   lookBase: LookKey;
   /** The choices themselves; they may drift from the card (Custom). */
   choices: OutputChoices;
+  /** The P1 controls under More options, and the edge color. */
+  more: MoreChoices;
 }
 
 export type OutputFormAction =
@@ -77,9 +144,17 @@ export type OutputFormAction =
   /** The switch: extras reset to that side's default (all on with remove,
    * all off with keep); the color and photo shape stay. */
   | { type: "background"; background: OutputChoices["background"] }
-  | { type: "color"; color: ColorChoice }
+  /** A color, or Match my photo's edges. */
+  | { type: "color"; color: FormColorChoice }
   | { type: "extra"; family: ExtraFamily; on: boolean }
-  | { type: "fit"; fit: OutputChoices["fit"] }
+  /** Photo shape; crop is Trim to the channel's shape. */
+  | { type: "fit"; fit: FormFit }
+  /** Number of scenes: "off" turns the scenes family off, a count turns it on. */
+  | { type: "scenes"; count: number | typeof SCENES_OFF }
+  /** Any other More options control. */
+  | { type: "more"; patch: Partial<Omit<MoreChoices, "trim" | "edgeMatch" | "sceneCount">> }
+  /** A product's remembered choices (rememberedFormState). */
+  | { type: "prefill"; state: OutputFormState }
   /** The Custom chip's Reset: back to the card's preset. */
   | { type: "reset" }
   /** "Keep my photos instead" while cutouts are paused: the Keep look with
@@ -96,13 +171,20 @@ function allExtras(on: boolean): OutputExtras {
 
 /** The form's first state: Marketplace ready, today's pack. */
 export function initialOutputForm(): OutputFormState {
-  return { lookBase: "marketplace", choices: copyChoices(LOOK_PRESETS.marketplace) };
+  return { lookBase: "marketplace", choices: copyChoices(LOOK_PRESETS.marketplace), more: defaultMore() };
+}
+
+/** The Number of scenes value that turns the scenes family off. */
+export const SCENES_OFF = "off";
+
+function clampSceneCount(count: number): number {
+  return Math.min(sceneCountOptions.max, Math.max(sceneCountOptions.min, Math.round(count)));
 }
 
 export function outputFormReducer(state: OutputFormState, action: OutputFormAction): OutputFormState {
   switch (action.type) {
     case "look":
-      return { lookBase: action.look, choices: copyChoices(LOOK_PRESETS[action.look]) };
+      return { lookBase: action.look, choices: copyChoices(LOOK_PRESETS[action.look]), more: defaultMore() };
     case "background":
       if (state.choices.background === action.background) return state;
       return {
@@ -110,15 +192,34 @@ export function outputFormReducer(state: OutputFormState, action: OutputFormActi
         choices: { ...state.choices, background: action.background, extras: allExtras(action.background === "remove") },
       };
     case "color":
-      return { ...state, choices: { ...state.choices, color: { ...action.color } } };
+      if (action.color.kind === "edge_match") {
+        return { ...state, more: { ...state.more, edgeMatch: true } };
+      }
+      return { ...state, choices: { ...state.choices, color: { ...action.color } }, more: { ...state.more, edgeMatch: false } };
     case "extra":
       return { ...state, choices: { ...state.choices, extras: { ...state.choices.extras, [action.family]: action.on } } };
     case "fit":
-      return { ...state, choices: { ...state.choices, fit: action.fit } };
+      // Trim keeps the P0 fit at auto, so the heads ups and the estimate
+      // judge the photo as one that keeps its shape.
+      return action.fit === "crop"
+        ? { ...state, choices: { ...state.choices, fit: "auto" }, more: { ...state.more, trim: true } }
+        : { ...state, choices: { ...state.choices, fit: action.fit }, more: { ...state.more, trim: false } };
+    case "scenes":
+      return action.count === SCENES_OFF
+        ? { ...state, choices: { ...state.choices, extras: { ...state.choices.extras, scenes: false } } }
+        : {
+            ...state,
+            choices: { ...state.choices, extras: { ...state.choices.extras, scenes: true } },
+            more: { ...state.more, sceneCount: clampSceneCount(action.count) },
+          };
+    case "more":
+      return { ...state, more: { ...state.more, ...action.patch } };
+    case "prefill":
+      return { lookBase: action.state.lookBase, choices: copyChoices(action.state.choices), more: { ...action.state.more } };
     case "reset":
-      return { ...state, choices: copyChoices(LOOK_PRESETS[state.lookBase]) };
+      return { ...state, choices: copyChoices(LOOK_PRESETS[state.lookBase]), more: defaultMore() };
     case "keep_instead":
-      return { lookBase: "keep_photo", choices: copyChoices(LOOK_PRESETS.keep_photo) };
+      return { lookBase: "keep_photo", choices: copyChoices(LOOK_PRESETS.keep_photo), more: defaultMore() };
   }
 }
 
@@ -151,22 +252,79 @@ export function effectiveChoices(choices: OutputChoices, context: EffectiveConte
   return out;
 }
 
+/**
+ * The P1 fields of the POST body (the P1 schema contract): only the ones
+ * that differ from their default and matter for these choices, so a hidden
+ * control never changes the pack. The scene fields ride only with scenes
+ * on, product size only with Remove, enlarge only with Keep, and the logo
+ * and graphics color only with graphics or cards on.
+ */
+export interface P1OutputFields {
+  sceneCount?: number;
+  scenePreset?: ScenePresetChoice;
+  logo?: boolean;
+  productSize?: ProductSize;
+  enlarge?: boolean;
+  graphicsColor?: boolean;
+}
+
+export function p1OutputFields(choices: OutputChoices, more: MoreChoices = DEFAULT_MORE_CHOICES): P1OutputFields {
+  const keep = choices.background === "keep";
+  const graphicsOn = choices.extras.graphics || choices.extras.cards;
+  const out: P1OutputFields = {};
+  if (choices.extras.scenes && more.sceneCount !== DEFAULT_MORE_CHOICES.sceneCount) out.sceneCount = more.sceneCount;
+  if (choices.extras.scenes && more.scenePreset !== DEFAULT_MORE_CHOICES.scenePreset) out.scenePreset = more.scenePreset;
+  if (graphicsOn && more.logo !== DEFAULT_MORE_CHOICES.logo) out.logo = more.logo;
+  if (!keep && more.productSize !== DEFAULT_MORE_CHOICES.productSize) out.productSize = more.productSize;
+  if (keep && more.enlarge !== DEFAULT_MORE_CHOICES.enlarge) out.enlarge = more.enlarge;
+  if (graphicsOn && more.graphicsColor !== DEFAULT_MORE_CHOICES.graphicsColor) out.graphicsColor = more.graphicsColor;
+  return out;
+}
+
+/** The POST body's outputOptions: the P0 fields, crop and edge_match with
+ * Keep, and the P1 fields that differ from their defaults. */
+export type FormOutputOptionsBody = Omit<OutputOptionsInput, "fit" | "color"> & {
+  fit?: OutputOptionsInput["fit"] | "crop";
+  color?: OutputOptionsInput["color"] | { kind: "edge_match" };
+} & P1OutputFields;
+
 /** The POST body's outputOptions. */
-export function outputOptionsBody(lookBase: LookKey, choices: OutputChoices): OutputOptionsInput {
+export function outputOptionsBody(
+  lookBase: LookKey,
+  choices: OutputChoices,
+  more: MoreChoices = DEFAULT_MORE_CHOICES,
+): FormOutputOptionsBody {
+  const keep = choices.background === "keep";
   return {
     v: 1,
     lookBase,
     background: choices.background,
-    color: { ...choices.color },
-    fit: choices.fit,
+    color: keep && more.edgeMatch ? { kind: "edge_match" } : { ...choices.color },
+    fit: keep && more.trim ? "crop" : choices.fit,
     extras: { ...choices.extras },
+    ...p1OutputFields(choices, more),
+  };
+}
+
+/** The P1 part of a body, empty when every P1 control is at its default. */
+function p1IntentPart(choices: OutputChoices, more: MoreChoices): Record<string, unknown> {
+  const keep = choices.background === "keep";
+  return {
+    ...p1OutputFields(choices, more),
+    ...(keep && more.trim ? { fit: "crop" } : {}),
+    ...(keep && more.edgeMatch ? { color: "edge_match" } : {}),
   };
 }
 
 /** The part of the Idempotency-Key fingerprint the options add: any choice
- * that changes the pack changes it, lookBase never does. */
-export function optionsIntentKey(choices: OutputChoices): string {
-  return outputOptionsKey(choices);
+ * that changes the pack changes it, lookBase never does. With every P1
+ * control at its default it is exactly outputOptionsKey. */
+export function optionsIntentKey(choices: OutputChoices, more: MoreChoices = DEFAULT_MORE_CHOICES): string {
+  const extra = p1IntentPart(choices, more);
+  const base = outputOptionsKey(choices);
+  if (Object.keys(extra).length === 0) return base;
+  const sorted = Object.fromEntries(Object.entries(extra).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  return `${base}|${JSON.stringify(sorted)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +386,10 @@ export interface FormResolveArgs {
   brandColors: readonly string[];
   brandKitsAllowed: boolean;
   photos: readonly FormPhoto[];
+  /** The P1 controls. Resolved with them where the schema knows them. */
+  more?: MoreChoices;
+  /** Per photo Background Select values by photo id; missing means "pack". */
+  photoBackgrounds?: Readonly<Record<string, PhotoBackground>>;
 }
 
 export interface FormResolved {
@@ -236,30 +398,66 @@ export interface FormResolved {
 }
 
 /**
+ * The photos kept once each photo's own Background Select applies: "keep"
+ * and "remove" win over the pack's switch, "pack" follows it. The server
+ * resolves uploads[].background into keepMediaIds the same way.
+ */
+export function keptPhotoIds(
+  photos: readonly Pick<FormPhoto, "id">[],
+  background: OutputChoices["background"],
+  photoBackgrounds: Readonly<Record<string, PhotoBackground>> = {},
+): string[] {
+  return photos
+    .filter((photo) => {
+      const own = photoBackgrounds[photo.id] ?? "pack";
+      return own === "pack" ? background === "keep" : own === "keep";
+    })
+    .map((photo) => photo.id);
+}
+
+/**
  * The options as createJob would resolve them for these photos. A brand
  * color the kit or plan cannot give falls back to white here, so the form
  * keeps working; the brand card and option are disabled in that case and
  * the server refuses it anyway.
+ *
+ * With P1 controls changed, the options are first resolved with their P1
+ * fields, so the estimate follows them once the schema accepts each field;
+ * while it does not, the P0 choices alone are resolved, as before.
  */
 export function resolveFormOutput(args: FormResolveArgs): FormResolved {
-  const run = (choices: OutputChoices) =>
+  const run = (input: FormOutputOptionsBody | OutputChoices) =>
     resolveJobOutput({
-      input: { ...(args.lookBase ? { lookBase: args.lookBase } : {}), ...choices },
+      input: { ...(args.lookBase ? { lookBase: args.lookBase } : {}), ...input } as OutputOptionsInput,
       mode: "listing",
       enabled: true,
       brandColors: args.brandColors,
       brandKitsAllowed: args.brandKitsAllowed,
       photos: args.photos,
     });
-  const first = run(args.choices);
+  const p1 = args.more ? p1OutputFields(args.choices, args.more) : {};
+  let first = Object.keys(p1).length > 0 ? run({ ...args.choices, ...p1 }) : null;
+  if (!first || (!first.ok && first.reason === "invalid_options")) {
+    first = run(args.choices);
+  }
+  let result: FormResolved;
   if (first.ok) {
-    return { resolved: first.resolved, flags: first.flags };
+    result = { resolved: first.resolved, flags: first.flags };
+  } else {
+    const fallback = run({ ...args.choices, color: { kind: "swatch", key: DEFAULT_SWATCH_KEY } });
+    if (!fallback.ok) {
+      throw new Error(`The form's options did not resolve: ${fallback.reason}`);
+    }
+    result = { resolved: fallback.resolved, flags: fallback.flags };
   }
-  const fallback = run({ ...args.choices, color: { kind: "swatch", key: DEFAULT_SWATCH_KEY } });
-  if (!fallback.ok) {
-    throw new Error(`The form's options did not resolve: ${fallback.reason}`);
+  if (!args.photoBackgrounds || Object.keys(args.photoBackgrounds).length === 0) {
+    return result;
   }
-  return { resolved: fallback.resolved, flags: fallback.flags };
+  const keepMediaIds = keptPhotoIds(args.photos, args.choices.background, args.photoBackgrounds);
+  return {
+    resolved: { ...result.resolved, keepMediaIds },
+    flags: { ...result.flags, keepMediaIds: [...keepMediaIds] },
+  };
 }
 
 /** The heads ups for this pick: conflictsFor over the form's photos. */
@@ -325,8 +523,9 @@ export function photoOutputContext(
  */
 export function pauseBlocksSubmit(packsPaused: boolean, selected: readonly string[], flags: OutputPlanFlags): boolean {
   if (!packsPaused) return false;
-  if (flags.background === "remove") return true;
+  // With photos, each photo's own background counts (P1 per photo Select).
   if (flags.photos.length > 0) return packNeedsCutout(selected, flags);
+  if (flags.background === "remove") return true;
   return packNeedsCutout(selected, {
     ...flags,
     photos: [{ id: PLACEHOLDER_PHOTO_ID, angle: "front" }],
@@ -484,6 +683,11 @@ export interface ColorControlCopy {
   helper: string | null;
 }
 
+/** The color Select's value for Match my photo's edges (Keep only). */
+export const EDGE_MATCH_VALUE = "edge_match";
+export const EDGE_MATCH_LABEL = "Match my photo's edges";
+export const EDGE_MATCH_CHIP = "Matches the edges of each photo";
+
 /** "Background color" with Remove; "Color for added space" with Keep. */
 export function colorControlCopy(background: OutputChoices["background"]): ColorControlCopy {
   return background === "keep"
@@ -612,9 +816,115 @@ export const PHOTO_SHAPE_OPTIONS: ReadonlyArray<{ value: OutputChoices["fit"]; l
   { value: "pad", label: "Match each channel's shape and add space" },
 ];
 
-/** The More options controls that differ from the card the choices started from. */
+/** Trim to the channel's shape, the third Photo shape choice (fit crop). */
+export const TRIM_SHAPE_OPTION: { value: "crop"; label: string; helper: string } = {
+  value: "crop",
+  label: "Trim to each channel's shape",
+  helper: "We never trim your product. Without room to trim, we add space instead.",
+};
+
+/** The Photo shape radio that is checked. */
+export function formFit(state: Pick<OutputFormState, "choices" | "more">): FormFit {
+  return state.choices.background === "keep" && state.more.trim ? "crop" : state.choices.fit;
+}
+
+export const SCENE_COUNT_LABEL = "Number of scenes";
+export const SCENE_STYLE_LABEL = "Scene style";
+export const LOGO_LABEL = "Logo on graphics";
+export const PRODUCT_SIZE_LABEL = "Product size in the frame";
+export const NEVER_ENLARGE_LABEL = "Never enlarge my photo";
+export const NEVER_ENLARGE_HELPER = "Your photo is used at its own size or smaller. A channel that needs it bigger is left out.";
+export const GRAPHICS_COLOR_LABEL = "Graphics follow your color";
+export const GRAPHICS_COLOR_HELPER = "Graphics and cards use your background color instead of their usual one.";
+
+/** "Off, 1, 2, 3, 4", from seed sceneCountOptions. */
+export function sceneCountSelectOptions(): Array<{ value: string; label: string }> {
+  const counts = Array.from(
+    { length: sceneCountOptions.max - sceneCountOptions.min + 1 },
+    (_, i) => sceneCountOptions.min + i,
+  );
+  return [{ value: SCENES_OFF, label: "Off" }, ...counts.map((n) => ({ value: String(n), label: String(n) }))];
+}
+
+/** The Number of scenes Select's value. */
+export function sceneCountValue(state: Pick<OutputFormState, "choices" | "more">): string {
+  return state.choices.extras.scenes ? String(state.more.sceneCount) : SCENES_OFF;
+}
+
+/** Parses a Number of scenes Select value. */
+export function sceneCountFromValue(value: string): number | typeof SCENES_OFF | null {
+  if (value === SCENES_OFF) return SCENES_OFF;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= sceneCountOptions.min && n <= sceneCountOptions.max ? n : null;
+}
+
+/** Plain names for the seeded scene presets; a new preset needs a name here. */
+export const SCENE_STYLE_NAMES: Readonly<Record<PresetKey, string>> = {
+  minimal_studio: "Minimal studio",
+  luxury_marble: "Marble",
+  kitchen_lifestyle: "Kitchen",
+  outdoor: "Outdoor",
+  holiday: "Holiday",
+};
+
+/** "Auto, picked for your product", then every seeded preset. */
+export function sceneStyleOptions(): Array<{ value: ScenePresetChoice; label: string }> {
+  return [
+    { value: AUTO_STYLE_PRESET, label: "Auto, picked for your product" },
+    ...(Object.keys(presets) as PresetKey[]).map((key) => ({ value: key, label: SCENE_STYLE_NAMES[key] })),
+  ];
+}
+
+export function isScenePresetChoice(value: string): value is ScenePresetChoice {
+  return value === AUTO_STYLE_PRESET || Object.hasOwn(presets, value);
+}
+
+export const PRODUCT_SIZE_OPTIONS: ReadonlyArray<{ value: ProductSize; label: string }> = [
+  { value: "standard", label: "Standard" },
+  { value: "larger", label: "Larger" },
+  { value: "smaller", label: "Smaller" },
+];
+
+export interface MoreOptionsContext {
+  /** The brand kit has a logo, so Logo on graphics shows. */
+  hasLogo?: boolean;
+  /** Scenes are paused: the scene controls are disabled. */
+  scenesPaused?: boolean;
+}
+
+/** Which More options controls show for these choices. Hidden controls never reach the body. */
+export interface MoreOptionsVisibility {
+  photoShape: boolean;
+  sceneCount: boolean;
+  sceneStyle: boolean;
+  logo: boolean;
+  productSize: boolean;
+  neverEnlarge: boolean;
+  graphicsColor: boolean;
+}
+
+export function moreOptionsVisibility(choices: OutputChoices, context: MoreOptionsContext = {}): MoreOptionsVisibility {
+  const keep = choices.background === "keep";
+  const graphicsOn = choices.extras.graphics || choices.extras.cards;
+  return {
+    photoShape: keep,
+    sceneCount: true,
+    sceneStyle: choices.extras.scenes && !context.scenesPaused,
+    logo: !!context.hasLogo && graphicsOn,
+    productSize: !keep,
+    neverEnlarge: keep,
+    graphicsColor: graphicsOn,
+  };
+}
+
+/**
+ * The More options controls that differ from the card the choices started
+ * from: the photo shape (Trim included) and every P1 field the body sends.
+ * Number of scenes counts only as a count; Off is an Extra images change.
+ */
 export function moreOptionsChanged(state: OutputFormState): number {
-  return state.choices.fit === LOOK_PRESETS[state.lookBase].fit ? 0 : 1;
+  const shape = formFit(state) === LOOK_PRESETS[state.lookBase].fit ? 0 : 1;
+  return shape + Object.keys(p1OutputFields(state.choices, state.more)).length;
 }
 
 /** "More options", or "More options, 2 changed". */
@@ -721,26 +1031,29 @@ export interface PackCreatedOutputProps {
   look: Look;
   look_base: LookKey;
   background: OutputChoices["background"];
-  color_kind: ColorChoice["kind"];
+  color_kind: FormColorChoice["kind"];
   extras_off: number;
   kept_photos: number;
-  fit: OutputChoices["fit"];
+  fit: FormFit;
 }
 
-/** The pack_created properties the options add. */
+/** The pack_created properties the options add. kept_photos counts the
+ * photos kept after each photo's own Background Select. */
 export function packCreatedOutputProps(
   lookBase: LookKey,
   choices: OutputChoices,
   keptPhotos: number,
+  more: MoreChoices = DEFAULT_MORE_CHOICES,
 ): PackCreatedOutputProps {
+  const keep = choices.background === "keep";
   return {
     look: lookOf(choices),
     look_base: lookBase,
     background: choices.background,
-    color_kind: choices.color.kind,
+    color_kind: keep && more.edgeMatch ? "edge_match" : choices.color.kind,
     extras_off: extrasOffCount(choices.extras),
-    kept_photos: choices.background === "keep" ? keptPhotos : 0,
-    fit: choices.fit,
+    kept_photos: keptPhotos,
+    fit: formFit({ choices, more }),
   };
 }
 
@@ -756,3 +1069,172 @@ export const PACK_LOOK_CHANGED_EVENT = "pack_look_changed";
 export function packLookChangedProps(from: LookKey, to: LookKey): PackLookChangedProps | null {
   return from === to ? null : { from, to };
 }
+
+// ---------------------------------------------------------------------------
+// Remember choices per product (P1, founder decision 7)
+
+/** "Using your last choices for Ceramic mug." */
+export function rememberedLine(title: string): string {
+  return `Using your last choices for ${title}.`;
+}
+
+export const REMEMBERED_RESET_LABEL = `Start from ${LOOK_TITLES.marketplace}`;
+
+const P1_KEYS = ["sceneCount", "scenePreset", "logo", "productSize", "enlarge", "graphicsColor"] as const;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Reads the P1 fields of stored choices; null when one is out of shape. */
+function rememberedMore(raw: Record<string, unknown>): MoreChoices | null {
+  const more = defaultMore();
+  const { sceneCount, scenePreset, logo, productSize, enlarge, graphicsColor } = raw;
+  if (sceneCount !== undefined) {
+    if (typeof sceneCount !== "number" || sceneCountFromValue(String(sceneCount)) === null) return null;
+    more.sceneCount = sceneCount;
+  }
+  if (scenePreset !== undefined) {
+    if (typeof scenePreset !== "string" || !isScenePresetChoice(scenePreset)) return null;
+    more.scenePreset = scenePreset;
+  }
+  for (const [key, value] of [
+    ["logo", logo],
+    ["enlarge", enlarge],
+    ["graphicsColor", graphicsColor],
+  ] as const) {
+    if (value === undefined) continue;
+    if (typeof value !== "boolean") return null;
+    more[key] = value;
+  }
+  if (productSize !== undefined) {
+    if (typeof productSize !== "string" || !(PRODUCT_SIZES as readonly string[]).includes(productSize)) return null;
+    more.productSize = productSize as ProductSize;
+  }
+  if (raw.fit === "crop") more.trim = true;
+  if (isPlainObject(raw.color) && raw.color.kind === "edge_match") more.edgeMatch = true;
+  return more;
+}
+
+export interface RememberedContext {
+  /** Brand colors the form can offer (the kit's usable colors, when the plan has kits). */
+  brandColorCount: number;
+}
+
+/**
+ * A product's remembered choices (products.output_defaults) as the form's
+ * state, or null when there is nothing to prefill: no record, a record the
+ * schema refuses (fail closed), or exactly Marketplace ready. A brand color
+ * the kit no longer has falls back to the default swatch. It only ever
+ * prefills the form; a request without options is always Marketplace ready.
+ */
+export function rememberedFormState(raw: unknown, context: RememberedContext): OutputFormState | null {
+  if (!isPlainObject(raw)) return null;
+  const more = rememberedMore(raw);
+  if (!more) return null;
+  const p0: Record<string, unknown> = { ...raw };
+  for (const key of P1_KEYS) delete p0[key];
+  if (p0.fit === "crop") p0.fit = "auto";
+  if (isPlainObject(p0.color) && p0.color.kind === "edge_match") delete p0.color;
+  let normalized;
+  try {
+    normalized = normalizeOutputOptions(p0 as OutputOptionsInput);
+  } catch {
+    return null;
+  }
+  const { lookBase: storedBase, ...rest } = normalized;
+  const choices = copyChoices(rest);
+  if (choices.color.kind === "brand" && choices.color.index >= context.brandColorCount) {
+    choices.color = { kind: "swatch", key: DEFAULT_SWATCH_KEY };
+  }
+  if (choices.background !== "keep") {
+    more.trim = false;
+    more.edgeMatch = false;
+  }
+  const look = lookOf(choices);
+  const lookBase: LookKey =
+    storedBase && (LOOK_KEYS as readonly string[]).includes(storedBase) ? storedBase : look === "custom" ? "marketplace" : look;
+  const state: OutputFormState = { lookBase, choices, more };
+  const today = initialOutputForm();
+  const unchanged =
+    optionsIntentKey(state.choices, state.more) === optionsIntentKey(today.choices, today.more) &&
+    lookBase === today.lookBase;
+  return unchanged ? null : state;
+}
+
+// ---------------------------------------------------------------------------
+// "Keep my background" hint (P1)
+
+export const KEEP_BACKGROUND_HINT = `It sounds like you want to keep your background. Turn off ${SWITCH_LABEL}?`;
+export const KEEP_BACKGROUND_HINT_ACTION = "Turn it off";
+
+function normalizedNote(note: string): string {
+  return note.toLowerCase().replace(/[‘’ʼ]/g, "'").replace(/\s+/g, " ").trim();
+}
+
+/** True when the note uses one of the seeded keep background phrases. */
+export function noteAsksToKeepBackground(note: string, phrases: readonly string[] = keepBackgroundPhrases): boolean {
+  const text = normalizedNote(note);
+  if (!text) return false;
+  return phrases.some((phrase) => {
+    const p = normalizedNote(phrase);
+    const at = text.indexOf(p);
+    if (at < 0) return false;
+    // Whole words only: "keep background" never matches "keep backgrounds".
+    const before = at === 0 ? "" : text[at - 1];
+    const after = text[at + p.length] ?? "";
+    return !/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after);
+  });
+}
+
+/** The hint line while the switch is on and the note asks to keep the background, else null. */
+export function keepBackgroundHint(note: string, background: OutputChoices["background"]): string | null {
+  return background === "remove" && noteAsksToKeepBackground(note) ? KEEP_BACKGROUND_HINT : null;
+}
+
+// ---------------------------------------------------------------------------
+// Background per photo (P1)
+
+export const PHOTO_BACKGROUND_OPTIONS: ReadonlyArray<{ value: PhotoBackground; label: string }> = [
+  { value: "pack", label: "Pack setting" },
+  { value: "remove", label: "Remove" },
+  { value: "keep", label: "Keep as is" },
+];
+
+export function isPhotoBackground(value: string): value is PhotoBackground {
+  return (PHOTO_BACKGROUNDS as readonly string[]).includes(value);
+}
+
+/** The accessible name of a photo's Background Select. */
+export function photoBackgroundLabel(position: number): string {
+  return `Background for photo ${position}`;
+}
+
+/** An upload's background field: sent only when the photo has its own. */
+export function uploadBackgroundField(background: PhotoBackground | undefined): { background?: "remove" | "keep" } {
+  return background === "remove" || background === "keep" ? { background } : {};
+}
+
+// ---------------------------------------------------------------------------
+// Cutout preview (P1)
+
+/**
+ * What a preview frame shows: the seller's photo on a kept frame, the
+ * cutout preview on a removed frame when the preflight made one, else the
+ * silhouette. A white required frame never shows a kept photo.
+ */
+export type FramePicture = { kind: "photo"; src: string } | { kind: "cutout"; src: string } | { kind: "silhouette" } | { kind: "none" };
+
+export function framePicture(
+  frame: Pick<PreviewFrame, "white">,
+  background: OutputChoices["background"],
+  sources: { photoUrl?: string | null; cutoutUrl?: string | null; hasPhoto: boolean },
+): FramePicture {
+  const keptHere = background === "keep" && !frame.white;
+  if (keptHere && sources.photoUrl) return { kind: "photo", src: sources.photoUrl };
+  if (!keptHere && sources.cutoutUrl) return { kind: "cutout", src: sources.cutoutUrl };
+  if (background === "remove" || sources.hasPhoto) return { kind: "silhouette" };
+  return { kind: "none" };
+}
+
+export const EDGE_MATCH_PREVIEW_NOTE = "Added space takes the color of your photo's edges.";

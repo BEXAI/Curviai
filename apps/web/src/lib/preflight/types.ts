@@ -65,6 +65,9 @@ export interface PreflightView {
   productLongSide: number | null;
   /** What every image channel spec needs from the photo. */
   sizes: PreflightSizeNeed[];
+  /** A signed url of the product's cutout preview (a small alpha PNG), for
+   * the preview strip on the chosen color (PHASE_15 P1); null when none. */
+  previewUrl?: string | null;
   /** True for the simulated demo mode answer. */
   demo?: boolean;
 }
