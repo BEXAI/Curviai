@@ -27,6 +27,7 @@ import { IMPORT_TITLE_MAX, sellerNotesFrom, type ImportedImage, type ImportedPro
 import {
   KEEP_PHOTOS_INSTEAD_LABEL,
   KEEP_PHOTOS_PAUSED_COPY,
+  KEEP_PHOTOS_PAUSED_QUOTA_COPY,
   conflictCopy,
   conflictLines,
   leftOutAfterPauseLine,
@@ -140,6 +141,9 @@ interface NewPackFormProps {
    * Create pack is disabled for a pack that needs a cutout; with output
    * options on, a pack that keeps its photos can still start. */
   packsPaused?: boolean;
+  /** True when that pause comes from an empty cutout account, which no
+   * wait fixes, so the banner makes no time promise. */
+  packsPausedForQuota?: boolean;
   /** Section 3 "How your images look" (docs/phases/PHASE_15.md): the env
    * flag and the kill switch are both on. Off, the form renders and submits
    * exactly as before PHASE_15, with no outputOptions in the body. */
@@ -363,6 +367,7 @@ export function NewPackForm({
   paywall,
   initialProductId,
   packsPaused = false,
+  packsPausedForQuota = false,
   outputOptionsEnabled = false,
   brandColors,
   brandKitsAllowed = false,
@@ -512,7 +517,8 @@ export function NewPackForm({
   const photoOutput = (photo: PhotoItem): PhotoOutputContext | undefined =>
     flags && effectiveMode !== "concept" ? photoOutputContext(formPhotoId(photo), selected, flags) : undefined;
   // With options on, the cutout pause stops only a pack that needs a cutout.
-  const pauseBlocks = optionsOn && flags ? pauseBlocksSubmit(packsPaused, selected, flags) : packsPaused;
+  const cachedCutouts = new Set(photos.filter((p) => p.kind === "image" && p.preflight?.cutoutCached).map(formPhotoId));
+  const pauseBlocks = optionsOn && flags ? pauseBlocksSubmit(packsPaused, selected, flags, cachedCutouts) : packsPaused;
   // Concept packs are normalized to today's pack by the server, so they send none.
   const sendsOptions = optionsOn && effectiveMode === "listing";
 
@@ -1012,7 +1018,7 @@ export function NewPackForm({
             data-testid="preflight-banner"
             data-verdict="packs_paused"
           >
-            <p>{KEEP_PHOTOS_PAUSED_COPY}</p>
+            <p>{packsPausedForQuota ? KEEP_PHOTOS_PAUSED_QUOTA_COPY : KEEP_PHOTOS_PAUSED_COPY}</p>
             {pauseBlocks ? (
               <Button variant="outline" className="mt-3 min-h-11" onClick={keepPhotosInstead} data-testid="keep-photos-instead">
                 {KEEP_PHOTOS_INSTEAD_LABEL}

@@ -230,6 +230,10 @@ export function needsReviewNote(hint: string | null | undefined, context: ShotCo
     // so the real product could not be placed back exactly.
     reason =
       "The image service returned this scene in the wrong shape, so your product could not be placed back exactly and we held it back.";
+  } else if (h.includes("ran out of time")) {
+    // pipeline-runner.ts SHOT_OUT_OF_TIME: the run's time limit stopped
+    // new shots so the pack could still deliver what passed.
+    reason = "The pack ran out of time before this image could be made.";
   } else if (h.includes("spending limit")) {
     // The runner's pack spend cap, reached before this shot ran.
     reason = "The pack reached its spending limit before this shot could be made.";

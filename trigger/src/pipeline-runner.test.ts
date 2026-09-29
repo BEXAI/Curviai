@@ -97,6 +97,9 @@ import {
   type ShotOutcome,
   type StoredAsset,
   type StoredPack,
+  runOutOfTime,
+  SHOT_OUT_OF_TIME,
+  withRunDeadline,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
 
@@ -900,6 +903,44 @@ describe("per shot failure isolation (3.3)", () => {
     const partial = summary.pack ? summary.pack.files < outputCount(fittedPlan().shots) : false;
     expect(stopped.length > 0 || partial).toBe(true);
     expect(summary.chargedCredits + summary.releasedCredits).toBe(summary.reservedCredits);
+  });
+
+  it("stops starting shots at the run's time limit and still delivers and charges what passed", async () => {
+    const demo = new DemoShotGenerator();
+    let calls = 0;
+    const controller = new AbortController();
+    const generator: ShotGenerator = {
+      generate: async (args) => {
+        calls += 1;
+        const generation = await demo.generate(args);
+        // The limit arrives once the first output is made.
+        controller.abort();
+        return generation;
+      },
+    };
+    const deps = makeDeps({
+      generator,
+      shotConcurrency: 1,
+      runDeadline: { stopStartingAt: Number.MAX_SAFE_INTEGER, signal: controller.signal },
+    });
+    const summary = await runGeneratePack(baseInput, deps);
+    expect(calls).toBe(1);
+    expect(summary.state).toBe("done");
+    expect(summary.passed).toBeGreaterThan(0);
+    expect(summary.chargedCredits).toBeGreaterThan(0);
+    const stopped = deps.store.assets.filter((a) => a.verdict.repairHint === SHOT_OUT_OF_TIME);
+    expect(stopped.length).toBeGreaterThan(0);
+    expect(summary.chargedCredits + summary.releasedCredits).toBe(summary.reservedCredits);
+  });
+
+  it("gates no attempt without a time limit, and every attempt past it", async () => {
+    const clock = { now: () => new Date(1_000) };
+    expect(runOutOfTime({ clock })).toBe(false);
+    expect(runOutOfTime({ clock, runDeadline: { stopStartingAt: 2_000 } })).toBe(false);
+    expect(runOutOfTime({ clock, runDeadline: { stopStartingAt: 1_000 } })).toBe(true);
+    expect(runOutOfTime({ clock, runDeadline: { stopStartingAt: 2_000 } }, 2_500)).toBe(true);
+    const base = makeDeps({});
+    expect(withRunDeadline(base)).toBe(base);
   });
 });
 

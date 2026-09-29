@@ -103,7 +103,7 @@ export const WORKING_SOURCE_MAX_PX = Math.ceil(
   Math.max(...listSpecs().map((spec) => Math.max(spec.width ?? 0, spec.height ?? 0, spec.minWidth ?? 0, spec.minHeight ?? 0))) *
     1.25,
 );
-import { CUTOUT_CACHE_FRESH_MS, cutoutCacheKey, type CutoutCacheStore } from "./cutout-cache";
+import { CUTOUT_CACHE_FRESH_MS, cutoutCacheKey, r2CutoutCacheStore, type CutoutCacheStore } from "./cutout-cache";
 import { restoreSourceEdges } from "./cutout-edges";
 import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
@@ -1740,4 +1740,29 @@ function attemptFailure(err: unknown, spend: AttemptSpend): unknown {
     return new ShotUnavailableError(HARMONIZE_SHAPE_REFUSED, spend.micros);
   }
   return spend.micros > 0 ? new ShotFailedAfterSpendError(err, spend.micros) : err;
+}
+
+/**
+ * True when the upload's cached cutout of this stored photo is fresh, so a
+ * pack's cutout of it needs no provider call (fullCutout reads the same key
+ * before the router). The web app asks this while every cutout provider is
+ * paused, so a pack made only of photos checked at upload can still start.
+ * The bytes are prepared exactly as fullCutout prepares them. Never throws:
+ * a cache that cannot be read answers false.
+ */
+export async function hasFreshUploadCutout(
+  workspaceId: string,
+  source: Buffer,
+  opts: { store?: CutoutCacheStore | null; now?: () => Date } = {},
+): Promise<boolean> {
+  const store = opts.store === undefined ? r2CutoutCacheStore() : opts.store;
+  if (!store || source.length === 0) return false;
+  try {
+    const working = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
+    const hit = await store.get(cutoutCacheKey(workspaceId, working, "png"));
+    const now = (opts.now ?? (() => new Date()))().getTime();
+    return hit !== null && now - hit.storedAt.getTime() < CUTOUT_CACHE_FRESH_MS;
+  } catch {
+    return false;
+  }
 }

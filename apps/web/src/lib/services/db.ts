@@ -27,6 +27,7 @@ import {
   type SourceMediaTargetBox,
 } from "@curvi/db";
 import {
+  cutoutMediaIds,
   keepMediaIdsFor,
   normalizeOutputOptions,
   outputOptionsKey,
@@ -64,7 +65,12 @@ import {
 import { inventoryView } from "@/lib/inventory-copy";
 import { outputOptionsSummary, publicJobError, shotCopyContextOf } from "@/lib/job-copy";
 import { OPTIONS_UNREADABLE_COPY } from "@/lib/output-options-copy";
-import { PACKS_PAUSED_COPY, providerPreflight, type PreflightVerdict } from "@/lib/provider-preflight";
+import {
+  packsPausedCopy,
+  providerPreflightDetail,
+  type PreflightDetail,
+  type PreflightVerdict,
+} from "@/lib/provider-preflight";
 import { enqueueGeneratePack, enqueuePackFollowUp, settleJob } from "@/lib/jobs/enqueue";
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { brandStyleFor, buildGeneratePackInput, seoSlugFor, type PayloadBrandKit } from "@/lib/jobs/payload";
@@ -185,6 +191,20 @@ export interface DbServiceDeps {
   /** Overrides the provider pause verdict createJob checks (tests). Left
    * out, lib/provider-preflight decides. */
   providerVerdict?: () => Promise<PreflightVerdict>;
+  /** Overrides the upload cutout cache check (tests): true when a fresh
+   * cached cutout of this stored photo exists. Left out, R2 is read. */
+  cutoutCached?: (workspaceId: string, r2Key: string) => Promise<boolean>;
+}
+
+/** The shots of a follow up that need a cutout: all but the seller's kept
+ * photo, which the runner copies without one. */
+export function followUpCutoutSources(shots: readonly Pick<Shot, "type" | "method" | "sourceMediaId">[]): string[] {
+  const out: string[] = [];
+  for (const shot of shots) {
+    if (shot.type === "original_photo" && shot.method === "deterministic") continue;
+    if (!out.includes(shot.sourceMediaId)) out.push(shot.sourceMediaId);
+  }
+  return out;
 }
 
 /** A source_media.ingest record read back, or null when it is missing or
@@ -461,7 +481,7 @@ function fileDownloadPath(jobId: string, fileId: string): string {
  * really delivered what it billed for, even if it later ended failed. A run
  * the time cap or a restart settled writes no files and charges nothing, so
  * it stays unserved. */
-function servesFiles(job: { status: string; creditsCharged: number | null }): boolean {
+export function servesFiles(job: { status: string; creditsCharged: number | null }): boolean {
   return job.status === "done" || Number(job.creditsCharged ?? 0) > 0;
 }
 
@@ -997,9 +1017,53 @@ export class DbService implements Services {
     }
   }
 
-  /** The provider pause verdict (lib/provider-preflight), never throwing. */
-  private providerVerdict(): Promise<PreflightVerdict> {
-    return this.deps.providerVerdict ? this.deps.providerVerdict() : providerPreflight();
+  /** The provider pause verdict and its cause (lib/provider-preflight),
+   * never throwing. */
+  private async providerPause(): Promise<PreflightDetail> {
+    if (this.deps.providerVerdict) {
+      const verdict = await this.deps.providerVerdict();
+      return { verdict, cause: verdict === "ok" ? null : "failures" };
+    }
+    return providerPreflightDetail();
+  }
+
+  /**
+   * The refusal for work whose cutouts come from these photos while every
+   * cutout provider is paused, or null when it may start. A photo with a
+   * fresh cutout in the upload cache needs no provider (the runner reads
+   * that cache before the router), so work made only of such photos still
+   * runs. Never throws.
+   */
+  private async cutoutPauseRefusal(workspaceId: string, sources: readonly string[]): Promise<string | null> {
+    if (sources.length === 0) {
+      return null;
+    }
+    const pause = await this.providerPause();
+    if (pause.verdict !== "packs_paused") {
+      return null;
+    }
+    const cached = await Promise.all(sources.map((key) => this.cutoutCached(workspaceId, key)));
+    return cached.every(Boolean) ? null : packsPausedCopy(pause.cause);
+  }
+
+  private async cutoutCached(workspaceId: string, key: string): Promise<boolean> {
+    try {
+      if (this.deps.cutoutCached) {
+        return await this.deps.cutoutCached(workspaceId, key);
+      }
+      if (!isR2Configured() || !isWorkspaceSourceKey(workspaceId, key)) {
+        return false;
+      }
+      const bytes = await getObjectBytes(key);
+      if (!bytes) {
+        return false;
+      }
+      const { hasFreshUploadCutout } = await import("@curvi/trigger/live-runtime");
+      return await hasFreshUploadCutout(workspaceId, bytes);
+    } catch (err) {
+      console.warn(`[jobs] could not read the cutout cache for a photo in workspace ${workspaceId}`, err);
+      return false;
+    }
   }
 
   /** See Services.outputOptionsEnabled. */
@@ -1301,6 +1365,12 @@ export class DbService implements Services {
     const credits = followUpCredits(shots);
     if (inlineRunnerDraining()) {
       return { outcome: "rejected", reason: "unavailable", message: RESTARTING_MESSAGE };
+    }
+    // The same cutout pause createJob enforces, before any hold is taken: a
+    // shot that needs a cutout would only come back for review.
+    const paused = await this.cutoutPauseRefusal(workspaceId, followUpCutoutSources(shots));
+    if (paused) {
+      return { outcome: "rejected", reason: "unavailable", message: paused };
     }
     const runKey = crypto.randomUUID();
     let baseCostMicros = 0;
@@ -1875,9 +1945,16 @@ export class DbService implements Services {
     }
 
     // While every cutout provider is down, only a pack that needs no cutout
-    // may start: a Keep pack with no white required channel and no extras.
-    if (packNeedsCutout(input.channels, output.flags) && (await this.providerVerdict()) === "packs_paused") {
-      return { outcome: "rejected", reason: "unavailable", message: PACKS_PAUSED_COPY };
+    // may start (a Keep pack with no white required channel and no extras),
+    // or one whose every cutout is already in the upload cache.
+    if (packNeedsCutout(input.channels, output.flags)) {
+      const paused = await this.cutoutPauseRefusal(
+        workspaceId,
+        cutoutMediaIds(output.flags.photos, input.channels, output.flags),
+      );
+      if (paused) {
+        return { outcome: "rejected", reason: "unavailable", message: paused };
+      }
     }
 
     // Reservation is a seed cost estimate that leaves out shots production

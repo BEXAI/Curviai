@@ -3,7 +3,11 @@
  * the web process, so a deploy or restart orphans packs mid flight. The
  * runner heartbeats generation_jobs.updated_at on every state change, shot
  * attempt and stored asset, so a job that has not moved within the window
- * will never finish: it is failed and its credit hold is released.
+ * will never finish: it is settled with the rule settleJob uses. A pack
+ * whose files were already delivered (a follow up orphaned on a done pack,
+ * or a first run that stopped between savePack and its charges) goes back
+ * to done with its delivered files charged; anything else is failed. Either
+ * way the run key is rotated and the rest of the hold is released.
  *
  * Callers run it workspace scoped whenever the workspace's jobs or balance
  * are read (a single job page, the recent jobs list and the credit balance),
@@ -13,10 +17,12 @@
  * The UPDATE re-checks the status and the cutoff in SQL, so a run that
  * heartbeats or finishes between the read and the write is never clobbered,
  * and only the request that wins the update releases the credits. The worker
- * refuses to leave a terminal state, so a reconciled job stays failed.
+ * refuses to leave a terminal state, and the rotated run key refuses the
+ * orphaned run's writes, so a reconciled job stays as it was settled.
  */
 
-import { and, eq, generationJobs, lt, notInArray, sql, type Db } from "@curvi/db";
+import { and, eq, generationJobs, lt, notInArray, type Db } from "@curvi/db";
+import { settleJob } from "@/lib/jobs/settle";
 
 export const STALE_JOB_MS = 30 * 60 * 1000;
 export const RECONCILED_JOB_ERROR = "The run was interrupted before finishing. Reserved credits were released.";
@@ -36,8 +42,8 @@ export function looksStale(job: { status: string; updatedAt: Date }, now: Date =
 }
 
 /**
- * Fails every stale job in the workspace (or the one job) and releases its
- * hold. Returns the ids this call reconciled. Never throws: a sweep failure
+ * Settles every stale job in the workspace (or the one job) and releases
+ * its hold. Returns the ids this call reconciled. Never throws: a sweep failure
  * must not break the page that triggered it.
  */
 export async function reconcileStaleJobs(db: Db, opts: ReconcileOptions): Promise<string[]> {
@@ -56,19 +62,14 @@ export async function reconcileStaleJobs(db: Db, opts: ReconcileOptions): Promis
     if (candidates.length === 0) {
       return [];
     }
-    const reconciled = await db
-      .update(generationJobs)
-      .set({ status: "failed", error: RECONCILED_JOB_ERROR, updatedAt: now })
-      .where(conditions)
-      .returning({ id: generationJobs.id });
-    for (const { id } of reconciled) {
-      try {
-        await db.execute(sql`select release_credits(${opts.workspaceId}::uuid, ${id}::uuid)`);
-      } catch (err) {
-        console.error(`[jobs] could not release credits for reconciled job ${id}`, err);
+    const ids = await db.select({ id: generationJobs.id }).from(generationJobs).where(conditions);
+    const reconciled: string[] = [];
+    for (const { id } of ids) {
+      if (await settleStale(db, { jobId: id, workspaceId: opts.workspaceId }, staleBefore, now)) {
+        reconciled.push(id);
       }
     }
-    return reconciled.map((r) => r.id);
+    return reconciled;
   } catch (err) {
     console.error(`[jobs] stale job sweep failed for workspace ${opts.workspaceId}`, err);
     return [];
@@ -81,8 +82,8 @@ export const STALE_SWEEP_BATCH = 200;
 export interface StaleSweepResult {
   /** Jobs this sweep failed, with their workspace. */
   reconciled: Array<{ id: string; workspaceId: string }>;
-  /** Reconciled jobs whose hold could not be released. Nothing retries
-   * them on its own, so they are logged and reported to the scheduler. */
+  /** Stale jobs whose settle failed (it rolls back as a whole, so the next
+   * sweep tries them again). Logged and reported to the scheduler. */
   releaseFailures: string[];
 }
 
@@ -104,29 +105,55 @@ export async function sweepStaleJobs(
   const staleBefore = new Date(now.getTime() - STALE_JOB_MS);
   const live = and(notInArray(generationJobs.status, TERMINAL), lt(generationJobs.updatedAt, staleBefore));
   const candidates = await db
-    .select({ id: generationJobs.id })
+    .select({ id: generationJobs.id, workspaceId: generationJobs.workspaceId })
     .from(generationJobs)
     .where(live)
     .orderBy(generationJobs.updatedAt)
     .limit(opts.limit ?? STALE_SWEEP_BATCH);
   const reconciled: StaleSweepResult["reconciled"] = [];
   const releaseFailures: string[] = [];
-  for (const { id } of candidates) {
-    const [won] = await db
-      .update(generationJobs)
-      .set({ status: "failed", error: RECONCILED_JOB_ERROR, updatedAt: now })
-      .where(and(eq(generationJobs.id, id), live))
-      .returning({ id: generationJobs.id, workspaceId: generationJobs.workspaceId });
-    if (!won) {
-      continue;
-    }
-    reconciled.push(won);
+  for (const job of candidates) {
     try {
-      await db.execute(sql`select release_credits(${won.workspaceId}::uuid, ${won.id}::uuid)`);
+      if (await settleStaleOrThrow(db, { jobId: job.id, workspaceId: job.workspaceId }, staleBefore, now)) {
+        reconciled.push(job);
+      }
     } catch (err) {
-      releaseFailures.push(won.id);
-      console.error(`[jobs] stale job sweep could not release credits for job ${won.id}`, err);
+      // The settle runs in one transaction, so the job is still stale and
+      // the next sweep tries it again.
+      releaseFailures.push(job.id);
+      console.error(`[jobs] stale job sweep could not settle job ${job.id}`, err);
     }
   }
   return { reconciled, releaseFailures };
+}
+
+/** Settles one stale job, re-checking the cutoff in the same UPDATE, so a
+ * run that heartbeats in between is left alone. True when this call won. */
+async function settleStaleOrThrow(
+  db: Db,
+  job: { jobId: string; workspaceId: string },
+  staleBefore: Date,
+  now: Date,
+): Promise<boolean> {
+  const { status } = await settleJob(db, job, {
+    undelivered: "failed",
+    error: RECONCILED_JOB_ERROR,
+    onlyIf: lt(generationJobs.updatedAt, staleBefore),
+    now,
+  });
+  return status !== null;
+}
+
+async function settleStale(
+  db: Db,
+  job: { jobId: string; workspaceId: string },
+  staleBefore: Date,
+  now: Date,
+): Promise<boolean> {
+  try {
+    return await settleStaleOrThrow(db, job, staleBefore, now);
+  } catch (err) {
+    console.error(`[jobs] could not settle reconciled job ${job.jobId}`, err);
+    return false;
+  }
 }
