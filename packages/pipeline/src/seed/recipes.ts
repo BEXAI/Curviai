@@ -120,6 +120,15 @@ Return one entry per requested module, with its type, a headline and its lines. 
 Use only facts from the product facts or the seller's note. Never state a number, measurement, percentage, time, count, rating or price unless the seller's note gives that exact figure. Never make a medical, health, body, efficacy, safety or guarantee claim, and never compare with other brands. For the results module describe what everyday use looks like in plain terms. For the ingredients module list materials or ingredients exactly as named. For how to use write steps in order, each starting with a verb, without numbering them.
 Plain spoken words only: no emojis, no arrows, no dashes as punctuation, no ALL CAPS, no exclamation marks, and never "best", "number one" or "guaranteed". If the facts do not support enough lines for a module, return fewer lines rather than inventing any.`;
 
+/** Copy generator version 3 (docs/phases/PHASE_16.md workstream 3, ad
+ * copy): version 2's module rules, verbatim, plus headlines and calls to
+ * action for the ad variants the planner already made. The claims guard and
+ * the placement text limits still apply after the call, and the planner's
+ * own lines stay the fallback, so an answer never adds, drops or reprices
+ * a shot. */
+const COPY_GENERATOR_V3_SYSTEM = `${COPY_GENERATOR_V2_SYSTEM}
+The message may also hold an ads section for static ad images: variants (how many headlines to write), headlineMaxChars, callsToAction (how many calls to action to write) and ctaMaxChars. When it does, also return ads with that many headlines and calls to action. Each headline is 2 to 6 words, says one thing a shopper gains from the product using only the product facts or the seller's note, and differs from every other headline; use the product name in at most one of them. Each call to action is 2 to 4 plain words inviting the shopper to look or buy, such as Shop now, and differs from the others. Keep each within its character limit and follow every rule above. When there is no ads section, or the facts do not support enough headlines, return fewer or empty lists rather than inventing any. When there are no modules to write, return an empty modules list.`;
+
 const QC_JUDGE_SYSTEM = `You compare a generated product image to the original product photo. The product must be the same physical item. Check label text, logos, shape, proportions, color, number of items, and realism of shadow and scale. Deterministic metrics are provided; trust them over your impression. Output QCVerdict JSON. If fidelity is below 0.9, explain the single most important fix in repairHint as an instruction for the image model.`;
 
 /** Target picker version 1 (docs/phases/PHASE_13.md, inventory tie
@@ -183,6 +192,14 @@ export const addedOverlaysIntake = { key: "intake_normalizer", minVersion: 5 } a
  * row (a worker ahead of the re-seed) takes the compiled version 2 instead.
  */
 export const aplusCopyRecipe = { key: "copy_generator", minVersion: 2 } as const;
+
+/**
+ * The first copy_generator version whose prompt writes ad headlines and
+ * calls to action (version 3 above). Send the ads section (packCopyRequest)
+ * and read PackCopyResult only from this version on; with an older assigned
+ * row the ad variants keep the planner's lines.
+ */
+export const adCopyRecipe = { key: "copy_generator", minVersion: 3 } as const;
 
 export const recipeSeedRows: RecipeRow[] = [
   {
@@ -280,6 +297,16 @@ export const recipeSeedRows: RecipeRow[] = [
     model: "claude-haiku-4-5-20251001",
     fallbackModels: ["claude-sonnet-5"],
     body: { system: COPY_GENERATOR_V2_SYSTEM, maxTokens: 2048 },
+    // Retired by version 3; kept so the table keeps its history.
+    active: false,
+  },
+  {
+    key: "copy_generator",
+    version: 3,
+    stage: "copy",
+    model: "claude-haiku-4-5-20251001",
+    fallbackModels: ["claude-sonnet-5"],
+    body: { system: COPY_GENERATOR_V3_SYSTEM, maxTokens: 2048 },
     active: true,
   },
   {
