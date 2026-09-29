@@ -10,8 +10,11 @@
 -- hosted MCP server and the CLI: the key is shown once and only its hash is
 -- stored, prefix is the unique public start of the key the server looks it
 -- up by, and a key is revoked (revoked_at), never deleted. Like integrations
--- it guards access to the workspace, so only owners and admins read, create
--- or update keys, and nobody deletes them through a client role.
+-- it guards access to the workspace, so only owners and admins read keys.
+-- No client role inserts, updates or deletes them: the server creates and
+-- revokes keys over the owner connection after its own role, plan and cap
+-- checks. A client UPDATE policy would let an admin rewrite created_by (who
+-- the key acts as), key_hash, scopes or clear revoked_at.
 --
 -- favorites (workstream 6) is one row per workspace and asset. Members read;
 -- owners, admins and editors add and remove; the client seat stays read
@@ -54,18 +57,6 @@ ALTER TABLE "api_keys" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE POLICY "api_keys_select_owner_admin" ON "api_keys"
   FOR SELECT
   USING (workspace_id in (select workspace_id from members where user_id = auth.uid() and role in ('owner','admin')));--> statement-breakpoint
-
-CREATE POLICY "api_keys_insert_owner_admin" ON "api_keys"
-  FOR INSERT
-  WITH CHECK (
-    workspace_id in (select workspace_id from members where user_id = auth.uid() and role in ('owner','admin'))
-    and created_by = auth.uid()
-  );--> statement-breakpoint
-
-CREATE POLICY "api_keys_update_owner_admin" ON "api_keys"
-  FOR UPDATE
-  USING (workspace_id in (select workspace_id from members where user_id = auth.uid() and role in ('owner','admin')))
-  WITH CHECK (workspace_id in (select workspace_id from members where user_id = auth.uid() and role in ('owner','admin')));--> statement-breakpoint
 
 ALTER TABLE "favorites" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 
