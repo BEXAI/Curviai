@@ -45,6 +45,18 @@ export function upscaleLimitText(limit: number = MAX_SOURCE_UPSCALE): string {
   return String(Math.round(limit * 100) / 100);
 }
 
+/**
+ * The enlarge limit as the end of a too small sentence, for the cap the pack
+ * actually uses (keptMaxUpscale): "without enlarging it more than 1.5 times",
+ * or, with Never enlarge my photo (a cap of 1), "without enlarging it, since
+ * you chose Never enlarge my photo".
+ */
+export function enlargeLimitClause(limit: number = MAX_SOURCE_UPSCALE): string {
+  return limit <= 1
+    ? "without enlarging it, since you chose Never enlarge my photo"
+    : `without enlarging it more than ${upscaleLimitText(limit)} times`;
+}
+
 const LEAVE_IT_OUT = "Leave it out";
 
 interface WhiteRequiredChannelCopy {
@@ -166,12 +178,16 @@ export const SHOPIFY_SOFT_NOTE = consistentStyleNote("shopify.product");
  * 900 by 675 pixels, too small for Amazon secondary images without
  * enlarging it more than 1.5 times, so it will be left out there. ..."
  */
-export function tooSmallLine(specId: string, photo?: { width?: number; height?: number } | null): string {
+export function tooSmallLine(
+  specId: string,
+  photo?: { width?: number; height?: number } | null,
+  maxUpscale: number = MAX_SOURCE_UPSCALE,
+): string {
   const size =
     photo?.width !== undefined && photo.height !== undefined
       ? `This photo is ${photo.width} by ${photo.height} pixels, too small`
       : "This photo is too small";
-  return `${size} for ${channelName(specId)} without enlarging it more than ${upscaleLimitText()} times, so it will be left out there. Upload the original from your camera to include it.`;
+  return `${size} for ${channelName(specId)} ${enlargeLimitClause(maxUpscale)}, so it will be left out there. Upload the original from your camera to include it.`;
 }
 
 /** A report note on a white required file when the seller picked another color (control 3). */
@@ -186,6 +202,9 @@ export interface ConflictCopyContext {
   background: "remove" | "keep";
   /** The pack's photos, for the pixel numbers in the too small line. */
   photos?: readonly { id: string; width?: number; height?: number }[];
+  /** The enlarge cap conflictsFor used (keptMaxUpscale), so the too small
+   * line names the seller's own choice. MAX_SOURCE_UPSCALE when absent. */
+  maxUpscale?: number;
 }
 
 /** One heads up line under a channel row or in "Heads up for your channels". */
@@ -230,7 +249,11 @@ export function conflictCopy(conflict: OutputConflict, context: ConflictCopyCont
     case "other_items":
       return { ...base, text: OTHER_ITEMS_KEPT_COPY, specIds: [] };
     case "too_small":
-      return { ...base, text: tooSmallLine(specId ?? "", photoOf(context, conflict.photoId)), specIds: [] };
+      return {
+        ...base,
+        text: tooSmallLine(specId ?? "", photoOf(context, conflict.photoId), context.maxUpscale),
+        specIds: [],
+      };
   }
 }
 

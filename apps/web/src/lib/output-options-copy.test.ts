@@ -119,6 +119,21 @@ describe("conflict copy", () => {
     expect(tooSmallLine("amazon.secondary")).toContain("This photo is too small for Amazon secondary images");
   });
 
+  it("names Never enlarge my photo instead of the enlarge limit when the cap is 1", () => {
+    const line = tooSmallLine("amazon.secondary", { width: 1400, height: 1400 }, 1);
+    expect(line).toBe(
+      "This photo is 1400 by 1400 pixels, too small for Amazon secondary images without enlarging it, since you chose Never enlarge my photo, so it will be left out there. Upload the original from your camera to include it.",
+    );
+    expect(line).not.toContain(String(MAX_SOURCE_UPSCALE));
+    const conflict = { code: "too_small" as const, specId: "amazon.secondary", photoId: "p1" };
+    const photos = [{ id: "p1", width: 1400, height: 1400 }];
+    expect(conflictCopy(conflict, { background: "keep", photos, maxUpscale: 1 }).text).toBe(line);
+    expect(conflictCopy(conflict, { background: "keep", photos }).text).toContain(
+      `more than ${MAX_SOURCE_UPSCALE} times`,
+    );
+    expect(line).not.toMatch(/[–—→←]| - |->|=>/);
+  });
+
   it("merges a Keep pack's heads up into one line per case", () => {
     const keep = resolved({ background: "keep", fit: "pad" }, "#FFFFFF", ["p1"]);
     const photos = [{ id: "p1", width: 400, height: 300, otherItems: true }];

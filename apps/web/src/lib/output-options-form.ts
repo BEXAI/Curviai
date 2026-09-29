@@ -26,6 +26,7 @@ import {
   LOOK_KEYS,
   lookOf,
   keepMediaIdsFor,
+  keptMaxUpscale,
   normalizeOutputOptions,
   originalFitFor,
   outputOptionsKey,
@@ -456,13 +457,16 @@ export function formConflicts(
   return conflictsFor(selected, resolved, conflictPhotos);
 }
 
-/** What the conflict copy needs: the background and the photos' pixel sizes. */
+/** What the conflict copy needs: the background, the photos' pixel sizes
+ * and the enlarge cap formConflicts used (Never enlarge my photo gives 1). */
 export function conflictContextOf(
   background: OutputChoices["background"],
   photos: readonly FormPhoto[],
+  resolved?: Pick<ResolvedOutputOptions, "enlarge"> | null,
 ): ConflictCopyContext {
   return {
     background,
+    maxUpscale: keptMaxUpscale(resolved),
     photos: photos.map((photo) => ({
       id: photo.id,
       ...(typeof photo.width === "number" ? { width: photo.width } : {}),
@@ -905,10 +909,12 @@ export function moreOptionsVisibility(choices: OutputChoices, context: MoreOptio
  * The More options controls that differ from the card the choices started
  * from: the photo shape (Trim included) and every P1 field the body sends.
  * Number of scenes counts only as a count; Off is an Extra images change.
+ * The P1 fields are counted over the effective choices, the ones the body is
+ * built from, so a scene count held while scenes are paused is not counted.
  */
-export function moreOptionsChanged(state: OutputFormState): number {
+export function moreOptionsChanged(state: OutputFormState, context: EffectiveContext = {}): number {
   const shape = formFit(state) === LOOK_PRESETS[state.lookBase].fit ? 0 : 1;
-  return shape + Object.keys(p1OutputFields(state.choices, state.more)).length;
+  return shape + Object.keys(p1OutputFields(effectiveChoices(state.choices, context), state.more)).length;
 }
 
 /** "More options", or "More options, 2 changed". */
