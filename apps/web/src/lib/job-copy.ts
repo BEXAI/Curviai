@@ -199,6 +199,10 @@ const HELD_RETURNED = "Credits held for it went back to your balance.";
 const HELD_RUN_AGAIN = "Credits held for it went back to your balance, so you can run it again.";
 const NOTHING_CHARGED = "Nothing was charged.";
 const CONTACT = "email hello@curvi.ai";
+const WRONG_CALL = "If your product is something else, use a different photo that shows only the product and start a new pack.";
+/** Photo guidance for a refused photo (PHASE_14 item 3.3). */
+const PHOTO_TIPS =
+  "For the best result, photograph one product on a plain background, with the whole product in the frame. A note that names the product, like the silver watch, also helps us find it. Then start a new pack.";
 
 /**
  * Seller copy for every failure a pack can end on, by what the seller can do
@@ -211,11 +215,19 @@ export const JOB_ERROR_COPY = {
   // The photo cannot be used.
   screenshot: `This photo looks like a screenshot, not a photo of your product. Take a photo of the product with your camera and start a new pack. ${NOTHING_CHARGED}`,
   multipleProducts: `We found more than one product in this photo and could not tell which one you meant. Start a new pack and say which product to feature, or use a photo with only that product. ${NOTHING_CHARGED}`,
-  noProduct: `We could not find a product to sell in your photos. Take a clear photo of just the product, then start a new pack. ${NOTHING_CHARGED}`,
+  noProduct: `We could not find a product to sell in your photos. ${PHOTO_TIPS} ${NOTHING_CHARGED}`,
   cutout: `We could not separate the product from the background in your photo. Take a sharp photo of the product on a plain background, then start a new pack. ${NOTHING_CHARGED}`,
   noShotPassed: `None of the shots in this pack passed our quality checks, so nothing was charged. Each shot below says why. A sharp photo of the product on a plain background often helps.`,
   // Content blocked.
-  flagged: `Your photos were flagged for a manual review, so we did not make a pack from them. ${NOTHING_CHARGED} If you think this is a mistake, ${CONTACT}.`,
+  // Content Curvi never makes, whatever the brand (docs/phases/PHASE_14.md
+  // workstream 2). There is no review queue, so each line names the
+  // category and says what to do now. Brands and logos never land here.
+  blockedAdult: `Curvi does not make images of nudity or adult content, so we did not make a pack from this photo. ${NOTHING_CHARGED} ${WRONG_CALL}`,
+  blockedWeapons: `Curvi does not make images of weapons, so we did not make a pack from this photo. ${NOTHING_CHARGED} ${WRONG_CALL}`,
+  blockedDrugs: `Curvi does not make images of drugs, so we did not make a pack from this photo. ${NOTHING_CHARGED} ${WRONG_CALL}`,
+  blockedProhibited: `Curvi does not make images of goods that are banned from sale or recalled, so we did not make a pack from this photo. ${NOTHING_CHARGED} ${WRONG_CALL}`,
+  blockedPerson: `This photo shows a person as the main subject, and Curvi makes images of products. ${NOTHING_CHARGED} Use a photo where the product is the main subject and start a new pack. A product worn on a wrist or held in a hand is fine.`,
+  flagged: `We could not make a pack from this photo because of what it shows. ${NOTHING_CHARGED} ${WRONG_CALL}`,
   contentBlocked: `The image service would not make images from this photo under its content rules, so this pack stopped. ${NOTHING_CHARGED} Try a different photo of the product.`,
   // Limits and credits.
   credits: `There were not enough credits to start this pack. ${NOTHING_CHARGED} Top up or pick fewer channels.`,
@@ -268,12 +280,24 @@ function isBusyStatus(r: string): boolean {
   return status !== null && (status >= 500 || status === 408 || status === 429);
 }
 
+/** pipeline-runner.ts MODERATION_BLOCKED_PREFIX, and the "flagged for"
+ * wording older jobs stored. */
+function isModeration(r: string): boolean {
+  return r.startsWith("moderation stopped this pack") || r.includes("flagged for") || r.includes("manual review");
+}
+
+/** pipeline-runner.ts NO_SELLABLE_PRODUCT_MESSAGE, lowercased. */
+const NO_PRODUCT_START = "intake found no sellable product";
+
 /**
  * Ordered: the first match wins. Our own plain messages come first, then
  * photo and content problems, limits, and last the provider and runtime
  * failures, whose raw text can name anything.
  */
 const RULES: readonly Rule[] = [
+  // The runner's no product message carries intake's labels, which are
+  // model text, so it is matched on its fixed start before anything else.
+  ["noProduct", (r) => r.startsWith(NO_PRODUCT_START)],
   ["screenshot", has("screenshot", "screen capture")],
   // pipeline-runner.ts MULTIPLE_PRODUCTS_MESSAGE: several products and no
   // single match to the seller's note.
@@ -290,8 +314,14 @@ const RULES: readonly Rule[] = [
   // reserve_credits SQL exception). A provider's own "Insufficient credits"
   // answer is our account, so it is left to the setup rule below.
   ["credits", has("credit reservation failed", "insufficient credit balance")],
-  // Intake and analysis gates (trigger/src/pipeline-runner.ts).
-  ["flagged", (r) => r.includes("flagged for") || r.includes("manual review")],
+  // Intake and analysis gates (trigger/src/pipeline-runner.ts). Older jobs
+  // stored "flagged for ... manual review"; they map to the same lines.
+  ["blockedAdult", (r) => isModeration(r) && (r.includes("nudity") || r.includes("adult"))],
+  ["blockedWeapons", (r) => isModeration(r) && r.includes("weapon")],
+  ["blockedDrugs", (r) => isModeration(r) && r.includes("drugs")],
+  ["blockedProhibited", (r) => isModeration(r) && r.includes("prohibited")],
+  ["blockedPerson", (r) => isModeration(r) && r.includes("main subject")],
+  ["flagged", isModeration],
   ["noProduct", has("no sellable product", "found no product", "no product was found", "no product to place")],
   ["cutout", has("separate the product from its background")],
   ["readFailed", has("failed schema validation")],
@@ -383,7 +413,69 @@ export function jobErrorKind(raw: string | null | undefined): JobErrorKind | nul
  */
 export function publicJobError(raw: string | null | undefined): string | null {
   const kind = jobErrorKind(raw);
+  if (kind === "noProduct") {
+    return noProductCopy(raw ?? "");
+  }
   return kind === null ? null : JOB_ERROR_COPY[kind];
+}
+
+/** A label from intake reduced to plain words: letters, spaces and
+ * apostrophes only, so no digits, brackets or symbols reach the page. */
+function plainLabel(label: string): string {
+  return label
+    .replace(/[^A-Za-z' ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .slice(0, 40)
+    .trim();
+}
+
+/** Words that never belong in a product label on the page: service names
+ * and engineering terms. A label with one is dropped, not shown. */
+const NOT_A_LABEL =
+  /anthropic|claude|gemini|google|openai|gpt|photoroom|\bbfl\b|flux|\bfal\b|replicate|responded|status|schema|provider|micros|circuit|breaker|stop_reason|json|error/;
+
+function listWords(items: readonly string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+function splitFirstSentence(text: string): [string, string] {
+  const end = text.indexOf(". ");
+  return end < 0 ? [text, ""] : [text.slice(0, end + 1), text.slice(end + 2)];
+}
+
+/**
+ * The no product line (PHASE_14 item 3.3). When the runner stored what
+ * intake saw (pipeline-runner.ts noSellableProductMessage: "Intake saw: a;
+ * b" and "Not sharp"), the line says so before the photo tips. Model text
+ * is reduced to plain words first; the rest is JOB_ERROR_COPY.noProduct.
+ */
+export function noProductCopy(raw: string): string {
+  const base = JOB_ERROR_COPY.noProduct;
+  const [lead, rest] = splitFirstSentence(base);
+  const extra: string[] = [];
+  const marker = "intake saw:";
+  const sawAt = raw.toLowerCase().indexOf(marker);
+  if (sawAt >= 0) {
+    const labels = [
+      ...new Set(
+        raw
+          .slice(sawAt + marker.length)
+          .split(";")
+          .map(plainLabel)
+          .filter((label) => label.length > 1 && !NOT_A_LABEL.test(label)),
+      ),
+    ].slice(0, 3);
+    if (labels.length > 0) {
+      extra.push(`We saw ${listWords(labels)}, but could not tell that any of it is a product for sale.`);
+    }
+  }
+  if (/\. not sharp/i.test(raw)) {
+    extra.push("The photo also looked blurry.");
+  }
+  return extra.length === 0 ? base : [lead, ...extra, rest].join(" ");
 }
 
 export interface PackTally {
