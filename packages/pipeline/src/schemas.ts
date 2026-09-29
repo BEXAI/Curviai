@@ -39,6 +39,45 @@ export const QCVerdict = z.object({
   repairHint: z.string().max(300)
 });
 
+/**
+ * The seller's note as structured intent (docs/phases/PHASE_13.md), parsed
+ * once by intake and passed to later stages as data, never as free text. It
+ * decides which visible product is featured and what is left out; it can
+ * never change rules, moderation, pricing or channel specs.
+ */
+export const SellerIntent = z.object({
+  /** The one product the seller wants featured, in plain words, or null. */
+  featureOnly: z.string().max(120).nullable(),
+  /** Visible things the seller wants left out of every image. */
+  exclude: z.array(z.string().max(120)).max(8),
+  /** Visible text or parts the seller insists stay in the picture. */
+  mustKeep: z.array(z.string().max(120)).max(8),
+  /** Everything else in the note that is about style. */
+  styleNotes: z.string().max(400).nullable(),
+});
+
+/**
+ * A product box normalized to the image: x and y are the top left corner,
+ * width and height the size, each a share (0..1) of the width or height of
+ * the upright image intake was shown. Normalized coordinates survive the
+ * resizing between the photo intake sees and the working copy the cutout
+ * gets; every consumer converts with the size of the image it holds.
+ */
+export const NormalizedBox = z.object({
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  width: z.number().positive().max(1),
+  height: z.number().positive().max(1),
+});
+
+/** One product intake saw in an image, and whether it is the one the
+ * seller's note asks for. */
+export const IntakeProduct = z.object({
+  label: z.string().max(120),
+  box: NormalizedBox,
+  matchesIntent: z.enum(["yes", "no", "unclear"]),
+});
+
 /** Result shape of the intake normalizer recipe: one entry per uploaded image. */
 export const IntakeImageResult = z.object({
   sellableProduct: z.boolean(),
@@ -60,6 +99,10 @@ export const IntakeImageResult = z.object({
    * a camera photo of the product. Optional so answers from intake recipe
    * version 1, which never asked, still parse. */
   screenshot: z.boolean().optional(),
+  /** Every distinct product visible, with its box and whether it matches
+   * the seller's note (intake version 3). Optional so answers from versions
+   * 1 and 2, which never returned it, still parse and behave as before. */
+  products: z.array(IntakeProduct).max(12).optional(),
   flags: z.object({
     nudity: z.boolean(),
     weapons: z.boolean(),
@@ -69,7 +112,12 @@ export const IntakeImageResult = z.object({
   }),
 });
 
-export const IntakeResult = z.object({ images: z.array(IntakeImageResult).min(1) });
+export const IntakeResult = z.object({
+  images: z.array(IntakeImageResult).min(1),
+  /** The seller's note parsed into intent (intake version 3). Optional so
+   * version 1 and 2 answers still parse. */
+  sellerIntent: SellerIntent.optional(),
+});
 
 export type Hex = z.infer<typeof Hex>;
 export type ProductProfile = z.infer<typeof ProductProfile>;
@@ -79,6 +127,9 @@ export type ShotMethod = Shot["method"];
 export type ShotList = z.infer<typeof ShotList>;
 export type QCVerdict = z.infer<typeof QCVerdict>;
 export type IntakeImageResult = z.infer<typeof IntakeImageResult>;
+export type SellerIntent = z.infer<typeof SellerIntent>;
+export type NormalizedBox = z.infer<typeof NormalizedBox>;
+export type IntakeProduct = z.infer<typeof IntakeProduct>;
 export type IntakeResult = z.infer<typeof IntakeResult>;
 
 /** JSON Schema for a Zod schema, ready to send as a tool or response schema. */

@@ -53,6 +53,7 @@ import {
   planShots,
   printableSellerLines,
   qcKindForSpec,
+  significantComponents,
   trimToBudget,
   withSellerAngles,
   IntakeResult,
@@ -63,7 +64,9 @@ import {
   type AngleRole,
   type DigitalSourceKind,
   type FidelityReport,
+  type NormalizedBox,
   type PackAsset,
+  type SellerIntent,
   type PixelCheckReport,
   type PlanOptions,
   type RawImage,
@@ -262,6 +265,11 @@ export interface JobStore {
    * Display and analysis only: the runner never fails a pack because this
    * failed. */
   saveRecipeVariants?(jobId: string, variants: ReturnType<typeof recipeVariantsOf>): Promise<void>;
+  /** Records the seller intent intake parsed from the note
+   * (generation_jobs.seller_intent), only while the job is live and this
+   * run's, so follow ups and retries keep what the seller asked for. The
+   * runner never fails a pack because this failed. */
+  saveSellerIntent?(jobId: string, intent: SellerIntent): Promise<void>;
   /** Delivers the files of a pack follow up (a retried shot or an added
    * angle) into a pack that was already delivered: uploads them and records
    * their asset_variants rows, only while the job is live, like savePack.
@@ -360,6 +368,11 @@ export class InMemoryJobStore implements JobStore {
   readonly assets: StoredAsset[] = [];
   readonly packs: StoredPack[] = [];
   readonly followUps: StoredFollowUpFiles[] = [];
+  readonly sellerIntents = new Map<string, SellerIntent>();
+
+  async saveSellerIntent(jobId: string, intent: SellerIntent): Promise<void> {
+    this.sellerIntents.set(jobId, intent);
+  }
 
   async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<boolean> {
     this.states.push({ jobId, state, meta });
@@ -441,6 +454,23 @@ export interface ShotGenerateArgs {
   brandColors?: string[];
   /** Workspace brand kit fonts and logo, for template stills. */
   brand?: BrandStyle;
+  /** The product in the shot's photo this pack is for, when intake found
+   * more than one or matched the seller's note (docs/phases/PHASE_13.md). */
+  target?: ProductTarget;
+}
+
+/**
+ * The product in one photo a pack is for. With a box, the photo showed other
+ * products too: the generator crops to the box before the cutout and keeps
+ * only the cutout pieces that overlap it, and every delivered still must
+ * hold a single product. Without a box the photo showed only this product
+ * and is used whole, exactly as before.
+ */
+export interface ProductTarget {
+  label: string;
+  box: NormalizedBox | null;
+  /** The other products in the photo, which are removed from every image. */
+  others: Array<{ label: string; box: NormalizedBox }>;
 }
 
 /**
@@ -482,6 +512,12 @@ export interface ShotContext {
   /** The run's key (generation_jobs.run_key), so a shot, in process or in a
    * fan out subtask, checks liveness against its own run. */
   runKey?: string;
+  /** The product each photo is for, by media id (docs/phases/PHASE_13.md).
+   * A photo without an entry is used whole, as before. */
+  targets?: Record<string, ProductTarget>;
+  /** What the seller asked to leave out, from the parsed note. The QC judge
+   * sees it as data next to the target's label. */
+  exclude?: string[];
 }
 
 /** IPTC digital source marking per plan 5.7.2: composited scenes carry
@@ -893,6 +929,103 @@ export function screenshotMediaIds(intake: IntakeResult, judged: readonly string
     }
   });
   return flagged;
+}
+
+/** Job error when a photo shows more than one product and intake could not
+ * tell which one the seller means (docs/phases/PHASE_13.md). Raised before
+ * any paid generation; credits held for the pack are released by the
+ * failure path. The web app maps it to seller copy. */
+export const MULTIPLE_PRODUCTS_MESSAGE =
+  "We found more than one product in this photo and could not tell which one you meant, so nothing was charged.";
+
+/** Shot reason when a delivered still holds more than one product after
+ * isolation. The web app maps it to seller copy. */
+export const SHOT_EXTRA_ITEMS =
+  "This image still showed more than one product, so it was left out and not charged.";
+
+/** Photo roles that show several items on purpose, so several products in
+ * them are never ambiguous. */
+const MULTI_ITEM_ANGLES: ReadonlySet<string> = new Set(["in_the_box"]);
+
+/** The product each photo is for, and the photos where intake could not
+ * tell. */
+export interface TargetSelection {
+  targets: Record<string, ProductTarget>;
+  /** Media ids of photos with several products and no single match. */
+  ambiguous: string[];
+}
+
+/**
+ * Picks the product each photo is for from intake's per image products
+ * (intake version 3). A photo whose answer lists no products (versions 1
+ * and 2) gets no target and is used whole, exactly as before. One product:
+ * that one, used whole. Several: the one intake matched to the seller's
+ * note, cropped and isolated; none or more than one match makes the photo
+ * ambiguous, except for photos that show several items on purpose (the in
+ * the box role). When intake's answers cannot be matched to the photos, no
+ * target is set, as with the screenshot flags.
+ */
+export function selectTargets(
+  intake: IntakeResult,
+  judged: ReadonlyArray<{ mediaId: string; angle?: AngleRole }>,
+  jobId: string,
+): TargetSelection {
+  const selection: TargetSelection = { targets: {}, ambiguous: [] };
+  if (!intake.images.some((image) => (image.products?.length ?? 0) > 0)) {
+    return selection;
+  }
+  if (intake.images.length !== judged.length) {
+    console.warn(
+      `[runner] job ${jobId} intake returned ${intake.images.length} verdicts for ${judged.length} photos; products are not mapped to photos`,
+    );
+    return selection;
+  }
+  intake.images.forEach((image, i) => {
+    const photo = judged[i];
+    const products = image.products ?? [];
+    if (image.screenshot === true || products.length === 0) {
+      return;
+    }
+    if (products.length === 1) {
+      selection.targets[photo.mediaId] = { label: products[0].label, box: null, others: [] };
+      return;
+    }
+    if (photo.angle && MULTI_ITEM_ANGLES.has(photo.angle)) {
+      return;
+    }
+    const matches = products.filter((p) => p.matchesIntent === "yes");
+    if (matches.length !== 1) {
+      selection.ambiguous.push(photo.mediaId);
+      return;
+    }
+    const [chosen] = matches;
+    selection.targets[photo.mediaId] = {
+      label: chosen.label,
+      box: chosen.box,
+      others: products.filter((p) => p !== chosen).map((p) => ({ label: p.label, box: p.box })),
+    };
+  });
+  return selection;
+}
+
+/** The labels a pack features and removes, for the compliance report: only
+ * when a photo's product was isolated from others, since only then was
+ * anything removed. */
+export function enforcedIntent(
+  targets: Record<string, ProductTarget>,
+  exclude: readonly string[] = [],
+): { featured: string[]; removed: string[] } | null {
+  const featured = new Set<string>();
+  const removed = new Set<string>(exclude);
+  for (const target of Object.values(targets)) {
+    if (!target.box) continue;
+    featured.add(target.label);
+    for (const other of target.others) removed.add(other.label);
+  }
+  if (featured.size === 0) {
+    return null;
+  }
+  return { featured: [...featured], removed: [...removed] };
 }
 
 interface LlmCall<T> {
@@ -1349,6 +1482,7 @@ async function runOutput(
 ): Promise<OutputRun> {
   const spec = getSpec(specId);
   const target: Shot = { ...shot, channels: [specId] };
+  const productTarget = ctx.targets?.[shot.sourceMediaId];
   let attempt = 1;
   let repairHint: string | undefined;
   let useFallbackProvider = false;
@@ -1375,6 +1509,7 @@ async function runOutput(
         workspaceId: ctx.workspaceId,
         brandColors: ctx.brandColors,
         ...(ctx.brand ? { brand: ctx.brand } : {}),
+        ...(productTarget ? { target: productTarget } : {}),
       });
     } catch (err) {
       // Whatever ended the attempt, the provider spend it made stays on the
@@ -1410,6 +1545,25 @@ async function runOutput(
     }
     const { pixel, fidelity, fidelityInputsMissing, measured } = checked;
     const fidelityOk = fidelityInputsMissing ? false : (fidelity?.pass ?? true);
+    // A still whose product was isolated from others must hold exactly one
+    // product. The mask does not change on a retry, so this ends the output
+    // at once, before the judge is paid for.
+    const extra = extraItemsFailure(productTarget, generation);
+    if (extra) {
+      return {
+        summary: {
+          specId,
+          status: "needs_review",
+          attempts: attempt,
+          usedFallbackProvider: useFallbackProvider,
+          verdict: extra,
+          pixelPass: pixel.pass,
+          fidelityPass: fidelityInputsMissing ? false : fidelity ? fidelity.pass : null,
+          measured,
+        },
+        stopShot: false,
+      };
+    }
 
     let verdict: QCVerdict;
     try {
@@ -1419,6 +1573,9 @@ async function runOutput(
         QCVerdict,
         {
           shot: { id: shot.id, type: shot.type, scene: shot.scene, channel: specId },
+          // The product the image must show and what must not appear, as
+          // data; the judge fails a shot showing more with extra_items.
+          ...(productTarget ? { sellerIntent: judgeIntent(productTarget, ctx.exclude) } : {}),
           deterministic: {
             pixel: { pass: pixel.pass, checks: pixel.checks },
             fidelity: fidelity
@@ -1493,6 +1650,35 @@ async function runOutput(
   }
 }
 
+/** The seller intent the QC judge sees for a shot: the product the image
+ * must show and every product or thing that must not appear. */
+export function judgeIntent(
+  target: ProductTarget,
+  exclude: readonly string[] = [],
+): { featured: string; exclude: string[] } {
+  return {
+    featured: target.label,
+    exclude: [...new Set([...target.others.map((o) => o.label), ...exclude])],
+  };
+}
+
+/**
+ * The deterministic extra items check (docs/phases/PHASE_13.md item 6): a
+ * still whose product was isolated from other products fails when its mask
+ * holds more than one significant piece. Photos with a single product (no
+ * box) are not checked, so a pair of earrings shot alone still ships.
+ */
+export function extraItemsFailure(target: ProductTarget | undefined, generation: ShotGeneration): QCVerdict | null {
+  if (!target?.box || !generation.mask) {
+    return null;
+  }
+  const pieces = significantComponents(generation.mask).length;
+  if (pieces <= 1) {
+    return null;
+  }
+  return { pass: false, fidelity: 0, issues: ["extra_items"], repairHint: SHOT_EXTRA_ITEMS };
+}
+
 /** The file a passing output delivers: its encoded bytes and mask PNG,
  * decoded again only when the packager checks it. */
 async function packAssetFor(
@@ -1540,6 +1726,7 @@ async function deriveOutput(
   if ((await deps.store.heartbeat?.(ctx.jobId)) === false) {
     return stop("The job was stopped before this shot finished.", true);
   }
+  const productTarget = ctx.targets?.[shot.sourceMediaId];
   const args: ShotGenerateArgs = {
     shot: target,
     attempt: 1,
@@ -1548,6 +1735,7 @@ async function deriveOutput(
     workspaceId: ctx.workspaceId,
     brandColors: ctx.brandColors,
     ...(ctx.brand ? { brand: ctx.brand } : {}),
+    ...(productTarget ? { target: productTarget } : {}),
   };
   let generation: ShotGeneration;
   try {
@@ -1576,7 +1764,7 @@ async function deriveOutput(
     return stop("We could not check this shot, so it needs review.", false, errorDetail(err));
   }
   const { pixel, fidelity, fidelityInputsMissing, measured } = checked;
-  const verdict = deterministicVerdict(pixel, fidelity);
+  const verdict = extraItemsFailure(productTarget, generation) ?? deterministicVerdict(pixel, fidelity);
   const pass = verdict.pass && !fidelityInputsMissing;
   const summary: ShotOutputSummary = {
     specId,
@@ -2278,6 +2466,17 @@ export async function runGeneratePack(
     if (!intake.value) {
       throw new Error("Intake response failed schema validation");
     }
+    // The seller's note as structured intent (intake version 3), kept on
+    // the job so follow ups and retries keep it. Data only: never a reason
+    // to fail the pack.
+    const sellerIntent = intake.value.sellerIntent;
+    if (sellerIntent) {
+      try {
+        await store.saveSellerIntent?.(input.jobId, sellerIntent);
+      } catch (intentErr) {
+        console.warn(`[runner] could not record the seller intent for job ${input.jobId}`, intentErr);
+      }
+    }
     // Screenshots (docs/phases/PHASE_12.md A5): a screen capture is never
     // the product, so a photo intake flags is left out of analysis, planning
     // and every shot. A pack of nothing but screenshots stops here, before
@@ -2309,6 +2508,17 @@ export async function runGeneratePack(
     if (intakeBlock.length > 0) {
       throw new Error(`This upload was flagged for ${intakeBlock.join(", ")} and needs a manual review before a pack can run`);
     }
+    // The product each photo is for (docs/phases/PHASE_13.md). A photo with
+    // several products and no single match to the seller's note stops the
+    // pack here, before any paid generation; the failure path releases the
+    // held credits.
+    const selection = selectTargets(intake.value, judgedImages, input.jobId);
+    const ambiguous = selection.ambiguous.filter((mediaId) => !screenshots.has(mediaId));
+    if (ambiguous.length > 0) {
+      throw new Error(MULTIPLE_PRODUCTS_MESSAGE);
+    }
+    const targets = selection.targets;
+    const exclude = sellerIntent?.exclude ?? [];
 
     const analysis = await bookedLlm(
       llmJson<ProductProfile>(
@@ -2465,6 +2675,8 @@ export async function runGeneratePack(
       recipes,
       ...(input.brand ? { brand: input.brand } : {}),
       ...(input.runKey ? { runKey: input.runKey } : {}),
+      ...(Object.keys(targets).length > 0 ? { targets } : {}),
+      ...(exclude.length > 0 ? { exclude } : {}),
     };
     // Pack level spend cap: a shared tracker gates every generation attempt
     // across the parallel fan out, so a runaway pack stops mid flight. The
@@ -2558,6 +2770,7 @@ export async function runGeneratePack(
     const built = await buildPack(packAssets, families, {
       outDir: deps.packOutDir,
       writeFiles: true,
+      intent: enforcedIntent(targets, exclude),
     });
     if (built.report.files.length === 0) {
       throw new Error("None of the shots in this pack could be delivered, so nothing was charged.");

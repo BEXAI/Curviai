@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { CHANNEL_LIMIT_REASON } from "@curvi/pipeline";
-import { HARMONIZE_SHAPE_REFUSED } from "@curvi/trigger/live-runtime";
+import { HARMONIZE_SHAPE_REFUSED, ISOLATION_FAILED, PRODUCT_TOUCHING } from "@curvi/trigger/live-runtime";
 import {
   SHOT_CHANNEL_FULL,
   SHOT_CONTENT_BLOCKED,
+  SHOT_EXTRA_ITEMS,
   SHOT_NOT_DELIVERED,
   SHOT_PROVIDER_TROUBLE,
 } from "@curvi/trigger/runner";
@@ -104,6 +105,9 @@ describe("needsReviewNote", () => {
       /pack reached its spending limit/,
     ],
     ["unchecked shot", "We could not check this shot, so it needs review.", /could not run our checks/],
+    ["PRODUCT_TOUCHING", PRODUCT_TOUCHING, /touches another product.*photo with only that product/],
+    ["SHOT_EXTRA_ITEMS", SHOT_EXTRA_ITEMS, /still showed another product next to the one you picked/],
+    ["ISOLATION_FAILED", ISOLATION_FAILED, /could not find the product clearly in your photo/],
   ];
 
   it.each(RUNNER_HINTS)("maps the runner's %s hint to its own plain reason", (_name, hint, says) => {

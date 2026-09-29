@@ -138,6 +138,15 @@ export function needsReviewNote(hint: string | null | undefined): string {
     reason = "We could not run our checks on this shot, so we held it back.";
   } else if (h.includes("screenshot") || h.includes("screen capture")) {
     reason = "This photo looks like a screenshot, not a photo of your product. Take a photo of the product with your camera.";
+  } else if (h.includes("touches another product")) {
+    // live-runtime.ts PRODUCT_TOUCHING: the picked product touches another
+    // one, so the cutout could not keep only it.
+    reason =
+      "The product you picked touches another product in your photo, so we could not separate them. Take a photo with only that product and start a new pack.";
+  } else if (h.includes("more than one product")) {
+    // pipeline-runner.ts SHOT_EXTRA_ITEMS: the image still held a second
+    // product after the others were removed.
+    reason = "This image still showed another product next to the one you picked, so we held it back.";
   } else if (h.includes("separate the product from its background")) {
     // live-runtime.ts SEGMENTATION_FAILED: the cutout kept the background.
     reason =
@@ -147,7 +156,8 @@ export function needsReviewNote(hint: string | null | undefined): string {
     h.includes("source photo") ||
     h.includes("no product was found") ||
     h.includes("found no product") ||
-    h.includes("no product to place")
+    h.includes("no product to place") ||
+    h.includes("find the product you picked")
   ) {
     reason = "We could not find the product clearly in your photo. A sharp photo on a plain background usually fixes this.";
   } else if (h.includes("would be cut off")) {
@@ -200,6 +210,7 @@ const CONTACT = "email hello@curvi.ai";
 export const JOB_ERROR_COPY = {
   // The photo cannot be used.
   screenshot: `This photo looks like a screenshot, not a photo of your product. Take a photo of the product with your camera and start a new pack. ${NOTHING_CHARGED}`,
+  multipleProducts: `We found more than one product in this photo and could not tell which one you meant. Start a new pack and say which product to feature, or use a photo with only that product. ${NOTHING_CHARGED}`,
   noProduct: `We could not find a product to sell in your photos. Take a clear photo of just the product, then start a new pack. ${NOTHING_CHARGED}`,
   cutout: `We could not separate the product from the background in your photo. Take a sharp photo of the product on a plain background, then start a new pack. ${NOTHING_CHARGED}`,
   noShotPassed: `None of the shots in this pack passed our quality checks, so nothing was charged. Each shot below says why. A sharp photo of the product on a plain background often helps.`,
@@ -264,6 +275,9 @@ function isBusyStatus(r: string): boolean {
  */
 const RULES: readonly Rule[] = [
   ["screenshot", has("screenshot", "screen capture")],
+  // pipeline-runner.ts MULTIPLE_PRODUCTS_MESSAGE: several products and no
+  // single match to the seller's note.
+  ["multipleProducts", has("more than one product")],
   // The web app's own settle and reconcile messages (lib/jobs/enqueue.ts
   // SETTLED_JOB_MESSAGES, services/reconcile.ts, services/db.ts abandonJob).
   ["interrupted", has("interrupted before finishing")],

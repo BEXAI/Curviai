@@ -112,6 +112,36 @@ describe("DbService.createJob with seller inputs", () => {
     expect(payload?.creditBudget).toBe(withInputs);
   });
 
+  it("stores the seller's note on the job and sends it to the worker (0020)", async () => {
+    const ws = await workspaceFor(OWNER);
+    const note = "Feature only the blue bottle, leave the red one out";
+    const result = await service().createJob(ws, {
+      productId: "new",
+      channels: CHANNELS,
+      mode: "listing",
+      idempotencyKey: nextKey(),
+      uploads: [upload(ws, "two-bottles.jpg", "front")],
+      userDescription: note,
+    });
+    expect(result.outcome).toBe("created");
+    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws));
+    expect(job.sellerNote).toBe(note);
+    // Intake fills the parsed intent in once the run starts.
+    expect(job.sellerIntent).toBeNull();
+    expect(enqueue.fn.mock.calls[0]?.[0]?.userDescription).toBe(note);
+
+    const ws2 = await workspaceFor(OWNER);
+    await service().createJob(ws2, {
+      productId: "new",
+      channels: CHANNELS,
+      mode: "listing",
+      idempotencyKey: nextKey(),
+      uploads: [upload(ws2, "mug.jpg", "front")],
+    });
+    const [plain] = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws2));
+    expect(plain.sellerNote).toBeNull();
+  });
+
   it("keeps saved details a later pack leaves out, and clears the ones it empties", async () => {
     const ws = await workspaceFor(OWNER);
     const [p] = await db
