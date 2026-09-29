@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { Button, cn } from "@curvi/ui";
 import { track } from "@/lib/track";
-import { uploadSourcePhoto } from "@/lib/upload-photo";
+import { PHOTO_ACCEPT, uploadSourcePhoto } from "@/lib/upload-photo";
 import type { JobShotView, JobView } from "@/lib/services/types";
 
 /**
@@ -240,7 +240,7 @@ export function AddPhotoButton({
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept={PHOTO_ACCEPT}
         className="sr-only"
         aria-label={`Photo of the ${angleName}`}
         data-testid="add-photo-input"

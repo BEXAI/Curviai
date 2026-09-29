@@ -5,6 +5,8 @@
  * takes, returned as one result the caller renders.
  */
 
+import { ALLOWED_IMAGE_CONTENT_TYPES } from "@/lib/upload-validation";
+
 export type PhotoUploadResult =
   | { ok: true; key: string; sha256: string }
   | { ok: false; message: string };
@@ -14,9 +16,15 @@ export async function sha256Hex(file: Blob): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** The file picker's accept list: exactly the image types the sign route
+ * takes, so a HEIC or AVIF file is not offered and then refused. */
+export const PHOTO_ACCEPT = ALLOWED_IMAGE_CONTENT_TYPES.join(",");
+
+export const PHOTO_TYPE_REFUSED = "Pick a JPG, PNG or WebP photo.";
+
 export async function uploadSourcePhoto(file: File): Promise<PhotoUploadResult> {
-  if (!file.type.startsWith("image/")) {
-    return { ok: false, message: "Pick a photo file, such as a JPG or PNG." };
+  if (!(ALLOWED_IMAGE_CONTENT_TYPES as readonly string[]).includes(file.type)) {
+    return { ok: false, message: PHOTO_TYPE_REFUSED };
   }
   try {
     const response = await fetch("/api/uploads/sign", {

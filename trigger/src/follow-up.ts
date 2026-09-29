@@ -44,6 +44,7 @@ import {
   type ShotOutcome,
   type ShotPackAsset,
   type StoredFollowUpFiles,
+  withRunDeadline,
 } from "./pipeline-runner";
 import type { JobRecipes } from "./recipes";
 import { JobLedgerPlan, type LedgerAction } from "./state";
@@ -279,8 +280,9 @@ export async function runPackFollowUp(
     const runShots =
       deps.runShots ??
       (async (shots: Shot[], c: ShotContext): Promise<ShotOutcome[]> => {
+        const gated = withRunDeadline(deps);
         const results = await allSettledWithLimit(shots, deps.shotConcurrency ?? DEFAULT_SHOT_CONCURRENCY, (s) =>
-          runShot(s, c, deps),
+          runShot(s, c, gated),
         );
         return Promise.all(
           results.map((result, i) =>

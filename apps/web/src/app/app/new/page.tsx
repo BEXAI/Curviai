@@ -7,7 +7,7 @@ import { entitlementsFor } from "@curvi/pipeline/seed";
 import { tierKeyOf } from "@/lib/entitlements";
 import { isStripeConfigured } from "@/lib/env";
 import { usableBrandColors } from "@/lib/output-options-form";
-import { SCENES_PAUSED_COPY, preflightCopy, providerPreflight } from "@/lib/provider-preflight";
+import { SCENES_PAUSED_COPY, preflightCopy, providerPreflightDetail } from "@/lib/provider-preflight";
 import { getServices } from "@/lib/services";
 import { newPackChannelOptions } from "./channel-options";
 
@@ -46,7 +46,7 @@ export default async function NewPackPage({
   // Preflight (Phase 14 1.5): say so before submit when an image service is
   // down; with the cutout service down no pack can deliver, so Create pack
   // is disabled.
-  const preflight = await providerPreflight();
+  const { verdict: preflight, cause: pauseCause } = await providerPreflightDetail();
   // Output options (PHASE_15): the env flag and the kill switch. With them
   // on, a cutout pause is shown inside the form, which offers to keep the
   // photos instead; scenes paused turns the scenes extra off there.
@@ -64,7 +64,7 @@ export default async function NewPackPage({
       brandColors = [];
     }
   }
-  const preflightNotice = outputOptionsEnabled && preflight === "packs_paused" ? null : preflightCopy(preflight);
+  const preflightNotice = outputOptionsEnabled && preflight === "packs_paused" ? null : preflightCopy(preflight, pauseCause);
 
   return (
     <div>
@@ -110,6 +110,7 @@ export default async function NewPackPage({
           paywall={paywall}
           initialProductId={requestedProduct}
           packsPaused={preflight === "packs_paused"}
+          packsPausedForQuota={preflight === "packs_paused" && pauseCause === "quota"}
           outputOptionsEnabled={outputOptionsEnabled}
           brandColors={brandColors}
           brandKitsAllowed={brandKitsAllowed}

@@ -62,6 +62,7 @@ let keyCounter = 0;
 interface ServiceOptions {
   enabled?: boolean | null;
   verdict?: "ok" | "packs_paused" | "scenes_paused";
+  cutoutCached?: (workspaceId: string, key: string) => Promise<boolean>;
   ingest?: (key: string) => IngestOutcome;
 }
 
@@ -75,6 +76,7 @@ function service(opts: ServiceOptions = {}): DbService {
     getSupabase: async () => null,
     ...(enabled === null ? {} : { outputOptionsEnabled: async () => enabled }),
     providerVerdict: async () => opts.verdict ?? "ok",
+    cutoutCached: opts.cutoutCached ?? (async () => false),
     ...(opts.ingest ? { ingestUpload: async (key: string) => opts.ingest!(key) } : {}),
   });
 }
@@ -347,6 +349,21 @@ describe("DbService.createJob with output options", () => {
       jobInput(productId, { channels: ["shopify.product", "etsy.listing"], outputOptions: KEEP }),
     );
     expect(keepOnly.outcome).toBe("created");
+  });
+
+  it("runs a cutout pack while cutouts are paused when every photo it cuts out is in the upload cache", async () => {
+    const { ws, productId, keys } = await workspaceWith("starter");
+    const asked: string[] = [];
+    const cached = service({
+      verdict: "packs_paused",
+      cutoutCached: async (_ws, key) => {
+        asked.push(key);
+        return true;
+      },
+    });
+    const result = await cached.createJob(ws, jobInput(productId));
+    expect(result.outcome).toBe("created");
+    expect(asked).toEqual(keys);
   });
 
   it("records source_media.ingest for uploads, keeping a re-encode the preflight saw first", async () => {

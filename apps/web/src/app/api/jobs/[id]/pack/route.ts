@@ -9,6 +9,12 @@
  * memory together, and the route is rate limited by IP and by user
  * (jobs.pack). Workspace scoped through the caller's membership, db mode
  * only, since demo jobs keep no durable files.
+ *
+ * The zip is served whenever the file list is (servesFiles): a finished
+ * pack, and a delivered pack while a retried shot or an added photo runs
+ * again. "Download all files" is a plain link, so a refusal answered to a
+ * browser navigation is a short page with the message and a way back to the
+ * pack instead of raw JSON. API callers still get JSON.
  */
 
 import { Readable } from "node:stream";
@@ -21,7 +27,7 @@ import { packZipEntries } from "@/lib/pack-zip";
 import { isWorkspaceKey, objectExists, privateBucket, r2Client } from "@/lib/r2";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
 import { isDbMode } from "@/lib/services";
-import { getDb } from "@/lib/services/db";
+import { getDb, servesFiles } from "@/lib/services/db";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -41,8 +47,48 @@ async function openObject(key: string): Promise<Readable | null> {
 
 export async function GET(
   request: Request,
-  { params }: { params: Promise<{ id: string }> },
+  context: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const response = await packZip(request, context);
+  if (response.ok || !wantsHtml(request)) {
+    return response;
+  }
+  const { id } = await context.params;
+  return refusalPage(response, isUuid(id) ? id : null);
+}
+
+/** True for a browser navigation (the Download all link), not a fetch. */
+function wantsHtml(request: Request): boolean {
+  return (request.headers.get("accept") ?? "").includes("text/html");
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/** The refusal's message as a small page with a link back to the pack. The
+ * status and a Retry-After header are kept. */
+async function refusalPage(response: Response, jobId: string | null): Promise<Response> {
+  let message = "We could not prepare this download right now. Try again in a moment.";
+  try {
+    const body = (await response.clone().json()) as { error?: unknown };
+    if (typeof body.error === "string" && body.error.length > 0) {
+      message = body.error;
+    }
+  } catch {
+    // Not JSON: keep the default message.
+  }
+  const back = jobId ? `/app/jobs/${jobId}` : "/app";
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Download not available</title><style>body{font-family:system-ui,sans-serif;background:#fafaf9;color:#1c1917;margin:0;padding:48px 16px}main{max-width:32rem;margin:0 auto}a{color:inherit}</style></head><body><main><h1>Download not available</h1><p>${escapeHtml(message)}</p><p><a href="${back}">Back to your pack</a></p></main></body></html>`;
+  const headers = new Headers({ "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    headers.set("retry-after", retryAfter);
+  }
+  return new Response(html, { status: response.status, headers });
+}
+
+async function packZip(request: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
   const ipLimited = await limitByIp(request, "jobs.pack");
   if (ipLimited) {
     return ipLimited;
@@ -71,7 +117,7 @@ export async function GET(
   if (!job) {
     return NextResponse.json({ error: NOT_FOUND }, { status: 404 });
   }
-  if (job.status !== "done") {
+  if (!servesFiles(job)) {
     return NextResponse.json(
       { error: "This pack is not finished yet. Download it once it is done." },
       { status: 409 },

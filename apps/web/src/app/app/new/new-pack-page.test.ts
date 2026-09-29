@@ -6,9 +6,9 @@ import { listSpecs } from "@curvi/specs";
 import { creditBalanceLine, submitFailureSpendsKey } from "@/components/app/new-pack-form";
 import { checkChannelEntitlements } from "@/lib/entitlements";
 import { isSpecLive } from "@/lib/marketing-facts";
-import { KEEP_PHOTOS_PAUSED_COPY, whiteRequiredCopy } from "@/lib/output-options-copy";
+import { KEEP_PHOTOS_PAUSED_COPY, KEEP_PHOTOS_PAUSED_QUOTA_COPY, whiteRequiredCopy } from "@/lib/output-options-copy";
 import { LISTING_MODE_LINE } from "@/lib/output-options-form";
-import { PACKS_PAUSED_COPY, SCENES_PAUSED_COPY } from "@/lib/provider-preflight";
+import { PACKS_PAUSED_COPY, PACKS_PAUSED_QUOTA_COPY, SCENES_PAUSED_COPY } from "@/lib/provider-preflight";
 import { newPackChannelOptions } from "./channel-options";
 
 // The new pack form must never offer a channel createJob refuses: a channel
@@ -70,11 +70,21 @@ vi.mock("@/lib/services", () => ({
   }),
 }));
 
-const preflight = vi.hoisted(() => ({ verdict: "ok" as "ok" | "scenes_paused" | "packs_paused" }));
+const preflight = vi.hoisted(() => ({
+  verdict: "ok" as "ok" | "scenes_paused" | "packs_paused",
+  cause: null as "quota" | "failures" | null,
+}));
 
 vi.mock("@/lib/provider-preflight", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/provider-preflight")>();
-  return { ...actual, providerPreflight: async () => preflight.verdict };
+  return {
+    ...actual,
+    providerPreflight: async () => preflight.verdict,
+    providerPreflightDetail: async () => ({
+      verdict: preflight.verdict,
+      cause: preflight.verdict === "ok" ? null : (preflight.cause ?? "failures"),
+    }),
+  };
 });
 
 const ALL_TIERS: TierKey[] = ["free", "starter", "growth", "pro", "agency"];
@@ -278,6 +288,20 @@ describe("/app/new", () => {
     }
   });
 
+  it("makes no time promise when the cutout account is out of credit", async () => {
+    preflight.verdict = "packs_paused";
+    preflight.cause = "quota";
+    try {
+      const html = await renderPage();
+      expect(html).toContain(PACKS_PAUSED_QUOTA_COPY);
+      expect(html).not.toContain("a few minutes");
+      expect(createButton(html)).toContain('disabled=""');
+    } finally {
+      preflight.verdict = "ok";
+      preflight.cause = null;
+    }
+  });
+
   it("says scenes are paused but keeps Create pack when only scenes are down", async () => {
     preflight.verdict = "scenes_paused";
     try {
@@ -353,6 +377,19 @@ describe("/app/new with output options on", () => {
       expect(html).toContain('href="/app/brand"');
     } finally {
       page.brandColors = ["#1F2A44"];
+    }
+  });
+
+  it("drops the time promise from the form's pause when the account is out of credit", async () => {
+    preflight.verdict = "packs_paused";
+    preflight.cause = "quota";
+    try {
+      const html = await renderOn();
+      expect(html).toContain(KEEP_PHOTOS_PAUSED_QUOTA_COPY);
+      expect(html).not.toContain("a few minutes");
+    } finally {
+      preflight.verdict = "ok";
+      preflight.cause = null;
     }
   });
 

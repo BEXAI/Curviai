@@ -193,6 +193,10 @@ export const SHOT_NOT_DELIVERED = "This image could not be added to the pack, so
 export const PROVIDER_NOT_ENABLED = "provider not enabled";
 /** Skipped reason for shots none of whose channel specs the seller picked. */
 export const CHANNEL_NOT_SELECTED = "channel not selected";
+/** Plain copy for a shot the run's time limit stopped before it ran. The
+ * web app's job copy matches "ran out of time". */
+export const SHOT_OUT_OF_TIME =
+  "This pack ran out of time before this image could be made, so it was left out and not charged.";
 /** Plain copy for a shot the pack spend cap stopped before it ran. */
 const PACK_CAP_REACHED =
   "This pack reached its spending limit before this shot could be made, so it needs review.";
@@ -1009,6 +1013,52 @@ export interface PipelineDeps {
   /** Called when the global daily spend crosses the alert line (plan 4.4:
    * $50 alert). Defaults to a console warning in the runtime wiring. */
   onSpendAlert?: (totalMicros: number) => void;
+  /** The run's time limit (the web app's inline run cap). From
+   * stopStartingAt (epoch ms), or once the signal aborts, no new generation
+   * attempt starts: the shots left go to review as out of time and are not
+   * charged, so packaging still delivers and charges what passed. */
+  runDeadline?: { stopStartingAt: number; signal?: AbortSignal };
+}
+
+/** True once the run's time limit says no new work may start. */
+export function runOutOfTime(deps: Pick<PipelineDeps, "runDeadline" | "clock">, atMs?: number): boolean {
+  const deadline = deps.runDeadline;
+  if (!deadline) return false;
+  if (deadline.signal?.aborted) return true;
+  return (atMs ?? deps.clock.now().getTime()) >= deadline.stopStartingAt;
+}
+
+/**
+ * The deps with every generation attempt gated on the run's time limit: an
+ * attempt that would start past it throws ShotUnavailableError, which ends
+ * that output in review with SHOT_OUT_OF_TIME. The deps as they are without
+ * a limit.
+ */
+export function withRunDeadline<D extends PipelineDeps>(deps: D): D {
+  if (!deps.runDeadline) return deps;
+  const inner = deps.generator;
+  const gate = (): void => {
+    if (runOutOfTime(deps)) {
+      throw new ShotUnavailableError(SHOT_OUT_OF_TIME);
+    }
+  };
+  return {
+    ...deps,
+    generator: {
+      generate: async (args) => {
+        gate();
+        return inner.generate(args);
+      },
+      ...(inner.deriveForSpec
+        ? {
+            deriveForSpec: async (args: ShotGenerateArgs, from: ShotGeneration, specId: string) => {
+              gate();
+              return inner.deriveForSpec!(args, from, specId);
+            },
+          }
+        : {}),
+    },
+  };
 }
 
 export { DEFAULT_SHOT_CONCURRENCY };
@@ -3395,8 +3445,10 @@ async function retryTransientShots(
       console.error(`[runner] could not record shot ${shot.id}`, err);
     }
   };
-  const elapsed = deps.clock.now().getTime() - runStartedAt;
-  const enabled = settings.enabled !== false && elapsed + delayMs < budgetMs;
+  const nowMs = deps.clock.now().getTime();
+  const elapsed = nowMs - runStartedAt;
+  const enabled =
+    settings.enabled !== false && elapsed + delayMs < budgetMs && !runOutOfTime(deps, nowMs + delayMs);
   if (enabled) {
     console.warn(
       `[runner] job ${ctx.jobId}: ${retryIndexes.length} shot(s) failed on a transient provider error; retrying once in ${delayMs} ms`,
@@ -3973,12 +4025,12 @@ export async function runGeneratePack(
     // Pack level spend cap: a shared tracker gates every generation attempt
     // across the parallel fan out, so a runaway pack stops mid flight. The
     // shots it stops go to needs review; what already passed still ships.
-    let fanOutDeps = deps;
+    let fanOutDeps = withRunDeadline(deps);
     if (deps.packCostCapMicros !== undefined) {
       const cap = deps.packCostCapMicros;
       const baseCost = costMicros;
       let generatedCostMicros = 0;
-      const inner = deps.generator;
+      const inner = fanOutDeps.generator;
       const gate = (): void => {
         if (baseCost + generatedCostMicros >= cap) {
           throw new ShotUnavailableError(PACK_CAP_REACHED);
@@ -3997,7 +4049,7 @@ export async function runGeneratePack(
         }
       };
       fanOutDeps = {
-        ...deps,
+        ...fanOutDeps,
         generator: {
           generate: (args) => tracked(() => inner.generate(args)),
           ...(inner.deriveForSpec

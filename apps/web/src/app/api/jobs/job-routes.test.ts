@@ -106,6 +106,23 @@ describe("GET /api/jobs/:id/pack", () => {
     expect((await downloadPack(new Request("http://localhost"), ctx({ id: "abc" }))).status).toBe(404);
     expect((await downloadPack(new Request("http://localhost"), ctx({ id: JOB_ID }))).status).toBe(404);
   });
+
+  it("answers a browser navigation with a page and a way back instead of raw JSON", async () => {
+    const response = await downloadPack(
+      new Request("http://localhost", { headers: { accept: "text/html,application/xhtml+xml" } }),
+      ctx({ id: JOB_ID }),
+    );
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    const html = await response.text();
+    expect(html).toContain("Pack downloads are not available on this server.");
+    expect(html).toContain(`href="/app/jobs/${JOB_ID}"`);
+  });
+
+  it("keeps JSON for API callers", async () => {
+    const response = await downloadPack(new Request("http://localhost"), ctx({ id: JOB_ID }));
+    expect(response.headers.get("content-type")).toContain("application/json");
+  });
 });
 
 describe("POST /api/uploads/complete status codes (Update.md 6.8)", () => {
