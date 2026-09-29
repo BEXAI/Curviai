@@ -74,9 +74,6 @@ export function storedPreflightOf(
   if (run.moderation.length > 0) {
     return { ...base, status: "blocked", problem: problemFor("prohibited", { reasons: run.moderation }) };
   }
-  if (image.screenshot === true) {
-    return { ...base, status: "blocked", problem: problemFor("screenshot") };
-  }
   if (!image.sellableProduct) {
     return { ...base, status: "blocked", problem: problemFor("no_product") };
   }

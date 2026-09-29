@@ -726,37 +726,24 @@ describe("intake screenshot flag (PHASE_12 A5)", () => {
     }
   }
 
-  it("fails a pack of only screenshots after intake, before any other call, and charges nothing", async () => {
+  it("never refuses a pack for being screenshots (founder decision 2026-09-29)", async () => {
     const intake = new MockProvider({
       name: "mock-intake",
       tasks: [intakeKey],
-      // A model that contradicts itself (sellable but a screenshot) is still refused.
-      output: { images: [screenshotVerdict, { ...screenshotVerdict, sellableProduct: true }] },
+      output: { images: [{ ...screenshotVerdict, sellableProduct: true }, { ...screenshotVerdict, sellableProduct: true }] },
     });
     const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
-    const plan = new MockProvider({ name: "mock-plan", tasks: [planKey], output: { notAShotList: true } });
-    const generator = { generate: vi.fn() } as unknown as ShotGenerator;
-    const deps = makeDeps({ ai: makeAi({ intake, analyze, plan }), generator });
+    const deps = makeDeps({ ai: makeAi({ intake, analyze }) });
     const summary = await runGeneratePack(
       { ...baseInput, images: [{ mediaId: "m1" }, { mediaId: "m2" }] },
       deps,
     );
 
-    expect(summary.state).toBe("failed");
-    expect(summary.error).toBe(SCREENSHOT_UPLOAD_MESSAGE);
-    expect(SCREENSHOT_UPLOAD_MESSAGE).toContain("screenshot");
-    expect(intake.calls).toHaveLength(1);
-    expect(analyze.calls).toHaveLength(0);
-    expect(plan.calls).toHaveLength(0);
-    expect(generator.generate).not.toHaveBeenCalled();
-    expect(summary.plannedShots).toBe(0);
-    expect(summary.chargedCredits).toBe(0);
-    expect(summary.releasedCredits).toBe(baseInput.creditBudget);
-    expect(deps.store.ledger.some((e) => e.reason === "charge")).toBe(false);
-    expect(deps.store.states.at(-1)).toMatchObject({ state: "failed", meta: { error: SCREENSHOT_UPLOAD_MESSAGE } });
+    expect(summary.error).not.toBe(SCREENSHOT_UPLOAD_MESSAGE);
+    expect(analyze.calls).toHaveLength(1);
   });
 
-  it("drops the screenshot from a mixed pack so the real photo is the source of every shot", async () => {
+  it("keeps a screenshot in a mixed pack as a photo like any other", async () => {
     const png = await encodePng(solidCanvas(8, 8, 200, 200, 200));
     const screenshotKey = "ws/ws1/src/screen.png";
     const photoKey = "ws/ws1/src/photo.jpg";
@@ -795,16 +782,14 @@ describe("intake screenshot flag (PHASE_12 A5)", () => {
       ((provider.calls[0].input as LlmTaskInput).messages[0].content as Array<{ type: string; text?: string }>);
     expect(blocks(intake).filter((b) => b.type === "image")).toHaveLength(2);
     const analyzeBlocks = blocks(analyze);
-    expect(analyzeBlocks.filter((b) => b.type === "image")).toHaveLength(1);
+    expect(analyzeBlocks.filter((b) => b.type === "image")).toHaveLength(2);
     const analyzeText = analyzeBlocks.find((b) => b.type === "text")?.text ?? "";
     expect(analyzeText).toContain(photoKey);
-    expect(analyzeText).not.toContain(screenshotKey);
-    // Every planned and generated shot comes from the camera photo.
+    expect(analyzeText).toContain(screenshotKey);
+    // The screenshot the seller marked as the front is a source like the photo.
     expect(store.plans).toHaveLength(1);
-    expect(store.plans[0].length).toBeGreaterThan(0);
-    expect(store.plans[0].every((shot) => shot.sourceMediaId === photoKey)).toBe(true);
-    expect(sources.length).toBeGreaterThan(0);
-    expect(sources.every((source) => source === photoKey)).toBe(true);
+    expect(store.plans[0].some((shot) => shot.sourceMediaId === screenshotKey)).toBe(true);
+    expect(sources).toContain(screenshotKey);
   });
 
   it("keeps every photo when intake's verdicts cannot be matched to the photos", async () => {
@@ -2421,7 +2406,7 @@ describe("intake judges every photo it lists (reviewer item 5)", () => {
     (JSON.parse(blocks(provider).find((b) => b.type === "text")?.text ?? "{}") as { images: Array<{ mediaId: string }> })
       .images.map((image) => image.mediaId);
 
-  it("drops photo 4 of 5 when intake flags it, with the analyzer still on its own limit", async () => {
+  it("keeps photo 4 of 5 when intake flags it a screenshot, with the analyzer still on its own limit", async () => {
     const png = await encodePng(solidCanvas(8, 8, 200, 200, 200));
     const keys = ["front", "side", "detail", "screen", "scale"].map((name) => `ws/ws1/src/${name}.jpg`);
     const intake = new MockProvider({
@@ -2459,14 +2444,10 @@ describe("intake judges every photo it lists (reviewer item 5)", () => {
     // Intake saw all five photos and listed the same five, in order.
     expect(blocks(intake).filter((b) => b.type === "image")).toHaveLength(5);
     expect(listed(intake)).toEqual(keys);
-    // The analyzer keeps its limit of three images and never sees photo 4.
+    // The analyzer keeps its limit of three images.
     expect(blocks(analyze).filter((b) => b.type === "image")).toHaveLength(3);
-    expect(blocks(analyze).find((b) => b.type === "text")?.text ?? "").not.toContain(keys[3]);
-    // Nothing is planned or generated from the screenshot.
-    expect(store.plans[0].length).toBeGreaterThan(0);
-    expect(store.plans[0].some((shot) => shot.sourceMediaId === keys[3])).toBe(false);
-    expect(sources.length).toBeGreaterThan(0);
-    expect(sources).not.toContain(keys[3]);
+    // The screenshot stays in the pack: its back angle is planned from it.
+    expect(store.plans[0].some((shot) => shot.sourceMediaId === keys[3])).toBe(true);
   });
 
   it("lists only the photos it was shown when one cannot be loaded", async () => {

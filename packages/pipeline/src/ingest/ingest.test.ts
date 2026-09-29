@@ -319,37 +319,16 @@ describe("readMovieDurationSeconds", () => {
   });
 });
 
-describe("screenshot refusal", () => {
-  it("refuses a tall phone screen PNG and keeps a camera shaped photo", async () => {
+describe("screenshots", () => {
+  it("accepts phone screen captures, by shape or by metadata tag", async () => {
     const screen = await sharp({ create: { width: 1320, height: 2868, channels: 3, background: "#ffffff" } }).png().toBuffer();
-    const refused = await ingestImage(screen);
-    expect(refused.ok).toBe(false);
-    expect(refused.ok ? null : refused.reason).toBe("screenshot");
-
-    const photo = await sharp({ create: { width: 3024, height: 4032, channels: 3, background: "#3366cc" } }).png().toBuffer();
-    expect((await ingestImage(photo)).ok).toBe(true);
-    const jpegTall = await sharp({ create: { width: 1080, height: 2400, channels: 3, background: "#3366cc" } }).jpeg().toBuffer();
-    expect((await ingestImage(jpegTall)).ok).toBe(true);
-  });
-
-  it("keeps a 2:1 product export and still refuses a 19.5:9 phone screen", async () => {
-    const twoToOne = await sharp({ create: { width: 1000, height: 2000, channels: 3, background: "#3366cc" } }).png().toBuffer();
-    expect((await ingestImage(twoToOne)).ok).toBe(true);
-    const justUnder = await sharp({ create: { width: 1000, height: 2090, channels: 3, background: "#3366cc" } }).png().toBuffer();
-    expect((await ingestImage(justUnder)).ok).toBe(true);
-
-    // 1080 x 2340 is 19.5:9 (2.17), the common Android screen.
+    expect((await ingestImage(screen)).ok).toBe(true);
     const phone = await sharp({ create: { width: 1080, height: 2340, channels: 3, background: "#ffffff" } }).png().toBuffer();
-    const refused = await ingestImage(phone);
-    expect(refused.ok ? null : refused.reason).toBe("screenshot");
-  });
-
-  it("refuses a capture tagged Screenshot in its metadata whatever its shape", async () => {
+    expect((await ingestImage(phone)).ok).toBe(true);
     const tagged = await sharp({ create: { width: 2000, height: 1500, channels: 3, background: "#ffffff" } })
       .withExif({ IFD0: { ImageDescription: "Screenshot" } })
       .jpeg()
       .toBuffer();
-    const result = await ingestImage(tagged);
-    expect(result.ok ? null : result.reason).toBe("screenshot");
+    expect((await ingestImage(tagged)).ok).toBe(true);
   });
 });

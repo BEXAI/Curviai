@@ -188,7 +188,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
 
   // 2. The moderation gate, the same function the pack stops on.
   run.moderation = moderationBlockReasons(intake, null);
-  if (run.moderation.length > 0 || image.screenshot === true || !image.sellableProduct) {
+  if (run.moderation.length > 0 || !image.sellableProduct) {
     return run;
   }
 

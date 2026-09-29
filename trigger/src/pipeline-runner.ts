@@ -3635,6 +3635,9 @@ export async function runGeneratePack(
             IntakeToolResult,
           ),
         );
+    // Screenshots are accepted (founder decision 2026-09-29): intake's
+    // screenshot flag never leaves a photo out or stops a pack.
+    for (const img of intake.value?.images ?? []) img.screenshot = false;
     if (!intake.value) {
       throw new Error("Intake response failed schema validation");
     }

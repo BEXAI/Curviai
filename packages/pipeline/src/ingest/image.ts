@@ -218,9 +218,8 @@ export async function ingestImage(input: Buffer): Promise<ImageIngestResult> {
   if (width * height > INGEST_PIXEL_CAP) {
     return refuse("too_many_pixels");
   }
-  if (looksLikeScreenshot(meta, detected)) {
-    return refuse("screenshot");
-  }
+  // Screenshots are accepted (founder decision 2026-09-29): a screen
+  // capture of a product photo is a valid source.
   const orientation = meta.orientation ?? 1;
   // Orientations 5 to 8 swap the axes.
   const upright = orientation >= 5 ? { width: height, height: width } : { width, height };

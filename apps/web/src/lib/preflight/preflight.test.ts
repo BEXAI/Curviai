@@ -77,12 +77,12 @@ describe("storedPreflightOf", () => {
     expect(preflightProductBoxOf(undefined)).toBeUndefined();
   });
 
-  it("blocks prohibited goods, screenshots and photos with no product, each with its own fix", () => {
+  it("blocks prohibited goods and photos with no product, each with its own fix, and never screenshots", () => {
     const prohibited = storedPreflightOf(run({ moderation: ["weapons"] }));
     expect(prohibited.status).toBe("blocked");
     expect(prohibited.problem?.title).toContain("weapons");
     const screenshot = storedPreflightOf(run({}, { screenshot: true }));
-    expect(screenshot.problem?.code).toBe("screenshot");
+    expect(screenshot.status).not.toBe("blocked");
     const none = storedPreflightOf(run({}, { sellableProduct: false }));
     expect(none.problem?.code).toBe("no_product");
     expect(none.problem?.tips?.length).toBeGreaterThanOrEqual(2);
