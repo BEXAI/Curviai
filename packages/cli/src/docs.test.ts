@@ -69,7 +69,7 @@ describe("skills/curvi", () => {
       .map((line) => line.trim())
       .filter((line) => line.startsWith("curvi "));
     expect(commands.length).toBeGreaterThan(3);
-    const known = [/^curvi --version$/, /^curvi help$/, /^curvi auth (login|status|logout)\b/, /^curvi pack (create|get)\b/, /^curvi check\b/];
+    const known = [/^curvi --version$/, /^curvi help$/, /^curvi auth (login|status|logout)\b/, /^curvi pack (create|get)\b/, /^curvi check\b/, /^curvi channels\b/];
     for (const command of commands) {
       expect(known.some((pattern) => pattern.test(command)), command).toBe(true);
     }

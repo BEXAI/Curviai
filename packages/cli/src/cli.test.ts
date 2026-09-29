@@ -14,16 +14,27 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function pack(status: string, extra: Partial<Pack> = {}): Pack {
+function packOf(status: Pack["status"], extra: Partial<Pack> = {}): Pack {
   return {
     id: ID,
     status,
+    finished: ["done", "failed", "canceled"].includes(status),
+    productId: "22222222-2222-4222-8222-222222222222",
+    productTitle: "Mug",
     channels: ["amazon.main", "shopify.product"],
     creditsReserved: 3,
     creditsCharged: status === "done" ? 2.5 : 0,
     createdAt: "2026-09-29T10:00:00.000Z",
+    error: null,
+    shots: [],
+    links: { self: `/api/v1/packs/${ID}`, files: `/api/v1/packs/${ID}/files` },
     ...extra,
   };
+}
+
+/** The body of POST /packs and GET /packs/{id}. */
+function pack(status: Pack["status"], extra: Partial<Pack> = {}): { pack: Pack } {
+  return { pack: packOf(status, extra) };
 }
 
 const FILES: PackFiles = {
@@ -38,6 +49,7 @@ const FILES: PackFiles = {
       kind: "image",
       bytes: 3,
       url: "https://files.example.com/signed/1?sig=abc",
+      expiresAt: "2026-09-29T10:15:00.000Z",
     },
     {
       id: "v_2",
@@ -47,8 +59,9 @@ const FILES: PackFiles = {
       kind: "image",
       bytes: 3,
       url: "https://files.example.com/signed/2?sig=def",
+      expiresAt: "2026-09-29T10:15:00.000Z",
     },
-    { id: "p_1", name: "compliance-report.pdf", channel: null, specId: null, kind: "report", bytes: null, url: null },
+    { id: "p_1", name: "compliance-report.pdf", channel: null, specId: null, kind: "report", bytes: null, url: null, expiresAt: null },
   ],
 };
 
@@ -172,25 +185,22 @@ describe("curvi auth", () => {
 });
 
 describe("curvi pack create", () => {
-  it("uploads the photo with channels, bundle, look, answers and options", async () => {
+  it("sends the photos with channels, bundle, look, note and options", async () => {
     await writeFile(join(dir, "mug.JPG"), new Uint8Array([0xff, 0xd8, 0xff]));
-    const h = await harness(() => json(pack("queued"), 202));
+    const h = await harness(() => json(pack("queued"), 201));
     await signIn(h);
     const code = await run(
       [
         "pack",
         "create",
         "mug.JPG",
+        "https://example.com/back.jpg",
         "--channels",
         "amazon.main,shopify.product",
         "--bundle",
         "listing",
         "--look",
         "marketplace",
-        "--answer",
-        "mood=bright",
-        "--answer",
-        "use=kitchen",
         "--note",
         "Matte black",
         "--options",
@@ -204,15 +214,14 @@ describe("curvi pack create", () => {
     const [url, init] = h.fetch.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${DEFAULT_BASE_URL}/packs`);
     expect((init.headers as Record<string, string>)["Idempotency-Key"]).toBe("idem-42");
-    const form = init.body as FormData;
-    expect((form.get("photo") as File).type).toBe("image/jpeg");
-    expect(JSON.parse(form.get("request") as string)).toEqual({
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toEqual({
       channels: ["amazon.main", "shopify.product"],
       bundle: "listing",
       look: "marketplace",
       note: "Matte black",
-      answers: { mood: "bright", use: "kitchen" },
       outputOptions: { variations: 2 },
+      photos: [{ data: Buffer.from([0xff, 0xd8, 0xff]).toString("base64") }, { url: "https://example.com/back.jpg" }],
     });
     expect(h.out()).toContain(`Pack ${ID} is queued.`);
     // Not waiting: no poll and no files call.
@@ -222,9 +231,9 @@ describe("curvi pack create", () => {
   it("waits, then lists the signed file links", async () => {
     const statuses = ["queued", "generating", "done"];
     const h = await harness((url, init) => {
-      if (init.method === "POST") return json(pack(statuses.shift()!), 202);
+      if (init.method === "POST") return json(pack(statuses.shift() as Pack["status"]), 201);
       if (url.endsWith("/files")) return json(FILES);
-      return json(pack(statuses.shift()!));
+      return json(pack(statuses.shift() as Pack["status"]));
     });
     await signIn(h);
     const code = await run(["pack", "create", "https://example.com/mug.jpg", "--channels", "amazon.main", "--wait"], h.deps);
@@ -234,11 +243,11 @@ describe("curvi pack create", () => {
     expect(h.out()).toContain("Credits: 2.5 charged, 3 held");
     expect(h.out()).toContain("https://files.example.com/signed/1?sig=abc");
     const body = JSON.parse((h.fetch.mock.calls[0] as [string, RequestInit])[1].body as string);
-    expect(body.photoUrl).toBe("https://example.com/mug.jpg");
+    expect(body.photos).toEqual([{ url: "https://example.com/mug.jpg" }]);
   });
 
   it("prints JSON for agents", async () => {
-    const h = await harness((url) => (url.endsWith("/files") ? json(FILES) : json(pack("done"), 202)));
+    const h = await harness((url) => (url.endsWith("/files") ? json(FILES) : json(pack("done"), 201)));
     await signIn(h);
     const before = h.out().length;
     expect(await run(["pack", "create", "https://example.com/a.jpg", "--channels", "amazon.main", "--json"], h.deps)).toBe(0);
@@ -266,9 +275,10 @@ describe("curvi pack create", () => {
     expect(await run(["pack", "create", "missing.jpg", "--channels", "amazon.main"], h.deps)).toBe(EXIT.usage);
     expect(h.err()).toContain("Could not read the photo at missing.jpg.");
     expect(await run(["pack", "create", "https://example.com/a.jpg"], h.deps)).toBe(EXIT.usage);
-    expect(await run(["pack", "create", "https://example.com/a.jpg", "--channels", "x", "--answer", "mood"], h.deps)).toBe(
-      EXIT.usage,
-    );
+    expect(await run(["pack", "create", "--channels", "amazon.main"], h.deps)).toBe(EXIT.usage);
+    expect(
+      await run(["pack", "create", "https://example.com/a.jpg", "--channels", "x", "--answer", "mood=bright"], h.deps),
+    ).toBe(EXIT.usage);
     expect(await run(["pack", "create", "https://example.com/a.jpg", "--channels", "x", "--options", "[1]"], h.deps)).toBe(
       EXIT.usage,
     );
@@ -276,13 +286,18 @@ describe("curvi pack create", () => {
   });
 
   it("shows the server's reason and a hint when the API refuses", async () => {
-    const h = await harness(() => json({ error: "API access needs the Growth plan." }, 403));
+    const h = await harness(() =>
+      json({ error: "API access needs the Growth plan.", reason: "upgrade_required" }, 403),
+    );
     await signIn(h);
     expect(await run(["pack", "create", "https://example.com/a.jpg", "--channels", "amazon.main"], h.deps)).toBe(
       EXIT.error,
     );
     expect(h.err()).toContain("API access needs the Growth plan.");
-    const h2 = await harness(() => json({ error: "Invalid request.", issues: ["Unknown bundle: huge."] }, 400));
+    expect(h.err()).toContain("Growth plan and up");
+    const h2 = await harness(() =>
+      json({ error: "Invalid request.", reason: "invalid_request", issues: ["Unknown bundle: huge."] }, 400),
+    );
     expect(
       await run(["pack", "create", "https://example.com/a.jpg", "--channels", "amazon.main", "--bundle", "huge"], {
         ...h2.deps,
@@ -300,14 +315,23 @@ describe("curvi pack get", () => {
         pack("failed", {
           error: "The photo could not be read.",
           shots: [
-            { shotId: "s1", shotType: "main_white", status: "done", channels: ["amazon.main"], credits: 0.5 },
             {
-              shotId: "s2",
-              shotType: "lifestyle",
+              id: "s1",
+              type: "main_white",
+              status: "done",
+              channels: ["amazon.main"],
+              credits: 0.5,
+              note: null,
+              compliance: null,
+            },
+            {
+              id: "s2",
+              type: "lifestyle",
               status: "needs_review",
               channels: ["shopify.product"],
               credits: 1,
               note: "The product edge did not pass.",
+              compliance: { pass: false, fillPct: 80, background: [255, 255, 255] },
             },
           ],
         }),
@@ -316,7 +340,7 @@ describe("curvi pack get", () => {
     await signIn(h);
     expect(await run(["pack", "get", ID], h.deps)).toBe(EXIT.error);
     expect(h.out()).toContain("Shots: 1 done, 1 needs review");
-    expect(h.out()).toContain("s2: The product edge did not pass.");
+    expect(h.out()).toContain("lifestyle: The product edge did not pass.");
     expect(h.out()).toContain("The photo could not be read.");
   });
 
@@ -354,10 +378,13 @@ describe("curvi check", () => {
       json({
         pass,
         summary: pass ? "Every check passed." : "1 of 3 checks failed.",
-        rows: [
+        width: 2000,
+        height: 2000,
+        checks: [
           { key: "resolution", label: "Resolution", pass: true, measured: "2000 px" },
           { key: "fill", label: "Product fill", pass, measured: pass ? "88 percent" : "60 percent" },
         ],
+        rules: { minLongSide: 1000, fillMinPercent: 85, fillMaxPercent: 100 },
       }),
     );
     await signIn(h);
@@ -365,9 +392,45 @@ describe("curvi check", () => {
     pass = false;
     expect(await run(["check", "main.png"], h.deps)).toBe(EXIT.checkFailed);
     expect(h.out()).toContain("Fail  Product fill: 60 percent");
-    const form = (h.fetch.mock.calls[0] as [string, RequestInit])[1].body as FormData;
-    expect((form.get("photo") as File).type).toBe("image/png");
+    const body = JSON.parse((h.fetch.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(body).toEqual({ data: Buffer.from([0x89, 0x50]).toString("base64") });
     expect((h.fetch.mock.calls[0] as [string])[0]).toBe(`${DEFAULT_BASE_URL}/checks/main-image`);
+  });
+});
+
+describe("curvi channels", () => {
+  it("lists the channels and bundles for the key's plan", async () => {
+    const h = await harness(() =>
+      json({
+        channels: [
+          {
+            id: "amazon.main",
+            channel: "amazon",
+            name: "Amazon main image",
+            width: 2000,
+            height: 2000,
+            availability: "available",
+            upgradeTo: null,
+          },
+          {
+            id: "meta.feed_1x1",
+            channel: "meta",
+            name: "Meta feed square",
+            width: 1080,
+            height: 1080,
+            availability: "upgrade_required",
+            upgradeTo: "pro",
+          },
+        ],
+        bundles: [{ key: "main", label: "Main image" }],
+      }),
+    );
+    await signIn(h);
+    expect(await run(["channels"], h.deps)).toBe(EXIT.ok);
+    expect((h.fetch.mock.calls[0] as [string])[0]).toBe(`${DEFAULT_BASE_URL}/channels`);
+    expect(h.out()).toContain("amazon.main  Amazon main image, 2000 x 2000, available");
+    expect(h.out()).toContain("needs the pro plan");
+    expect(h.out()).toContain("main  Main image");
   });
 });
 

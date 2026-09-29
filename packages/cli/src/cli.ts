@@ -2,9 +2,10 @@
  * The curvi command (PHASE_16 workstream 5):
  *
  *   curvi auth login | status | logout
- *   curvi pack create <photo> --channels <ids> [--bundle] [--look] [--wait]
+ *   curvi pack create <photos> --channels <ids> [--bundle] [--look] [--wait]
  *   curvi pack get <id> [--wait] [--out <dir>]
  *   curvi check <photo>
+ *   curvi channels
  *
  * run() takes every side effect as a dependency, so the tests drive it with
  * a mocked fetch, a temporary config folder and captured output. Bundle,
@@ -15,7 +16,14 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { boolFlag, listFlag, parseArgs, stringFlag, UsageError, type FlagSpec, type ParsedArgs } from "./args.ts";
-import { CurviApiError, CurviClient, CurviNetworkError, type FetchLike, type PhotoSource } from "./client.ts";
+import {
+  CurviApiError,
+  CurviClient,
+  CurviNetworkError,
+  MAX_PACK_PHOTOS,
+  type FetchLike,
+  type PhotoSource,
+} from "./client.ts";
 import {
   deleteConfig,
   maskKey,
@@ -24,7 +32,14 @@ import {
   writeConfig,
   type ConfigEnv,
 } from "./config.ts";
-import { isTerminalStatus, type CreatePackRequest, type MainImageCheck, type Pack, type PackFiles } from "./types.ts";
+import {
+  isTerminalStatus,
+  type ChannelsResponse,
+  type CreatePackRequest,
+  type MainImageCheck,
+  type Pack,
+  type PackFiles,
+} from "./types.ts";
 
 export const CLI_VERSION = "0.1.0";
 
@@ -62,14 +77,17 @@ Usage:
   curvi auth login [--key <key>] [--api-url <url>]
   curvi auth status
   curvi auth logout
-  curvi pack create <photo or URL> --channels <ids> [--bundle <key>] [--look <key>]
-                    [--answer <kind=value>] [--title <text>] [--note <text>]
+  curvi pack create <photos or URLs> --channels <ids> [--bundle <key>] [--look <key>]
+                    [--title <text>] [--note <text>] [--product <id>]
                     [--options <json>] [--idempotency-key <key>]
                     [--wait] [--timeout <seconds>] [--out <folder>] [--json]
   curvi pack get <pack id> [--wait] [--timeout <seconds>] [--out <folder>] [--json]
   curvi check <photo or URL> [--json]
+  curvi channels [--json]
 
+A pack takes up to ${MAX_PACK_PHOTOS} photos of one product; the first is the front.
 Channels are spec ids separated by commas, for example amazon.main,shopify.product.
+A channel name such as amazon picks every live spec of that channel; curvi channels lists them.
 The bundle picks how much the pack makes, for example listing; the default is everything.
 The look picks a starting style, for example marketplace.
 
@@ -89,8 +107,8 @@ const CREATE_FLAGS: Record<string, FlagSpec> = {
   channels: { multiple: true },
   bundle: {},
   look: {},
-  answer: { multiple: true },
   title: {},
+  product: {},
   note: {},
   options: {},
   "idempotency-key": {},
@@ -100,20 +118,12 @@ const CREATE_FLAGS: Record<string, FlagSpec> = {
 };
 const GET_FLAGS: Record<string, FlagSpec> = { ...COMMON, wait: { boolean: true }, timeout: {}, out: {} };
 
-const PHOTO_TYPES: Record<string, string> = {
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".png": "image/png",
-  ".webp": "image/webp",
-  ".heic": "image/heic",
-  ".heif": "image/heif",
-  ".avif": "image/avif",
-};
-
 function isWebUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
 }
 
+/** A photo path or link. A file is read here and sent base64 encoded; the
+ * server checks its type and size, as it does a browser upload. */
 async function photoSource(deps: CliDeps, input: string | undefined): Promise<PhotoSource> {
   if (!input) {
     throw new UsageError("Give the path or URL of a product photo.");
@@ -128,8 +138,7 @@ async function photoSource(deps: CliDeps, input: string | undefined): Promise<Ph
   } catch {
     throw new UsageError(`Could not read the photo at ${input}.`);
   }
-  const type = PHOTO_TYPES[extname(path).toLowerCase()] ?? "application/octet-stream";
-  return { file: { name: basename(path), type, bytes } };
+  return { file: { name: basename(path), bytes } };
 }
 
 async function clientFor(deps: CliDeps, args: ParsedArgs): Promise<CurviClient> {
@@ -158,10 +167,10 @@ function countBy<T>(items: readonly T[], key: (item: T) => string): Map<string, 
 
 export function formatPack(pack: Pack): string {
   const lines = [`Pack ${pack.id} is ${pack.status.replace(/_/g, " ")}.`];
+  if (pack.productTitle) lines.push(`Product: ${pack.productTitle}`);
   if (pack.channels.length > 0) lines.push(`Channels: ${pack.channels.join(", ")}`);
-  if (pack.bundle) lines.push(`Bundle: ${pack.bundle}`);
   lines.push(`Credits: ${pack.creditsCharged} charged, ${pack.creditsReserved} held`);
-  const shots = pack.shots ?? [];
+  const shots = pack.shots;
   if (shots.length > 0) {
     const counts = [...countBy(shots, (shot) => String(shot.status))]
       .map(([status, count]) => `${count} ${status.replace(/_/g, " ")}`)
@@ -169,12 +178,11 @@ export function formatPack(pack: Pack): string {
     lines.push(`Shots: ${counts}`);
     for (const shot of shots) {
       if (shot.note && (shot.status === "needs_review" || shot.status === "skipped")) {
-        lines.push(`  ${shot.shotId}: ${shot.note}`);
+        lines.push(`  ${shot.type}: ${shot.note}`);
       }
     }
   }
   if (pack.error) lines.push(pack.error);
-  if (pack.appUrl) lines.push(`Open it in Curvi: ${pack.appUrl}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -195,10 +203,25 @@ export function formatFiles(files: PackFiles): string {
 }
 
 export function formatCheck(check: MainImageCheck): string {
-  const lines = [check.summary];
-  for (const row of check.rows) {
+  const lines = [check.summary, `Size: ${check.width} x ${check.height}`];
+  for (const row of check.checks) {
     lines.push(`  ${row.pass ? "Pass" : "Fail"}  ${row.label}: ${row.measured}`);
   }
+  return `${lines.join("\n")}\n`;
+}
+
+export function formatChannels(result: ChannelsResponse): string {
+  const lines = ["Channels (spec id, size, availability on your plan):"];
+  for (const channel of result.channels) {
+    const size = channel.width && channel.height ? `${channel.width} x ${channel.height}` : "any size";
+    const availability =
+      channel.availability === "upgrade_required"
+        ? `needs the ${channel.upgradeTo ?? "next"} plan`
+        : channel.availability.replace(/_/g, " ");
+    lines.push(`  ${channel.id}  ${channel.name}, ${size}, ${availability}`);
+  }
+  lines.push("Bundles:");
+  for (const bundle of result.bundles) lines.push(`  ${bundle.key}  ${bundle.label}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -254,26 +277,38 @@ function waitSeconds(args: ParsedArgs): number {
 async function waitForPack(deps: CliDeps, client: CurviClient, first: Pack, seconds: number): Promise<Pack> {
   const deadline = deps.now() + seconds * 1000;
   let pack = first;
-  while (!isTerminalStatus(pack.status)) {
+  while (!pack.finished && !isTerminalStatus(pack.status)) {
     if (deps.now() >= deadline) {
       deps.stderr(`Still ${pack.status} after ${seconds} seconds. Run curvi pack get ${pack.id} --wait to keep waiting.\n`);
       return pack;
     }
     await deps.sleep(POLL_INTERVAL_MS);
-    pack = await client.getPack(pack.id);
+    pack = (await client.getPack(pack.id)).pack;
   }
   return pack;
 }
 
 /** Prints the pack, and its files once it is done, then downloads them with --out. */
-async function finishPack(deps: CliDeps, client: CurviClient, pack: Pack, args: ParsedArgs): Promise<number> {
+async function finishPack(
+  deps: CliDeps,
+  client: CurviClient,
+  pack: Pack,
+  args: ParsedArgs,
+  replayed = false,
+): Promise<number> {
   const out = stringFlag(args, "out");
-  const files = pack.status === "done" ? await client.getPackFiles(pack.id) : null;
+  const files = pack.status === "done" ? await client.listPackFiles(pack.id) : null;
   const written = files && out ? await downloadFiles(deps, files, out) : [];
 
   if (boolFlag(args, "json")) {
-    printJson(deps, { pack, ...(files ? { files } : {}), ...(out ? { downloaded: written } : {}) });
+    printJson(deps, {
+      pack,
+      ...(replayed ? { replayed } : {}),
+      ...(files ? { files } : {}),
+      ...(out ? { downloaded: written } : {}),
+    });
   } else {
+    if (replayed) deps.stdout("This Idempotency-Key already started a pack, so here it is again.\n");
     deps.stdout(formatPack(pack));
     if (files) deps.stdout(formatFiles(files));
     if (out) deps.stdout(`Saved ${written.length} files to ${resolve(deps.cwd, out)}\n`);
@@ -282,20 +317,6 @@ async function finishPack(deps: CliDeps, client: CurviClient, pack: Pack, args: 
     deps.stderr("The pack is not done yet, so nothing was downloaded.\n");
   }
   return pack.status === "failed" || pack.status === "canceled" ? EXIT.error : EXIT.ok;
-}
-
-function parseAnswers(args: ParsedArgs): Record<string, string> | undefined {
-  const pairs = listFlag(args, "answer");
-  if (pairs.length === 0) return undefined;
-  const answers: Record<string, string> = {};
-  for (const pair of pairs) {
-    const eq = pair.indexOf("=");
-    if (eq <= 0 || eq === pair.length - 1) {
-      throw new UsageError(`Write each answer as kind=value, for example mood=bright. Got ${pair}.`);
-    }
-    answers[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
-  }
-  return answers;
 }
 
 function parseOptions(args: ParsedArgs): Record<string, unknown> | undefined {
@@ -315,37 +336,42 @@ function parseOptions(args: ParsedArgs): Record<string, unknown> | undefined {
 
 async function packCreate(deps: CliDeps, argv: string[]): Promise<number> {
   const args = parseArgs(argv, CREATE_FLAGS);
-  if (args.positionals.length > 1) {
-    throw new UsageError("Give one photo per pack.");
+  if (args.positionals.length > MAX_PACK_PHOTOS) {
+    throw new UsageError(`Give at most ${MAX_PACK_PHOTOS} photos of one product.`);
   }
   const channels = listFlag(args, "channels");
   if (channels.length === 0) {
     throw new UsageError("Pick at least one channel with --channels, for example --channels amazon.main.");
   }
   const seconds = waitSeconds(args);
-  const request: CreatePackRequest = { channels };
+  const request: Omit<CreatePackRequest, "photos"> = { channels };
   const bundle = stringFlag(args, "bundle");
   const look = stringFlag(args, "look");
   const title = stringFlag(args, "title");
   const note = stringFlag(args, "note");
-  const answers = parseAnswers(args);
+  const productId = stringFlag(args, "product");
   const outputOptions = parseOptions(args);
   if (bundle) request.bundle = bundle;
   if (look) request.look = look;
   if (title) request.title = title;
   if (note) request.note = note;
-  if (answers) request.answers = answers;
+  if (productId) request.productId = productId;
   if (outputOptions) request.outputOptions = outputOptions;
 
-  const photo = await photoSource(deps, args.positionals[0]);
+  if (args.positionals.length === 0 && !productId) {
+    throw new UsageError("Give the path or URL of a product photo, or --product with the id of a product that has photos.");
+  }
+  const photos: PhotoSource[] = [];
+  for (const input of args.positionals) photos.push(await photoSource(deps, input));
   const client = await clientFor(deps, args);
   const idempotencyKey = stringFlag(args, "idempotency-key");
-  let pack = await client.createPack(photo, request, idempotencyKey ? { idempotencyKey } : {});
+  const created = await client.createPack(photos, request, idempotencyKey ? { idempotencyKey } : {});
+  let pack = created.pack;
   if (boolFlag(args, "wait") || stringFlag(args, "out")) {
     if (!boolFlag(args, "json")) deps.stderr(`Pack ${pack.id} started. Waiting for it to finish.\n`);
     pack = await waitForPack(deps, client, pack, seconds);
   }
-  return finishPack(deps, client, pack, args);
+  return finishPack(deps, client, pack, args, created.replayed === true);
 }
 
 async function packGet(deps: CliDeps, argv: string[]): Promise<number> {
@@ -356,7 +382,7 @@ async function packGet(deps: CliDeps, argv: string[]): Promise<number> {
   }
   const seconds = waitSeconds(args);
   const client = await clientFor(deps, args);
-  let pack = await client.getPack(id);
+  let pack = (await client.getPack(id)).pack;
   if (boolFlag(args, "wait") || stringFlag(args, "out")) {
     pack = await waitForPack(deps, client, pack, seconds);
   }
@@ -377,6 +403,21 @@ async function check(deps: CliDeps, argv: string[]): Promise<number> {
     deps.stdout(formatCheck(result));
   }
   return result.pass ? EXIT.ok : EXIT.checkFailed;
+}
+
+async function channels(deps: CliDeps, argv: string[]): Promise<number> {
+  const args = parseArgs(argv, COMMON);
+  if (args.positionals.length > 0) {
+    throw new UsageError("curvi channels takes no arguments.");
+  }
+  const client = await clientFor(deps, args);
+  const result = await client.listChannels();
+  if (boolFlag(args, "json")) {
+    printJson(deps, result);
+  } else {
+    deps.stdout(formatChannels(result));
+  }
+  return EXIT.ok;
 }
 
 async function authLogin(deps: CliDeps, argv: string[]): Promise<number> {
@@ -431,11 +472,13 @@ function describeError(error: unknown): string {
     const hint =
       error.status === 401
         ? " Check the key with curvi auth status, or make a new one."
-        : error.status === 403
+        : error.reason === "upgrade_required" && error.status === 403
           ? " API keys work on the Growth plan and up."
-          : error.status === 429 && error.retryAfter !== null
-            ? ` Try again in ${error.retryAfter} seconds.`
-            : "";
+          : error.status === 409 && error.existingPackId
+            ? ` The pack it started is ${error.existingPackId}; run curvi pack get ${error.existingPackId}.`
+            : error.status === 429 && error.retryAfter !== null
+              ? ` Try again in ${error.retryAfter} seconds.`
+              : "";
     const issues = error.issues.length > 0 ? `\n${error.issues.map((issue) => `  ${issue}`).join("\n")}` : "";
     return `${error.message}${hint}${issues}`;
   }
@@ -471,6 +514,9 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     }
     if (command === "check") {
       return await check(deps, sub === undefined ? rest : [sub, ...rest]);
+    }
+    if (command === "channels") {
+      return await channels(deps, sub === undefined ? rest : [sub, ...rest]);
     }
     throw new UsageError(`Unknown command ${command}. Run curvi help.`);
   } catch (error) {

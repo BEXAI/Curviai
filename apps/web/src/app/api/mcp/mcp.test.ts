@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setApiKeyBackendForTests } from "@/lib/api-keys/backend";
 import { JSONRPC, MCP_TOOLS, PROTOCOL_VERSION_META, SUPPORTED_PROTOCOL_VERSIONS } from "@/lib/api-v1/mcp";
 import { MainImageCheckResponse, PackResponse } from "@/lib/api-v1/schemas";
@@ -197,6 +197,22 @@ describe("tools against the demo services", () => {
     }
     expect(finished).toBe(true);
     expect(Array.isArray(last.files) && last.files.length > 0).toBe(true);
+  });
+
+  it("create_pack takes the bundle and look shortcuts next to partial output options", async () => {
+    vi.stubEnv("NEXT_PUBLIC_OUTPUT_OPTIONS", "1");
+    // The tool passes the arguments as sent to the action, so the output
+    // options' schema defaults (bundle everything) cannot clash with the
+    // bundle shortcut.
+    const created = await call("create_pack", {
+      channels: ["amazon.main"],
+      idempotency_key: "mcp-look",
+      bundle: "main",
+      look: "marketplace",
+      outputOptions: { logo: false },
+    });
+    expect(created.body.result?.isError, JSON.stringify(created.body.result?.structuredContent)).toBe(false);
+    vi.unstubAllEnvs();
   });
 
   it("returns refusals as tool errors the model can read", async () => {

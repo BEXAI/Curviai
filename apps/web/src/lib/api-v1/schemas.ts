@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import { BUNDLE_KEYS, OutputOptionsInput } from "@curvi/pipeline/output-options";
+import { BUNDLE_KEYS, LOOK_KEYS, OutputOptionsInput } from "@curvi/pipeline/output-options";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import {
   angleRoleSchema,
@@ -51,6 +51,10 @@ export const CreatePackRequest = z
     comparisonFacts: sellerLinesSchema.optional(),
     endorsements: endorsementLinesSchema.optional(),
     bundle: z.enum(BUNDLE_KEYS).optional().describe("How much the pack makes. everything is the default."),
+    look: z
+      .enum(LOOK_KEYS)
+      .optional()
+      .describe("A starting style. The server fills the output options from the look's preset; outputOptions fields sent with it win."),
     outputOptions: OutputOptionsInput.optional(),
   })
   .strict();

@@ -46,7 +46,7 @@ It asks for the key and saves it in the user's config folder, readable by them o
 
 ## Choose what the pack makes
 
-Channels are spec ids joined by commas. Common ones:
+Channels are spec ids joined by commas. A channel name such as `amazon` picks every live spec of that channel. Run `curvi channels` to see every spec, its size and whether the user's plan includes it. Common ones:
 
 | The user says | Channels |
 | --- | --- |
@@ -69,7 +69,7 @@ If you are unsure, ask one short question about channels, then use the defaults.
 curvi pack create ./photo.jpg --channels amazon.main,shopify.product --bundle listing --wait --json
 ```
 
-A photo on the web works too: pass its https URL instead of the path. `--wait` polls until the pack is done; `--out ./curvi-pack` also downloads every file into that folder. Add `--note "matte black finish, keep it dark"` for anything the user wants the images to show.
+A photo on the web works too: pass its https URL instead of the path. Pass up to 8 photos of the same product, front first, and the pack uses the angles it needs. `--wait` polls until the pack is done; `--out ./curvi-pack` also downloads every file into that folder. Add `--note "matte black finish, keep it dark"` for anything the user wants the images to show.
 
 A pack holds credits while it runs and charges only for files that pass their checks. Tell the user how many credits the pack charged (`pack.creditsCharged` in the JSON).
 

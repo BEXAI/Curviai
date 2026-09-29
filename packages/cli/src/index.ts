@@ -4,6 +4,8 @@ export {
   CurviClient,
   CurviNetworkError,
   DEFAULT_BASE_URL,
+  MAX_PACK_PHOTOS,
+  photoInput,
   type CreatePackOptions,
   type CurviClientOptions,
   type FetchLike,

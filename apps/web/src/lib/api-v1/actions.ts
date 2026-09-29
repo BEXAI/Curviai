@@ -15,6 +15,7 @@
  */
 
 import { z } from "zod";
+import { BUNDLE_KEYS, DEFAULT_BUNDLE, LOOK_KEYS, lookPresetFor, type BundleKey, type LookKey } from "@curvi/pipeline/output-options";
 import { packBundles } from "@curvi/pipeline/seed";
 import { flatPixelsOnWhite } from "@curvi/pipeline/pixels";
 import { getSpec, hasSpec } from "@curvi/specs";
@@ -214,6 +215,34 @@ export function withBundle(raw: unknown): unknown {
   return { ...body, outputOptions: { ...(options as Record<string, unknown> | undefined), bundle: body.bundle } };
 }
 
+/** The request body with the look shortcut expanded into output options:
+ * the look's seeded preset for the pack's bundle, with lookBase set, under
+ * any outputOptions fields sent alongside it (the web form's look cards
+ * work the same way). Runs after withBundle, before the schema parse, so
+ * the options' defaults never override the preset. */
+export function withLook(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return raw;
+  }
+  const body = raw as Record<string, unknown>;
+  const look = body.look;
+  const options = body.outputOptions;
+  if (
+    typeof look !== "string" ||
+    !(LOOK_KEYS as readonly string[]).includes(look) ||
+    (options !== undefined && (typeof options !== "object" || options === null || Array.isArray(options)))
+  ) {
+    // Nothing to expand, or a value the schema refuses anyway.
+    return raw;
+  }
+  const sent = (options as Record<string, unknown> | undefined) ?? {};
+  const bundle =
+    typeof sent.bundle === "string" && (BUNDLE_KEYS as readonly string[]).includes(sent.bundle)
+      ? (sent.bundle as BundleKey)
+      : DEFAULT_BUNDLE;
+  return { ...body, outputOptions: { ...lookPresetFor(look as LookKey, bundle), lookBase: look, ...sent } };
+}
+
 /** POST /api/v1/packs and the create_pack tool. */
 export async function createPack(ctx: ApiContext, rawBody: unknown, idempotencyKey: string | null): Promise<ApiResult> {
   const { caller } = ctx;
@@ -228,13 +257,13 @@ export async function createPack(ctx: ApiContext, rawBody: unknown, idempotencyK
     return errorResult(400, "idempotency_key_too_long", API_COPY.idempotencyTooLong);
   }
 
-  const body = withBundle(rawBody);
-  if (body === null) {
+  const bundled = withBundle(rawBody);
+  if (bundled === null) {
     return errorResult(400, "invalid_request", API_COPY.invalid, {
       issues: ["bundle: It must match outputOptions.bundle when both are sent."],
     });
   }
-  const parsed = CreatePackRequest.safeParse(body);
+  const parsed = CreatePackRequest.safeParse(withLook(bundled));
   if (!parsed.success) {
     return errorResult(400, "invalid_request", API_COPY.invalid, { issues: issuesOf(parsed.error) });
   }

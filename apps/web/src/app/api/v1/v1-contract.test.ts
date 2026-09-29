@@ -425,3 +425,35 @@ describe("GET /api/v1/channels", () => {
     expect(body.bundles.map((b) => b.key)).toContain("everything");
   });
 });
+
+describe("the look shortcut", () => {
+  it("expands a look into its seeded preset for the bundle, under any options sent with it", async () => {
+    const { withLook } = await import("@/lib/api-v1/actions");
+    const { lookPresetFor } = await import("@curvi/pipeline/output-options");
+    expect(withLook({ channels: ["amazon.main"] })).toEqual({ channels: ["amazon.main"] });
+    expect(withLook({ channels: ["amazon.main"], look: "marketplace" })).toEqual({
+      channels: ["amazon.main"],
+      look: "marketplace",
+      outputOptions: { ...lookPresetFor("marketplace"), lookBase: "marketplace" },
+    });
+    expect(
+      withLook({ channels: ["amazon.main"], look: "keep_photo", outputOptions: { bundle: "listing", logo: false } }),
+    ).toEqual({
+      channels: ["amazon.main"],
+      look: "keep_photo",
+      outputOptions: { ...lookPresetFor("keep_photo", "listing"), lookBase: "keep_photo", bundle: "listing", logo: false },
+    });
+    // An unknown look is left for the schema to refuse.
+    expect(withLook({ channels: ["amazon.main"], look: "neon" })).toEqual({ channels: ["amazon.main"], look: "neon" });
+  });
+
+  it("starts a pack with a look and the bundle shortcut, and refuses an unknown look", async () => {
+    vi.stubEnv("NEXT_PUBLIC_OUTPUT_OPTIONS", "1");
+    const ok = await createDemoPack("look-1", { channels: ["amazon.main"], bundle: "main", look: "marketplace" });
+    expect(ok.status).toBe(201);
+    await expectContract(ok, "/api/v1/packs", "post", PackResponse);
+    const bad = await createDemoPack("look-2", { channels: ["amazon.main"], look: "neon" });
+    expect(bad.status).toBe(400);
+    expect((await expectContract(bad, "/api/v1/packs", "post", PackResponse)).reason).toBe("invalid_request");
+  });
+});

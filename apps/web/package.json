@@ -37,6 +37,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@curvi/cli": "workspace:*",
     "@tailwindcss/postcss": "^4.0.0",
     "@types/archiver": "^6.0.2",
     "@types/node": "^24.0.0",

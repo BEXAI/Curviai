@@ -120,7 +120,9 @@ interface ToolDefinition {
   scope: ApiScope | null;
   args: z.ZodType;
   annotations: Record<string, boolean>;
-  run: (ctx: ApiContext, args: never) => Promise<ApiResult>;
+  /** args is the parsed arguments; raw is what the client sent, for tools
+   * whose action parses again and must not see the schema's defaults. */
+  run: (ctx: ApiContext, args: never, raw: Record<string, unknown>) => Promise<ApiResult>;
 }
 
 function inputSchemaOf(schema: z.ZodType): Record<string, unknown> {
@@ -141,9 +143,11 @@ export const MCP_TOOLS: readonly ToolDefinition[] = [
     scope: "packs:write",
     args: CreatePackArgs,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    run: async (ctx, args: z.infer<typeof CreatePackArgs>) => {
-      const { idempotency_key: key, ...body } = args;
-      return createPack(ctx, body, key);
+    run: async (ctx, args: z.infer<typeof CreatePackArgs>, raw) => {
+      // createPack parses the body itself: pass it as sent, so the output
+      // options' defaults do not clash with the bundle or look shortcuts.
+      const { idempotency_key: _key, ...body } = raw;
+      return createPack(ctx, body, args.idempotency_key);
     },
   },
   {
@@ -341,14 +345,15 @@ async function callTool(
       },
     });
   }
-  const args = tool.args.safeParse(parsed.params.arguments ?? {});
+  const rawArgs = (parsed.params.arguments ?? {}) as Record<string, unknown>;
+  const args = tool.args.safeParse(rawArgs);
   if (!args.success) {
     const issues = args.error.issues.map((i) => (i.path.length ? `${i.path.join(".")}: ${i.message}` : i.message));
     return rpcResponse(parsed.id, {
       result: { ...complete, ...toolResult({ status: 400, body: { error: "Invalid arguments.", reason: "invalid_request", issues } }) },
     });
   }
-  const result = await tool.run({ caller: auth.caller, headers: request.headers }, args.data as never);
+  const result = await tool.run({ caller: auth.caller, headers: request.headers }, args.data as never, rawArgs);
   return rpcResponse(parsed.id, { result: { ...complete, ...toolResult(result) } });
 }
 

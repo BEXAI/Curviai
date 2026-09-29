@@ -5,6 +5,9 @@
     "jsx": "preserve",
     "allowJs": true,
     "incremental": true,
+    // The CLI end to end test imports @curvi/cli, whose sources name their
+    // .ts files (it runs on Node's type stripping). noEmit is on already.
+    "allowImportingTsExtensions": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
     "plugins": [{ "name": "next" }],

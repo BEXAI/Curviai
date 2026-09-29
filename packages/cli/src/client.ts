@@ -1,20 +1,24 @@
 /**
  * A small typed client for the Curvi public API v1 (see types.ts for the
- * routes and wire shapes). It has no dependencies beyond the platform fetch,
- * FormData and Blob, so the CLI, the skill and later SDKs can share it.
+ * routes and wire shapes). Its method names are the OpenAPI operation ids.
+ * It has no dependencies beyond the platform fetch, so the CLI, the skill
+ * and later SDKs can share it.
  *
- * Retries: a GET, and a POST that carries an Idempotency-Key, is sent again
- * after a network error, a 429 or a 5xx, waiting for Retry-After when the
- * server gives one. The same Idempotency-Key is reused on every attempt, so a
- * retried create never makes a second pack or holds credits twice.
+ * Retries: a GET, the main image check (it stores nothing) and a pack
+ * create (it carries an Idempotency-Key) are sent again after a network
+ * error, a 429 or a 5xx, waiting for Retry-After when the server gives one.
+ * The same Idempotency-Key is reused on every attempt, so a retried create
+ * never makes a second pack or holds credits twice.
  */
-
 import type {
   ApiErrorBody,
+  ChannelsResponse,
   CreatePackRequest,
   MainImageCheck,
-  Pack,
   PackFiles,
+  PackResponse,
+  PhotoAngle,
+  PhotoInput,
 } from "./types.ts";
 
 export const DEFAULT_BASE_URL = "https://curvi.ai/api/v1";
@@ -28,14 +32,27 @@ const MAX_BACKOFF_MS = 30_000;
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** A photo read from disk, sent as the multipart "photo" part. */
+/** A photo read from disk, sent base64 encoded as a photo's data. */
 export interface PhotoFile {
   name: string;
-  type: string;
   bytes: Uint8Array;
 }
 
-export type PhotoSource = { file: PhotoFile } | { url: string };
+/** A photo from disk or a public https link, with what it shows when it is
+ * not the front. */
+export type PhotoSource = ({ file: PhotoFile } | { url: string }) & { angle?: PhotoAngle };
+
+/** The wire form of a photo: { url } or { data } (base64). */
+export function photoInput(photo: PhotoSource): PhotoInput {
+  const angle = photo.angle ? { angle: photo.angle } : {};
+  if ("url" in photo) {
+    return { url: photo.url, ...angle };
+  }
+  return { data: Buffer.from(photo.file.bytes).toString("base64"), ...angle };
+}
+
+/** The API refuses a pack with more photos than this. */
+export const MAX_PACK_PHOTOS = 8;
 
 export interface CurviClientOptions {
   apiKey: string;
@@ -54,16 +71,27 @@ export interface CreatePackOptions {
 
 export class CurviApiError extends Error {
   readonly status: number;
+  /** The server's machine readable reason, for example upgrade_required;
+   * null when the answer carried none. */
+  readonly reason: string | null;
   readonly issues: string[];
   /** Seconds the server asked the caller to wait, when it said. */
   readonly retryAfter: number | null;
+  /** On a 409 idempotency_conflict: the pack the key already started. */
+  readonly existingPackId: string | null;
 
-  constructor(status: number, message: string, issues: string[] = [], retryAfter: number | null = null) {
+  constructor(
+    status: number,
+    message: string,
+    details: { reason?: string | null; issues?: string[]; retryAfter?: number | null; existingPackId?: string | null } = {},
+  ) {
     super(message);
     this.name = "CurviApiError";
     this.status = status;
-    this.issues = issues;
-    this.retryAfter = retryAfter;
+    this.reason = details.reason ?? null;
+    this.issues = details.issues ?? [];
+    this.retryAfter = details.retryAfter ?? null;
+    this.existingPackId = details.existingPackId ?? null;
   }
 }
 
@@ -105,7 +133,14 @@ async function errorFrom(response: Response): Promise<CurviApiError> {
       ? body.error
       : `The Curvi API answered ${response.status}.`;
   const issues = Array.isArray(body?.issues) ? body.issues.filter((i): i is string => typeof i === "string") : [];
-  return new CurviApiError(response.status, message, issues, retryAfterSeconds(response));
+  const bodyRetry =
+    typeof body?.retryAfterSeconds === "number" && body.retryAfterSeconds >= 0 ? body.retryAfterSeconds : null;
+  return new CurviApiError(response.status, message, {
+    reason: typeof body?.reason === "string" ? body.reason : null,
+    issues,
+    retryAfter: retryAfterSeconds(response) ?? bodyRetry,
+    existingPackId: typeof body?.existingPackId === "string" ? body.existingPackId : null,
+  });
 }
 
 export class CurviClient {
@@ -126,58 +161,54 @@ export class CurviClient {
     this.sleep = options.sleep ?? defaultSleep;
   }
 
-  /** POST /packs: starts a pack and holds its credits, like the web form. */
-  createPack(photo: PhotoSource, request: CreatePackRequest, options: CreatePackOptions = {}): Promise<Pack> {
+  /**
+   * POST /packs (createPack): starts a pack and holds its credits, like the
+   * web form. Photos go in the body as links or base64 bytes.
+   */
+  createPack(
+    photos: readonly PhotoSource[],
+    request: Omit<CreatePackRequest, "photos">,
+    options: CreatePackOptions = {},
+  ): Promise<PackResponse> {
+    if (photos.length > MAX_PACK_PHOTOS) {
+      throw new Error(`A pack takes at most ${MAX_PACK_PHOTOS} photos.`);
+    }
     const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
-    return this.send<Pack>("POST", "/packs", {
-      idempotencyKey,
-      body: () => this.photoBody(photo, request),
-    });
+    const body: CreatePackRequest = { ...request, ...(photos.length > 0 ? { photos: photos.map(photoInput) } : {}) };
+    return this.send<PackResponse>("POST", "/packs", { idempotencyKey, retryable: true, json: body });
   }
 
-  /** GET /packs/{id}. */
-  getPack(id: string): Promise<Pack> {
-    return this.send<Pack>("GET", `/packs/${encodeURIComponent(id)}`);
+  /** GET /packs/{id} (getPack). */
+  getPack(id: string): Promise<PackResponse> {
+    return this.send<PackResponse>("GET", `/packs/${encodeURIComponent(id)}`);
   }
 
-  /** GET /packs/{id}/files: signed, short lived file URLs. */
-  getPackFiles(id: string): Promise<PackFiles> {
+  /** GET /packs/{id}/files (listPackFiles): signed, short lived file URLs. */
+  listPackFiles(id: string): Promise<PackFiles> {
     return this.send<PackFiles>("GET", `/packs/${encodeURIComponent(id)}/files`);
   }
 
-  /** POST /checks/main-image: the free Amazon main image checker. */
-  checkMainImage(photo: PhotoSource, options: CreatePackOptions = {}): Promise<MainImageCheck> {
-    const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
-    return this.send<MainImageCheck>("POST", "/checks/main-image", {
-      idempotencyKey,
-      body: () => this.photoBody(photo, {}),
-    });
+  /** POST /checks/main-image (checkMainImage): the free Amazon main image
+   * checker. It stores nothing, so a retry is safe without a key. */
+  checkMainImage(photo: PhotoSource): Promise<MainImageCheck> {
+    const { angle: _angle, ...body } = photoInput(photo);
+    return this.send<MainImageCheck>("POST", "/checks/main-image", { retryable: true, json: body });
   }
 
-  /**
-   * A fresh body per attempt: a FormData or string can be sent again, but
-   * building it anew keeps every attempt independent of the last one.
-   */
-  private photoBody(photo: PhotoSource, fields: object): { body: NonNullable<RequestInit["body"]>; contentType?: string } {
-    if ("url" in photo) {
-      return { body: JSON.stringify({ ...fields, photoUrl: photo.url }), contentType: "application/json" };
-    }
-    const form = new FormData();
-    // A copy into a plain ArrayBuffer, which every Blob constructor accepts.
-    const bytes = new Uint8Array(photo.file.bytes).buffer;
-    form.append("photo", new Blob([bytes], { type: photo.file.type }), photo.file.name);
-    form.append("request", JSON.stringify(fields));
-    // fetch sets the multipart boundary itself.
-    return { body: form };
+  /** GET /channels (listChannels): the channel specs and bundles a pack can
+   * name, with availability on the key's plan. */
+  listChannels(): Promise<ChannelsResponse> {
+    return this.send<ChannelsResponse>("GET", "/channels");
   }
 
   private async send<T>(
     method: "GET" | "POST",
     path: string,
-    options: { idempotencyKey?: string; body?: () => { body: NonNullable<RequestInit["body"]>; contentType?: string } } = {},
+    options: { idempotencyKey?: string; retryable?: boolean; json?: unknown } = {},
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
-    const retryable = method === "GET" || options.idempotencyKey !== undefined;
+    const retryable = method === "GET" || options.retryable === true;
+    const body = options.json === undefined ? undefined : JSON.stringify(options.json);
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -187,12 +218,11 @@ export class CurviClient {
       };
       if (this.userAgent) headers["User-Agent"] = this.userAgent;
       if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
-      const payload = options.body?.();
-      if (payload?.contentType) headers["Content-Type"] = payload.contentType;
+      if (body !== undefined) headers["Content-Type"] = "application/json";
 
       let response: Response;
       try {
-        response = await this.fetchImpl(url, { method, headers, body: payload?.body });
+        response = await this.fetchImpl(url, { method, headers, ...(body !== undefined ? { body } : {}) });
       } catch (error) {
         lastError = new CurviNetworkError(`Could not reach the Curvi API at ${this.baseUrl}.`, { cause: error });
         if (!retryable || attempt === MAX_ATTEMPTS) throw lastError;
