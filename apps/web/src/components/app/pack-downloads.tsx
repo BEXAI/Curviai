@@ -2,6 +2,8 @@
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Card, CardContent, buttonVariants, cn } from "@curvi/ui";
+import { OutputPreview } from "@/components/app/output-preview";
+import { aspectRatioCss, mayBeTransparentFile, previewAspect } from "@/lib/output-preview";
 import { track } from "@/lib/track";
 import type { JobFilesView, JobFileView } from "@/lib/services/types";
 
@@ -29,6 +31,33 @@ function formatBytes(bytes: number | null): string | null {
 
 function trackDownload(jobId: string, file: Pick<JobFileView, "channel" | "kind">): void {
   track("pack_downloaded", { jobId, channel: file.channel, kind: file.kind });
+}
+
+/**
+ * One file's preview in its channel's shape, with the checkerboard behind a
+ * PNG's transparent pixels, like the shot cards on the board (PHASE_15 item 34).
+ */
+export function FilePreview({ file }: { file: Pick<JobFileView, "name" | "specId" | "url"> }) {
+  const aspect = previewAspect([file.specId]);
+  if (!file.url) {
+    return (
+      <div
+        className="flex w-full items-center justify-center rounded-lg border border-dashed border-ink-200 text-xs text-ink-400"
+        style={{ aspectRatio: aspectRatioCss(aspect) }}
+      >
+        Preview unavailable
+      </div>
+    );
+  }
+  return (
+    <OutputPreview
+      src={file.url}
+      alt={`${file.specId ?? "asset"} ${file.name}`}
+      aspect={aspect}
+      transparent={mayBeTransparentFile(file.name)}
+      testId="file-preview"
+    />
+  );
 }
 
 /** Channel tabs with correctly named downloads (plan 3.3.4): per channel
@@ -207,18 +236,7 @@ export function PackDownloads({ jobId }: { jobId: string }) {
                 <li key={file.id}>
                   <Card data-testid="pack-file">
                     <CardContent className="p-4">
-                      {file.url ? (
-                        // Plain img: signed R2 urls and data uris are not next/image compatible.
-                        <img
-                          src={file.url}
-                          alt={`${file.specId ?? "asset"} ${file.name}`}
-                          className="aspect-square w-full rounded-lg border border-ink-100 bg-white object-contain"
-                        />
-                      ) : (
-                        <div className="flex aspect-square w-full items-center justify-center rounded-lg border border-dashed border-ink-200 text-xs text-ink-400">
-                          Preview unavailable
-                        </div>
-                      )}
+                      <FilePreview file={file} />
                       <div className="mt-3 flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <p className="truncate text-xs font-medium text-ink-900" title={file.name}>
