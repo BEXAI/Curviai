@@ -64,8 +64,8 @@ export function badgePlacement(
 ): BadgeBox | null {
   const top = (opts.safeZone?.top ?? 0) + opts.margin;
   const bottom = canvas.height - (opts.safeZone?.bottom ?? 0) - opts.margin - size.height;
-  const left = opts.margin;
-  const right = canvas.width - opts.margin - size.width;
+  const left = (opts.safeZone?.left ?? 0) + opts.margin;
+  const right = canvas.width - (opts.safeZone?.right ?? 0) - opts.margin - size.width;
   if (right < left || bottom < top) {
     return null;
   }
@@ -95,7 +95,13 @@ function scaledSafeZone(spec: ChannelSpec, canvasHeight: number): ChannelSpec["s
     return undefined;
   }
   const scale = spec.height ? canvasHeight / spec.height : 1;
-  return { top: Math.ceil(spec.safeZone.top * scale), bottom: Math.ceil(spec.safeZone.bottom * scale) };
+  const { top, bottom, left, right } = spec.safeZone;
+  return {
+    top: Math.ceil(top * scale),
+    bottom: Math.ceil(bottom * scale),
+    ...(left !== undefined ? { left: Math.ceil(left * scale) } : {}),
+    ...(right !== undefined ? { right: Math.ceil(right * scale) } : {}),
+  };
 }
 
 function escapeXml(value: string): string {

@@ -123,7 +123,10 @@ function ruleRows(spec: ChannelSpec): { rule: string; value: string }[] {
   if (spec.safeZone) {
     rows.push({
       rule: "Safe zone",
-      value: `Keep the top ${spec.safeZone.top} px and bottom ${spec.safeZone.bottom} px clear of critical content`,
+      value:
+        spec.safeZone.left !== undefined || spec.safeZone.right !== undefined
+          ? `Keep the top ${spec.safeZone.top} px, bottom ${spec.safeZone.bottom} px, left ${spec.safeZone.left ?? 0} px and right ${spec.safeZone.right ?? 0} px clear of critical content`
+          : `Keep the top ${spec.safeZone.top} px and bottom ${spec.safeZone.bottom} px clear of critical content`,
     });
   }
   if (spec.iptcDigitalSourceTypeRequiredIfAI) {

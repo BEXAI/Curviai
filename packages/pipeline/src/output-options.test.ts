@@ -278,6 +278,7 @@ describe("extra families", () => {
       transparentPng: ["cutout_png"],
       graphics: ["infographic", "dimensions", "in_the_box", "comparison"],
       cards: ["social_1x1", "social_4x5", "social_9x16", "social_2x3", "aplus_banner"],
+      ads: ["pin_moodboard", "carousel_slide", "ad_variant"],
     });
     expect(SELLER_OFF_REASON).toBe("turned off by the seller");
     expect(SOURCE_TOO_SMALL_REASON).toBe("source too small for this channel");

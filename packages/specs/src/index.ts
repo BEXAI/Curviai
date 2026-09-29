@@ -49,7 +49,33 @@ export const ChannelSpec = z.object({
   badgeAllowed: z.boolean().optional(),
   iptcDigitalSourceTypeRequiredIfAI: z.boolean().optional(),
   naming: z.string().optional(),
-  safeZone: z.object({ top: z.number().int().min(0), bottom: z.number().int().min(0) }).optional(),
+  /**
+   * Pixels at each edge the platform covers with its own interface (name,
+   * caption, buttons). Text, logos and the product stay inside. left and
+   * right are absent on specs whose sides are clear.
+   */
+  safeZone: z
+    .object({
+      top: z.number().int().min(0),
+      bottom: z.number().int().min(0),
+      left: z.number().int().min(0).optional(),
+      right: z.number().int().min(0).optional(),
+    })
+    .optional(),
+  /**
+   * Character limits of the platform's ad text fields (PHASE_16 workstream
+   * 3, docs/verification.md): the headline field, the primary text or
+   * caption, TikTok's ad text, the pin title. Punctuation and spaces count.
+   */
+  textLimits: z
+    .object({
+      headline: z.number().int().positive().optional(),
+      primaryText: z.number().int().positive().optional(),
+      adText: z.number().int().positive().optional(),
+      title: z.number().int().positive().optional(),
+    })
+    .strict()
+    .optional(),
   fps: z.number().int().positive().optional(),
   maxSeconds: z.number().int().positive().optional(),
 });
@@ -257,6 +283,35 @@ export function isExactSize(spec: ChannelSpec): boolean {
 /** False when the channel refuses added borders or flat added space. */
 export function allowsAddedBorders(spec: ChannelSpec): boolean {
   return spec.bordersAllowed !== false;
+}
+
+/**
+ * The inner box of a spec's canvas that is clear of the platform's own
+ * interface: the canvas less its safe zone on every side. The whole canvas
+ * when the spec has no safe zone.
+ */
+export function safeArea(spec: ChannelSpec, canvas: { width: number; height: number }): {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+} {
+  const zone = spec.safeZone;
+  const left = zone?.left ?? 0;
+  const top = zone?.top ?? 0;
+  const width = Math.max(0, canvas.width - left - (zone?.right ?? 0));
+  const height = Math.max(0, canvas.height - top - (zone?.bottom ?? 0));
+  return { left, top, width, height };
+}
+
+/**
+ * The most characters an ad line for this spec may carry in the platform's
+ * text field: its headline limit, else its primary text, ad text or title
+ * limit, else null when the registry names none.
+ */
+export function adTextLimit(spec: ChannelSpec): number | null {
+  const limits = spec.textLimits;
+  return limits?.headline ?? limits?.primaryText ?? limits?.adText ?? limits?.title ?? null;
 }
 
 /** True when the channel refuses added text or overlays on the image. */

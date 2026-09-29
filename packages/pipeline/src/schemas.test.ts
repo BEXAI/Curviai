@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  ADS_SHOT_TYPES,
   APLUS_MODULE_SHOT_TYPES,
   DETERMINISTIC_ONLY_SHOT_TYPES,
   IntakeResult,
@@ -194,12 +195,15 @@ describe("LlmShot and original_photo", () => {
     expect(LlmShot.safeParse({ ...original, type: "amazon_main" }).success).toBe(true);
   });
 
-  it("leaves out exactly the deterministic only types and the A+ modules", () => {
+  it("leaves out exactly the deterministic only types, the A+ modules and the ads formats", () => {
     const llm: readonly string[] = LlmShot.shape.type.options;
     expect(Shot.shape.type.options.filter((t) => !llm.includes(t))).toEqual([
       ...DETERMINISTIC_ONLY_SHOT_TYPES,
       ...APLUS_MODULE_SHOT_TYPES,
+      ...ADS_SHOT_TYPES,
     ]);
-    expect(Object.keys(LlmShot.shape)).not.toContain("headline");
+    for (const field of ["headline", "carouselId", "slideIndex", "slideCount", "variantKey", "cta"]) {
+      expect(Object.keys(LlmShot.shape)).not.toContain(field);
+    }
   });
 });

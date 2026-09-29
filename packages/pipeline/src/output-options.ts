@@ -79,8 +79,11 @@ export const ColorChoice = z.discriminatedUnion("kind", [
 ]);
 export type ColorChoice = z.infer<typeof ColorChoice>;
 
-/** The switchable extra image families (PHASE_15 control 5). */
-export const EXTRA_FAMILY_KEYS = ["scenes", "backdrops", "transparentPng", "graphics", "cards"] as const;
+/** The switchable extra image families (PHASE_15 control 5). ads (PHASE_16
+ * workstream 3: the moodboard pin, the carousel and the ad pack) is off
+ * unless the seller turns it on, and is left out of the options while off
+ * (compactExtras), so every pack from before it keeps its options key. */
+export const EXTRA_FAMILY_KEYS = ["scenes", "backdrops", "transparentPng", "graphics", "cards", "ads"] as const;
 export type ExtraFamily = (typeof EXTRA_FAMILY_KEYS)[number];
 
 /** Shot types per extra family. A shot type in no family is never switchable. */
@@ -90,7 +93,32 @@ export const EXTRA_FAMILIES: Readonly<Record<ExtraFamily, readonly Shot["type"][
   transparentPng: ["cutout_png"],
   graphics: ["infographic", "dimensions", "in_the_box", "comparison"],
   cards: ["social_1x1", "social_4x5", "social_9x16", "social_2x3", "aplus_banner"],
+  ads: ["pin_moodboard", "carousel_slide", "ad_variant"],
 };
+
+/** Extra families that start off in every look and bundle, and are written
+ * into the options only when on. */
+const OFF_UNLESS_ON_FAMILIES: readonly ExtraFamily[] = ["ads"];
+
+/**
+ * The extras with every off unless on family (ads) left out while it is off,
+ * so absent and false read the same and today's options keep their key. The
+ * other families are always written.
+ */
+export function compactExtras(extras: OutputExtras): OutputExtras {
+  const out = { ...extras };
+  for (const family of OFF_UNLESS_ON_FAMILIES) {
+    if (out[family] !== true) {
+      delete out[family];
+    }
+  }
+  return out;
+}
+
+/** True when the family is switched on. An absent ads switch is off. */
+export function extraOn(extras: Partial<OutputExtras>, family: ExtraFamily): boolean {
+  return extras[family] === true;
+}
 
 /** Shot types the seller can never switch off. */
 export const NEVER_SWITCHABLE_SHOT_TYPES: readonly Shot["type"][] = [
@@ -150,7 +178,7 @@ export function bundleExtrasFor(bundle: BundleKey, background: "remove" | "keep"
   for (const family of EXTRA_FAMILY_KEYS) {
     out[family] = background === "remove" && seeded[family] && bundleHoldsFamily(bundle, family);
   }
-  return out;
+  return compactExtras(out);
 }
 
 /** The most other angle images the bundle plans, or null for no cap. */
@@ -227,6 +255,7 @@ const ExtrasInput = z
     transparentPng: z.boolean(),
     graphics: z.boolean(),
     cards: z.boolean(),
+    ads: z.boolean(),
   })
   .partial()
   .strict();
@@ -238,6 +267,8 @@ const Extras = z
     transparentPng: z.boolean(),
     graphics: z.boolean(),
     cards: z.boolean(),
+    /** The ads family (PHASE_16); absent is off. */
+    ads: z.boolean().optional(),
   })
   .strict();
 export type OutputExtras = z.infer<typeof Extras>;
@@ -302,10 +333,13 @@ function allExtras(on: boolean): OutputExtras {
 export function normalizeOutputOptions(input?: OutputOptionsInput | null): NormalizedOutputOptions {
   const parsed = OutputOptionsInput.parse(input ?? {});
   const bundle = parsed.bundle;
-  const extras = { ...bundleExtrasFor(bundle, parsed.background), ...parsed.extras };
+  const merged: OutputExtras = { ...bundleExtrasFor(bundle, parsed.background), ...parsed.extras };
   for (const family of EXTRA_FAMILY_KEYS) {
-    extras[family] &&= bundleHoldsFamily(bundle, family);
+    if (merged[family] !== undefined) {
+      merged[family] &&= bundleHoldsFamily(bundle, family);
+    }
   }
+  const extras = compactExtras(merged);
   return {
     v: 1,
     ...(parsed.lookBase !== undefined ? { lookBase: parsed.lookBase } : {}),
@@ -374,7 +408,7 @@ function choicesOf(options: NormalizedOutputOptions | OutputChoices): OutputChoi
     background: options.background,
     color: options.color,
     fit: options.fit,
-    extras: options.extras,
+    extras: compactExtras(options.extras),
     sceneCount: options.sceneCount,
     scenePreset: options.scenePreset,
     logo: options.logo,
@@ -617,7 +651,7 @@ export function planFlagsOf(
   return {
     background: resolved.background,
     keepMediaIds: [...resolved.keepMediaIds],
-    extras: { ...resolved.extras },
+    extras: compactExtras(resolved.extras),
     fit: resolved.fit,
     sceneCount: sceneCountOf(resolved),
     enlarge: resolved.enlarge ?? P1_DEFAULTS.enlarge,
@@ -866,7 +900,7 @@ export interface PixelBox {
  * aspect (canvasSizeFor) that fits in the photo and holds the product box
  * plus seed originalFit.cropMarginShare of the box's longest side on every
  * side (the margin stops at the photo's edge). On a spec with a safe zone
- * (meta.story_9x16) the box plus margin must also sit inside the zone once
+ * (meta.story_9x16, TikTok's left and right too) the box plus margin must also sit inside the zone once
  * the window is scaled to the canvas. The window is centered on the box as
  * far as those rules allow. null when there is no usable box or the box
  * cannot fit, and the caller falls back (cropFallbackFor). Pure.
@@ -909,11 +943,17 @@ export function cropWindowFor(
   // The safe zone, in window pixels.
   const zoneTop = Math.ceil(((spec.safeZone?.top ?? 0) * winH) / canvas.height);
   const zoneBottom = Math.ceil(((spec.safeZone?.bottom ?? 0) * winH) / canvas.height);
+  const zoneLeft = Math.ceil(((spec.safeZone?.left ?? 0) * winW) / canvas.width);
+  const zoneRight = Math.ceil(((spec.safeZone?.right ?? 0) * winW) / canvas.width);
   const place = (lo: number, hi: number, center: number): number | null => {
     if (lo > hi) return null;
     return Math.min(hi, Math.max(lo, Math.round(center)));
   };
-  const left = place(Math.max(0, need.right - winW), Math.min(W - winW, need.left), (need.left + need.right - winW) / 2);
+  const left = place(
+    Math.max(0, need.right - (winW - zoneRight)),
+    Math.min(W - winW, need.left - zoneLeft),
+    (need.left + need.right - winW - zoneLeft + zoneRight) / 2,
+  );
   const top = place(
     Math.max(0, need.bottom - (winH - zoneBottom)),
     Math.min(H - winH, need.top - zoneTop),
@@ -992,7 +1032,8 @@ export function originalScale(
   if ((fit === "crop" ? cropFallbackFor(spec) : fit) === "pad") {
     const canvas = canvasSizeFor(spec);
     const safeHeight = canvas.height - (spec.safeZone?.top ?? 0) - (spec.safeZone?.bottom ?? 0);
-    return placed(Math.min(canvas.width / w, Math.max(1, safeHeight) / h, byMegapixels, 1));
+    const safeWidth = canvas.width - (spec.safeZone?.left ?? 0) - (spec.safeZone?.right ?? 0);
+    return placed(Math.min(Math.max(1, safeWidth) / w, Math.max(1, safeHeight) / h, byMegapixels, 1));
   }
   const bounds = dimensionBounds(spec);
   const long = Math.max(w, h);

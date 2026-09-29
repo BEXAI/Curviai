@@ -179,9 +179,17 @@ export async function makeOnBackground(
 }
 
 /** A spec safe zone scaled to a smaller canvas of the same aspect. */
-function scaleSafeZone(zone: { top: number; bottom: number }, scale: number): { top: number; bottom: number } {
-  return { top: Math.ceil(zone.top * scale), bottom: Math.ceil(zone.bottom * scale) };
+function scaleSafeZone(zone: SafeZone, scale: number): SafeZone {
+  return {
+    top: Math.ceil(zone.top * scale),
+    bottom: Math.ceil(zone.bottom * scale),
+    ...(zone.left !== undefined ? { left: Math.ceil(zone.left * scale) } : {}),
+    ...(zone.right !== undefined ? { right: Math.ceil(zone.right * scale) } : {}),
+  };
 }
+
+/** Edges of a canvas the product stays clear of, in pixels. */
+type SafeZone = { top: number; bottom: number; left?: number; right?: number };
 
 /**
  * Canvas sizes to try, largest first: the spec size, then shrinking steps of
@@ -224,8 +232,9 @@ export interface BackgroundPlacementOptions {
   rgb: Rgb;
   /** Product longest side over the canvas longest side. */
   fill: number;
-  /** Rows at the top and bottom the product must stay clear of (meta.story_9x16). */
-  safeZone?: { top: number; bottom: number };
+  /** Rows at the top and bottom, and columns at the sides, the product must
+   * stay clear of (meta.story_9x16, tiktok.ad_9x16). */
+  safeZone?: SafeZone;
 }
 
 /** A product placed on a flat background at one canvas size, before encoding. */
@@ -250,6 +259,8 @@ export async function placeOnBackground(
   const canvasLong = Math.max(canvasW, canvasH);
   const zoneTop = opts.safeZone?.top ?? 0;
   const zoneH = Math.max(1, canvasH - zoneTop - (opts.safeZone?.bottom ?? 0));
+  const zoneLeft = opts.safeZone?.left ?? 0;
+  const zoneW = Math.max(1, canvasW - zoneLeft - (opts.safeZone?.right ?? 0));
   const [bgR, bgG, bgB] = opts.rgb;
 
   // Scale so the product longest side hits the fill target, but never overflow
@@ -257,7 +268,7 @@ export async function placeOnBackground(
   const bboxLong = Math.max(bbox.width, bbox.height);
   const scale = Math.min(
     (opts.fill * canvasLong) / bboxLong,
-    (canvasW * canvasDefaults.maxAxisShare) / bbox.width,
+    (zoneW * canvasDefaults.maxAxisShare) / bbox.width,
     (zoneH * canvasDefaults.maxAxisShare) / bbox.height,
   );
   const targetW = Math.max(1, Math.round(bbox.width * scale));
@@ -294,7 +305,7 @@ export async function placeOnBackground(
     outData[o + 3] = 255;
   }
   const outMaskData = Buffer.alloc(canvasW * canvasH, 0);
-  const offsetX = Math.floor((canvasW - targetW) / 2);
+  const offsetX = zoneLeft + Math.max(0, Math.floor((zoneW - targetW) / 2));
   const offsetY = zoneTop + Math.max(0, Math.floor((zoneH - targetH) / 2));
   for (let y = 0; y < targetH; y++) {
     for (let x = 0; x < targetW; x++) {

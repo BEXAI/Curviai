@@ -32,6 +32,7 @@ import {
   bundleOf,
   bundleShotTypes,
   extraFamilyOf,
+  extraOn,
   isSecondaryShot,
   originalScale,
   sceneCountOf,
@@ -52,6 +53,7 @@ import {
 import { capAplusModules, moduleSkipReason, plannedModuleLines } from "../aplus-copy";
 import { ProductProfile, Shot, ShotList, type ShotMethod } from "../schemas";
 import { printableEndorsements, printableSellerLines } from "../seller-inputs";
+import { dropIncompleteCarousels, planAdsShots, sellerTextFor } from "./ads";
 
 export interface PlanOptions {
   /** Selected channels or channel families, e.g. ["amazon", "shopify.product"]. */
@@ -623,6 +625,24 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     });
   }
 
+  // Ads formats (PHASE_16 workstream 3): the moodboard pin, the carousel and
+  // the ad pack, only with the ads switch on. Off (the default), none of them
+  // is considered, so the plan and its skipped list are as before.
+  if (output && extraOn(output.extras, "ads")) {
+    planAdsShots(
+      {
+        profile,
+        specSelected,
+        scenesOn: extraOn(output.extras, "scenes"),
+        frontMediaId: mediaFor("front"),
+        stylePreset: basePreset,
+        boxContents: opts.boxContents,
+        sellerText: sellerTextFor([opts.boxContents, opts.comparisonFacts, opts.endorsements]),
+      },
+      { plan, skip },
+    );
+  }
+
   // video_spin if 4 or more angles or a video exist.
   if (angles.length >= 4 || opts.hasVideoSource) {
     plan({
@@ -690,12 +710,10 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   // Channel file limits (amazon.secondary takes 8, amazon.main takes 1) and
   // rule 6, the credit budget, which keeps a file for every picked spec it
   // can afford (trimToBudget).
-  const kept = fitLimitsAndBudget(
-    covered,
-    opts.creditBudget,
+  // A carousel that lost a slide to a limit or the trim ships no slide.
+  const kept = dropIncompleteCarousels(
+    fitLimitsAndBudget(covered, opts.creditBudget, skipped, specSelected, reservedSlotsFor(covered, sceneCountOf(output))),
     skipped,
-    specSelected,
-    reservedSlotsFor(covered, sceneCountOf(output)),
   );
 
   // Schema cap: at most 40 shots.
@@ -704,7 +722,7 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     skipped.push({ type: dropped.type, reason: "shot cap" });
   }
 
-  return ShotList.parse({ shots: kept, skipped });
+  return ShotList.parse({ shots: dropIncompleteCarousels(kept, skipped), skipped });
 }
 
 /**
@@ -1296,7 +1314,9 @@ function socialChannelFor(type: "social_1x1" | "social_4x5" | "social_9x16"): st
     case "social_4x5":
       return ["meta.feed_4x5"];
     case "social_9x16":
-      return ["meta.story_9x16"];
+      // Every 9:16 social spec takes the story card, each rendered inside
+      // its own safe zone (PHASE_16 workstream 3 added Reels and TikTok).
+      return ["meta.story_9x16", "meta.reels_9x16", "tiktok.ad_9x16"];
   }
 }
 

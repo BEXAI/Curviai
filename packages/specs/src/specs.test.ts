@@ -11,10 +11,12 @@ import {
   isMarketplaceSpec,
   isExactSize,
   isSpecSelected,
+  adTextLimit,
   listSpecs,
   loadRegistry,
   refusesOverlays,
   requiresWhiteBackground,
+  safeArea,
   selectedSpecIds,
 } from "./index.js";
 
@@ -22,7 +24,7 @@ describe("channel spec registry", () => {
   it("parses and validates the bundled registry", () => {
     const registry = loadRegistry();
     expect(registry.version).toBe(2);
-    expect(registry.specs.length).toBe(22);
+    expect(registry.specs.length).toBe(24);
   });
 
   it("contains the launch critical specs", () => {
@@ -218,7 +220,7 @@ describe("isSpecSelected, the one channel selection rule (Update.md 2.11)", () =
   });
 
   it("selects every spec under a bare family or a group prefix", () => {
-    expect(selectedSpecIds(["meta"])).toEqual(["meta.feed_1x1", "meta.feed_4x5", "meta.story_9x16"]);
+    expect(selectedSpecIds(["meta"])).toEqual(["meta.feed_1x1", "meta.feed_4x5", "meta.story_9x16", "meta.reels_9x16"]);
     expect(selectedSpecIds(["amazon.aplus"])).toEqual([
       "amazon.aplus.basic_header",
       "amazon.aplus.premium_full",
@@ -318,7 +320,9 @@ describe("background and layout helpers", () => {
       "meta.feed_1x1",
       "meta.feed_4x5",
       "meta.story_9x16",
+      "meta.reels_9x16",
       "pinterest.pin",
+      "tiktok.ad_9x16",
     ]);
   });
 
@@ -354,5 +358,57 @@ describe("background and layout helpers", () => {
     for (const id of ["amazon.secondary", "shopify.product", "etsy.listing", "meta.feed_1x1", "pinterest.pin"]) {
       expect(refusesOverlays(getSpec(id)), id).toBe(false);
     }
+  });
+});
+
+describe("ad placements (PHASE_16 workstream 3, docs/verification.md 2026-09-29)", () => {
+  it("adds tiktok.ad_9x16 at 1080 by 1920 with the stricter union safe zone and 100 characters of ad text", () => {
+    const spec = getSpec("tiktok.ad_9x16");
+    expect(spec).toMatchObject({ width: 1080, height: 1920, exactSize: true, formats: ["jpg", "png"], textAllowed: true });
+    expect(spec.safeZone).toEqual({ top: 269, bottom: 484, left: 65, right: 140 });
+    expect(spec.textLimits).toEqual({ adText: 100 });
+    expect(adTextLimit(spec)).toBe(100);
+    expect(isMarketplaceSpec(spec.id)).toBe(false);
+    expect(isMarketplaceChannel("tiktok")).toBe(false);
+    // tiktok does not select TikTok Shop, and TikTok Shop does not select the ad.
+    expect(selectedSpecIds(["tiktok"])).toEqual(["tiktok.ad_9x16"]);
+    expect(isSpecSelected(["tiktokshop"], "tiktok.ad_9x16")).toBe(false);
+  });
+
+  it("adds meta.reels_9x16 and widens the story safe zone to Meta's 14, 35 and 6 percent", () => {
+    for (const id of ["meta.reels_9x16", "meta.story_9x16"]) {
+      const spec = getSpec(id);
+      expect(spec.safeZone, id).toEqual({ top: 269, bottom: 672, left: 65, right: 65 });
+      // 14, 35 and 6 percent of 1080 by 1920, rounded up.
+      expect(spec.safeZone!.top).toBe(Math.ceil(1920 * 0.14));
+      expect(spec.safeZone!.bottom).toBe(Math.ceil(1920 * 0.35));
+      expect(spec.safeZone!.left).toBe(Math.ceil(1080 * 0.06));
+    }
+    expect(adTextLimit(getSpec("meta.reels_9x16"))).toBe(44);
+    expect(adTextLimit(getSpec("meta.story_9x16"))).toBe(40);
+    expect(adTextLimit(getSpec("meta.feed_4x5"))).toBe(27);
+    expect(adTextLimit(getSpec("pinterest.pin"))).toBe(100);
+    expect(adTextLimit(getSpec("amazon.main"))).toBeNull();
+  });
+
+  it("computes the safe area inside every edge", () => {
+    expect(safeArea(getSpec("tiktok.ad_9x16"), { width: 1080, height: 1920 })).toEqual({
+      left: 65,
+      top: 269,
+      width: 1080 - 65 - 140,
+      height: 1920 - 269 - 484,
+    });
+    expect(safeArea(getSpec("meta.feed_4x5"), { width: 1080, height: 1350 })).toEqual({
+      left: 0,
+      top: 0,
+      width: 1080,
+      height: 1350,
+    });
+  });
+
+  it("refuses an unknown text limit field", () => {
+    expect(() =>
+      Registry.parse({ version: 1, specs: [{ id: "x.y", verified: false, textLimits: { caption: 10 } }] }),
+    ).toThrow();
   });
 });

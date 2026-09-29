@@ -13,6 +13,8 @@ export * from "./brand/palette";
 export * from "./metadata/iptc";
 export * from "./packager/index";
 export * from "./templates/still";
+export * from "./templates/ads";
+export * from "./templates/ads-layout";
 export * from "./seller-inputs";
 export * from "./isolate";
 export * from "./inventory";
