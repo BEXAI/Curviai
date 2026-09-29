@@ -107,7 +107,7 @@ Higgsfield's marketplace cards send the seller's photo through a generative imag
 
 **What the seller gets.**
 - **Reuse:** "Make this pack again" on any job restores channels, output options, bundle and answers, with a new photo or the same one.
-- **Variations:** up to 4 scene variations per lifestyle shot; the seller picks the one that ships. Only the picked one is charged at full price (seed `creditCosts.variation` for extras, rule 2, founder decision).
+- **Variations:** up to 4 scene variations per lifestyle shot; the seller picks which ones ship. Each extra beyond the first is charged at `creditCosts.generativeStill` (founder decision 3, rule 2).
 - **Gallery:** a masonry grid at each image's true aspect ratio, favorites, filters by channel and shot type, in the job page and a new /app/library.
 
 **Model.**
@@ -133,7 +133,7 @@ Higgsfield's marketplace cards send the seller's photo through a generative imag
 - generation_jobs: `seller_answers jsonb` (object check).
 - asset_variants: `picked boolean not null default true`.
 - New tables with workspace_id and RLS: `api_keys`, `favorites`.
-- Seed: `packBundles`, A+ module templates and copy slots, ad and carousel templates, `question_planner` recipe, copy_generator new version, `creditCosts.variation` if the founder approves a price.
+- Seed: `packBundles`, A+ module templates and copy slots, ad and carousel templates, `question_planner` recipe, copy_generator new version, the `apiAccess` tier entitlement (founder decision 5). Extra variations reuse `creditCosts.generativeStill` (founder decision 3), so no `creditCosts.variation` key.
 - Registry: A+ module sizes, `tiktok.ad_9x16`, `meta.reels_9x16`, text limits, all after rule 7 checks.
 
 ## Rollout order
@@ -149,13 +149,15 @@ Each step: plan detail in this file first (rule 1), worker deployed before web, 
 
 ## Founder decisions
 
-1. Bundle default: Everything (today's pack) or Listing set.
-2. Price of an A+ module: 0.5 credits (deterministic) or bundle pricing for the A+ set.
-3. Variations price: free extra variations up to 4, or a seed price per extra variation.
-4. Carousel scene: one generated canvas per carousel (1 credit) or template backgrounds only.
-5. Public API and MCP: which plans get API keys (Growth and up is the suggestion), and rate limits.
-6. Skill distribution: publish under a curvi-ai GitHub org (needs creating) and list in the Claude Code and Cursor marketplaces.
-7. Whether the question step replaces the note field by default or sits beside it.
+Decided 2026-09-29 as defaults. The founder may revise any of them later; a change lands in the seed or the registry (rule 2), not in code.
+
+1. **Bundle default: Everything.** `bundle` defaults to `everything`, which equals today's pack, so an absent bundle and an explicit `everything` give the same plan, estimate, hold and `outputOptionsKey`.
+2. **A+ module price: 0.5 credits each.** Every A+ module is charged at `creditCosts.deterministic` (0.5 in the seed today). No bundle discount: the A+ set costs the sum of its modules.
+3. **Variations: 1 per scene by default.** The seller can ask for up to 4 variations of a lifestyle scene. The first is included in the shot's normal price; each extra variation is charged at `creditCosts.generativeStill` (1 in the seed today). Only picked variations ship. This replaces the `creditCosts.variation` idea in section 6 and the data model summary: no new price key is added.
+4. **Carousel scene: one generated canvas per carousel.** When scenes are on, a carousel gets one generated scene canvas at `creditCosts.generativeStill`, sliced into its slides, never one per slide. When scenes are off, slides use template backgrounds at `creditCosts.deterministic` per slide.
+5. **API keys and MCP: Growth plan and up.** A new seed tier entitlement `apiAccess` (true on Growth and higher tiers, false below) gates /app/settings/api, the v1 API and the MCP server. Rate limits reuse the existing Upstash limiter settings; no new limiter numbers.
+6. **Skill distribution: in this repo for now.** The skill lives in `skills/curvi/` in this repository under MIT until a curvi-ai GitHub org exists. The CLI is `packages/cli` and is not published to npm yet. Marketplace listings wait for the org.
+7. **The question step sits beside the note field.** It is skippable and never blocks submit; the note stays where it is.
 
 ## Done when
 
