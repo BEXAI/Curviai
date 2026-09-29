@@ -532,4 +532,13 @@ export const adsFormats = {
     maxVariants: 6,
     callsToAction: ["Shop now", "See the details", "Get yours today", "Take a closer look", "Find out more", "Order yours"],
   },
+  /** Slots the copy_generator recipe (version 3) writes for the planned ad
+   * variants. The recipe only rewords shots the planner already made, so
+   * the plan, the estimate and the hold never change; the planner's lines
+   * above stay the fallback. */
+  adCopy: {
+    ctaMaxChars: 24,
+    /** Fewer clean recipe calls to action than this keeps the seed's. */
+    minCallsToAction: 2,
+  },
 } as const;

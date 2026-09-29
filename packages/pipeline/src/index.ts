@@ -23,5 +23,6 @@ export * from "./questions";
 export * from "./contact-sheet";
 export * from "./size-gate";
 export * from "./aplus-copy";
+export * from "./ad-copy";
 export * from "./copy-lint";
 export * from "./variations";
