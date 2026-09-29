@@ -12,7 +12,7 @@ Credits: nothing was charged. The evaluator reported 6 credits still held by the
 
 ## Root causes
 
-1. **Branded products are blocked outright.** The product analyzer's prompt (packages/pipeline/src/seed/recipes.ts, product_analyzer rule 5) says "A famous luxury logo on a low quality photo is possible_counterfeit", and moderationBlockReasons (trigger/src/pipeline-runner.ts) turns possible_counterfeit into a hard stop worded as "needs a manual review". No review queue exists, so the seller hits a dead end. Legitimate resellers, authorized dealers and brand owners are exactly Curvi's customers.
+1. **Branded products are blocked outright.** The product analyzer's prompt (packages/pipeline/src/seed/recipes.ts, product_analyzer rule 5) says "A famous luxury logo on a low quality photo is possible_counterfeit", and moderationBlockReasons (trigger/src/pipeline-runner.ts) turns possible_counterfeit into a hard stop worded as "needs a manual review". No review queue exists, so the seller hits a dead end. Brand owners and people who work for them are exactly Curvi's customers.
 2. **The image service failure is not yet diagnosed.** The copy is honest (nothing charged), but the pack delivered nothing at all, even the files that need no image model (white main, cutout, sweeps). One failing provider takes down the whole pack.
 3. **A cluttered photo gets a flat refusal.** Intake decides "no sellable product" when the product shares the frame with other items, and the seller learns this only after starting a pack.
 4. **Every failure is discovered after submit.** All three problems could have been caught in seconds at upload, before any hold or wait.
@@ -28,15 +28,17 @@ Credits: nothing was charged. The evaluator reported 6 credits still held by the
 | 1.5 | Preflight health: before a pack starts, check the provider breaker state and the last probe. If generation is down, the new pack form says so and offers the deterministic only pack. | The seller knows before submitting. |
 | 1.6 | Alerting: provider failure rate and breaker opens page the founder (Phase 12 D1 and D4, Sentry DSN needed). | A staging drill fires the alert. |
 
-## Workstream 2: branded products and moderation (P0)
+## Workstream 2: brands and logos are always allowed (P0)
+
+Founder decision, 2026-09-29: sellers use Curvi for their own company brands and for blue chip employers and clients. It is not Curvi's job to validate a seller's employer or their rights to a photo or a brand. Every restriction tied to logos and brands is removed. Moderation keeps only the categories that are prohibited whatever the brand (nudity or adult content, weapons, drugs, prohibited goods).
 
 | # | Item | Done when |
 | --- | --- | --- |
-| 2.1 | Separate "prohibited" from "needs a second look". Hard block stays only for nudity, adult, weapons, drugs and prohibited goods. possible_counterfeit no longer blocks. | A Rolex on white runs. |
-| 2.2 | Analyzer prompt version 2 (new recipe row, pnpm eval, re-seed): flag possible_counterfeit only on concrete signals (misspelled brand, wrong logo geometry, a listing claiming "replica" or "inspired by"), never for a famous brand alone. | Golden set: genuine branded products (watch, sneakers, handbag, cosmetics) are not flagged; obvious replicas are. |
-| 2.3 | Seller attestation for branded products: when intake or the analyzer sees a well known brand, the form asks the seller to confirm "I own this product or am authorized to sell this brand" (stored with user, time and job). Terms updated accordingly (legal review, founder). | The confirmation is recorded on the job and shown in the compliance report. |
-| 2.4 | No promises the product cannot keep: remove "needs a manual review" wording unless a review queue exists. Either build a small founder review queue (admin page, approve or refuse with a note, the seller gets an email or in app notice) or use plain refusal copy that says why and what to do. | No seller ever waits for a review nobody performs. |
-| 2.5 | realPersonMainSubject: a product worn on a wrist or hand is not "a person as the main subject". Narrow the intake wording and test with a watch on a wrist. | On-wrist product photos pass. |
+| 2.1 | Remove possible_counterfeit as a block: moderationBlockReasons ignores it, and the ProductProfile schema keeps it only for backward compatibility (never set by new recipes). No brand or logo ever stops or delays a pack. | A Rolex on white and a SwissLuxury photo run to a full pack. |
+| 2.2 | Product analyzer version 2 (new recipe row, pnpm eval, re-seed): drop the counterfeit rule and every instruction to judge brands, logos or authenticity; brands and logos are simply transcribed into preserveLogos and preserveText as today. | No golden set photo with a brand is flagged. |
+| 2.3 | No seller attestation, no ownership check, no brand prompt in the form. | Nothing in the flow asks about brand rights. |
+| 2.4 | Remove "needs a manual review" wording everywhere; a prohibited category refusal says plainly why and what to do. There is no review queue. | No seller waits for a review nobody performs. |
+| 2.5 | realPersonMainSubject: a product worn on a wrist, hand or body is not "a person as the main subject". Narrow the intake wording and test with a watch on a wrist. | On-wrist product photos pass. |
 
 ## Workstream 3: cluttered photos (P1)
 
@@ -52,19 +54,18 @@ Run intake, moderation, the inventory and the size gate as soon as a photo is up
 
 ## Workstream 5: testing so this does not happen again (P1)
 
-- Golden set additions (Phase 12 B1): branded luxury watch on white, the same watch on a wrist, an unbranded watch, a café scene with a watch and sneakers, a known replica listing photo, sneakers with a big logo.
-- A live eval run against staging for each, asserting: branded genuine runs, replica is refused with plain copy, cluttered photo runs with a note or asks to choose, and every pack delivers at least the deterministic files when generation is down.
+- Golden set additions (Phase 12 B1): branded luxury watch on white, the same watch on a wrist, an unbranded watch, a café scene with a watch and sneakers, sneakers with a big logo.
+- A live eval run against staging for each, asserting: every branded photo runs, cluttered photo runs with a note or asks to choose, and every pack delivers at least the deterministic files when generation is down.
 - A synthetic "evaluator walk" e2e in staging: upload, preflight, pack, download, with each failure mode forced.
 
 ## Order
 
 1. 1.1 and 1.2 now (production outage; needs founder approval for the read only query and log access).
-2. 2.1, 2.4, 2.5 (small, unblock every branded seller), then 2.2 with eval and a re-seed, then 2.3 with the terms change.
+2. Workstream 2 in full (unblocks every branded seller), with eval and a re-seed for the analyzer version 2.
 3. 1.3 and 1.4 (degrade and retry), then 1.5 and 1.6.
 4. Workstreams 3 and 4, then 5 alongside.
 
 ## Founder decisions
 
-- Branded products: attestation only, or attestation plus a founder review queue for flagged cases.
-- Terms of service wording for the attestation (legal review).
+- Decided 2026-09-29: brands and logos are always allowed, with no attestation and no review.
 - Whether a deterministic only pack (no lifestyle scenes) charges full or reduced credits when generation is paused (the plan assumes only delivered shots are charged, as today).
