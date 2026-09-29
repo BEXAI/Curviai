@@ -30,7 +30,7 @@ import {
   type JobRecipeVariant,
 } from "@curvi/db";
 import type { PackFileReport } from "@curvi/pipeline";
-import type { Shot } from "@curvi/pipeline/schemas";
+import type { SellerIntent, Shot } from "@curvi/pipeline/schemas";
 import {
   JobAbandonedError,
   type JobLedgerEntry,
@@ -167,6 +167,16 @@ export class DbJobStore implements JobStore {
   /** Records the recipe version each stage of the job runs on (A/B). */
   async saveRecipeVariants(jobId: string, variants: Record<string, JobRecipeVariant>): Promise<void> {
     await this.db.update(generationJobs).set({ recipeVariants: variants }).where(eq(generationJobs.id, jobId));
+  }
+
+  /** Records the seller intent intake parsed from the note, only while the
+   * job is live and still this store's run (liveJob), so a stale runner of
+   * an earlier run never overwrites the live run's intent. */
+  async saveSellerIntent(jobId: string, intent: SellerIntent): Promise<void> {
+    await this.db
+      .update(generationJobs)
+      .set({ sellerIntent: intent, updatedAt: new Date() })
+      .where(this.liveJob(jobId));
   }
 
   /** Returns everything the ledger still holds for the job. Idempotent:

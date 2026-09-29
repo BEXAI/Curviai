@@ -104,7 +104,16 @@ export interface PackResult {
     files: PackFileReport[];
     /** Assets left out for a channel file limit or a duplicate name. Never delivered, never charged. */
     dropped: PackDroppedAsset[];
+    /** The seller intent the pack enforced, when a product was isolated. */
+    intent?: PackIntent;
   };
+}
+
+/** What the pack featured and removed at the seller's request
+ * (docs/phases/PHASE_13.md item 6), listed in the compliance report. */
+export interface PackIntent {
+  featured: string[];
+  removed: string[];
 }
 
 /** Channel family of a spec id: "amazon.main" belongs to "amazon". */
@@ -118,6 +127,8 @@ export interface BuildPackOptions {
   /** Also write each delivered file loose under outDir/files/{channel}/{name},
    * so persistence layers can upload individual files, not only zips. */
   writeFiles?: boolean;
+  /** The seller intent the pack enforced, written into every report. */
+  intent?: PackIntent | null;
 }
 
 export async function buildPack(
@@ -300,6 +311,7 @@ export async function buildPack(
     channels: [...byChannel.keys()],
     files: fileReports,
     dropped,
+    ...(opts.intent ? { intent: opts.intent } : {}),
   };
   const reportPath = path.join(outDir, "compliance-report.json");
   await writeFile(reportPath, JSON.stringify(report, null, 2));
@@ -312,6 +324,7 @@ export async function buildPack(
       channel,
       files: fileReports.filter((f) => f.channel === channel),
       dropped: dropped.filter((d) => d.channel === channel),
+      ...(opts.intent ? { intent: opts.intent } : {}),
     };
     await writeZip(zipPath, [
       ...entries,

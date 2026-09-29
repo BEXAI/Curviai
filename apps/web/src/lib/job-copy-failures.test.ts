@@ -6,7 +6,7 @@ import {
   ProviderError,
   ProviderTimeoutError,
 } from "@curvi/ai";
-import { JobAbandonedError, PLAN_FAILED_MESSAGE } from "@curvi/trigger/runner";
+import { JobAbandonedError, MULTIPLE_PRODUCTS_MESSAGE, PLAN_FAILED_MESSAGE } from "@curvi/trigger/runner";
 import { IllegalTransitionError } from "@curvi/trigger/state";
 import { SETTLED_JOB_MESSAGES } from "@/lib/jobs/enqueue";
 import { RECONCILED_JOB_ERROR } from "@/lib/services/reconcile";
@@ -132,6 +132,7 @@ const CASES: Array<[string, JobErrorKind]> = [
 
   // Intake and analysis gates (trigger/src/pipeline-runner.ts).
   ["Intake found no sellable product in the uploaded images", "noProduct"],
+  [MULTIPLE_PRODUCTS_MESSAGE, "multipleProducts"],
   ["This upload was flagged for weapons, adult content and needs a manual review before a pack can run", "flagged"],
   ["This product was flagged for regulated goods and needs a manual review before a pack can run", "flagged"],
   ["Intake response failed schema validation", "readFailed"],

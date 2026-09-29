@@ -65,6 +65,52 @@ describe("strictToolSchema", () => {
     expect(IntakeResult.parse({ images: [{ ...base, screenshot: true }] }).images[0].screenshot).toBe(true);
   });
 
+  it("sends intake version 3's products and seller intent as optional fields", () => {
+    const out = strictToolSchema(IntakeResult) as {
+      properties: {
+        sellerIntent: { properties: Record<string, unknown>; required: string[] };
+        images: { items: { properties: Record<string, { items?: { properties: Record<string, unknown> } }>; required: string[] } };
+      };
+      required: string[];
+    };
+    expect(out.required).toEqual(["images"]);
+    expect(out.properties.sellerIntent.required).toEqual(["featureOnly", "exclude", "mustKeep", "styleNotes"]);
+    const item = out.properties.images.items;
+    expect(item.required).not.toContain("products");
+    const product = item.properties.products.items!;
+    expect(Object.keys(product.properties)).toEqual(["label", "box", "matchesIntent"]);
+    expect(product.properties.matchesIntent).toMatchObject({ enum: ["yes", "no", "unclear"] });
+
+    const base = {
+      sellableProduct: true,
+      distinctProducts: 2,
+      sharpEnough: true,
+      flags: { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false },
+    };
+    // A version 2 answer still parses.
+    expect(IntakeResult.safeParse({ images: [base] }).success).toBe(true);
+    const v3 = IntakeResult.parse({
+      images: [
+        {
+          ...base,
+          products: [
+            { label: "red bottle", box: { x: 0.05, y: 0.1, width: 0.4, height: 0.8 }, matchesIntent: "no" },
+            { label: "blue bottle", box: { x: 0.55, y: 0.1, width: 0.4, height: 0.8 }, matchesIntent: "yes" },
+          ],
+        },
+      ],
+      sellerIntent: { featureOnly: "blue bottle", exclude: ["red bottle"], mustKeep: [], styleNotes: null },
+    });
+    expect(v3.images[0].products?.[1].matchesIntent).toBe("yes");
+    expect(v3.sellerIntent?.exclude).toEqual(["red bottle"]);
+    // Boxes are normalized to the image, so a pixel box is refused.
+    expect(
+      IntakeResult.safeParse({
+        images: [{ ...base, products: [{ label: "x", box: { x: 40, y: 10, width: 300, height: 400 }, matchesIntent: "yes" }] }],
+      }).success,
+    ).toBe(false);
+  });
+
   it("keeps property names that match keywords and keeps enums", () => {
     const out = strictToolSchema(
       z.object({ pattern: z.string().regex(/^a/), kind: z.enum(["a", "b"]), tags: z.array(z.string()).min(3).max(5) }),

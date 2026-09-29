@@ -59,6 +59,26 @@ export interface JobRecipeVariant {
   source: "db" | "seed";
 }
 
+/** A box normalized to 0..1 of the upright photo: x and y are the top left
+ * corner, width and height the size, all as shares of the photo's width and
+ * height (migration 0020). */
+export interface SourceMediaTargetBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The seller's note parsed into structured intent by intake (0020). Same
+ * shape as SellerIntent in @curvi/pipeline, kept here so the db package does
+ * not depend on the pipeline. */
+export interface JobSellerIntent {
+  featureOnly: string | null;
+  exclude: string[];
+  mustKeep: string[];
+  styleNotes: string | null;
+}
+
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -146,6 +166,10 @@ export const sourceMedia = pgTable(
     maskR2Key: text("mask_r2_key"),
     /** Which angle the photo shows, when the seller said (migration 0014). */
     angle: text("angle").$type<SourceMediaAngle>(),
+    /** The product in this photo the pack is for, as a box normalized to
+     * 0..1 of the upright photo (migration 0020). Written by the product
+     * chooser; null when the seller did not choose. */
+    targetBox: jsonb("target_box").$type<SourceMediaTargetBox>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -221,6 +245,11 @@ export const generationJobs = pgTable(
     // the job from done back to generating. A cancel or settle changes it.
     // Null on rows from before 0019: those runs are checked by status alone.
     runKey: text("run_key"),
+    // The seller's note exactly as typed, and the structured intent intake
+    // parsed from it (0020), so follow ups and retries keep what the seller
+    // asked for. Both null on jobs without a note or from before 0020.
+    sellerNote: text("seller_note"),
+    sellerIntent: jsonb("seller_intent").$type<JobSellerIntent>(),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

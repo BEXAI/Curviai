@@ -41,17 +41,23 @@ import {
   type RoutingTable,
 } from "@curvi/ai";
 import {
+  boxInCrop,
   compositeShot,
   decodeToRgba,
   deriveQcErodePx,
   encodePng,
   HarmonizeAspectError,
+  isolateTarget,
   prepareWorkingSource,
   rawToSharp,
   renderTemplateStill,
   TEMPLATE_STILL_TYPES,
   TEXT_TEMPLATE_TYPES,
   TemplateUnavailableError,
+  cropToTarget,
+  type NormalizedBox,
+  type TargetCrop,
+  type PixelRect,
   type TemplateStillType,
   type CompositeResult,
   type ImageOutput,
@@ -98,6 +104,7 @@ import {
   routedCallHooks,
   SHOT_CONTENT_BLOCKED,
   type PipelineDeps,
+  type ProductTarget,
   type ShotGenerateArgs,
   type ShotGeneration,
   type ShotGenerator,
@@ -568,6 +575,39 @@ export function segmentationRefusal(mask: RawMask): string | null {
   return null;
 }
 
+/** Shot refusal when the product the seller picked touches another product
+ * in the photo, so the two cannot be separated. The web app maps it to
+ * seller copy. */
+export const PRODUCT_TOUCHING =
+  "The product you picked touches another product in this photo, so we could not separate them and this shot was not charged.";
+/** Shot refusal when the photo could not be cropped to the product. */
+export const ISOLATION_FAILED = "We could not find the product you picked in this photo, so this shot needs review.";
+
+/**
+ * Keeps only the cutout pieces overlapping the target box (mapped into the
+ * crop, at whatever size the cutout came back) and zeroes the rest, or a
+ * refusal when the target cannot be told apart from another product.
+ */
+export function isolateCutout(
+  cutout: RawImage,
+  target: ProductTarget,
+  crop: TargetCrop,
+): { image: RawImage; refusal?: undefined } | { image?: undefined; refusal: string } {
+  const frame = { width: cutout.width, height: cutout.height };
+  const targetRect = target.box ? boxInCrop(target.box, crop.source, crop.rect, frame) : null;
+  if (!targetRect) {
+    return { refusal: ISOLATION_FAILED };
+  }
+  const others = target.others
+    .map((other) => boxInCrop(other.box, crop.source, crop.rect, frame))
+    .filter((rect): rect is PixelRect => rect !== null);
+  const result = isolateTarget(cutout, targetRect, others);
+  if (result.touching) {
+    return { refusal: PRODUCT_TOUCHING };
+  }
+  return { image: result.image };
+}
+
 const COMPOSITE_METHODS: ReadonlySet<string> = new Set(["composite_generate", "edit_generate"]);
 
 export interface LiveShotGeneratorOptions {
@@ -805,6 +845,14 @@ export class LiveShotGenerator implements ShotGenerator {
         // after it stay bounded. Bytes sharp cannot read go as they are; the
         // service may.
         const upright = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
+        // When the photo shows other products too, the cutout only sees the
+        // target plus a margin (docs/phases/PHASE_13.md item 3). Cropping
+        // resamples nothing and regenerates nothing (rule 3).
+        const target = args.target?.box ? args.target : null;
+        const crop = target ? await cropToTarget(upright, target.box as NormalizedBox) : null;
+        if (target && !crop) {
+          throw new ShotUnavailableError(ISOLATION_FAILED);
+        }
         let cutout: CallResult<PhotoroomCutoutOutput>;
         try {
           cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
@@ -814,7 +862,7 @@ export class LiveShotGenerator implements ShotGenerator {
             ai.breakerStore,
             {
               task: CUTOUT_TASK,
-              input: { imageBytes: upright, format: "png" },
+              input: { imageBytes: crop ? crop.bytes : upright, format: "png" },
               workspaceId: args.workspaceId,
               jobId: args.jobId,
               stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
@@ -826,7 +874,18 @@ export class LiveShotGenerator implements ShotGenerator {
           throw billed > 0 ? new ProductLoadError(err, billed) : err;
         }
         const costMicros = cutout.costMicros + cutout.billedFailureMicros;
-        const productRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
+        let productRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
+        if (target && crop) {
+          // Keep only the cutout pieces on the target; every other product
+          // the cutout kept becomes fully transparent. Kept pixels are byte
+          // identical, so the fidelity check still proves rule 3.
+          const isolated = isolateCutout(productRgba, target, crop);
+          if (isolated.refusal !== undefined) {
+            console.warn(`[live] job ${args.jobId} photo ${args.shot.sourceMediaId} isolation refused: ${isolated.refusal}`);
+            return { product: null, refusal: isolated.refusal, costMicros };
+          }
+          productRgba = isolated.image;
+        }
         const mask = alphaMask(productRgba);
         const refusal = segmentationRefusal(mask);
         if (refusal) {

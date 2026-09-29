@@ -13,6 +13,7 @@ import {
 import { MockProvider } from "@curvi/ai/testing";
 import {
   buildPack,
+  decodeToRgba,
   encodePng,
   planShots,
   solidCanvas,
@@ -20,7 +21,8 @@ import {
   type PlanOptions,
   type Shot,
 } from "@curvi/pipeline";
-import { creditCosts } from "@curvi/pipeline/seed";
+import { creditCosts, CUTOUT_TASK } from "@curvi/pipeline/seed";
+import type { Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
 import { isMarketplaceSpec } from "@curvi/specs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -46,6 +48,8 @@ import {
   wrapUserDescription,
   InMemoryJobStore,
   isSpendCapBlock,
+  MULTIPLE_PRODUCTS_MESSAGE,
+  SHOT_EXTRA_ITEMS,
   ShotFailedAfterSpendError,
   ShotUnavailableError,
   type AiDeps,
@@ -78,6 +82,7 @@ vi.mock("@curvi/pipeline", async (importOriginal) => {
   };
 });
 import { demoProfile, DemoShotGenerator } from "./runtime";
+import { LiveShotGenerator, PRODUCT_TOUCHING } from "./live-runtime";
 
 const intakeKey = activeRecipe("intake").key;
 const analyzeKey = activeRecipe("analyze").key;
@@ -2293,5 +2298,284 @@ describe("run keys reach every store call of the run (reviewer item 1)", () => {
     const summary = await runGeneratePack(baseInput, makeDeps({ store }));
     expect(summary.state).toBe("done");
     expect(store.boundTo).toEqual([]);
+  });
+});
+
+describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
+  const cleanFlags = { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false };
+  const verdict = { sellableProduct: true, distinctProducts: 2, sharpEnough: true, screenshot: false, flags: cleanFlags };
+  const redBox = { x: 0.1, y: 50 / 300, width: 0.375, height: 200 / 300 };
+  const blueBox = { x: 0.5, y: 50 / 300, width: 0.375, height: 200 / 300 };
+  const intent = { featureOnly: "blue bottle", exclude: ["red bottle"], mustKeep: [], styleNotes: null };
+  const twoProducts = (red: "yes" | "no" | "unclear", blue: "yes" | "no" | "unclear") => ({
+    images: [
+      {
+        ...verdict,
+        products: [
+          { label: "red bottle", box: redBox, matchesIntent: red },
+          { label: "blue bottle", box: blueBox, matchesIntent: blue },
+        ],
+      },
+    ],
+    sellerIntent: intent,
+  });
+  const intakeWith = (output: unknown) => new MockProvider({ name: "mock-intake", tasks: [intakeKey], output });
+
+  /** Records every generation's args, then renders like the demo. */
+  class RecordingGenerator implements ShotGenerator {
+    readonly calls: ShotGenerateArgs[] = [];
+    private readonly demo = new DemoShotGenerator();
+    async generate(args: ShotGenerateArgs): Promise<ShotGeneration> {
+      this.calls.push(args);
+      return this.demo.generate(args);
+    }
+  }
+
+  /** A 400 x 300 photo on white: a red product at x 40 to 190 and a blue
+   * one from x 190 plus the gap to 350. */
+  async function twoProductPhoto(gap = 10): Promise<Buffer> {
+    const img = solidCanvas(400, 300, 255, 255, 255);
+    for (let y = 50; y < 250; y++) {
+      for (let x = 40; x < 350; x++) {
+        const o = (y * 400 + x) * 4;
+        if (x < 190) {
+          img.data[o] = 200;
+          img.data[o + 1] = 30;
+          img.data[o + 2] = 30;
+        } else if (x >= 190 + gap) {
+          img.data[o] = 30;
+          img.data[o + 1] = 40;
+          img.data[o + 2] = 200;
+        }
+      }
+    }
+    return encodePng(img);
+  }
+
+  /** Stands in for Photoroom: every pixel that is not white is foreground,
+   * so it keeps every product it is shown, like the real service. */
+  class SegmentAllCutout implements Provider {
+    readonly name = "photoroom";
+    readonly kind = "cutout" as const;
+    readonly inputs: Array<{ width: number; height: number; red: number; blue: number }> = [];
+    supports(task: string): boolean {
+      return task === CUTOUT_TASK;
+    }
+    estimateCostMicros(): number {
+      return 20_000;
+    }
+    async invoke<TIn, TOut>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
+      const input = await decodeToRgba((req.input as unknown as { imageBytes: Buffer }).imageBytes);
+      let red = 0;
+      let blue = 0;
+      for (let i = 0; i < input.width * input.height; i++) {
+        const [r, g, b] = [input.data[i * 4], input.data[i * 4 + 1], input.data[i * 4 + 2]];
+        if (r > 240 && g > 240 && b > 240) {
+          input.data[i * 4 + 3] = 0;
+        } else if (r > 150) {
+          red++;
+        } else if (b > 150) {
+          blue++;
+        }
+      }
+      this.inputs.push({ width: input.width, height: input.height, red, blue });
+      return { output: { imageBytes: await encodePng(input), contentType: "image/png" } as TOut, costMicros: 20_000 };
+    }
+  }
+
+  function countColors(img: { data: Buffer; width: number; height: number }): { red: number; blue: number } {
+    let red = 0;
+    let blue = 0;
+    for (let i = 0; i < img.width * img.height; i++) {
+      const [r, g, b] = [img.data[i * 4], img.data[i * 4 + 1], img.data[i * 4 + 2]];
+      if (r > 150 && g < 100 && b < 100) red++;
+      if (b > 150 && r < 100 && g < 100) blue++;
+    }
+    return { red, blue };
+  }
+
+  async function liveRun(intakeOutput: unknown, photo: Buffer) {
+    const ai = makeAi({ intake: intakeWith(intakeOutput) });
+    const cutout = new SegmentAllCutout();
+    ai.registry.register(cutout);
+    ai.routing[CUTOUT_TASK] = ["photoroom"];
+    const mediaId = "ws/ws1/src/two-bottles.png";
+    const loadMedia = async () => photo;
+    const generator = new LiveShotGenerator({
+      ai,
+      wiring: { llmLive: true, imageProviders: [], cutoutLive: true },
+      loadMedia,
+    });
+    const deps = makeDeps({ ai, generator, loadMedia, packOutDir: await mkdtemp(path.join(tmpdir(), "curvi-intent-")) });
+    const summary = await runGeneratePack(
+      {
+        ...baseInput,
+        channels: ["amazon.main"],
+        images: [{ mediaId, angle: "front" }],
+        userDescription: "Feature only the blue bottle",
+      },
+      deps,
+    );
+    return { summary, deps, cutout };
+  }
+
+  it("features the product the note matches, the second of two, and tells the judge and the report", async () => {
+    const intake = intakeWith(twoProducts("no", "yes"));
+    const qc = new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict });
+    const generator = new RecordingGenerator();
+    const deps = makeDeps({
+      ai: makeAi({ intake, qc }),
+      generator,
+      packOutDir: await mkdtemp(path.join(tmpdir(), "curvi-intent-")),
+    });
+    const summary = await runGeneratePack({ ...baseInput, userDescription: "Only the blue one" }, deps);
+
+    expect(summary.state).toBe("done");
+    expect(deps.store.sellerIntents.get(baseInput.jobId)).toEqual(intent);
+    expect(generator.calls.length).toBeGreaterThan(0);
+    for (const call of generator.calls) {
+      expect(call.target).toEqual({ label: "blue bottle", box: blueBox, others: [{ label: "red bottle", box: redBox }] });
+    }
+    // The judge gets the target and the exclude list as data.
+    const payload = JSON.parse((qc.calls[0].input as LlmTaskInput).messages[0].content as string) as {
+      sellerIntent?: unknown;
+    };
+    expect(payload.sellerIntent).toEqual({ featured: "blue bottle", exclude: ["red bottle"] });
+    // The compliance report lists what was enforced.
+    const report = JSON.parse(await readFile(summary.pack!.reportPath, "utf8")) as { intent?: unknown };
+    expect(report.intent).toEqual({ featured: ["blue bottle"], removed: ["red bottle"] });
+  });
+
+  it("hands the generator a cutout of the target alone: the other product never reaches the image", async () => {
+    const { summary, deps, cutout } = await liveRun(twoProducts("no", "yes"), await twoProductPhoto());
+
+    expect(summary.state).toBe("done");
+    expect(summary.passed).toBeGreaterThan(0);
+    // The cutout saw the blue product plus a margin: a sliver of red at most.
+    expect(cutout.inputs).toHaveLength(1);
+    expect(cutout.inputs[0].width).toBeLessThan(400);
+    expect(cutout.inputs[0].blue).toBe(150 * 200);
+    expect(cutout.inputs[0].red).toBeGreaterThan(0);
+    expect(cutout.inputs[0].red).toBeLessThan(150 * 200 * 0.1);
+    // Every delivered image holds the blue product and not one red pixel.
+    const delivered = deps.store.assets.filter((a) => a.status === "passed" && a.encoded);
+    expect(delivered.length).toBeGreaterThan(0);
+    for (const asset of delivered) {
+      const colors = countColors(await decodeToRgba(asset.encoded!.buffer));
+      expect(colors.red).toBe(0);
+      expect(colors.blue).toBeGreaterThan(0);
+    }
+  });
+
+  it("refuses the shot at no charge when the picked product touches the other one", async () => {
+    const { summary, deps } = await liveRun(twoProducts("no", "yes"), await twoProductPhoto(0));
+    expect(summary.chargedCredits).toBe(0);
+    expect(deps.store.assets.length).toBeGreaterThan(0);
+    expect(deps.store.assets.every((a) => a.status === "needs_review")).toBe(true);
+    expect(deps.store.assets[0]?.verdict.repairHint).toBe(PRODUCT_TOUCHING);
+    expect(deps.store.ledger.some((e) => e.reason === "charge")).toBe(false);
+  });
+
+  for (const [name, answer] of [
+    ["no product matches the note", twoProducts("unclear", "unclear")],
+    ["both products match the note", twoProducts("yes", "yes")],
+  ] as const) {
+    it(`fails before any paid generation with nothing charged when ${name}`, async () => {
+      const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+      const generator = new RecordingGenerator();
+      const deps = makeDeps({ ai: makeAi({ intake: intakeWith(answer), analyze }), generator });
+      const summary = await runGeneratePack(baseInput, deps);
+
+      expect(summary.state).toBe("failed");
+      expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+      expect(MULTIPLE_PRODUCTS_MESSAGE).toContain("more than one product");
+      expect(analyze.calls).toHaveLength(0);
+      expect(generator.calls).toHaveLength(0);
+      expect(summary.chargedCredits).toBe(0);
+      expect(summary.releasedCredits).toBe(baseInput.creditBudget);
+      expect(deps.store.ledger.some((e) => e.reason === "charge")).toBe(false);
+    });
+  }
+
+  it("leaves several products in an in the box photo alone", async () => {
+    const summary = await runGeneratePack(
+      { ...baseInput, images: [{ mediaId: "m1", angle: "in_the_box" }] },
+      makeDeps({ ai: makeAi({ intake: intakeWith(twoProducts("unclear", "unclear")) }) }),
+    );
+    expect(summary.state).toBe("done");
+  });
+
+  /** A run's outcome without run specific ids, for before and after compares. */
+  async function outcomeOf(intakeOutput: unknown) {
+    const generator = new RecordingGenerator();
+    const deps = makeDeps({ ai: makeAi({ intake: intakeWith(intakeOutput) }), generator });
+    const summary = await runGeneratePack(baseInput, deps);
+    return {
+      summary: { ...summary, pack: summary.pack ? { files: summary.pack.files, channels: summary.pack.channels } : null },
+      ledger: deps.store.ledger.map((e) => ({ reason: e.reason, credits: e.credits, ref: e.ref })),
+      targets: generator.calls.map((call) => call.target),
+      shots: generator.calls.map((call) => `${call.shot.id}:${call.shot.channels[0]}`).sort(),
+    };
+  }
+
+  it("runs a single product photo exactly as before", async () => {
+    const before = await outcomeOf(intakeFixture);
+    const single = await outcomeOf({
+      images: [
+        {
+          ...intakeFixture.images[0],
+          products: [{ label: "ceramic mug", box: { x: 0.2, y: 0.1, width: 0.6, height: 0.8 }, matchesIntent: "yes" }],
+        },
+      ],
+      sellerIntent: { featureOnly: null, exclude: [], mustKeep: [], styleNotes: "bright" },
+    });
+    expect(single.summary).toEqual(before.summary);
+    expect(single.ledger).toEqual(before.ledger);
+    expect(single.shots).toEqual(before.shots);
+    // Used whole: no crop and no isolation.
+    expect(single.targets.every((t) => t?.box === null)).toBe(true);
+    expect(before.targets.every((t) => t === undefined)).toBe(true);
+  });
+
+  it("runs intake version 2 answers, which list no products, exactly as before", async () => {
+    const before = await outcomeOf(intakeFixture);
+    // A version 2 answer that saw two products still carries no products list.
+    const v2 = await outcomeOf({
+      images: [
+        {
+          ...intakeFixture.images[0],
+          screenshot: false,
+          distinctProducts: 2,
+          boundingBoxes: [
+            { label: "red bottle", x: 40, y: 50, width: 150, height: 200 },
+            { label: "blue bottle", x: 200, y: 50, width: 150, height: 200 },
+          ],
+        },
+      ],
+    });
+    expect(v2.summary).toEqual(before.summary);
+    expect(v2.ledger).toEqual(before.ledger);
+    expect(v2.targets.every((t) => t === undefined)).toBe(true);
+  });
+
+  it("fails a delivered still that still holds two products with extra_items", async () => {
+    // A generator whose product mask comes back in two separate pieces.
+    const demo = new DemoShotGenerator();
+    const twoPieces: ShotGenerator = {
+      generate: async (args) => {
+        const rendered = await demo.generate(args);
+        const { width, height } = rendered.mask!;
+        const data = Buffer.from(rendered.mask!.data);
+        const mid = Math.floor(width / 2);
+        for (let y = 0; y < height; y++) for (let x = mid - 20; x < mid + 20; x++) data[y * width + x] = 0;
+        return { ...rendered, mask: { data, width, height } };
+      },
+    };
+    const deps = makeDeps({ ai: makeAi({ intake: intakeWith(twoProducts("no", "yes")) }), generator: twoPieces });
+    const summary = await runGeneratePack(baseInput, deps);
+    expect(summary.chargedCredits).toBe(0);
+    const reviewed = deps.store.assets.filter((a) => a.verdict.issues.includes("extra_items"));
+    expect(reviewed.length).toBeGreaterThan(0);
+    expect(reviewed[0].verdict.repairHint).toBe(SHOT_EXTRA_ITEMS);
   });
 });

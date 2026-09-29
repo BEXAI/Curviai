@@ -1398,6 +1398,9 @@ export class DbService implements Services {
             channels: input.channels,
             mode: input.mode,
             runKey,
+            // The seller's note as typed (0020), so follow ups and retries
+            // keep it; the runner saves the intent it parses next to it.
+            sellerNote: input.userDescription?.trim() ? input.userDescription : null,
           })
           .returning({ id: generationJobs.id });
         try {

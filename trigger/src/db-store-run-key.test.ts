@@ -152,4 +152,19 @@ describe("DbJobStore bound to a run that lost the job", () => {
     await db.update(generationJobs).set({ status: "failed" }).where(eq(generationJobs.id, keyedRow));
     expect(await store().heartbeat(keyedRow)).toBe(false);
   });
+
+  it("saves the seller intent only for the run that owns a live job (0020)", async () => {
+    const intent = { featureOnly: "blue bottle", exclude: ["red bottle"], mustKeep: [], styleNotes: null };
+    const jobId = await newJob("analyzing", "run-b", 0);
+    // A stale run writes nothing.
+    await store().forRun("run-a").saveSellerIntent(jobId, intent);
+    expect((await row(jobId)).sellerIntent).toBeNull();
+    // The live run records it.
+    await store().forRun("run-b").saveSellerIntent(jobId, intent);
+    expect((await row(jobId)).sellerIntent).toEqual(intent);
+    // A terminal job keeps what it had.
+    await db.update(generationJobs).set({ status: "failed" }).where(eq(generationJobs.id, jobId));
+    await store().forRun("run-b").saveSellerIntent(jobId, { ...intent, featureOnly: "red bottle" });
+    expect((await row(jobId)).sellerIntent).toEqual(intent);
+  });
 });
