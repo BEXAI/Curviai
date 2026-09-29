@@ -102,7 +102,7 @@ export default function HomePage() {
       <section className="relative overflow-hidden">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(64rem_36rem_at_70%_-20%,rgb(253_127_17/0.16),transparent),radial-gradient(40rem_24rem_at_10%_110%,rgb(253_127_17/0.07),transparent)]"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(64rem_36rem_at_75%_-20%,rgb(236_72_153/0.2),transparent),radial-gradient(44rem_28rem_at_0%_100%,rgb(45_212_191/0.14),transparent),radial-gradient(36rem_24rem_at_45%_40%,rgb(139_92_246/0.08),transparent)]"
         />
         <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-6 pb-20 pt-16 lg:grid-cols-2 lg:pt-24">
         <div className="animate-fade-in-up">
@@ -111,7 +111,7 @@ export default function HomePage() {
             {homeHero.eyebrow}
           </p>
           <h1 className="font-display text-4xl font-bold uppercase leading-tight tracking-tight text-white sm:text-5xl">
-            Shot once. <span className="block text-accent-400">Ready everywhere.</span>
+            Shot once. <span className="text-brand-gradient block">Ready everywhere.</span>
           </h1>
           <p className="mt-4 text-lg text-ink-300">{homeHero.lead}</p>
           <p className="mt-3 text-base font-medium text-ink-200">{homeHero.proof}</p>
@@ -258,7 +258,7 @@ export default function HomePage() {
       <section className="relative overflow-hidden border-t border-white/10">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(48rem_24rem_at_50%_120%,rgb(253_127_17/0.14),transparent)]"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(48rem_24rem_at_50%_120%,rgb(236_72_153/0.16),transparent),radial-gradient(40rem_20rem_at_20%_120%,rgb(45_212_191/0.12),transparent)]"
         />
         <div className="relative mx-auto max-w-3xl px-6 py-16 text-center">
           <Wordmark className="mx-auto mb-6 block h-12" />

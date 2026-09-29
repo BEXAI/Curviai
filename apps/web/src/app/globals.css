@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* The shared components live in a workspace package outside the app folder. */
+@source "../../../../packages/ui/src";
 
 @theme {
   --color-ink-50: #f6f7f9;
@@ -12,18 +14,22 @@
   --color-ink-800: #384153;
   --color-ink-900: #1d2433;
   --color-ink-950: #131826;
-  --color-accent-50: #fff8ed;
-  --color-accent-100: #ffefd4;
-  --color-accent-200: #ffdba8;
-  --color-accent-300: #ffc170;
-  --color-accent-400: #ff9c37;
-  --color-accent-500: #fd7f11;
-  --color-accent-600: #ee6407;
-  --color-accent-700: #c54a08;
-  --color-accent-800: #9c3a0f;
-  --color-accent-900: #7e3210;
-  --color-accent-950: #441706;
-  --color-night: #0b0d14;
+  /* Brand accent is the logo's pink; teal is the logo's second color and
+   * pairs with it in gradients. */
+  --color-accent-50: #fdf2f8;
+  --color-accent-100: #fce7f3;
+  --color-accent-200: #fbcfe8;
+  --color-accent-300: #f9a8d4;
+  --color-accent-400: #f472b6;
+  --color-accent-500: #ec4899;
+  --color-accent-600: #db2777;
+  --color-accent-700: #be185d;
+  --color-accent-800: #9d174d;
+  --color-accent-900: #831843;
+  --color-accent-950: #500724;
+  --color-teal-brand: #2dd4bf;
+  --color-violet-brand: #8b5cf6;
+  --color-night: #07080d;
 
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display: var(--font-grotesk), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
@@ -95,12 +101,12 @@
  */
 .theme-dark {
   color-scheme: dark;
-  --surface: #131722;
-  --surface-2: #1a1f2c;
+  --surface: rgb(255 255 255 / 0.035);
+  --surface-2: rgb(255 255 255 / 0.055);
 
-  --color-ink-50: #171b26;
-  --color-ink-100: #252b3a;
-  --color-ink-200: #313a4c;
+  --color-ink-50: rgb(255 255 255 / 0.045);
+  --color-ink-100: rgb(255 255 255 / 0.09);
+  --color-ink-200: rgb(255 255 255 / 0.14);
   --color-ink-300: #4a566d;
   --color-ink-400: #6c7d99;
   --color-ink-500: #8e9db4;
@@ -110,12 +116,12 @@
   --color-ink-900: #edf0f5;
   --color-ink-950: #f7f8fa;
 
-  --color-accent-50: #2a1a0c;
-  --color-accent-100: #3a220c;
-  --color-accent-200: #5c330d;
-  --color-accent-600: #ff9c37;
-  --color-accent-700: #ffb566;
-  --color-accent-800: #ffc98f;
+  --color-accent-50: rgb(236 72 153 / 0.1);
+  --color-accent-100: rgb(236 72 153 / 0.16);
+  --color-accent-200: rgb(236 72 153 / 0.32);
+  --color-accent-600: #f472b6;
+  --color-accent-700: #f9a8d4;
+  --color-accent-800: #fbcfe8;
 
   --color-red-50: #2a1417;
   --color-red-100: #3a1a1e;
@@ -131,6 +137,8 @@
   --color-amber-800: #fde68a;
   --color-amber-900: #fef3c7;
   --color-emerald-50: #0f2620;
+  --color-emerald-100: rgb(16 185 129 / 0.14);
+  --color-emerald-800: #a7f3d0;
   --color-emerald-200: #1d4a3c;
   --color-emerald-700: #6ee7b7;
   --color-emerald-900: #d1fae5;
@@ -151,12 +159,12 @@
   --color-ink-800: #384153;
   --color-ink-900: #1d2433;
   --color-ink-950: #131826;
-  --color-accent-50: #fff8ed;
-  --color-accent-100: #ffefd4;
-  --color-accent-200: #ffdba8;
-  --color-accent-600: #ee6407;
-  --color-accent-700: #c54a08;
-  --color-accent-800: #9c3a0f;
+  --color-accent-50: #fdf2f8;
+  --color-accent-100: #fce7f3;
+  --color-accent-200: #fbcfe8;
+  --color-accent-600: #db2777;
+  --color-accent-700: #be185d;
+  --color-accent-800: #9d174d;
   --shadow-card: 0 1px 2px 0 rgb(19 24 38 / 0.06), inset 0 1px 0 0 rgb(255 255 255 / 0.7);
 }
 
@@ -165,6 +173,7 @@
 .theme-dark .bg-white\/90:not(.theme-base *),
 .theme-dark .bg-white\/95:not(.theme-base *) {
   background-color: var(--surface);
+  backdrop-filter: blur(14px) saturate(140%);
 }
 
 /* Solid dark fills (primary buttons, active tabs) turn light in the flipped
@@ -186,4 +195,64 @@
   ) {
   background-color: var(--surface-2);
   color: var(--color-ink-900);
+}
+
+/*
+ * Backdrop: the night background lit by the logo's two colors from opposite
+ * corners, with a fine film grain so large dark areas are not flat. Fixed, so
+ * the light stays put while content scrolls over it.
+ */
+body.theme-dark {
+  background-color: var(--color-night);
+  background-image:
+    radial-gradient(60rem 40rem at 85% -10%, rgb(236 72 153 / 0.13), transparent 60%),
+    radial-gradient(50rem 36rem at -10% 20%, rgb(45 212 191 / 0.1), transparent 60%),
+    radial-gradient(40rem 30rem at 50% 110%, rgb(139 92 246 / 0.08), transparent 60%);
+  background-attachment: fixed;
+}
+
+body.theme-dark::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+body.theme-dark > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Pages and the app sit on the lit backdrop instead of painting over it. */
+.theme-dark .bg-night:not(.theme-base, .theme-base *) {
+  background-color: transparent;
+}
+
+/* Headings use the display face, set tight. */
+:is(h1, h2) {
+  font-family: var(--font-display);
+  letter-spacing: -0.025em;
+}
+
+/* Brand gradient, the logo's teal into pink, for text and fills. */
+.text-brand-gradient {
+  background-image: linear-gradient(100deg, var(--color-teal-brand), var(--color-violet-brand) 45%, var(--color-accent-500));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.bg-brand-gradient {
+  background-image: linear-gradient(100deg, var(--color-teal-brand), var(--color-violet-brand) 50%, var(--color-accent-500));
+}
+
+/* A hairline that picks up the brand light at the top edge of a card. */
+.ring-brand {
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.08),
+    0 0 0 1px rgb(255 255 255 / 0.06),
+    0 20px 50px -24px rgb(236 72 153 / 0.25);
 }

@@ -32,7 +32,7 @@ function bottle(fill: string, capFill: string, labelStroke: string): string {
       <rect x="280" y="302" width="40" height="5" rx="2" fill="#8494ad"/>
       <rect x="280" y="314" width="32" height="5" rx="2" fill="#8494ad"/>
       <rect x="280" y="326" width="36" height="5" rx="2" fill="#8494ad"/>
-      <rect x="280" y="352" width="40" height="26" rx="4" fill="#fd7f11"/>
+      <rect x="280" y="352" width="40" height="26" rx="4" fill="#ec4899"/>
     </g>`;
 }
 

@@ -1,14 +1,17 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import { Bricolage_Grotesque, Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@/components/analytics";
 import { CookieConsent } from "@/components/cookie-consent";
 import { siteUrl } from "@/lib/env";
 import { SITE_DESCRIPTION, SITE_KEYWORDS, SITE_NAME, SITE_TITLE } from "@/lib/seo";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
-const grotesk = Space_Grotesk({ subsets: ["latin"], variable: "--font-grotesk" });
-const jbMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jbmono" });
+// Geist for text, Bricolage Grotesque for display headings, Geist Mono for
+// labels and numbers. The CSS variable names stay the same so every
+// font-sans, font-display and font-mono utility picks them up.
+const inter = Geist({ subsets: ["latin"], variable: "--font-inter" });
+const grotesk = Bricolage_Grotesque({ subsets: ["latin"], variable: "--font-grotesk" });
+const jbMono = Geist_Mono({ subsets: ["latin"], variable: "--font-jbmono" });
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl()),
