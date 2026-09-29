@@ -132,6 +132,9 @@ export interface PackInventoryItem {
 export interface PackInventoryPhoto {
   photo: number;
   items: PackInventoryItem[];
+  /** When the vision picker chose the featured product: "Picked by looking
+   * at the photo: " and its short reason. */
+  picked?: string;
 }
 
 /** Channel family of a spec id: "amazon.main" belongs to "amazon". */

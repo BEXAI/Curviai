@@ -17,6 +17,13 @@
  *    in several parts, props around it removed);
  * 6. otherwise ambiguous: the pack stops before any paid generation.
  *
+ * Then a tie breaker: when the rules end ambiguous or in conflict, the photo
+ * has 2 to 6 pieces and the seller wrote something, the runner may ask a
+ * vision model which numbered piece the note means (the target_picker
+ * recipe). visionDecision takes its answer only on a valid number with high
+ * or medium confidence, and never on a piece whose color the note excludes,
+ * so the deterministic color stays a hard veto.
+ *
  * Everything here is pure and deterministic: same pixels and same answers,
  * same result. The color table is fixed data, not a prompt or a model id.
  */
@@ -595,6 +602,7 @@ export type InventoryRule =
   | "note"
   | "single_object"
   | "single_product"
+  | "vision"
   | "ambiguous"
   | "conflict"
   | "none";
@@ -711,6 +719,125 @@ export function chooseInventoryTarget(input: InventoryChoiceInput): InventoryDec
 }
 
 // ---------------------------------------------------------------------------
+// The vision tie breaker.
+
+/** The vision picker is asked only about photos with this many pieces. */
+export const PICKER_MIN_PIECES = 2;
+export const PICKER_MAX_PIECES = 6;
+
+/** The longest picker reason kept on the job. */
+export const PICKER_REASON_MAX = 200;
+
+export type PickConfidence = "high" | "medium" | "low";
+
+/** The target_picker answer: choice is a number on the contact sheet (1
+ * based, see pickerNumbering), or null when no single item fits. */
+export interface VisionPick {
+  choice: number | null;
+  confidence: PickConfidence;
+  reason: string;
+}
+
+/** Why a picker answer was taken or not. */
+export type VisionOutcome = "accepted" | "no_choice" | "low_confidence" | "out_of_range" | "excluded_color";
+
+/** A picker answer as kept on the job. */
+export interface VisionPickRecord {
+  choice: number | null;
+  confidence: PickConfidence;
+  reason: string;
+  outcome: VisionOutcome;
+}
+
+/** Whether the rules left a photo to the vision picker: ambiguous or in
+ * conflict, 2 to 6 pieces, and something the seller wrote to go on. */
+export function needsVisionPick(decision: InventoryDecision, pieces: number, noteGiven: boolean): boolean {
+  return (
+    noteGiven &&
+    (decision.rule === "ambiguous" || decision.rule === "conflict") &&
+    pieces >= PICKER_MIN_PIECES &&
+    pieces <= PICKER_MAX_PIECES
+  );
+}
+
+/** Piece indexes in the order the contact sheet numbers them: left to right
+ * by the center of each piece's box, top to bottom on a tie, so "the one on
+ * the left" is number 1. Number n is entry n - 1. */
+export function pickerNumbering(objects: readonly InventoryObject[]): number[] {
+  const center = (o: InventoryObject) => ({ x: o.box.x + o.box.width / 2, y: o.box.y + o.box.height / 2 });
+  return [...objects]
+    .sort((a, b) => {
+      const ca = center(a);
+      const cb = center(b);
+      if (ca.x !== cb.x) return ca.x - cb.x;
+      if (ca.y !== cb.y) return ca.y - cb.y;
+      return a.index - b.index;
+    })
+    .map((o) => o.index);
+}
+
+/** Dashes used as punctuation: hyphen runs between spaces, en and em dashes
+ * and the like. */
+const DASH_PUNCTUATION = /\s+-+\s+|\s*[‒-―−]\s*/g;
+/** Arrows, drawn or typed. */
+const ARROWS = /[←-⇿⟰-⟿⤀-⥿⬀-⯿]|->|=>|<-/g;
+/** Emoji and other pictographs. */
+const PICTOGRAPHS = /[\p{Extended_Pictographic}\u{1f1e6}-\u{1f1ff}️‍]/gu;
+
+/** The picker's reason as plain, short seller copy (CLAUDE.md rule 9): one
+ * line, no dashes as punctuation, no arrows or emoji, at most
+ * PICKER_REASON_MAX characters. */
+export function plainReason(text: string): string {
+  return text
+    .replace(PICTOGRAPHS, "")
+    .replace(ARROWS, " ")
+    .replace(DASH_PUNCTUATION, ", ")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/,+/g, ",")
+    .trim()
+    .slice(0, PICKER_REASON_MAX)
+    .trim();
+}
+
+/**
+ * The decision a picker answer makes, or null with why it was not taken: no
+ * choice, low confidence, a number off the sheet, or a piece whose dominant
+ * color the note excludes. An accepted pick features that one piece and
+ * removes the rest, with the usual touching checks (two intake products in
+ * the piece, or a large share of an excluded color).
+ */
+export function visionDecision(
+  input: InventoryChoiceInput,
+  pick: VisionPick,
+): { decision: InventoryDecision | null; outcome: VisionOutcome } {
+  const { objects, products, signals } = input;
+  if (pick.choice === null) return { decision: null, outcome: "no_choice" };
+  if (pick.confidence !== "high" && pick.confidence !== "medium") {
+    return { decision: null, outcome: "low_confidence" };
+  }
+  const order = pickerNumbering(objects);
+  if (!Number.isInteger(pick.choice) || pick.choice < 1 || pick.choice > order.length) {
+    return { decision: null, outcome: "out_of_range" };
+  }
+  const index = order[pick.choice - 1];
+  const object = objects.find((o) => o.index === index) as InventoryObject;
+  if (signals.excludeColors.includes(object.color.name)) {
+    return { decision: null, outcome: "excluded_color" };
+  }
+  const match = matchProducts(objects, products);
+  return {
+    decision: {
+      rule: "vision",
+      featured: [index],
+      removed: objects.map((o) => o.index).filter((i) => i !== index),
+      touching: match.productsInside[index] >= 2 || holdsExcludedColor(object, signals),
+    },
+    outcome: "accepted",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The record kept on the job.
 
 export type InventoryItemStatus = "featured" | "removed" | "kept";
@@ -741,6 +868,9 @@ export interface PhotoInventory {
   unmatchedProducts: string[];
   rule: InventoryRule;
   touching: boolean;
+  /** The vision picker's answer, when the rules could not decide and it
+   * was asked. Its reason is shown to the seller when rule is "vision". */
+  vision?: VisionPickRecord;
 }
 
 export interface JobInventory {
@@ -768,6 +898,8 @@ export function inventoryRecord(args: {
   /** Intake's distinctProducts for the photo, when it answered. */
   distinctProducts?: number | null;
   decision: InventoryDecision;
+  /** The vision picker's answer and whether it was taken, when asked. */
+  vision?: VisionPickRecord;
 }): PhotoInventory {
   const { inventory, products, decision } = args;
   const match = matchProducts(inventory.objects, products);
@@ -802,6 +934,7 @@ export function inventoryRecord(args: {
     unmatchedProducts: products.filter((_, i) => match.objectsOf[i].length === 0).map((p) => p.label),
     rule: decision.rule,
     touching: decision.touching,
+    ...(args.vision ? { vision: args.vision } : {}),
   };
 }
 

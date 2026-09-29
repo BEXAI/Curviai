@@ -14,3 +14,4 @@ export * from "./templates/still";
 export * from "./seller-inputs";
 export * from "./isolate";
 export * from "./inventory";
+export * from "./contact-sheet";

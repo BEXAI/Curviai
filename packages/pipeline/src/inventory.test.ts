@@ -5,8 +5,12 @@ import {
   colorNameOf,
   inventoryRecord,
   matchProducts,
+  needsVisionPick,
   noteSignals,
+  pickerNumbering,
+  plainReason,
   shapeOf,
+  visionDecision,
   type InventoryObject,
   type NoteSignals,
 } from "./inventory";
@@ -298,6 +302,87 @@ describe("inventoryRecord", () => {
     expect(record.unmatchedItems).toEqual([0]);
     expect(record.unmatchedProducts).toEqual(["mug"]);
     expect(matchProducts(inv.objects, products).productOf).toEqual([null, 0]);
+  });
+});
+
+describe("the vision tie breaker", () => {
+  const objects = (img = twoBottles()): InventoryObject[] => analyzeInventory(img).objects;
+  const gatorade = noteSignals("Blue Gatorade only, delete the red gatorade fully");
+  const conflict = { rule: "conflict" as const, featured: [], removed: [], touching: false };
+
+  it("is asked only for 2 to 6 pieces the rules left undecided, with a note", () => {
+    expect(needsVisionPick(conflict, 2, true)).toBe(true);
+    expect(needsVisionPick({ ...conflict, rule: "ambiguous" }, 6, true)).toBe(true);
+    expect(needsVisionPick(conflict, 1, true)).toBe(false);
+    expect(needsVisionPick(conflict, 7, true)).toBe(false);
+    expect(needsVisionPick(conflict, 2, false)).toBe(false);
+    for (const rule of ["note", "model", "single_object", "single_product", "in_the_box", "none"] as const) {
+      expect(needsVisionPick({ ...conflict, rule }, 2, true)).toBe(false);
+    }
+  });
+
+  it("numbers the pieces left to right", () => {
+    // Blue first in the pixel order here, since it starts higher up.
+    const img = cutout(400, 300, [
+      { left: 40, top: 60, width: 150, height: 200, rgb: RED },
+      { left: 200, top: 20, width: 150, height: 200, rgb: BLUE },
+    ]);
+    const objs = objects(img);
+    expect(objs.map((o) => o.color.name)).toEqual(["blue", "red"]);
+    expect(pickerNumbering(objs).map((i) => objs[i].color.name)).toEqual(["red", "blue"]);
+  });
+
+  it("takes a high or medium pick and features that piece alone", () => {
+    for (const confidence of ["high", "medium"] as const) {
+      expect(
+        visionDecision({ objects: objects(), products: [], signals: noteSignals("the tall one with the gold cap") }, {
+          choice: 2,
+          confidence,
+          reason: "The blue bottle has the gold cap.",
+        }),
+      ).toEqual({ decision: { rule: "vision", featured: [1], removed: [0], touching: false }, outcome: "accepted" });
+    }
+  });
+
+  it("refuses a low confidence answer, no answer and a number off the sheet", () => {
+    const input = { objects: objects(), products: [], signals: none };
+    expect(visionDecision(input, { choice: 1, confidence: "low", reason: "" })).toEqual({ decision: null, outcome: "low_confidence" });
+    expect(visionDecision(input, { choice: null, confidence: "high", reason: "" })).toEqual({ decision: null, outcome: "no_choice" });
+    expect(visionDecision(input, { choice: 3, confidence: "high", reason: "" })).toEqual({ decision: null, outcome: "out_of_range" });
+    expect(visionDecision(input, { choice: 0, confidence: "high", reason: "" }).outcome).toBe("out_of_range");
+  });
+
+  it("vetoes a pick on a color the note excludes", () => {
+    const products = [product("red bottle", redBox, "yes"), product("blue bottle", blueBox, "no")];
+    expect(chooseInventoryTarget({ objects: objects(), products, signals: gatorade }).rule).toBe("conflict");
+    expect(visionDecision({ objects: objects(), products, signals: gatorade }, { choice: 1, confidence: "high", reason: "red" })).toEqual({
+      decision: null,
+      outcome: "excluded_color",
+    });
+    expect(
+      visionDecision({ objects: objects(), products, signals: gatorade }, { choice: 2, confidence: "high", reason: "blue" }).decision,
+    ).toMatchObject({ rule: "vision", featured: [1], removed: [0] });
+  });
+
+  it("keeps the touching check on a picked piece", () => {
+    // A small blue cap on the left, and a mostly blue bottle touching a red one.
+    const two = objects(
+      cutout(400, 300, [
+        { left: 0, top: 0, width: 30, height: 30, rgb: BLUE },
+        { left: 100, top: 50, width: 200, height: 200, rgb: BLUE },
+        { left: 300, top: 50, width: 90, height: 200, rgb: RED },
+      ]),
+    );
+    expect(two).toHaveLength(2);
+    const picked = visionDecision({ objects: two, products: [], signals: gatorade }, { choice: 2, confidence: "high", reason: "" });
+    expect(picked.outcome).toBe("accepted");
+    expect(picked.decision?.touching).toBe(true);
+  });
+
+  it("keeps the reason plain: one line, no dashes, arrows or emoji, at most 200 characters", () => {
+    expect(plainReason("Blue bottle — gold cap -> matches \u{1F600}\n the note")).toBe("Blue bottle, gold cap matches the note");
+    expect(plainReason("well-known brand")).toBe("well-known brand");
+    expect(plainReason("x".repeat(300))).toHaveLength(200);
   });
 });
 

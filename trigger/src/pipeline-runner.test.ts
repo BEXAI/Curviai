@@ -88,6 +88,7 @@ const intakeKey = activeRecipe("intake").key;
 const analyzeKey = activeRecipe("analyze").key;
 const planKey = activeRecipe("plan").key;
 const qcKey = activeRecipe("qc").key;
+const pickerKey = activeRecipe("pick").key;
 
 const intakeFixture = {
   images: [
@@ -2397,9 +2398,13 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
   async function liveRun(
     intakeOutput: unknown,
     photo: Buffer,
-    opts: { note?: string; angle?: "front" | "in_the_box"; analyze?: MockProvider } = {},
+    opts: { note?: string; angle?: "front" | "in_the_box"; analyze?: MockProvider; picker?: MockProvider } = {},
   ) {
     const ai = makeAi({ intake: intakeWith(intakeOutput), ...(opts.analyze ? { analyze: opts.analyze } : {}) });
+    if (opts.picker) {
+      ai.registry.register(opts.picker);
+      ai.routing[pickerKey] = [opts.picker.name];
+    }
     const cutout = new SegmentAllCutout();
     ai.registry.register(cutout);
     ai.routing[CUTOUT_TASK] = ["photoroom"];
@@ -2626,6 +2631,147 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
       const summary = await runGeneratePack(baseInput, deps);
       expect(summary.state).toBe("done");
       expect(deps.store.inventories.size).toBe(0);
+    });
+
+    describe("the vision tie breaker", () => {
+      const pickerWith = (output: unknown, costMicros = 7_000) =>
+        new MockProvider({ name: "mock-picker", tasks: [pickerKey], output, costMicros });
+      const reason = "The blue bottle is the one the note asks for.";
+
+      it("settles a conflict with a high confidence pick, features that product and books the picker on the job", async () => {
+        const picker = pickerWith({ choice: 2, confidence: "high", reason });
+        const { summary, deps, calls, cutout } = await liveRun(twoProducts("yes", "no"), await twoProductPhoto(), {
+          note: productionNote,
+          picker,
+        });
+
+        expect(summary.state).toBe("done");
+        expect(summary.passed).toBeGreaterThan(0);
+        // Still one cutout: the contact sheet is drawn from the inventory's.
+        expect(cutout.inputs).toHaveLength(1);
+        expect(picker.calls).toHaveLength(1);
+        for (const call of calls) {
+          expect(call.target?.label).toBe("blue bottle");
+          expect(call.target?.others.map((o) => o.label)).toEqual(["red bottle"]);
+        }
+        const colors = await deliveredColors(deps);
+        expect(colors.red).toBe(0);
+        expect(colors.blue).toBeGreaterThan(0);
+        // The cutout and the picker, each booked once on the job's COGS.
+        expect(summary.costMicros).toBe(20_000 + 7_000);
+
+        // What the picker was shown: the numbered sheet, the photo, and the
+        // facts per number with the note as wrapped data.
+        const request = picker.calls[0].input as LlmTaskInput;
+        const content = request.messages[0].content as Array<{ type: string; text?: string; source?: { media_type: string } }>;
+        expect(content.filter((b) => b.type === "image").map((b) => b.source?.media_type)).toEqual(["image/jpeg", "image/jpeg"]);
+        const payload = JSON.parse(content[content.length - 1].text!) as Record<string, unknown>;
+        expect(payload.userDescription).toBe(wrapUserDescription(productionNote));
+        expect(payload.items).toEqual([
+          { number: 1, color: "red", shape: "tall", label: "red bottle" },
+          { number: 2, color: "blue", shape: "tall", label: "blue bottle" },
+        ]);
+        expect(payload.sellerIntent).toEqual({ featureOnly: "blue bottle", exclude: ["red bottle"] });
+        const tool = (request.tools ?? [])[0] as { strict?: boolean; input_schema: { required: string[] } };
+        expect(tool.strict).toBe(true);
+        expect(tool.input_schema.required).toEqual(expect.arrayContaining(["choice", "confidence", "reason"]));
+
+        const photo = deps.store.inventories.get(baseInput.jobId)!.photos[0];
+        expect(photo.rule).toBe("vision");
+        expect(photo.vision).toEqual({ choice: 2, confidence: "high", reason, outcome: "accepted" });
+        expect(photo.items.map((i) => i.status)).toEqual(["removed", "featured"]);
+        const report = JSON.parse(await readFile(summary.pack!.reportPath, "utf8")) as {
+          inventory?: Array<{ picked?: string }>;
+        };
+        expect(report.inventory?.[0].picked).toBe(`Picked by looking at the photo: ${reason}`);
+      });
+
+      it("fails as before with nothing charged on a low confidence answer, and still books the picker", async () => {
+        const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+        const picker = pickerWith({ choice: 2, confidence: "low", reason: "Hard to say." });
+        const { summary, deps, calls } = await liveRun(twoProducts("yes", "no"), await twoProductPhoto(), {
+          note: productionNote,
+          analyze,
+          picker,
+        });
+        expect(summary.state).toBe("failed");
+        expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+        expect(picker.calls).toHaveLength(1);
+        expect(analyze.calls).toHaveLength(0);
+        expect(calls).toHaveLength(0);
+        expect(summary.chargedCredits).toBe(0);
+        expect(summary.releasedCredits).toBe(baseInput.creditBudget);
+        expect(deps.store.ledger.some((e) => e.reason === "charge")).toBe(false);
+        expect(summary.costMicros).toBe(20_000 + 7_000);
+        const photo = deps.store.inventories.get(baseInput.jobId)!.photos[0];
+        expect(photo.rule).toBe("conflict");
+        expect(photo.vision?.outcome).toBe("low_confidence");
+        expect(photo.items.every((i) => i.status === "kept")).toBe(true);
+      });
+
+      it("vetoes a pick on a color the note excludes", async () => {
+        const picker = pickerWith({ choice: 1, confidence: "high", reason: "The red bottle." });
+        const { summary, deps, calls } = await liveRun(twoProducts("yes", "no"), await twoProductPhoto(), {
+          note: productionNote,
+          picker,
+        });
+        expect(summary.state).toBe("failed");
+        expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+        expect(calls).toHaveLength(0);
+        expect(summary.chargedCredits).toBe(0);
+        expect(deps.store.inventories.get(baseInput.jobId)!.photos[0].vision?.outcome).toBe("excluded_color");
+      });
+
+      it("asks when the note names the product without a color word the rules can use", async () => {
+        const picker = pickerWith({ choice: 2, confidence: "medium", reason: "The note asks for the one on the right." });
+        const { summary, deps, calls } = await liveRun(noProducts, await twoProductPhoto(), {
+          note: "Feature the one on the right",
+          picker,
+        });
+        expect(picker.calls).toHaveLength(1);
+        expect(summary.state).toBe("done");
+        expect(calls.every((c) => c.target?.label === "blue tall object")).toBe(true);
+        expect((await deliveredColors(deps)).red).toBe(0);
+        expect(deps.store.inventories.get(baseInput.jobId)!.photos[0].rule).toBe("vision");
+      });
+
+      it("is never asked when the rules decide or the photo shows one product", async () => {
+        const picker = pickerWith({ choice: 1, confidence: "high", reason: "x" });
+        const decided = await liveRun(noProducts, await twoProductPhoto(), { note: productionNote, picker });
+        expect(decided.summary.state).toBe("done");
+        expect(decided.deps.store.inventories.get(baseInput.jobId)!.photos[0].rule).toBe("note");
+        const agreed = await liveRun(twoProducts("no", "yes"), await twoProductPhoto(), { note: productionNote, picker });
+        expect(agreed.summary.state).toBe("done");
+
+        const single = solidCanvas(400, 300, 255, 255, 255);
+        for (let y = 50; y < 250; y++) {
+          for (let x = 200; x < 350; x++) {
+            const o = (y * 400 + x) * 4;
+            single.data[o] = 30;
+            single.data[o + 1] = 40;
+            single.data[o + 2] = 200;
+          }
+        }
+        const one = await liveRun(intakeFixture, await encodePng(single), { note: "Only the blue one", picker });
+        expect(one.summary.state).toBe("done");
+        // Several pieces with no note at all are not asked about either.
+        const silent = await liveRun(noProducts, await twoProductPhoto(), { note: "", picker });
+        expect(silent.summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+        expect(picker.calls).toHaveLength(0);
+      });
+
+      it("fails as before when the picker is down", async () => {
+        const picker = new MockProvider({ name: "mock-picker", tasks: [pickerKey], failTimes: Infinity });
+        const { summary, calls } = await liveRun(twoProducts("yes", "no"), await twoProductPhoto(), {
+          note: productionNote,
+          picker,
+        });
+        expect(picker.calls.length).toBeGreaterThan(0);
+        expect(summary.state).toBe("failed");
+        expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+        expect(calls).toHaveLength(0);
+        expect(summary.chargedCredits).toBe(0);
+      });
     });
   });
 

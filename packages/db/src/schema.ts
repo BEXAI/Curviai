@@ -108,6 +108,14 @@ export interface JobInventoryPhoto {
   unmatchedProducts: string[];
   rule: string;
   touching: boolean;
+  /** The vision picker's answer when the rules could not decide (rule
+   * "vision" when it was taken). No migration: the column is jsonb. */
+  vision?: {
+    choice: number | null;
+    confidence: "high" | "medium" | "low";
+    reason: string;
+    outcome: string;
+  };
 }
 
 export interface JobInventory {

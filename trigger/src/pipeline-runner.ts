@@ -75,6 +75,17 @@ import {
   itemLabel,
   noteSignals,
   unionBox,
+  needsVisionPick,
+  pickerNumbering,
+  PICKER_MAX_PIECES,
+  PICKER_MIN_PIECES,
+  plainReason,
+  renderContactSheet,
+  visionDecision,
+  TargetPick,
+  TargetPickAnswer,
+  type VisionPick,
+  type VisionPickRecord,
   type IntakeProduct,
   type InventoryDecision,
   type CutoutInventory,
@@ -1076,6 +1087,15 @@ const INVENTORY_CONCURRENCY = 2;
 export interface PhotoInventoryResult {
   record: PhotoInventory;
   decision: InventoryDecision;
+  /** True when the rules left the photo undecided in a way the vision
+   * picker may settle (needsVisionPick). */
+  pickable: boolean;
+}
+
+/** Whether the seller wrote anything that could say which product is
+ * meant: the note itself, or the intent intake parsed from it. */
+export function sellerWroteNote(note: string | null | undefined, intent: SellerIntent | null): boolean {
+  return (note ?? "").trim().length > 0 || !!intent?.featureOnly?.trim() || (intent?.exclude.length ?? 0) > 0;
 }
 
 /**
@@ -1096,12 +1116,14 @@ export function inventorySelection(
   cutouts: ReadonlyMap<string, CutoutInventory>,
   note: string | undefined,
   jobId: string,
+  picks: ReadonlyMap<string, VisionPick> = new Map(),
 ): { selection: TargetSelection; photos: PhotoInventoryResult[] } {
   const legacy = selectTargets(intake, judged, jobId);
   const selection: TargetSelection = { targets: { ...legacy.targets }, ambiguous: [...legacy.ambiguous] };
   const photos: PhotoInventoryResult[] = [];
   const mapped = intake.images.length === judged.length;
   const signals = noteSignals(note, intake.sellerIntent ?? null);
+  const noteGiven = sellerWroteNote(note, intake.sellerIntent ?? null);
   judged.forEach((photo, i) => {
     const inventory = cutouts.get(photo.mediaId);
     const image = mapped ? intake.images[i] : undefined;
@@ -1109,20 +1131,39 @@ export function inventorySelection(
       return;
     }
     const products: IntakeProduct[] = image?.products ?? [];
-    const decision = chooseInventoryTarget({
+    const choiceInput = {
       objects: inventory.objects,
       products,
       signals,
       multiItem: !!photo.angle && MULTI_ITEM_ANGLES.has(photo.angle),
-    });
+    };
+    let decision = chooseInventoryTarget(choiceInput);
+    // The vision tie breaker, when the rules could not decide and the
+    // picker answered for this photo. Its answer only counts when
+    // visionDecision accepts it; otherwise the photo stays ambiguous.
+    let vision: VisionPickRecord | undefined;
+    const pick = picks.get(photo.mediaId);
+    if (pick && needsVisionPick(decision, inventory.objects.length, noteGiven)) {
+      const judgedPick = visionDecision(choiceInput, pick);
+      vision = {
+        choice: pick.choice,
+        confidence: pick.confidence,
+        reason: plainReason(pick.reason),
+        outcome: judgedPick.outcome,
+      };
+      if (judgedPick.decision) {
+        decision = judgedPick.decision;
+      }
+    }
     const record = inventoryRecord({
       mediaId: photo.mediaId,
       inventory,
       products,
       distinctProducts: image ? image.distinctProducts : null,
       decision,
+      ...(vision ? { vision } : {}),
     });
-    photos.push({ record, decision });
+    photos.push({ record, decision, pickable: needsVisionPick(decision, inventory.objects.length, noteGiven) });
     if (decision.rule === "none") {
       return;
     }
@@ -1172,7 +1213,100 @@ export function packInventory(
       shape: item.shape,
       status: item.status,
     })),
+    ...(record.rule === "vision" && record.vision?.reason
+      ? { picked: `${PICKED_BY_VISION}${record.vision.reason}` }
+      : {}),
   }));
+}
+
+/** How the report and the pack page introduce the vision picker's reason. */
+export const PICKED_BY_VISION = "Picked by looking at the photo: ";
+
+/** Everything the vision picker needs for one photo. */
+interface PickRequest {
+  mediaId: string;
+  /** The photo's number in the pack, from 1, for the metering step id. */
+  photo: number;
+  inventory: CutoutInventory;
+  cutout: RawImage;
+  products: readonly IntakeProduct[];
+}
+
+/** Long side of the original photo sent next to the contact sheet. */
+const PICKER_PHOTO_MAX_SIDE = 1024;
+
+/**
+ * Asks the target_picker recipe which numbered piece of one photo the
+ * seller's note means: a contact sheet of the pieces cut from the photo's
+ * inventory cutout (no second cutout call) and the original photo
+ * downscaled, with each number's measured facts and the parsed intent as
+ * data. The call goes through llmJson, so @curvi/ai meters it and the
+ * caller books it on the job. Null when the picker cannot be asked or does
+ * not answer in shape; the photo then stays ambiguous.
+ */
+async function askTargetPicker(
+  deps: PipelineDeps,
+  recipes: JobRecipes,
+  input: GeneratePackInput,
+  sellerIntent: SellerIntent | null,
+  request: PickRequest,
+  booked: <T>(call: Promise<LlmCall<T>>) => Promise<LlmCall<T>>,
+): Promise<VisionPick | null> {
+  const { inventory, products } = request;
+  const order = pickerNumbering(inventory.objects).map((index) => inventory.objects[index]);
+  const match = matchProducts(inventory.objects, products);
+  const sheet = await renderContactSheet(
+    request.cutout,
+    order.map((o) => o.pixelBox),
+  ).catch((err: unknown) => {
+    console.warn(`[runner] job ${input.jobId} could not draw the picker's contact sheet`, errorText(err));
+    return null;
+  });
+  if (!sheet) {
+    return null;
+  }
+  const blocks: unknown[] = [
+    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: sheet.buffer.toString("base64") } },
+  ];
+  if (deps.loadMedia && isWorkspaceObjectKey(input.workspaceId, request.mediaId)) {
+    const bytes = await deps.loadMedia(request.mediaId).catch(() => null);
+    const photo = bytes && bytes.length > 0 ? await encodeVisionJpeg(bytes, PICKER_PHOTO_MAX_SIDE).catch(() => null) : null;
+    if (photo) {
+      blocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: photo.toString("base64") } });
+    }
+  }
+  const payload = {
+    userDescription: wrapUserDescription(input.userDescription),
+    sellerIntent: { featureOnly: sellerIntent?.featureOnly ?? null, exclude: sellerIntent?.exclude ?? [] },
+    items: order.map((o, i) => {
+      const p = match.productOf[o.index];
+      return { number: i + 1, color: o.color.name, shape: o.shape, label: p === null ? null : products[p].label };
+    }),
+  };
+  try {
+    const answer = await booked(
+      llmJson<VisionPick>(
+        deps.ai,
+        recipeFor(recipes, "pick"),
+        TargetPickAnswer,
+        payload,
+        { jobId: input.jobId, workspaceId: input.workspaceId, stepId: `pick:${request.photo}` },
+        blocks,
+        TargetPick,
+      ),
+    );
+    return answer.value;
+  } catch (err) {
+    console.warn(`[runner] job ${input.jobId} target picker failed; the photo stays ambiguous`, errorText(err));
+    return null;
+  }
+}
+
+/** One photo's inventory and, when the vision picker may need it, the
+ * cutout it was read from. */
+interface TakenInventory {
+  inventory: CutoutInventory;
+  cutout: RawImage | null;
 }
 
 /**
@@ -1188,8 +1322,8 @@ async function takeInventory(
   screenshots: ReadonlySet<string>,
   assertLive: () => Promise<void>,
   book: (micros: number) => void,
-): Promise<Map<string, CutoutInventory>> {
-  const found = new Map<string, CutoutInventory>();
+): Promise<Map<string, TakenInventory>> {
+  const found = new Map<string, TakenInventory>();
   const cut = deps.generator.inventoryCutout?.bind(deps.generator);
   const photos = judged.filter((photo) => !screenshots.has(photo.mediaId));
   if (!cut || photos.length === 0) {
@@ -1201,7 +1335,12 @@ async function takeInventory(
       const result = await cut({ jobId: input.jobId, workspaceId: input.workspaceId, mediaId: photo.mediaId });
       book(result.costMicros);
       if (result.cutout) {
-        found.set(photo.mediaId, analyzeInventory(result.cutout));
+        const inventory = analyzeInventory(result.cutout);
+        const pieces = inventory.objects.length;
+        // The cutout is kept (the generator's cached copy, not a new one)
+        // only for photos the vision picker may be asked about.
+        const keep = pieces >= PICKER_MIN_PIECES && pieces <= PICKER_MAX_PIECES;
+        found.set(photo.mediaId, { inventory, cutout: keep ? result.cutout : null });
       }
     } catch (err) {
       console.warn(`[runner] job ${input.jobId} inventory of one photo failed; it keeps the intake path`, err);
@@ -2715,19 +2854,63 @@ export async function runGeneratePack(
     // out once, split into its pieces and reconciled with intake, so how many
     // products a photo shows and which one the pack features never rests on
     // one model answer. The shots of each photo reuse the same cutout.
-    const cutouts = await takeInventory(deps, input, judgedImages, screenshots, assertLive, (micros) => {
+    const taken = await takeInventory(deps, input, judgedImages, screenshots, assertLive, (micros) => {
       costMicros += micros;
     });
+    const cutouts = new Map([...taken].map(([mediaId, photo]) => [mediaId, photo.inventory]));
     // The product each photo is for. A photo with several products and no
     // single match to the seller's note stops the pack here, before any paid
     // generation; the failure path releases the held credits.
-    const { selection, photos: inventoryPhotos } = inventorySelection(
+    let { selection, photos: inventoryPhotos } = inventorySelection(
       intake.value,
       judgedImages,
       cutouts,
       input.userDescription,
       input.jobId,
     );
+    // The vision tie breaker: a photo of 2 to 6 pieces the rules left
+    // ambiguous or in conflict, with a note to go on, is shown to the
+    // target_picker recipe before the pack fails. Its spend is booked on the
+    // job like every LLM call; an answer visionDecision refuses changes
+    // nothing, so the pack fails as before with no credits charged.
+    const picks = new Map<string, VisionPick>();
+    for (const photo of inventoryPhotos) {
+      const cutout = taken.get(photo.record.mediaId)?.cutout;
+      if (!photo.pickable || !cutout) {
+        continue;
+      }
+      const index = judgedImages.findIndex((image) => image.mediaId === photo.record.mediaId);
+      const image = intake.value.images.length === judgedImages.length ? intake.value.images[index] : undefined;
+      await assertLive();
+      const pick = await askTargetPicker(
+        deps,
+        recipes,
+        input,
+        sellerIntent ?? null,
+        {
+          mediaId: photo.record.mediaId,
+          photo: index + 1,
+          inventory: cutouts.get(photo.record.mediaId) as CutoutInventory,
+          cutout,
+          products: image?.products ?? [],
+        },
+        bookedLlm,
+      );
+      if (pick) {
+        picks.set(photo.record.mediaId, pick);
+      }
+    }
+    taken.clear();
+    if (picks.size > 0) {
+      ({ selection, photos: inventoryPhotos } = inventorySelection(
+        intake.value,
+        judgedImages,
+        cutouts,
+        input.userDescription,
+        input.jobId,
+        picks,
+      ));
+    }
     if (inventoryPhotos.length > 0) {
       try {
         await store.saveInventory?.(input.jobId, {
