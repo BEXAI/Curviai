@@ -206,7 +206,7 @@ describe("rule 3 on every live ads output", () => {
       const generation = await generator.generate(argsFor(shot));
       await expectProductKept(generation, shot.channels[0]!);
     }
-  });
+  }, 120_000);
 });
 
 describe("the carousel scene layer (founder decision 4)", () => {
