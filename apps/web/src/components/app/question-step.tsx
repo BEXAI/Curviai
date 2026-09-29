@@ -24,7 +24,8 @@ function thumbFor(items: readonly PreflightItemView[], value: string): Preflight
  * The question step (docs/phases/PHASE_16.md workstream 4): at most four
  * short questions with labeled options, beside the note field. Every
  * question is optional and "Skip, use my note" hides the step; nothing here
- * ever blocks Create pack.
+ * ever blocks Create pack. The options are toggle buttons: tapping the one
+ * held takes that answer back.
  */
 export function QuestionStep({ questions, items, values, onPick, onSkip }: QuestionStepProps) {
   if (questions.length === 0) return null;
@@ -36,7 +37,7 @@ export function QuestionStep({ questions, items, values, onPick, onSkip }: Quest
           const prompt = QUESTION_STEP_COPY.prompts[question.kind];
           const current = values[question.id] ?? null;
           return (
-            <div key={question.id} role="radiogroup" aria-label={prompt} data-testid={`question-${question.kind}`}>
+            <div key={question.id} role="group" aria-label={prompt} data-testid={`question-${question.kind}`}>
               <p className="text-sm font-medium text-ink-900">{prompt}</p>
               <div className="mt-1 flex flex-wrap gap-2">
                 {question.options.map((option) => {
@@ -46,8 +47,7 @@ export function QuestionStep({ questions, items, values, onPick, onSkip }: Quest
                     <button
                       key={option.value}
                       type="button"
-                      role="radio"
-                      aria-checked={active}
+                      aria-pressed={active}
                       onClick={() => onPick(question, option.value)}
                       className={cn(
                         "inline-flex min-h-11 items-center gap-2 rounded-full border bg-white px-3 py-1 text-sm transition-colors",

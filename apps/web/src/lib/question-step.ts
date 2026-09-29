@@ -92,6 +92,28 @@ export function targetPickOf(value: string): { chosen: number | null; targetAll:
   return match ? { chosen: Number(match[1]), targetAll: false } : null;
 }
 
+/** A tap's new value: tapping the option already held clears the answer,
+ * so every question stays optional on its own. */
+export function toggledAnswer(current: string | null | undefined, value: string): string | null {
+  return current === value ? null : value;
+}
+
+/** What a target tap sets on its photo, clearing it when the tap took the
+ * answer back (the chooser's rules then apply again). */
+export function targetPatchFor(value: string | null): { chosen: number | null; targetAll: boolean } | null {
+  return value === null ? { chosen: null, targetAll: false } : targetPickOf(value);
+}
+
+/**
+ * What skipping the step undoes on its source photo. A skipped step sends no
+ * answers, so "Both" must not linger as a hidden answer: the photo drops
+ * targetAll and the chooser comes back asking for a tap. A single product
+ * picked in the step stays, since the chooser shows and sends that pick.
+ */
+export function skipPatchFor(photo: Pick<QuestionPhoto, "targetAll"> | null): { targetAll: false } | null {
+  return photo?.targetAll ? { targetAll: false } : null;
+}
+
 /**
  * The channels after a "Where will you sell?" tap: the marketplace picks
  * become the answer's specs (only pickable ones), every other pick stays.

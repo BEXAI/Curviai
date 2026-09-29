@@ -97,7 +97,9 @@ import {
   QUESTION_STEP_COPY,
   questionSourcePhoto,
   sellerAnswersBody,
-  targetPickOf,
+  skipPatchFor,
+  targetPatchFor,
+  toggledAnswer,
   targetValueOf,
   visibleQuestions,
 } from "@/lib/question-step";
@@ -646,11 +648,19 @@ export function NewPackForm({
   );
   const answersBody = sellerAnswersBody({ photo: questionPhoto, questions, picks: effectivePicks, skipped: questionsSkipped });
 
-  function pickAnswer(question: SellerQuestion, value: string) {
+  function pickAnswer(question: SellerQuestion, tapped: string) {
     setSubmitError(null);
+    // Tapping the held option takes the answer back.
+    const value = toggledAnswer(questionValues[question.id], tapped);
     if (question.kind === "target") {
-      const pick = targetPickOf(value);
+      const pick = targetPatchFor(value);
       if (pick && questionPhoto) updatePhoto(questionPhoto.id, pick);
+      return;
+    }
+    if (value === null) {
+      // An empty pick, not a missing one, so a reused pack's answer does
+      // not tap itself again; sellerAnswersBody sends nothing for it.
+      setQuestionPicks((current) => ({ ...current, [question.id]: "" }));
       return;
     }
     setQuestionPicks((current) => ({ ...current, [question.id]: value }));
@@ -1442,7 +1452,11 @@ export function NewPackForm({
                   items={questionPhoto?.preflight?.items ?? []}
                   values={questionValues}
                   onPick={pickAnswer}
-                  onSkip={() => setQuestionsSkipped(true)}
+                  onSkip={() => {
+                    setQuestionsSkipped(true);
+                    const undo = skipPatchFor(questionPhoto);
+                    if (undo && questionPhoto) updatePhoto(questionPhoto.id, undo);
+                  }}
                 />
               ) : questions.length > 0 ? (
                 <button
