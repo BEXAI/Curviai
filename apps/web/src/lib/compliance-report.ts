@@ -212,6 +212,14 @@ function measuredText(value: number | string | null | undefined, format: (n: num
 /** Pixel check names added in PHASE_15 (qc/pixelChecks.ts). */
 export const WHITE_OR_CLEAR_CHECK = "backgroundWhiteOrClear";
 export const MEGAPIXELS_CHECK = "megapixels";
+/** The chosen color check of PHASE_15 P1 (qc/pixelChecks.ts): how far the
+ * file's background is from the color it was asked to have, in CIEDE2000. */
+export const BACKGROUND_MATCHES_CHECK = "backgroundMatchesChoice";
+
+/** A CIEDE2000 difference in words, to two decimals. */
+function colorDifferenceText(value: number): string {
+  return `a difference of ${Math.round(value * 100) / 100}`;
+}
 
 /** Megapixels from a stored value: a count in megapixels, or in pixels when it is large. */
 function asMegapixels(value: number): number {
@@ -255,6 +263,16 @@ export function describeCheck(check: z.infer<typeof StoredCheck>, specId?: strin
         pass,
         measured: measuredText(measured, megapixelText),
         required: max === null ? (limit ?? "") : `at most ${megapixelText(max)}`,
+      };
+    }
+    case BACKGROUND_MATCHES_CHECK: {
+      const max = limitNumber(limit);
+      return {
+        key: name,
+        label: "Background matches your color",
+        pass,
+        measured: measuredText(measured, colorDifferenceText),
+        required: max === null ? (limit ?? "") : `a difference of at most ${Math.round(max * 100) / 100}`,
       };
     }
     case "dimensions":

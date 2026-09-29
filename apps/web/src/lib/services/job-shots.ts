@@ -16,7 +16,7 @@
  * progress, and the rerun's own final row settles it.
  */
 
-import { needsReviewNote, skippedCopy } from "@/lib/job-copy";
+import { needsReviewNote, skippedCopy, type ShotCopyContext } from "@/lib/job-copy";
 import { angleLabel, angleOfSkippedShot, isRetryable, RERUN_STEP_STATUS } from "./shot-ops";
 import type { JobShotView, JobStatus, ShotCompliance, ShotStatus } from "./types";
 
@@ -99,6 +99,9 @@ interface Group {
 export interface ShotViewContext {
   status: JobStatus;
   mode: "listing" | "concept";
+  /** The pack's stored choices the card copy names (PHASE_15): its enlarge
+   * cap and scene count. */
+  copy?: ShotCopyContext;
 }
 
 /** Plain copy for a shot queued to run again that never did, for example
@@ -188,12 +191,12 @@ export function buildShotViews(
       }
     } else if (status === "needs_review") {
       const hint = typeof qc?.repairHint === "string" && qc.repairHint ? qc.repairHint : group.best.error;
-      view.note = needsReviewNote(hint);
+      view.note = needsReviewNote(hint, job?.copy);
       if (operable && isRetryable(qc)) {
         view.action = "retry";
       }
     } else if (status === "skipped") {
-      const copy = skippedCopy(group.best.error, view.shotType);
+      const copy = skippedCopy(group.best.error, view.shotType, job?.copy);
       view.label = copy.label;
       view.note = copy.note;
       const angle = copy.label === "Needs photo" ? angleOfSkippedShot(group.best.stage, group.best.error) : null;
