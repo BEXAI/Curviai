@@ -9,14 +9,20 @@
 import type { JobShotView, JobView } from "@/lib/services/types";
 
 /**
- * Public share pages. /s/[slug] exists, but today it renders one illustrated
- * demo for every slug, so a link to it would show a buyer somebody else's
- * bottle, not this pack. While this is false, "Copy link" copies the pack
- * page, which opens only for members of the workspace, and the reveal says
- * so. Flip it once /s/[slug] renders the real pack for a slug the owner chose
- * to share (docs/PENDING.md, Growth).
+ * Whether the reveal's "Copy link" copies a public page. Public pages are
+ * live, but they sit at /s/{slug} for a slug the owner publishes from the
+ * "Share this makeover" panel under the board (lib/shares), not at the job
+ * id. So the reveal's Copy link stays on the pack page, which opens only for
+ * members of the workspace, and its note points the seller at that panel for
+ * a public link.
  */
 export const PUBLIC_SHARE_PAGES_LIVE = false;
+
+/** The reveal's note under a workspace only Copy link. */
+export const PACK_WORKSPACE_LINK_COPY =
+  "The link opens this pack for people in your workspace. To share it with anyone, publish a share page in Share this makeover below.";
+export const MAKEOVER_WORKSPACE_LINK_COPY =
+  "The link opens this pack for people in your workspace. To share it with anyone, publish a share page in Share this makeover below, or download the side by side image.";
 
 export interface RevealShot {
   shotId: string;

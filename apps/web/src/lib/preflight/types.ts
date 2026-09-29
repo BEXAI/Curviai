@@ -80,6 +80,10 @@ export interface PreflightView {
   questions?: SellerQuestion[];
   /** True for the simulated demo mode answer. */
   demo?: boolean;
+  /** The upload's cutout of this photo was made (and kept in the upload
+   * cutout cache), so a pack can cut it out while the cutout service is
+   * paused. A hint for the form: createJob checks the cache itself. */
+  cutoutCached?: boolean;
 }
 
 export type PreflightOutcome =

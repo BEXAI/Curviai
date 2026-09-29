@@ -23,11 +23,13 @@ import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { estimatePackCredits, type EstimateMode } from "@/lib/pack-estimate";
 import { intentFor, type SubmitIntent } from "@/lib/submit-intent";
 import { track } from "@/lib/track";
+import { uploadTypeForFile } from "@/lib/upload-validation";
 import { requestPhotoImport } from "@/lib/url-import/client";
 import { IMPORT_TITLE_MAX, sellerNotesFrom, type ImportedImage, type ImportedProduct } from "@/lib/url-import/types";
 import {
   KEEP_PHOTOS_INSTEAD_LABEL,
   KEEP_PHOTOS_PAUSED_COPY,
+  KEEP_PHOTOS_PAUSED_QUOTA_COPY,
   conflictCopy,
   conflictLines,
   leftOutAfterPauseLine,
@@ -161,6 +163,9 @@ interface NewPackFormProps {
    * Create pack is disabled for a pack that needs a cutout; with output
    * options on, a pack that keeps its photos can still start. */
   packsPaused?: boolean;
+  /** True when that pause comes from an empty cutout account, which no
+   * wait fixes, so the banner makes no time promise. */
+  packsPausedForQuota?: boolean;
   /** Section 3 "How your images look" (docs/phases/PHASE_15.md): the env
    * flag and the kill switch are both on. Off, the form renders and submits
    * exactly as before PHASE_15, with no outputOptions in the body. */
@@ -418,6 +423,7 @@ export function NewPackForm({
   paywall,
   initialProductId,
   packsPaused = false,
+  packsPausedForQuota = false,
   outputOptionsEnabled = false,
   brandColors,
   brandKitsAllowed = false,
@@ -614,7 +620,8 @@ export function NewPackForm({
   const photoOutput = (photo: PhotoItem): PhotoOutputContext | undefined =>
     flags && effectiveMode !== "concept" ? photoOutputContext(formPhotoId(photo), selected, flags) : undefined;
   // With options on, the cutout pause stops only a pack that needs a cutout.
-  const pauseBlocks = optionsOn && flags ? pauseBlocksSubmit(packsPaused, selected, flags) : packsPaused;
+  const cachedCutouts = new Set(photos.filter((p) => p.kind === "image" && p.preflight?.cutoutCached).map(formPhotoId));
+  const pauseBlocks = optionsOn && flags ? pauseBlocksSubmit(packsPaused, selected, flags, cachedCutouts) : packsPaused;
   // Concept packs are normalized to today's pack by the server, so they send none.
   const sendsOptions = optionsOn && effectiveMode === "listing";
 
@@ -826,7 +833,8 @@ export function NewPackForm({
     const taken = photos.filter((p) => p.kind === "image").map((p) => p.angle);
     const added: Array<{ item: PhotoItem; file: File }> = [];
     for (const file of files.slice(0, Math.max(0, room))) {
-      const kind = file.type.startsWith("video/") ? "video" : "image";
+      const type = uploadTypeForFile(file);
+      const kind = type.ok ? type.kind : "image";
       const angle = nextAngle(taken);
       if (kind === "image") {
         taken.push(angle);
@@ -869,15 +877,18 @@ export function NewPackForm({
 
   async function handleFile(file: File, id: number) {
     const update = (patch: Partial<PhotoItem>) => updatePhoto(id, patch);
+    // Drag and drop skips the input's accept list: check the type here, and
+    // read an empty type from the file name, before asking to sign.
+    const type = uploadTypeForFile(file);
+    if (!type.ok) {
+      update({ phase: "error", message: type.message });
+      return;
+    }
     try {
       const response = await fetch("/api/uploads/sign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          kind: file.type.startsWith("video/") ? "video" : "image",
-          contentType: file.type,
-          bytes: file.size,
-        }),
+        body: JSON.stringify({ kind: type.kind, contentType: type.contentType, bytes: file.size }),
       });
       const data = (await response.json().catch(() => ({}))) as {
         url?: string;
@@ -898,7 +909,7 @@ export function NewPackForm({
       }
       const put = await fetch(data.url, {
         method: "PUT",
-        headers: { "Content-Type": file.type },
+        headers: { "Content-Type": type.contentType },
         body: file,
       });
       if (!put.ok) {
@@ -906,7 +917,7 @@ export function NewPackForm({
         return;
       }
       update({ phase: "uploaded", key: data.key, sha256: await sha256Hex(file) });
-      if (!file.type.startsWith("video/")) {
+      if (type.kind === "image") {
         void runPreflight(id, data.key);
       }
     } catch {
@@ -1178,7 +1189,7 @@ export function NewPackForm({
             data-testid="preflight-banner"
             data-verdict="packs_paused"
           >
-            <p>{KEEP_PHOTOS_PAUSED_COPY}</p>
+            <p>{packsPausedForQuota ? KEEP_PHOTOS_PAUSED_QUOTA_COPY : KEEP_PHOTOS_PAUSED_COPY}</p>
             {pauseBlocks ? (
               <Button variant="outline" className="mt-3 min-h-11" onClick={keepPhotosInstead} data-testid="keep-photos-instead">
                 {KEEP_PHOTOS_INSTEAD_LABEL}

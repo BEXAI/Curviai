@@ -224,6 +224,42 @@ describe("estimateCostMicros", () => {
     expect(three).toBe(price.perImageMicros * 3);
   });
 
+  it("prices the OpenAI image by requested size, falling back to the flat price", () => {
+    const provider = new OpenaiImageProvider({
+      name: "openai-image",
+      tasks: ["scene_plate"],
+      apiKey: "test-key",
+      model: "injected-model-id",
+      priceTable: { perImageMicros: 53_000, perImageMicrosBySize: { "1024x1024": 53_000, "1536x1024": 41_000 } },
+    });
+    const est = (input: Record<string, unknown>) => provider.estimateCostMicros({ task: "scene_plate", input });
+    expect(est({ prompt: "p", size: "1536x1024" })).toBe(41_000);
+    expect(est({ prompt: "p", size: "1024x1024", n: 2 })).toBe(106_000);
+    expect(est({ prompt: "p", size: "2048x2048" })).toBe(53_000);
+    expect(est({ prompt: "p" })).toBe(53_000);
+  });
+
+  it("sends the configured OpenAI quality and meters the size price", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const provider = new OpenaiImageProvider({
+      name: "openai-image",
+      tasks: ["scene_plate"],
+      apiKey: "test-key",
+      model: "injected-model-id",
+      priceTable: { perImageMicros: 53_000, perImageMicrosBySize: { "1536x1024": 41_000 } },
+      quality: "medium",
+      fetchFn: (async (_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ data: [{ b64_json: "AAAA" }] }), { status: 200 });
+      }) as typeof fetch,
+    });
+    const res = await provider.invoke({ task: "scene_plate", input: { prompt: "p", size: "1536x1024" } });
+    expect(bodies[0].quality).toBe("medium");
+    expect(res.costMicros).toBe(41_000);
+    await provider.invoke({ task: "scene_plate", input: { prompt: "p", size: "1536x1024", quality: "low" } });
+    expect(bodies[1].quality).toBe("low");
+  });
+
   it("bounds the Anthropic estimate by the output token budget", () => {
     const provider = new AnthropicLLMProvider({
       name: "claude-analyzer",

@@ -25,7 +25,9 @@ export const dynamic = "force-dynamic";
 
 const SignRequest = z.object({
   kind: z.enum(["image", "video"]),
-  contentType: z.string().min(1).max(100),
+  // An empty type reaches validateUploadRequest, which answers with plain
+  // copy the seller can act on.
+  contentType: z.string().max(100),
   bytes: z.number().int().positive(),
 });
 

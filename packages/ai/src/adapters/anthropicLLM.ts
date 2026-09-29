@@ -125,6 +125,19 @@ export interface AnthropicLLMInput {
   toolChoice?: unknown;
   maxTokens?: number;
   temperature?: number;
+  /** Per model thinking and effort settings from the recipe row, keyed by
+   * model id. Each provider in a failover chain applies only the entry for
+   * the model it runs, since the valid values differ by model (Sonnet 5
+   * accepts thinking disabled, Opus 5.5 rejects it, Haiku 4.5 rejects
+   * effort). No entry sends neither field, so the model default applies. */
+  modelOptions?: Record<string, AnthropicModelOptions>;
+}
+
+/** Thinking and effort for one model (Messages API, checked 2026-09-29,
+ * docs/verification.md): sent as thinking {type} and output_config.effort. */
+export interface AnthropicModelOptions {
+  thinking?: "adaptive" | "disabled";
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
 
 export interface AnthropicLLMOutput {
@@ -267,6 +280,9 @@ export class AnthropicLLMProvider implements CostAwareProvider {
     if (input.tools !== undefined) body.tools = input.tools;
     if (input.toolChoice !== undefined) body.tool_choice = input.toolChoice;
     if (input.temperature !== undefined) body.temperature = input.temperature;
+    const options = input.modelOptions?.[model];
+    if (options?.thinking !== undefined) body.thinking = { type: options.thinking };
+    if (options?.effort !== undefined) body.output_config = { effort: options.effort };
 
     const data = await requestJson<MessagesResponse>(this.fetchFn, this.name, req.task, `${this.baseUrl}/v1/messages`, {
       method: "POST",
@@ -294,6 +310,22 @@ export class AnthropicLLMProvider implements CostAwareProvider {
         code: "content_blocked",
         billedCostMicros: costMicros,
       });
+    }
+    // A reply cut off at max_tokens: thinking tokens count toward the same
+    // budget, so a thinking model can spend it before the answer. A forced
+    // tool call cut short would fail schema validation later with no hint of
+    // why; say so here instead. Not retried on this provider (the same
+    // budget cuts the same answer short) and not a sign the provider is
+    // unhealthy, so the chain fails over without touching the breaker.
+    if (data.stop_reason === "max_tokens" && (input.tools !== undefined || (!textBlock && !toolBlock))) {
+      throw new ProviderError(
+        `Anthropic response stopped at max_tokens (${String(body.max_tokens)}) before the answer was complete`,
+        this.name,
+        req.task,
+        false,
+        undefined,
+        { code: "output_truncated", billedCostMicros: costMicros },
+      );
     }
     if (!textBlock && !toolBlock) {
       throw new ProviderError(

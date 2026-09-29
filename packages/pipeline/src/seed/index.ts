@@ -1,4 +1,4 @@
-export { RecipeRow, adCopyRecipe, addedOverlaysIntake, aplusCopyRecipe, qcJudgePolicy, recipeSeedRows } from "./recipes";
+export { RecipeModelOptions, RecipeRow, adCopyRecipe, addedOverlaysIntake, aplusCopyRecipe, qcJudgePolicy, recipeSeedRows } from "./recipes";
 export {
   QUESTION_KINDS,
   channelChoices,

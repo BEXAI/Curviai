@@ -23,6 +23,8 @@ import {
   getInlinePackRunner,
   heartbeatQueuedJobs,
   settleInterruptedJob,
+  PACKAGING_RESERVE_MS,
+  stopStartingAt,
 } from "./enqueue";
 import {
   InlinePackRunner,
@@ -294,6 +296,13 @@ describe("settleInterruptedJob", () => {
   });
 });
 
+describe("stopStartingAt", () => {
+  it("leaves the packaging reserve before the run cap, and at least half the cap for shots", () => {
+    expect(stopStartingAt(1_000, 25 * 60_000)).toBe(1_000 + 25 * 60_000 - PACKAGING_RESERVE_MS);
+    expect(stopStartingAt(0, 60_000)).toBe(30_000);
+  });
+});
+
 describe("heartbeatQueuedJobs", () => {
   it("bumps queued jobs only", async () => {
     const waiting = await jobWith("queued", { updatedAt: OLD });
@@ -303,6 +312,21 @@ describe("heartbeatQueuedJobs", () => {
 
     expect((await jobRow(waiting)).updatedAt.getTime()).toBeGreaterThan(OLD.getTime());
     expect((await jobRow(started)).updatedAt.getTime()).toBe(OLD.getTime());
+  });
+
+  it("bumps a follow up waiting under its run key, and not a job whose key moved on", async () => {
+    const followUp = await jobWith("generating", { updatedAt: OLD });
+    await db.update(generationJobs).set({ runKey: "follow-up-key", updatedAt: OLD }).where(eq(generationJobs.id, followUp));
+    const replaced = await jobWith("generating", { updatedAt: OLD });
+    await db.update(generationJobs).set({ runKey: "newer-key", updatedAt: OLD }).where(eq(generationJobs.id, replaced));
+    const finished = await jobWith("done", { updatedAt: OLD });
+    await db.update(generationJobs).set({ runKey: "done-key", updatedAt: OLD }).where(eq(generationJobs.id, finished));
+
+    await heartbeatQueuedJobs(appDb(), [followUp, replaced, finished], ["follow-up-key", "stale-key", "done-key"]);
+
+    expect((await jobRow(followUp)).updatedAt.getTime()).toBeGreaterThan(OLD.getTime());
+    expect((await jobRow(replaced)).updatedAt.getTime()).toBe(OLD.getTime());
+    expect((await jobRow(finished)).updatedAt.getTime()).toBe(OLD.getTime());
   });
 
   it("does nothing for an empty list", async () => {

@@ -245,6 +245,141 @@ export const TargetPickAnswer = TargetPick.extend({
   reason: z.string().transform((text) => text.slice(0, 200)),
 });
 
+/*
+ * Lenient answer schemas. strictToolSchema drops maxItems, maxLength,
+ * minimum, maximum and pattern before a schema goes to the API, so a model
+ * answer can go past a bound the prompt never stated (14 lipsticks on a flat
+ * lay, 9 features on an electronics product). Failing the whole pack for that
+ * is worse than keeping the first items, so these answers are normalized to
+ * the bounds before the full schema checks them: arrays are cut to their
+ * maximum, strings sliced to their length, numbers clamped to their range,
+ * hex colors repaired or dropped. Anything else still fails validation.
+ * The input is never mutated; the runner keeps the raw answer for its logs.
+ */
+
+type Loose = Record<string, unknown>;
+
+function isRecord(value: unknown): value is Loose {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function cutString(value: unknown, max: number): unknown {
+  return typeof value === "string" ? value.slice(0, max) : value;
+}
+
+function cutArray(value: unknown, max: number, each?: (item: unknown) => unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  const kept = value.slice(0, max);
+  return each ? kept.map(each) : kept;
+}
+
+function clampNumber(value: unknown, min: number, max: number): unknown {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : value;
+}
+
+function wholeAtLeast(value: unknown, min: number): unknown {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.round(value)) : value;
+}
+
+/** "#abc", "ABCDEF" or " #AbCdEf " as "#AABBCC" style six digit hex; null
+ * when the value is not a hex color at all. */
+export function normalizeHex(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const digits = value.trim().replace(/^#/, "");
+  if (/^[0-9A-Fa-f]{6}$/.test(digits)) return `#${digits.toUpperCase()}`;
+  if (/^[0-9A-Fa-f]{3}$/.test(digits)) {
+    return `#${[...digits].map((d) => d + d).join("").toUpperCase()}`;
+  }
+  return null;
+}
+
+function positiveSize(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function normalizeNormalizedBox(box: unknown): unknown {
+  if (!isRecord(box)) return box;
+  return {
+    ...box,
+    x: clampNumber(box.x, 0, 1),
+    y: clampNumber(box.y, 0, 1),
+    width: clampNumber(box.width, 0, 1),
+    height: clampNumber(box.height, 0, 1),
+  };
+}
+
+function normalizeIntakeImage(image: unknown): unknown {
+  if (!isRecord(image)) return image;
+  const out: Loose = { ...image, distinctProducts: wholeAtLeast(image.distinctProducts, 0) };
+  if (Array.isArray(image.products)) {
+    out.products = image.products
+      // A product with no area cannot be cut out; drop it rather than the pack.
+      .filter((p) => !isRecord(p) || !isRecord(p.box) || (positiveSize(p.box.width) && positiveSize(p.box.height)))
+      .slice(0, 12)
+      .map((p) => (isRecord(p) ? { ...p, label: cutString(p.label, 120), box: normalizeNormalizedBox(p.box) } : p));
+  }
+  if (Array.isArray(image.boundingBoxes)) {
+    out.boundingBoxes = image.boundingBoxes
+      .filter((b) => !isRecord(b) || (positiveSize(b.width) && positiveSize(b.height)))
+      .map((b) => (isRecord(b) ? { ...b, x: clampNumber(b.x, 0, Infinity), y: clampNumber(b.y, 0, Infinity) } : b));
+  }
+  return out;
+}
+
+function normalizeSellerIntent(intent: unknown): unknown {
+  if (!isRecord(intent)) return intent;
+  const cut120 = (item: unknown) => cutString(item, 120);
+  return {
+    ...intent,
+    featureOnly: cutString(intent.featureOnly, 120),
+    exclude: cutArray(intent.exclude, 8, cut120),
+    mustKeep: cutArray(intent.mustKeep, 8, cut120),
+    styleNotes: cutString(intent.styleNotes, 400),
+  };
+}
+
+/** An intake answer brought inside IntakeResult's bounds. */
+export function normalizeIntakeAnswer(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const out: Loose = { ...raw };
+  if (Array.isArray(raw.images)) out.images = raw.images.map(normalizeIntakeImage);
+  if (raw.sellerIntent !== undefined) out.sellerIntent = normalizeSellerIntent(raw.sellerIntent);
+  return out;
+}
+
+/** A product analysis answer brought inside ProductProfile's bounds. */
+export function normalizeProductProfileAnswer(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const out: Loose = {
+    ...raw,
+    productCount: wholeAtLeast(raw.productCount, 1),
+    name: cutString(raw.name, 120),
+    materials: cutArray(raw.materials, 8),
+    features: cutArray(raw.features, 8),
+    benefits: cutArray(raw.benefits, 8),
+    useContexts: cutArray(raw.useContexts, 6),
+  };
+  if (Array.isArray(raw.dominantColors)) {
+    out.dominantColors = raw.dominantColors
+      .map((color) => {
+        if (!isRecord(color)) return color;
+        const hex = normalizeHex(color.hex);
+        return hex ? { ...color, hex } : null;
+      })
+      // A color with no readable hex is dropped; the others are kept.
+      .filter((color) => color !== null)
+      .slice(0, 6);
+  }
+  return out;
+}
+
+/** IntakeResult as model answers are validated (see normalizeIntakeAnswer). */
+export const IntakeAnswer = z.preprocess(normalizeIntakeAnswer, IntakeResult);
+
+/** ProductProfile as model answers are validated (see
+ * normalizeProductProfileAnswer). */
+export const ProductProfileAnswer = z.preprocess(normalizeProductProfileAnswer, ProductProfile);
+
 export type Hex = z.infer<typeof Hex>;
 export type ProductProfile = z.infer<typeof ProductProfile>;
 export type Shot = z.infer<typeof Shot>;

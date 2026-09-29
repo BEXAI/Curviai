@@ -627,7 +627,7 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
         </section>
       ) : null}
 
-      {job.status === "done" || job.followUpRunning ? <PackDownloads jobId={job.id} /> : null}
+      {job.status === "done" || job.followUpRunning ? <PackDownloads jobId={job.id} packDone={job.status === "done"} /> : null}
       {job.status === "done" ? <ComplianceReportPanel jobId={job.id} /> : null}
     </div>
   );

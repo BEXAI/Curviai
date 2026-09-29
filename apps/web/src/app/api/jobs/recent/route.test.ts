@@ -19,7 +19,7 @@ beforeEach(() => {
 describe("GET /api/jobs/recent", () => {
   it("lists the workspace's recent packs with only what the notice needs", async () => {
     vi.mocked(services.listRecentJobs).mockResolvedValue([
-      { id: TEST_JOB_ID, productTitle: "Kettle", status: "generating", creditsReserved: 6, createdAt: new Date(0).toISOString() },
+      { id: TEST_JOB_ID, productTitle: "Kettle", status: "generating", creditsReserved: 6, creditsCharged: 0, createdAt: new Date(0).toISOString() },
     ]);
     const response = await GET();
     expect(response.status).toBe(200);

@@ -137,6 +137,14 @@ describe("POST /api/uploads/sign", () => {
     expect(await response.json()).toMatchObject({ error: "File is too large. The image limit is 25 MB.", reason: "invalid_upload" });
   });
 
+  it("answers an empty content type with plain copy, not Invalid request", async () => {
+    const response = await sign(jsonRequest("https://curvi.ai/api/uploads/sign", { ...signBody, contentType: "" }));
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: string; reason: string };
+    expect(body.reason).toBe("invalid_upload");
+    expect(body.error).toContain("This file type is not supported.");
+  });
+
   it("refuses a content type over 100 characters", async () => {
     const response = await sign(
       jsonRequest("https://curvi.ai/api/uploads/sign", { ...signBody, contentType: `image/${"x".repeat(100)}` }),

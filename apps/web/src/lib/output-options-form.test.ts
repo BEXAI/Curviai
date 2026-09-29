@@ -279,6 +279,13 @@ describe("Leave it out and the cutout pause", () => {
     expect(pauseBlocksSubmit(true, noWhite, { ...flagsFor(keep), photos: [], keepMediaIds: [] })).toBe(false);
     expect(pauseBlocksSubmit(true, DEFAULT_CHANNELS, { ...flagsFor(keep), photos: [], keepMediaIds: [] })).toBe(true);
   });
+
+  it("lets a paused pack start when every photo it cuts out already has its upload cutout", () => {
+    const remove = flagsFor(initialOutputForm(), ["p1", "p2"]);
+    expect(pauseBlocksSubmit(true, DEFAULT_CHANNELS, remove, new Set(["p1", "p2"]))).toBe(false);
+    expect(pauseBlocksSubmit(true, DEFAULT_CHANNELS, remove, new Set(["p1"]))).toBe(true);
+    expect(pauseBlocksSubmit(true, DEFAULT_CHANNELS, remove, new Set())).toBe(true);
+  });
 });
 
 describe("photos and conflicts", () => {

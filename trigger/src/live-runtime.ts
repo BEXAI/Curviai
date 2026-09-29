@@ -16,7 +16,6 @@ import {
   callWithFailover,
   CircuitBreaker,
   downloadBytes,
-  FAL_API_KEY_ENV,
   type CallResult,
   type CapsHook,
   GeminiImageProvider,
@@ -25,6 +24,7 @@ import {
   FalCutoutProvider,
   ProviderError,
   providerErrorsOf,
+  reportBilled,
   signalOf,
   type BflFluxInput,
   type BflFluxOutput,
@@ -111,13 +111,14 @@ export const WORKING_SOURCE_MAX_PX = Math.ceil(
   Math.max(...listSpecs().map((spec) => Math.max(spec.width ?? 0, spec.height ?? 0, spec.minWidth ?? 0, spec.minHeight ?? 0))) *
     1.25,
 );
-import { CUTOUT_CACHE_FRESH_MS, cutoutCacheKey, type CutoutCacheStore } from "./cutout-cache";
+import { CUTOUT_CACHE_FRESH_MS, cutoutCacheKey, r2CutoutCacheStore, type CutoutCacheStore } from "./cutout-cache";
 import { restoreSourceEdges } from "./cutout-edges";
 import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
 import { ORIGINAL_NOT_PREPARED, renderOriginalShot } from "./live-original";
 import type { LiveProduct, StillRender } from "./live-product";
 import { isWorkspaceObjectKey } from "./object-keys";
+import { R2_REQUEST_TIMEOUTS } from "./r2";
 import { llmModelProviderName, seedRecipe } from "./recipes";
 import {
   failureSpendMicros,
@@ -201,17 +202,57 @@ export class ScenePlateBridge implements CostAwareProvider {
     return task === SCENE_PLATE_TASK || task === HARMONIZE_TASK;
   }
 
+  /**
+   * The inner adapter's estimate for the request it will actually receive.
+   * OpenAI prices by the size the bridge picks, so a plate is estimated at
+   * that size; its harmonize is a free pass through.
+   */
   estimateCostMicros(req: ProviderRequest): number | Promise<number> {
+    if (this.family === "openai") {
+      if (req.task === HARMONIZE_TASK) return 0;
+      const input = req.input as unknown as ScenePlateInput;
+      const openaiInput: OpenaiImageInput = { prompt: input.prompt, size: openaiSizeFor(input.width, input.height) };
+      return this.inner.estimateCostMicros?.({ ...req, input: openaiInput }) ?? 0;
+    }
     return this.inner.estimateCostMicros?.(req) ?? 0;
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
-    const png =
-      req.task === HARMONIZE_TASK
-        ? await this.harmonize(req.input as unknown as HarmonizeInput, req)
-        : await this.generate(req.input as unknown as ScenePlateInput, req);
-    const output: ImageOutput = { png: png.buffer };
-    return { output: output as TOut, costMicros: png.costMicros };
+    const release = this.meterSyncTimeout(req);
+    try {
+      const png =
+        req.task === HARMONIZE_TASK
+          ? await this.harmonize(req.input as unknown as HarmonizeInput, req)
+          : await this.generate(req.input as unknown as ScenePlateInput, req);
+      const output: ImageOutput = { png: png.buffer };
+      return { output: output as TOut, costMicros: png.costMicros };
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * A synchronous image call (Gemini, and OpenAI plates) that the router
+   * times out was sent and is still billed by the provider. When the router
+   * aborts the attempt, the image price is reported as billed before the
+   * timeout is handled, so the timeout is metered against the caps and
+   * never retried on the same provider (it still fails over), as BFL's and
+   * fal's async jobs already are. OpenAI's harmonize is a free pass through,
+   * and BFL reports its own billing once its job exists.
+   */
+  private meterSyncTimeout(req: ProviderRequest): () => void {
+    const sync = this.family === "gemini" || (this.family === "openai" && req.task === SCENE_PLATE_TASK);
+    const signal = signalOf(req);
+    if (!sync || !signal || signal.aborted) {
+      return () => {};
+    }
+    const estimate = this.inner.estimateCostMicros?.(req);
+    if (typeof estimate !== "number" || !(estimate > 0)) {
+      return () => {};
+    }
+    const onAbort = () => reportBilled(req, estimate);
+    signal.addEventListener("abort", onAbort, { once: true });
+    return () => signal.removeEventListener("abort", onAbort);
   }
 
   private async generate(
@@ -279,9 +320,19 @@ export class ScenePlateBridge implements CostAwareProvider {
       return { buffer: Buffer.from(image.dataBase64, "base64"), costMicros: res.costMicros };
     }
     if (this.family === "bfl") {
+      // FLUX.2 edits default to the input's size, up to 4 MP, and price by
+      // resolution; a 2000 px canvas (or a 2200 px spec) is at or over that.
+      // The draft goes at most about 2 MP, the plate's own size, and the
+      // composite stretches the result back to the canvas before the product
+      // pixels are pasted back.
+      const draft = await bflHarmonizeDraft(input.png);
       const res = await this.inner.invoke<BflFluxInput, BflFluxOutput>({
         ...req,
-        input: { prompt: input.prompt, inputImageBase64: input.png.toString("base64") },
+        input: {
+          prompt: input.prompt,
+          inputImageBase64: draft.png.toString("base64"),
+          ...(draft.width !== undefined ? { width: draft.width, height: draft.height } : {}),
+        },
       });
       const buffer = await this.download(res.output.imageUrl, req);
       return { buffer, costMicros: res.costMicros };
@@ -352,6 +403,30 @@ export function nearestGeminiAspectRatio(width: number, height: number): string 
 }
 
 /** Width and height from a PNG header, or null when the bytes are not a PNG. */
+/** Largest draft the BFL harmonize pass is sent, in pixels (about 2 MP,
+ * the size of a 1440 px plate). BFL documents a 4 MP maximum for FLUX.2
+ * edits (image editing docs, checked 2026-09-29). */
+export const BFL_HARMONIZE_MAX_PIXELS = 1440 * 1440;
+
+/**
+ * The draft composite as BFL's harmonize pass gets it: unchanged when it is
+ * already small enough (or not a readable PNG), else scaled down, keeping
+ * its shape, to at most BFL_HARMONIZE_MAX_PIXELS with both sides a multiple
+ * of 16, and the size sent along so the edit comes back at that size.
+ */
+export async function bflHarmonizeDraft(png: Buffer): Promise<{ png: Buffer; width?: number; height?: number }> {
+  const size = pngSize(png);
+  if (!size || size.width * size.height <= BFL_HARMONIZE_MAX_PIXELS) {
+    return { png };
+  }
+  const scale = Math.sqrt(BFL_HARMONIZE_MAX_PIXELS / (size.width * size.height));
+  const width = Math.max(16, Math.floor((size.width * scale) / 16) * 16);
+  const height = Math.max(16, Math.floor((size.height * scale) / 16) * 16);
+  const decoded = await decodeToRgba(png);
+  const resized = await rawToSharp(decoded).resize(width, height, { fit: "fill" }).png().toBuffer();
+  return { png: resized, width, height };
+}
+
 function pngSize(png: Buffer): { width: number; height: number } | null {
   if (png.length < 24 || png[0] !== 0x89 || png.toString("ascii", 1, 4) !== "PNG") {
     return null;
@@ -424,7 +499,10 @@ export function wireLiveProviders(
       tasks: [SCENE_PLATE_TASK, HARMONIZE_TASK],
       apiKey,
       model: row.model,
-      priceTable: { perImageMicros: row.perImageMicros },
+      priceTable: { perImageMicros: row.perImageMicros, perImageMicrosBySize: row.perImageMicrosBySize },
+      quality: row.quality,
+      fetchFn: fetchFn as typeof fetch,
+      ...(row.minTimeoutMs !== undefined ? { minTimeoutMs: row.minTimeoutMs } : {}),
     };
     const inner: CostAwareProvider =
       row.family === "gemini"
@@ -443,22 +521,23 @@ export function wireLiveProviders(
   // Cutouts run on fal (BiRefNet by default), in seed failover order. Every
   // shot starts from the cutout, so an exhausted or failing cutout provider
   // fails over to the next seeded one instead of failing every pack.
-  const falKey = readEnv(FAL_API_KEY_ENV);
-  if (falKey) {
-    for (const row of cutoutModelSeedRows) {
-      registry.register(
-        new FalCutoutProvider({
-          name: row.providerName,
-          tasks: [CUTOUT_TASK],
-          apiKey: falKey,
-          modelId: row.model,
-          modelParams: row.params,
-          priceTable: { perCallMicros: row.perCallMicros },
-          fetchFn: fetchFn as typeof fetch,
-        }),
-      );
-      wiring.cutoutProviders.push(row.providerName);
-    }
+  // Each row names its own key env, so a second fal account is a failover
+  // target with its own balance; a row whose key is unset is skipped.
+  for (const row of cutoutModelSeedRows) {
+    const falKey = readEnv(row.keyEnv);
+    if (!falKey) continue;
+    registry.register(
+      new FalCutoutProvider({
+        name: row.providerName,
+        tasks: [CUTOUT_TASK],
+        apiKey: falKey,
+        modelId: row.model,
+        modelParams: row.params,
+        priceTable: { perCallMicros: row.perCallMicros },
+        fetchFn: fetchFn as typeof fetch,
+      }),
+    );
+    wiring.cutoutProviders.push(row.providerName);
   }
   if (wiring.cutoutProviders.length > 0) {
     routing[CUTOUT_TASK] = [...wiring.cutoutProviders];
@@ -484,6 +563,9 @@ export function makeR2MediaLoader(readEnv: ReadEnv = readEnvDefault): MediaLoade
     region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
+    // A stalled socket to R2 fails instead of hanging the shot, and with it
+    // the process wide queue kept photo shots wait in.
+    requestHandler: R2_REQUEST_TIMEOUTS,
   });
   return async (key: string) => {
     try {
@@ -1859,4 +1941,29 @@ function attemptFailure(err: unknown, spend: AttemptSpend): unknown {
     return new ShotUnavailableError(HARMONIZE_SHAPE_REFUSED, spend.micros);
   }
   return spend.micros > 0 ? new ShotFailedAfterSpendError(err, spend.micros) : err;
+}
+
+/**
+ * True when the upload's cached cutout of this stored photo is fresh, so a
+ * pack's cutout of it needs no provider call (fullCutout reads the same key
+ * before the router). The web app asks this while every cutout provider is
+ * paused, so a pack made only of photos checked at upload can still start.
+ * The bytes are prepared exactly as fullCutout prepares them. Never throws:
+ * a cache that cannot be read answers false.
+ */
+export async function hasFreshUploadCutout(
+  workspaceId: string,
+  source: Buffer,
+  opts: { store?: CutoutCacheStore | null; now?: () => Date } = {},
+): Promise<boolean> {
+  const store = opts.store === undefined ? r2CutoutCacheStore() : opts.store;
+  if (!store || source.length === 0) return false;
+  try {
+    const working = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
+    const hit = await store.get(cutoutCacheKey(workspaceId, working, "png"));
+    const now = (opts.now ?? (() => new Date()))().getTime();
+    return hit !== null && now - hit.storedAt.getTime() < CUTOUT_CACHE_FRESH_MS;
+  } catch {
+    return false;
+  }
 }

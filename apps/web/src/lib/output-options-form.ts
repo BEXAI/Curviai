@@ -574,10 +574,17 @@ export function photoOutputContext(
  * (packNeedsCutout) waits. A pack with no photo yet is judged as if its
  * first photo were the front one.
  */
-export function pauseBlocksSubmit(packsPaused: boolean, selected: readonly string[], flags: OutputPlanFlags): boolean {
+export function pauseBlocksSubmit(
+  packsPaused: boolean,
+  selected: readonly string[],
+  flags: OutputPlanFlags,
+  cachedPhotoIds: ReadonlySet<string> = new Set(),
+): boolean {
   if (!packsPaused) return false;
   // With photos, each photo's own background counts (P1 per photo Select).
-  if (flags.photos.length > 0) return packNeedsCutout(selected, flags);
+  // A photo whose cutout the upload preflight already made needs no cutout
+  // service, so only the others block.
+  if (flags.photos.length > 0) return cutoutMediaIds(flags.photos, selected, flags).some((id) => !cachedPhotoIds.has(id));
   if (flags.background === "remove") return true;
   return packNeedsCutout(selected, {
     ...flags,

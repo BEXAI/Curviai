@@ -16,9 +16,11 @@
 import { after } from "next/server";
 import type { PackFollowUpInput } from "@curvi/trigger/follow-up";
 import type { GeneratePackInput } from "@curvi/trigger/runner";
-import { and, assets, eq, generationJobs, notInArray, sql, type Db } from "@curvi/db";
+import { and, eq, generationJobs, notInArray, sql, type Db } from "@curvi/db";
+import { settleInterruptedJob } from "./settle";
 import { optionalEnv } from "@/lib/env";
 import {
+  DEFAULT_MAX_RUN_MS,
   InlinePackRunner,
   installInlinePackRunner,
   readInlineRunnerConfig,
@@ -87,179 +89,33 @@ export const SETTLED_JOB_MESSAGES: Record<SettleReason, string> = {
     "This pack took longer than the time limit, so it was stopped. Reserved credits were released, so you can run it again.",
 };
 
-export type SettleOutcome = "failed" | "done" | "already_final";
+export {
+  deliveredCharges,
+  settleInterruptedJob,
+  settleJob,
+  type DeliveredCharge,
+  type SettleOutcome,
+  type SettleResult,
+} from "./settle";
 
-/** What a settle did: the status it set (null when the job was already
- * terminal) and the credits release_credits returned to the balance. */
-export interface SettleResult {
-  status: "done" | "failed" | "canceled" | null;
-  releasedCredits: number;
-}
-
-const TERMINAL_JOB_STATES = ["done", "failed", "canceled"] as const;
-
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-
-/** A charge the pack runner owes for a delivered asset. */
-export interface DeliveredCharge {
-  shotId: string;
-  credits: number;
-}
-
-/**
- * The approved assets of a job whose files were delivered, with the credits
- * and shot id the runner charges them under. savePack writes an
- * asset_variants row for every file it uploads, before the compliance
- * report row, so an approved asset without a variant was left out of the
- * pack (for example past a channel's image limit) and is never charged.
- * One charge per shot id, the ledger's idempotency key.
- */
-export async function deliveredCharges(db: Db | Tx, job: { jobId: string; workspaceId: string }): Promise<DeliveredCharge[]> {
-  const rows = await db
-    .select({ qc: assets.qc })
-    .from(assets)
-    .where(
-      and(
-        eq(assets.jobId, job.jobId),
-        eq(assets.workspaceId, job.workspaceId),
-        eq(assets.approved, true),
-        sql`exists (select 1 from asset_variants v where v.asset_id = ${assets.id})`,
-      ),
-    )
-    .orderBy(assets.createdAt);
-  const charges = new Map<string, number>();
-  for (const { qc } of rows) {
-    const shotId = qc && typeof qc.shotId === "string" && qc.shotId.length > 0 ? qc.shotId : null;
-    const credits = qc && typeof qc.credits === "number" && Number.isFinite(qc.credits) ? qc.credits : 0;
-    if (shotId && credits > 0 && !charges.has(shotId)) {
-      charges.set(shotId, credits);
-    }
-  }
-  return [...charges].map(([shotId, credits]) => ({ shotId, credits }));
-}
-
-/**
- * The failure path for a job the inline runner will not finish: a crash
- * before the runner's own failure handling could act, a run past its time
- * cap, or a shutdown.
- *
- * - A job that already reached a terminal state is left as it is.
- * - A job whose pack was already delivered (savePack writes the compliance
- *   report row last) is marked done, and every approved asset whose files
- *   were delivered is charged with charge_credits under its shot id. The
- *   runner writes the report row before it charges, so a stop between the
- *   two would otherwise hand over a paid pack for free. charge_credits is
- *   idempotent per shot id, so charges the runner already made are skipped.
- * - Anything else is marked failed with `error`.
- *
- * release_credits then returns whatever the ledger still holds for the job;
- * it releases nothing when nothing is held, so calling it for an already
- * settled job is harmless.
- *
- * Everything runs in one transaction, so a crash part way never leaves a
- * job marked done with its credits still held. The workspace row is locked
- * first, the same order charge_credits and reserve_credits use, so a runner
- * charging this job at the same moment waits instead of deadlocking. The
- * status change is conditional, so a run that finishes at the same moment
- * is never overwritten.
- */
-export async function settleInterruptedJob(
-  db: Db,
-  job: { jobId: string; workspaceId: string },
-  error: string,
-): Promise<SettleOutcome> {
-  const { status } = await settleJob(db, job, { undelivered: "failed", error });
-  return status === "done" || status === "failed" ? status : "already_final";
-}
-
-/**
- * The settle behind settleInterruptedJob and the seller's cancel (POST
- * /api/jobs/[id]/cancel): a delivered pack is marked done and its delivered
- * files charged, anything else takes the `undelivered` status, and
- * release_credits returns whatever the job still holds. See
- * settleInterruptedJob for the locking and the guarantees.
- */
-export async function settleJob(
-  db: Db,
-  job: { jobId: string; workspaceId: string },
-  opts: { undelivered: "failed" | "canceled"; error: string | null },
-): Promise<SettleResult> {
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`select 1 from workspaces where id = ${job.workspaceId}::uuid for update`);
-    const delivered = sql`exists (select 1 from pack_files pf where pf.job_id = ${job.jobId}::uuid and pf.kind = 'report')`;
-    const rows = await tx
-      .update(generationJobs)
-      .set({
-        status: sql`case when ${delivered} then 'done' else ${opts.undelivered}::text end`,
-        error: sql`case when ${delivered} then ${generationJobs.error} else ${opts.error}::text end`,
-        // A fresh run key that no runner holds: the run this settle stopped
-        // is refused at its next check even after a newer follow up moves
-        // the job back to generating under a key of its own (0019).
-        runKey: sql`gen_random_uuid()::text`,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(generationJobs.id, job.jobId),
-          eq(generationJobs.workspaceId, job.workspaceId),
-          notInArray(generationJobs.status, [...TERMINAL_JOB_STATES]),
-        ),
-      )
-      .returning({ status: generationJobs.status });
-    const status = rows[0]?.status;
-
-    if (status === "done") {
-      for (const charge of await deliveredCharges(tx, job)) {
-        try {
-          // A savepoint per charge: one charge the ledger refuses (it would
-          // exceed the hold) is logged and skipped instead of rolling back
-          // the whole settle and leaving the job stuck.
-          await tx.transaction(async (sp) => {
-            await sp.execute(
-              sql`select charge_credits(${job.workspaceId}::uuid, ${charge.credits}::numeric, ${job.jobId}::uuid, ${charge.shotId}::text)`,
-            );
-          });
-        } catch (err) {
-          console.error(
-            `[jobs] could not charge ${charge.credits} credits for shot ${charge.shotId} of delivered job ${job.jobId}`,
-            err,
-          );
-        }
-      }
-    }
-
-    const released = await tx.execute(
-      sql`select release_credits(${job.workspaceId}::uuid, ${job.jobId}::uuid) as released`,
-    );
-    return {
-      status: status === "done" || status === "failed" || status === "canceled" ? status : null,
-      releasedCredits: firstNumber(released, "released"),
-    };
-  });
-}
-
-/** One numeric column of the first row of a raw query. postgres-js returns
- * the rows array; other drivers wrap it in { rows }. */
-function firstNumber(result: unknown, column: string): number {
-  const rows = (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as Array<
-    Record<string, unknown>
-  >;
-  const value = Number(rows[0]?.[column] ?? 0);
-  return Number.isFinite(value) ? value : 0;
-}
-
-/** Bumps updated_at on jobs that are still queued, so jobs waiting for an
- * inline slot never look stale to the reconciler. Started or finished jobs
- * are left alone. */
-export async function heartbeatQueuedJobs(db: Db, jobIds: string[]): Promise<void> {
+/** Bumps updated_at on jobs waiting for an inline slot, so they never look
+ * stale to the reconciler. A job still queued is bumped by id. A follow up
+ * waits with its job already back in generating (startFollowUp), so it is
+ * bumped when the job's run_key is still the waiting entry's key: once that
+ * run starts, settles or is replaced, the key no longer matches and the
+ * heartbeat leaves the job alone. Finished jobs are never touched. */
+export async function heartbeatQueuedJobs(db: Db, jobIds: string[], runKeys: string[] = []): Promise<void> {
   if (jobIds.length === 0) {
     return;
   }
   const idArray = `{${jobIds.join(",")}}`;
-  await db
-    .update(generationJobs)
-    .set({ updatedAt: new Date() })
-    .where(and(sql`${generationJobs.id} = any(${idArray}::uuid[])`, eq(generationJobs.status, "queued")));
+  const byId = sql`${generationJobs.id} = any(${idArray}::uuid[])`;
+  const queued = eq(generationJobs.status, "queued");
+  const waiting =
+    runKeys.length > 0
+      ? sql`(${queued} or (${generationJobs.runKey} = any(${`{${runKeys.join(",")}}`}::text[]) and ${notInArray(generationJobs.status, ["done", "failed", "canceled"])}))`
+      : queued;
+  await db.update(generationJobs).set({ updatedAt: new Date() }).where(and(byId, waiting));
 }
 
 async function appDb(): Promise<Db> {
@@ -267,10 +123,26 @@ async function appDb(): Promise<Db> {
   return getDb();
 }
 
+/** Time the runner keeps after it stops starting shots, for packaging,
+ * storing and charging what passed before the run cap settles the job. */
+export const PACKAGING_RESERVE_MS = 4 * 60_000;
+
+/** When a run started now must stop starting new shots: the run cap less
+ * the packaging reserve, and never less than half the cap. */
+export function stopStartingAt(startedAt: number, maxRunMs: number): number {
+  return startedAt + Math.max(maxRunMs - PACKAGING_RESERVE_MS, Math.floor(maxRunMs / 2));
+}
+
 function createInlinePackRunner(): InlinePackRunner<InlineRunPayload> {
-  return new InlinePackRunner<InlineRunPayload>(readInlineRunnerConfig(optionalEnv), {
-    runPack: async (payload) => {
-      const { resolveRuntimeDeps } = await import("@curvi/trigger/db-runtime");
+  const config = readInlineRunnerConfig(optionalEnv);
+  return new InlinePackRunner<InlineRunPayload>(config, {
+    runPack: async (payload, signal) => {
+      const { resolveRuntimeDeps: runtimeDeps } = await import("@curvi/trigger/db-runtime");
+      // The run cap settles a job with no report row as failed and throws
+      // away every shot that passed, so the runner stops starting shots
+      // early enough to package and charge what it has (runDeadline).
+      const runDeadline = { stopStartingAt: stopStartingAt(Date.now(), config.maxRunMs ?? DEFAULT_MAX_RUN_MS), signal };
+      const resolveRuntimeDeps = () => ({ ...runtimeDeps(), runDeadline });
       if (isFollowUp(payload)) {
         // A follow up settles its own hold and always returns the job to
         // done. A crash is settled like a first run: the pack's report row
@@ -289,7 +161,7 @@ function createInlinePackRunner(): InlinePackRunner<InlineRunPayload> {
       const outcome = await settleInterruptedJob(await appDb(), payload, SETTLED_JOB_MESSAGES[reason]);
       console.warn(`[jobs] settled job ${payload.jobId} after ${reason}: ${outcome}`);
     },
-    heartbeat: async (jobIds) => heartbeatQueuedJobs(await appDb(), jobIds),
+    heartbeat: async (jobIds, runKeys) => heartbeatQueuedJobs(await appDb(), jobIds, runKeys),
   });
 }
 

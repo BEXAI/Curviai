@@ -27,6 +27,7 @@
 import {
   analyzeInventory,
   chooseInventoryTarget,
+  IntakeAnswer,
   finalizeQuestions,
   IntakeResult,
   IntakeToolResult,
@@ -184,7 +185,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
     const answer = await llmJson<IntakeResult>(
       deps.ai,
       recipe,
-      IntakeResult,
+      IntakeAnswer,
       { images: [{ mediaId: mediaKey }], userDescription: wrapUserDescription(args.note) },
       { jobId: preflightId, workspaceId, stepId: "preflight:intake" },
       blocks,

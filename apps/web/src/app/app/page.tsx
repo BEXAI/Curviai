@@ -13,6 +13,7 @@ import {
   tierDisplayName,
   typicalPackCredits,
 } from "@/lib/marketing-facts";
+import { packCreditsLine } from "@/lib/product-library";
 import { getServices } from "@/lib/services";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -121,7 +122,7 @@ export default async function DashboardPage() {
                         {job.productTitle}
                       </Link>
                       <p className="text-xs text-ink-400">
-                        {job.creditsReserved} credits reserved
+                        {packCreditsLine(job)}
                       </p>
                     </div>
                     <StatusChip status={job.status} />

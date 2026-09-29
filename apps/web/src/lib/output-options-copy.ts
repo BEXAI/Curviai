@@ -308,6 +308,11 @@ export function conflictLines(conflicts: readonly OutputConflict[], context: Con
 export const KEEP_PHOTOS_PAUSED_COPY =
   "Background removal is paused for a few minutes while an image service recovers. You can still keep your photos as they are for channels that do not need a white background. Nothing will be charged.";
 
+/** The same banner when the cutout account is out of credit, which no wait
+ * fixes: it makes no time promise. */
+export const KEEP_PHOTOS_PAUSED_QUOTA_COPY =
+  "Background removal is paused right now. You can still keep your photos as they are for channels that do not need a white background. Nothing will be charged.";
+
 /** The banner's button. */
 export const KEEP_PHOTOS_INSTEAD_LABEL = "Keep my photos instead";
 

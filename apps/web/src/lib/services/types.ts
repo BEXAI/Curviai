@@ -202,6 +202,8 @@ export interface JobSummary {
   productTitle: string;
   status: JobStatus;
   creditsReserved: number;
+  /** What the pack charged once it settled; 0 while it runs. */
+  creditsCharged: number;
   createdAt: string;
 }
 

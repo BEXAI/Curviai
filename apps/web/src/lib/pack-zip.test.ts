@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { packZipEntries } from "./pack-zip";
+import { isPageNavigation, packZipEntries, packZipRefusalCopy, packZipRefusalPath } from "./pack-zip";
 
 describe("packZipEntries (Update.md 6.5)", () => {
   it("names every entry exactly as stored, in one folder per channel, with the report at the root", () => {
@@ -53,5 +53,33 @@ describe("packZipEntries (Update.md 6.5)", () => {
       "meta/carousel/02.jpg",
       "tiktok/ads/ad_9x16/v1.jpg",
     ]);
+  });
+});
+
+describe("pack zip refusals reach the seller as plain copy, never raw JSON", () => {
+  const JOB = "00000000-0000-4000-8000-000000000abc";
+
+  it("sends a refused navigation back to the job page's files", () => {
+    expect(packZipRefusalPath(JOB, "not_finished")).toBe(`/app/jobs/${JOB}?pack_zip=not_finished#your-files`);
+  });
+
+  it("tells a page navigation from a fetch", () => {
+    const req = (headers: Record<string, string>) => new Request("https://curvi.ai/api/jobs/x/pack", { headers });
+    expect(isPageNavigation(req({ "sec-fetch-mode": "navigate" }))).toBe(true);
+    expect(isPageNavigation(req({ "sec-fetch-mode": "cors", accept: "text/html" }))).toBe(false);
+    expect(isPageNavigation(req({ accept: "text/html,application/xhtml+xml" }))).toBe(true);
+    expect(isPageNavigation(req({ accept: "application/json" }))).toBe(false);
+  });
+
+  it("has plain copy for each code and none for an unknown one", () => {
+    for (const code of ["not_finished", "no_files", "missing_files"]) {
+      const copy = packZipRefusalCopy(code);
+      expect(copy, code).toBeTruthy();
+      expect(copy, code).not.toMatch(/[\u2012-\u2015\u2190-\u21ff]|\p{Extended_Pictographic}/u);
+      expect(copy, code).not.toContain(" - ");
+    }
+    expect(packZipRefusalCopy("toString")).toBeNull();
+    expect(packZipRefusalCopy("<script>")).toBeNull();
+    expect(packZipRefusalCopy(null)).toBeNull();
   });
 });

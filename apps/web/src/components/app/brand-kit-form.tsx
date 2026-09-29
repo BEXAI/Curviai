@@ -6,6 +6,7 @@ import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import { BrandPaletteSuggestion } from "@/components/app/brand-palette-suggestion";
 import type { BrandPaletteOutcome } from "@/lib/brand/types";
 import type { BrandKitView, SaveResult } from "@/lib/services/types";
+import { uploadTypeForFile } from "@/lib/upload-validation";
 
 interface SelectOption {
   value: string;
@@ -28,6 +29,10 @@ interface BrandKitFormProps {
 const MIN_COLOR_SLOTS = 3;
 
 const HEX_PATTERN = /^#[0-9A-Fa-f]{6}$/;
+
+/** The logo picker's accept list, checked again for dropped files. */
+const LOGO_CONTENT_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+const LOGO_TYPE_COPY = "This file type is not supported. Use a PNG, JPEG or WEBP logo.";
 
 export function BrandKitForm({
   initial,
@@ -74,19 +79,24 @@ export function BrandKitForm({
   >({ phase: "idle" });
 
   async function handleLogoFile(file: File) {
+    const type = uploadTypeForFile(file, { allowVideo: false, allowedImageTypes: LOGO_CONTENT_TYPES });
+    if (!type.ok) {
+      setLogoState({ phase: "error", message: LOGO_TYPE_COPY });
+      return;
+    }
     setLogoState({ phase: "uploading" });
     try {
       const response = await fetch("/api/uploads/sign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "image", contentType: file.type, bytes: file.size }),
+        body: JSON.stringify({ kind: "image", contentType: type.contentType, bytes: file.size }),
       });
       const data = (await response.json()) as { url?: string; key?: string; error?: string; notice?: string };
       if (!response.ok || !data.url || !data.key) {
         setLogoState({ phase: "error", message: data.error ?? data.notice ?? "The upload could not be signed." });
         return;
       }
-      const put = await fetch(data.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+      const put = await fetch(data.url, { method: "PUT", headers: { "Content-Type": type.contentType }, body: file });
       if (!put.ok) {
         setLogoState({ phase: "error", message: "The upload failed. Try again." });
         return;

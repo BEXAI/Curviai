@@ -30,6 +30,7 @@ import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import {
   ASYNC_JOB_TIMEOUT_MARGIN_MS,
   billedFailure,
+  isHostOrSubdomain,
   reportBilled,
   requestJson,
   resolveApiKey,
@@ -49,10 +50,6 @@ export const FAL_DEFAULT_POLL = { pollIntervalMs: 1_000, pollTimeoutMs: 300_000 
 /** Hosts fal may hand back for polling, besides the configured base origin.
  * Matches the host exactly or any subdomain (dot boundary enforced). */
 const ALLOWED_FAL_HOST_SUFFIXES = ["fal.run", "fal.ai"] as const;
-
-function isHostOrSubdomain(hostname: string, suffix: string): boolean {
-  return hostname === suffix || hostname.endsWith(`.${suffix}`);
-}
 
 export interface FalGatewayConfig extends AdapterCommonConfig {
   /** fal model ID from seed data, e.g. an image or video model path. */

@@ -6,6 +6,7 @@ import {
   SHOT_CONTENT_BLOCKED,
   SHOT_EXTRA_ITEMS,
   SHOT_NOT_DELIVERED,
+  SHOT_OUT_OF_TIME,
   SHOT_PROVIDER_TROUBLE,
 } from "@curvi/trigger/runner";
 import {
@@ -126,6 +127,7 @@ describe("needsReviewNote", () => {
     ["SHOT_CONTENT_BLOCKED", SHOT_CONTENT_BLOCKED, /image service declined to make this scene/],
     ["HARMONIZE_SHAPE_REFUSED", HARMONIZE_SHAPE_REFUSED, /wrong shape.*placed back exactly/],
     ["SHOT_PROVIDER_TROUBLE", SHOT_PROVIDER_TROUBLE, /image service had trouble/],
+    ["SHOT_OUT_OF_TIME", SHOT_OUT_OF_TIME, /pack ran out of time before this image could be made/],
     [
       "pack spend cap",
       "This pack reached its spending limit before this shot could be made, so it needs review.",
@@ -392,5 +394,16 @@ describe("outputOptionsSummary", () => {
     for (const line of summary.lines) {
       expect(line).not.toMatch(FORBIDDEN);
     }
+  });
+});
+
+describe("the cutout pause copy (audit trigger)", () => {
+  it("says background removal is paused and points to Keep my photos", async () => {
+    const { SHOT_CUTOUT_PAUSED } = await import("@curvi/trigger/runner");
+    const { CUTOUT_PAUSED_NOTE } = await import("./job-copy");
+    const note = needsReviewNote(SHOT_CUTOUT_PAUSED);
+    expect(note).toContain(CUTOUT_PAUSED_NOTE);
+    expect(note).toContain("Keep my photos");
+    expect(note).not.toContain("had trouble");
   });
 });

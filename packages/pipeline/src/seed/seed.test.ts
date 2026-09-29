@@ -19,9 +19,9 @@ describe("recipe seed rows", () => {
     for (const row of recipeSeedRows) {
       expect(() => RecipeRow.parse(row)).not.toThrow();
     }
-    // Eight stages plus the retired intake versions 1 to 4, analyzer
-    // version 1 and copy_generator versions 1 and 2.
-    expect(recipeSeedRows).toHaveLength(15);
+    // Eight stages plus the retired intake versions 1 to 5, analyzer
+    // versions 1 and 2, planner version 1 and copy_generator versions 1 and 2.
+    expect(recipeSeedRows).toHaveLength(18);
   });
 
   it("covers the eight stages with the section 5.1 models", () => {
@@ -90,16 +90,17 @@ describe("recipe seed rows", () => {
     expect(aplusCopyRecipe.minVersion).toBeLessThanOrEqual(adCopyRecipe.minVersion);
   });
 
-  it("runs intake version 5 and keeps versions 1 to 4 retired", () => {
+  it("runs intake version 6 and keeps versions 1 to 5 retired", () => {
     const intake = recipeSeedRows.filter((r) => r.key === "intake_normalizer");
     expect(intake.map((r) => [r.version, r.active])).toEqual([
       [1, false],
       [2, false],
       [3, false],
       [4, false],
-      [5, true],
+      [5, false],
+      [6, true],
     ]);
-    const [v1, v2, v3, v4, v5] = intake;
+    const [v1, v2, v3, v4, v5, v6] = intake;
     expect(v2.body.system).toContain("Always set screenshot for every image.");
     expect(v2.body.system).toContain("A screenshot is never a sellable product photo");
     // Version 1's injection defense, verbatim, on every later version.
@@ -137,15 +138,26 @@ describe("recipe seed rows", () => {
     );
     expect(v5.body.system).toContain("Brands, logos and brand names never affect any flag");
     expect([v5.model, ...(v5.fallbackModels ?? [])]).toEqual([v4.model, ...(v4.fallbackModels ?? [])]);
+    // Version 6 (audit 2026-09-29) is version 5 verbatim plus the size limits
+    // strict tool use cannot send, on the same models.
+    expect(v6.body.system.startsWith(`${v5.body.system}\n`)).toBe(true);
+    expect(v6.body.system).toContain("List at most 12 products for an image");
+    expect(v6.body.system).toContain("exclude and mustKeep each hold at most 8 entries");
+    expect([v6.model, ...(v6.fallbackModels ?? [])]).toEqual([v5.model, ...(v5.fallbackModels ?? [])]);
   });
 
-  it("runs analyzer version 2, which never judges brands, logos or authenticity", () => {
+  it("runs analyzer version 3, version 2 plus the size limits, which never judges brands, logos or authenticity", () => {
     const analyzer = recipeSeedRows.filter((r) => r.key === "product_analyzer");
     expect(analyzer.map((r) => [r.version, r.active])).toEqual([
       [1, false],
-      [2, true],
+      [2, false],
+      [3, true],
     ]);
-    const [v1, v2] = analyzer;
+    const [v1, v2, v3] = analyzer;
+    expect(v3.body.system.startsWith(`${v2.body.system}\n`)).toBe(true);
+    expect(v3.body.system).toContain("at most 8 materials, 8 features and 8 benefits");
+    expect(v3.body.system).toContain("at most 6 dominantColors");
+    expect([v3.model, ...(v3.fallbackModels ?? [])]).toEqual([v2.model, ...(v2.fallbackModels ?? [])]);
     expect(v1.body.system).toContain("possible_counterfeit");
     expect(v2.body.system).not.toContain("counterfeit");
     expect(v2.body.system).not.toMatch(/luxury|authenticity check|conservatively/i);
@@ -160,6 +172,48 @@ describe("recipe seed rows", () => {
     );
     expect(v2.body.system).toContain("Brands, logos and brand names are always allowed");
     expect([v2.model, ...(v2.fallbackModels ?? [])]).toEqual([v1.model, ...(v1.fallbackModels ?? [])]);
+  });
+
+  it("runs planner version 2, version 1 plus the size limits", () => {
+    const planner = recipeSeedRows.filter((r) => r.key === "shot_planner");
+    expect(planner.map((r) => [r.version, r.active])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+    const [v1, v2] = planner;
+    expect(v2.body.system.startsWith(`${v1.body.system}\n`)).toBe(true);
+    expect(v2.body.system).toContain("at most 40 shots");
+    expect([v2.model, ...(v2.fallbackModels ?? [])]).toEqual([v1.model, ...(v1.fallbackModels ?? [])]);
+  });
+
+  it("sizes the thinking models' budgets: effort, max tokens and timeout on intake, analyzer and planner", () => {
+    for (const key of ["intake_normalizer", "product_analyzer", "shot_planner"]) {
+      const row = recipeSeedRows.find((r) => r.key === key && r.active);
+      const body = row?.body ?? { system: "" };
+      // Thinking shares max_tokens with the answer, so every one of them sets
+      // an explicit budget above the 4096 adapter default, and a timeout.
+      expect(body.maxTokens ?? 0).toBeGreaterThanOrEqual(8000);
+      expect(body.timeoutMs ?? 0).toBeGreaterThanOrEqual(120_000);
+      // Sonnet 5 and Opus 5.5 run at a stated effort, never with thinking
+      // disabled (Opus 5.5 rejects it); Haiku 4.5 gets no entry (it rejects
+      // effort).
+      const options = body.modelOptions ?? {};
+      expect(options["claude-sonnet-5"]?.effort).toBe("medium");
+      expect(options["claude-opus-5-5"]?.effort).toBe("medium");
+      expect(options["claude-opus-5-5"]?.thinking).toBeUndefined();
+      expect(options["claude-haiku-4-5-20251001"]).toBeUndefined();
+    }
+  });
+
+  it("rejects unknown thinking or effort values in a recipe body", () => {
+    const base = recipeSeedRows.find((r) => r.key === "product_analyzer" && r.active);
+    expect(
+      RecipeRow.safeParse({ ...base, body: { ...base?.body, modelOptions: { "claude-sonnet-5": { effort: "extreme" } } } })
+        .success,
+    ).toBe(false);
+    expect(
+      RecipeRow.safeParse({ ...base, body: { ...base?.body, modelOptions: { "claude-sonnet-5": { budget: 1 } } } }).success,
+    ).toBe(false);
   });
 
   it("seeds the target picker with the note as untrusted data and a null answer when unsure", () => {

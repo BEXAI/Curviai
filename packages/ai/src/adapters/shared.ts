@@ -310,3 +310,9 @@ export function imageDimensions(bytes: Uint8Array): { width: number; height: num
 export function base64Bytes(data: string): Uint8Array {
   return new Uint8Array(Buffer.from(data, "base64"));
 }
+
+/** True when hostname is suffix itself or a subdomain of it (dot boundary
+ * enforced, so "evilbfl.ai" never matches "bfl.ai"). */
+export function isHostOrSubdomain(hostname: string, suffix: string): boolean {
+  return hostname === suffix || hostname.endsWith(`.${suffix}`);
+}
