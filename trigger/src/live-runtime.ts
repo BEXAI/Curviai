@@ -1418,7 +1418,14 @@ export class LiveShotGenerator implements ShotGenerator {
       !output?.keepMediaIds.includes(shot.sourceMediaId) ||
       !MADE_WHITE_TYPES.has(shot.type) ||
       !specId ||
-      !isWorkspaceObjectKey(args.workspaceId, shot.sourceMediaId)
+      !isWorkspaceObjectKey(args.workspaceId, shot.sourceMediaId) ||
+      // The cached cutout holds every item in the photo. A photo with other
+      // items (a target, or a kept photo that shows them) takes the made
+      // white path, which isolates the seller's product.
+      args.target?.box ||
+      args.target?.keep ||
+      (args.target?.others.length ?? 0) > 0 ||
+      args.otherItems
     ) {
       return null;
     }
@@ -1460,10 +1467,14 @@ export class LiveShotGenerator implements ShotGenerator {
         console.warn(`[live] job ${args.jobId} already white file for ${specId} drifted; using the made white path`);
         return null;
       }
+      // The photo's own white background sits inside the placed rectangle,
+      // so a JPEG must keep it exactly white outside the product, not only
+      // the added pad.
       const out = await encodeForSpec(file.raw, file.mask, reference, spec, {
         preferPng: true,
         erodePx: erosion.erodePx,
         fidelityKind: "main",
+        backgroundMask: file.productMask,
       });
       const pixel = await pixelChecks(out.image, file.productMask, spec, {
         encoded: { bytes: out.encoded.buffer.length, format: out.encoded.format },

@@ -132,6 +132,36 @@ describe("encodeForSpec (2.3)", () => {
     ).rejects.toBeInstanceOf(ShotUnavailableError);
   });
 
+  it("checks the white inside a placed photo rectangle against the background mask", async () => {
+    // An already white kept photo: the fidelity mask is the placed photo
+    // rectangle, the whole canvas here, and the product sits inside it on
+    // white with one off white patch a JPEG must not ship.
+    const product = rectMask(256, 256, { left: 80, top: 80, width: 96, height: 96 });
+    const photo = noisyImage(product, 10);
+    for (let y = 10; y < 30; y++) {
+      for (let x = 10; x < 30; x++) {
+        photo.data.fill(250, (y * 256 + x) * 4, (y * 256 + x) * 4 + 3);
+      }
+    }
+    const rectangle = rectMask(256, 256, { left: 0, top: 0, width: 256, height: 256 });
+    const white = jpgOnly({ formats: ["jpg", "png"], background: { type: "white_preferred" } });
+    const rectOnly = await encodeForSpec(photo, rectangle, photo, white, { erodePx: 0, fidelityKind: "other" });
+    expect(rectOnly.encoded.format).toBe("jpg");
+    const checked = await encodeForSpec(photo, rectangle, photo, white, {
+      erodePx: 0,
+      fidelityKind: "other",
+      backgroundMask: product,
+    });
+    expect(checked.encoded.format).toBe("png");
+    await expect(
+      encodeForSpec(photo, rectangle, photo, { ...white, formats: ["jpg"] }, {
+        erodePx: 0,
+        fidelityKind: "other",
+        backgroundMask: product,
+      }),
+    ).rejects.toBeInstanceOf(ShotUnavailableError);
+  });
+
   it("prefers lossless PNG when asked and the spec takes it", async () => {
     const out = await encodeForSpec(raw, mask, raw, jpgOnly({ formats: ["jpg", "png"] }), { preferPng: true });
     expect(out.encoded.format).toBe("png");

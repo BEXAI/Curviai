@@ -1278,4 +1278,30 @@ describe("kept photos and the upload cache (PHASE_15 item 16)", () => {
     // The made white path reused the upload's cutout too.
     expect(cutout.calls).toBe(0);
   });
+
+  it("takes the made white path for an already white photo that shows other items", async () => {
+    const studio = await studioPhoto(255);
+    const { ai, wiring, cutout } = liveDeps(new FakeSceneProvider(), await productCutoutPng(96));
+    const generator = (): LiveShotGenerator =>
+      new LiveShotGenerator({
+        ai,
+        wiring,
+        loadMedia: async () => studio.photo,
+        cutoutCache: cacheWith(studio.photo, studio.cutout),
+      });
+    const madeWhite = { kind: "background", colorHex: white, forcedWhite: true };
+    const shot = shotOf("amazon_main", "amazon.main");
+    // A kept photo the runner saw other items in.
+    const withOthers = await generator().generate({ ...argsFor(shot, keep()), otherItems: true });
+    expect(withOthers.treatment).toEqual(madeWhite);
+    // A product the seller picked among others: only the made white path
+    // isolates it.
+    const box = { x: 0.05, y: 0.05, width: 0.9, height: 0.9 };
+    const targeted = await generator().generate({
+      ...argsFor(shot, keep()),
+      target: { label: "mug", box, others: [{ label: "spoon", box: { x: 0, y: 0, width: 0.05, height: 0.05 } }], keep: [box] },
+    });
+    expect(targeted.treatment).toEqual(madeWhite);
+    expect(cutout.calls).toBe(0);
+  });
 });
