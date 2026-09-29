@@ -8,6 +8,7 @@ import {
   channelChip,
   nextAngle,
   optionPhotosOf,
+  photoBackgroundsOf,
   photoBlockReason,
   sellerDetailsProblem,
   type PhotoItem,
@@ -221,7 +222,9 @@ describe("the output options panel", () => {
     const html = panel(initialOutputForm());
     expect(html).not.toContain("Heads up for your channels");
     expect(html).toContain("Background color");
-    expect(html).not.toContain("More options");
+    // More options holds the P1 controls with Remove too, but no photo shape.
+    expect(html).toContain("More options");
+    expect(html).not.toContain('data-testid="photo-shape"');
   });
 
   it("shows the white required and added text heads ups for Keep, with Leave it out", () => {
@@ -288,5 +291,133 @@ describe("kept photos in section 1", () => {
       { id: "ws/uploads/a.jpg", angle: "front", width: 1200, height: 900, otherItems: true },
     ]);
     expect(OTHER_ITEMS_KEPT_COPY).toContain("This photo shows other items.");
+  });
+
+  it("collects each photo's own background by the id the options use", () => {
+    expect(photoBackgroundsOf([photo])).toEqual({});
+    expect(photoBackgroundsOf([{ ...photo, background: "pack" }])).toEqual({});
+    expect(photoBackgroundsOf([{ ...photo, background: "keep" }, { ...photo, id: 2, key: "ws/uploads/b.jpg", background: "remove" }])).toEqual({
+      "ws/uploads/a.jpg": "keep",
+      "ws/uploads/b.jpg": "remove",
+    });
+    expect(photoBackgroundsOf([{ ...photo, phase: "error", background: "keep" }])).toEqual({});
+  });
+});
+
+describe("P1 controls in the panel and the form", () => {
+  const selected = ["amazon.main", "amazon.secondary", "shopify.product", "meta.story_9x16"];
+
+  function panel(state: OutputFormState, extra: Partial<OutputOptionsPanelProps> = {}): string {
+    return renderToStaticMarkup(
+      React.createElement(OutputOptionsPanel, {
+        state,
+        onAction: () => undefined,
+        tier: "growth",
+        brandColors: ["#1F2A44"],
+        brandKitsAllowed: true,
+        colorHex: "#FFFFFF",
+        headsUp: [],
+        onLeaveOut: () => undefined,
+        addedSpace: false,
+        frames: previewFrames(selected),
+        hasPhoto: true,
+        ...extra,
+      }),
+    );
+  }
+
+  const keep = outputFormReducer(initialOutputForm(), { type: "look", look: "keep_photo" });
+
+  it("offers Trim and Never enlarge with Keep, and Product size only with Remove", () => {
+    const kept = panel(keep);
+    expect(kept).toContain('data-testid="photo-shape"');
+    expect(kept).toContain("Trim to each channel&#x27;s shape");
+    expect(kept).toContain("We never trim your product.");
+    expect(kept).toContain('data-testid="never-enlarge"');
+    expect(kept).not.toContain('data-testid="product-size"');
+    const removed = panel(initialOutputForm());
+    expect(removed).toContain('data-testid="product-size"');
+    expect(removed).not.toContain('data-testid="never-enlarge"');
+  });
+
+  it("counts P1 changes in the summary", () => {
+    const state = outputFormReducer(outputFormReducer(initialOutputForm(), { type: "scenes", count: 2 }), {
+      type: "more",
+      patch: { productSize: "larger" },
+    });
+    expect(panel(state)).toContain("More options, 2 changed");
+  });
+
+  it("shows Logo on graphics only when the kit has a logo", () => {
+    expect(panel(initialOutputForm())).not.toContain('data-testid="logo-on-graphics"');
+    expect(panel(initialOutputForm(), { hasLogo: true })).toContain('data-testid="logo-on-graphics"');
+  });
+
+  it("disables Number of scenes and hides Scene style while scenes are paused", () => {
+    const html = panel(initialOutputForm(), { scenesPausedNote: "Lifestyle scenes are paused." });
+    expect(html).toMatch(/<select[^>]*disabled=""[^>]*data-testid="scene-count"/);
+    expect(html).not.toContain('data-testid="scene-style"');
+  });
+
+  it("offers Match my photo's edges as a color only with Keep", () => {
+    expect(panel(keep, { addedSpace: true })).toContain("Match my photo&#x27;s edges");
+    expect(panel(initialOutputForm())).not.toContain("Match my photo&#x27;s edges");
+    const edges = outputFormReducer(keep, { type: "color", color: { kind: "edge_match" } });
+    const html = panel(edges, { addedSpace: true });
+    expect(html).toMatch(/<option value="edge_match" selected="">/);
+    expect(html).toContain("Matches the edges of each photo");
+  });
+
+  it("shows the cutout preview on removed frames and the photo on kept ones", () => {
+    const removed = panel(initialOutputForm(), { cutoutUrl: "https://r2.example/preview.png" });
+    expect(removed).toContain('data-testid="cutout-preview"');
+    expect(removed).toContain("https://r2.example/preview.png");
+    expect(removed).not.toContain("Your product here");
+    const kept = panel(keep, { cutoutUrl: "https://r2.example/preview.png", photoUrl: "blob:photo" });
+    // The white required frame is made white from the cutout; the others keep the photo.
+    expect(kept).toMatch(/data-testid="preview-amazon.main"[^>]*>[^>]*data-picture="cutout"/);
+    expect(kept).toMatch(/data-testid="preview-amazon.secondary"[^>]*>[^>]*data-picture="photo"/);
+  });
+
+  function formWith(extra: Record<string, unknown>): string {
+    return renderToStaticMarkup(
+      React.createElement(NewPackForm, {
+        products: [
+          {
+            id: "p_1",
+            title: "Ceramic mug",
+            mode: "listing",
+            outputDefaults: {
+              v: 1,
+              lookBase: "keep_photo",
+              background: "keep",
+              color: { kind: "swatch", key: "white" },
+              fit: "pad",
+              extras: {},
+            },
+          },
+        ],
+        channels: selected.map((id) => ({ id, marketplace: true })),
+        tier: "growth",
+        paywall: { plan: "growth", creditBalance: 100, stripeLive: false, canBill: true },
+        creditBalance: 100,
+        initialProductId: "p_1",
+        ...extra,
+      }),
+    );
+  }
+
+  it("prefills a preselected product's remembered choices, with the notice and the reset link", () => {
+    const html = formWith({ outputOptionsEnabled: true });
+    expect(html).toContain("Using your last choices for Ceramic mug.");
+    expect(html).toContain("Start from Marketplace ready");
+    expect(html).toMatch(/role="switch"[^>]*aria-checked="false"/);
+    expect(html).toContain("Background: kept as you took it");
+  });
+
+  it("never prefills with output options off", () => {
+    const html = formWith({});
+    expect(html).not.toContain("Using your last choices");
+    expect(html).not.toContain('role="switch"');
   });
 });

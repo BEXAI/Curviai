@@ -4,6 +4,9 @@ import { useEffect, useId, useState } from "react";
 import { Input, Label, Select } from "@curvi/ui";
 import type { ColorChoice, OutputChoices } from "@curvi/pipeline/output-options";
 import {
+  EDGE_MATCH_CHIP,
+  EDGE_MATCH_LABEL,
+  EDGE_MATCH_VALUE,
   colorChoiceFromValue,
   colorControlCopy,
   colorLabel,
@@ -14,6 +17,7 @@ import {
   readRecentCustomColors,
   rememberCustomColor,
   writeRecentCustomColors,
+  type FormColorChoice,
 } from "@/lib/output-options-form";
 
 interface BackgroundColorSelectProps {
@@ -23,7 +27,9 @@ interface BackgroundColorSelectProps {
   background: OutputChoices["background"];
   brandColors: readonly string[];
   brandKitsAllowed: boolean;
-  onChange: (choice: ColorChoice) => void;
+  /** Match my photo's edges is picked (Keep only, PHASE_15 P1). */
+  edgeMatch?: boolean;
+  onChange: (choice: FormColorChoice) => void;
   /** The custom row's problem, so the form can hold the submit until it is fixed. */
   onProblem?: (problem: string | null) => void;
 }
@@ -48,6 +54,7 @@ export function BackgroundColorSelect({
   background,
   brandColors,
   brandKitsAllowed,
+  edgeMatch = false,
   onChange,
   onProblem,
 }: BackgroundColorSelectProps) {
@@ -84,6 +91,11 @@ export function BackgroundColorSelect({
   }
 
   function pick(value: string) {
+    if (value === EDGE_MATCH_VALUE) {
+      report(null);
+      onChange({ kind: "edge_match" });
+      return;
+    }
     if (value === "custom") {
       const start = recent[0] ?? hex;
       setText(start);
@@ -98,7 +110,8 @@ export function BackgroundColorSelect({
     }
   }
 
-  const note = darkColorNote(choice, hex, background);
+  const keepEdges = edgeMatch && background === "keep";
+  const note = keepEdges ? null : darkColorNote(choice, hex, background);
   const typed = parseCustomHex(text);
   // The color input takes lower case #rrggbb only.
   const pickerHex = (typed.ok ? typed.hex : hex).toLowerCase();
@@ -113,7 +126,7 @@ export function BackgroundColorSelect({
       <div className="mt-1.5 flex items-center gap-3">
         <Select
           id={selectId}
-          value={colorValue(choice)}
+          value={keepEdges ? EDGE_MATCH_VALUE : colorValue(choice)}
           onChange={(event) => pick(event.target.value)}
           className="min-w-0 flex-1 [&_select]:h-11"
           data-testid="color-select"
@@ -133,17 +146,20 @@ export function BackgroundColorSelect({
             </optgroup>
           ) : null}
           <option value="custom">Custom color</option>
+          {background === "keep" ? <option value={EDGE_MATCH_VALUE}>{EDGE_MATCH_LABEL}</option> : null}
         </Select>
         <span className="flex max-w-[45%] shrink-0 items-center gap-2 text-xs text-ink-700" data-testid="color-chip">
-          <span
-            aria-hidden="true"
-            className="size-6 shrink-0 rounded-md ring-1 ring-inset ring-ink-950/20"
-            style={{ backgroundColor: hex }}
-          />
-          <span className="truncate">{colorLabel(choice, hex)}</span>
+          {keepEdges ? null : (
+            <span
+              aria-hidden="true"
+              className="size-6 shrink-0 rounded-md ring-1 ring-inset ring-ink-950/20"
+              style={{ backgroundColor: hex }}
+            />
+          )}
+          <span className="truncate">{keepEdges ? EDGE_MATCH_CHIP : colorLabel(choice, hex)}</span>
         </span>
       </div>
-      {choice.kind === "custom" ? (
+      {choice.kind === "custom" && !keepEdges ? (
         <div className="mt-3" data-testid="custom-color">
           <Label htmlFor={hexId}>Color code</Label>
           <div className="mt-1 flex items-center gap-2">

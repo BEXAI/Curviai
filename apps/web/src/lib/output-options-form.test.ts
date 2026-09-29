@@ -4,17 +4,61 @@ import {
   EXTRA_FAMILY_KEYS,
   LOOK_PRESETS,
   outputOptionsKey,
+  type OutputOptionsInput,
   type OutputPlanFlags,
 } from "@curvi/pipeline/output-options";
-import { backgroundSwatches, creditCosts, stillStyle } from "@curvi/pipeline/seed";
+import {
+  backgroundSwatches,
+  creditCosts,
+  keepBackgroundPhrases,
+  presets,
+  sceneCountOptions,
+  stillStyle,
+} from "@curvi/pipeline/seed";
 import { getSpec, listSpecs, requiresWhiteBackground } from "@curvi/specs";
 import { intentFor } from "@/lib/submit-intent";
 import { DARK_COLOR_EDGE_NOTE, leftOutAfterPauseLine } from "@/lib/output-options-copy";
 import {
   CUSTOM_COLOR_ERROR,
+  DEFAULT_MORE_CHOICES,
+  EDGE_MATCH_CHIP,
+  EDGE_MATCH_LABEL,
+  EDGE_MATCH_PREVIEW_NOTE,
+  GRAPHICS_COLOR_HELPER,
+  GRAPHICS_COLOR_LABEL,
+  KEEP_BACKGROUND_HINT,
+  KEEP_BACKGROUND_HINT_ACTION,
+  LOGO_LABEL,
   LOOK_CARD_COPY,
+  NEVER_ENLARGE_HELPER,
+  NEVER_ENLARGE_LABEL,
+  PHOTO_BACKGROUND_OPTIONS,
   PHOTO_SHAPE_OPTIONS,
+  PRODUCT_SIZE_LABEL,
+  PRODUCT_SIZE_OPTIONS,
   RECENT_CUSTOM_STORAGE_KEY,
+  REMEMBERED_RESET_LABEL,
+  SCENES_OFF,
+  SCENE_COUNT_LABEL,
+  SCENE_STYLE_LABEL,
+  TRIM_SHAPE_OPTION,
+  formFit,
+  framePicture,
+  isPhotoBackground,
+  isScenePresetChoice,
+  keepBackgroundHint,
+  keptPhotoIds,
+  moreOptionsVisibility,
+  noteAsksToKeepBackground,
+  p1OutputFields,
+  photoBackgroundLabel,
+  rememberedFormState,
+  rememberedLine,
+  sceneCountFromValue,
+  sceneCountSelectOptions,
+  sceneCountValue,
+  sceneStyleOptions,
+  uploadBackgroundField,
   addedSpaceSpecIds,
   backgroundSummaryLine,
   brandLookAvailability,
@@ -181,7 +225,8 @@ describe("the idempotency intent", () => {
     const state = reduce({ type: "look", look: "keep_photo" }, { type: "fit", fit: "pad" });
     const body = outputOptionsBody(state.lookBase, state.choices);
     expect(body).toMatchObject({ v: 1, lookBase: "keep_photo", background: "keep", fit: "pad" });
-    expect(outputOptionsKey(body)).toBe(optionsIntentKey(state.choices));
+    // With every P1 control at its default the body is a P0 body.
+    expect(outputOptionsKey(body as OutputOptionsInput)).toBe(optionsIntentKey(state.choices));
   });
 });
 
@@ -429,7 +474,10 @@ describe("analytics", () => {
       fit: "auto",
     });
     expect(JSON.stringify(props)).not.toMatch(/#[0-9A-F]{6}/i);
-    expect(packCreatedOutputProps("marketplace", LOOK_PRESETS.marketplace, 3).kept_photos).toBe(0);
+    // The caller counts kept photos after each photo's own background, so a
+    // Remove pack can keep one (P1 per photo Background Select).
+    expect(packCreatedOutputProps("marketplace", LOOK_PRESETS.marketplace, 0).kept_photos).toBe(0);
+    expect(packCreatedOutputProps("marketplace", LOOK_PRESETS.marketplace, 1).kept_photos).toBe(1);
     expect(packLookChangedProps("marketplace", "keep_photo")).toEqual({ from: "marketplace", to: "keep_photo" });
     expect(packLookChangedProps("brand", "brand")).toBeNull();
   });
@@ -450,5 +498,257 @@ describe("copy (rule 9)", () => {
     for (const line of lines) {
       expect(line, line).not.toMatch(RULE_9);
     }
+  });
+
+  it("keeps the P1 copy plain too", () => {
+    const lines = [
+      TRIM_SHAPE_OPTION.label,
+      TRIM_SHAPE_OPTION.helper,
+      SCENE_COUNT_LABEL,
+      SCENE_STYLE_LABEL,
+      LOGO_LABEL,
+      PRODUCT_SIZE_LABEL,
+      NEVER_ENLARGE_LABEL,
+      NEVER_ENLARGE_HELPER,
+      GRAPHICS_COLOR_LABEL,
+      GRAPHICS_COLOR_HELPER,
+      EDGE_MATCH_LABEL,
+      EDGE_MATCH_CHIP,
+      EDGE_MATCH_PREVIEW_NOTE,
+      KEEP_BACKGROUND_HINT,
+      KEEP_BACKGROUND_HINT_ACTION,
+      REMEMBERED_RESET_LABEL,
+      rememberedLine("Ceramic mug"),
+      photoBackgroundLabel(2),
+      ...PHOTO_BACKGROUND_OPTIONS.map((o) => o.label),
+      ...PRODUCT_SIZE_OPTIONS.map((o) => o.label),
+      ...sceneStyleOptions().map((o) => o.label),
+      ...sceneCountSelectOptions().map((o) => o.label),
+    ];
+    for (const line of lines) {
+      expect(line, line).not.toMatch(RULE_9);
+    }
+    expect(KEEP_BACKGROUND_HINT).toBe(
+      "It sounds like you want to keep your background. Turn off Remove the background?",
+    );
+    expect(rememberedLine("Ceramic mug")).toBe("Using your last choices for Ceramic mug.");
+    expect(REMEMBERED_RESET_LABEL).toBe("Start from Marketplace ready");
+  });
+});
+
+describe("P1 controls", () => {
+  const keep = () => reduce({ type: "look", look: "keep_photo" });
+
+  it("keeps today's body and key while every P1 control is at its default", () => {
+    const state = initialOutputForm();
+    expect(state.more).toEqual(DEFAULT_MORE_CHOICES);
+    expect(DEFAULT_MORE_CHOICES.sceneCount).toBe(sceneCountOptions.default);
+    const body = outputOptionsBody(state.lookBase, state.choices, state.more);
+    expect(Object.keys(body).sort()).toEqual(["background", "color", "extras", "fit", "lookBase", "v"]);
+    expect(optionsIntentKey(state.choices, state.more)).toBe(outputOptionsKey(DEFAULT_OUTPUT_OPTIONS));
+  });
+
+  it("sets and clears Trim, which keeps the P0 fit at auto", () => {
+    const trimmed = outputFormReducer(keep(), { type: "fit", fit: "crop" });
+    expect(trimmed.more.trim).toBe(true);
+    expect(trimmed.choices.fit).toBe("auto");
+    expect(formFit(trimmed)).toBe("crop");
+    expect(outputOptionsBody(trimmed.lookBase, trimmed.choices, trimmed.more).fit).toBe("crop");
+    expect(moreOptionsChanged(trimmed)).toBe(1);
+    const pad = outputFormReducer(trimmed, { type: "fit", fit: "pad" });
+    expect(pad.more.trim).toBe(false);
+    expect(formFit(pad)).toBe("pad");
+    // Trim only applies to kept photos: with Remove it never reaches the body.
+    const removed = outputFormReducer(trimmed, { type: "background", background: "remove" });
+    expect(outputOptionsBody(removed.lookBase, removed.choices, removed.more).fit).toBe("auto");
+  });
+
+  it("picks Match my photo's edges as a color with Keep only", () => {
+    const edges = outputFormReducer(keep(), { type: "color", color: { kind: "edge_match" } });
+    expect(edges.more.edgeMatch).toBe(true);
+    expect(outputOptionsBody(edges.lookBase, edges.choices, edges.more).color).toEqual({ kind: "edge_match" });
+    expect(optionsIntentKey(edges.choices, edges.more)).not.toBe(optionsIntentKey(edges.choices));
+    const sand = outputFormReducer(edges, { type: "color", color: { kind: "swatch", key: "sand" } });
+    expect(sand.more.edgeMatch).toBe(false);
+    const removed = outputFormReducer(edges, { type: "background", background: "remove" });
+    expect(outputOptionsBody(removed.lookBase, removed.choices, removed.more).color).toEqual({ kind: "swatch", key: "white" });
+    expect(packCreatedOutputProps(edges.lookBase, edges.choices, 1, edges.more).color_kind).toBe("edge_match");
+  });
+
+  it("drives the scenes family and the count from one Select", () => {
+    expect(sceneCountSelectOptions().map((o) => o.label)).toEqual(["Off", "1", "2", "3", "4"]);
+    const off = reduce({ type: "scenes", count: SCENES_OFF });
+    expect(off.choices.extras.scenes).toBe(false);
+    expect(sceneCountValue(off)).toBe("off");
+    const two = outputFormReducer(off, { type: "scenes", count: 2 });
+    expect(two.choices.extras.scenes).toBe(true);
+    expect(sceneCountValue(two)).toBe("2");
+    expect(outputOptionsBody(two.lookBase, two.choices, two.more).sceneCount).toBe(2);
+    expect(outputFormReducer(off, { type: "scenes", count: 99 }).more.sceneCount).toBe(sceneCountOptions.max);
+    expect(sceneCountFromValue("0")).toBeNull();
+    expect(sceneCountFromValue("off")).toBe(SCENES_OFF);
+    // A count with scenes off never reaches the body.
+    const hidden = outputFormReducer(two, { type: "scenes", count: SCENES_OFF });
+    expect(outputOptionsBody(hidden.lookBase, hidden.choices, hidden.more).sceneCount).toBeUndefined();
+  });
+
+  it("lists every seeded scene preset after Auto", () => {
+    const options = sceneStyleOptions();
+    expect(options[0]).toEqual({ value: "auto", label: "Auto, picked for your product" });
+    expect(options.slice(1).map((o) => o.value)).toEqual(Object.keys(presets));
+    expect(isScenePresetChoice("holiday")).toBe(true);
+    expect(isScenePresetChoice("space")).toBe(false);
+  });
+
+  it("sends each P1 field only where it applies", () => {
+    const more = { ...DEFAULT_MORE_CHOICES, productSize: "larger" as const, enlarge: false, logo: false, graphicsColor: true };
+    const removed = p1OutputFields(LOOK_PRESETS.marketplace, more);
+    expect(removed).toEqual({ productSize: "larger", logo: false, graphicsColor: true });
+    const kept = p1OutputFields(LOOK_PRESETS.keep_photo, more);
+    // Keep turns graphics and cards off, so neither the logo nor the graphics color applies.
+    expect(kept).toEqual({ enlarge: false });
+    expect(moreOptionsVisibility(LOOK_PRESETS.keep_photo)).toMatchObject({
+      photoShape: true,
+      neverEnlarge: true,
+      productSize: false,
+      graphicsColor: false,
+    });
+    expect(moreOptionsVisibility(LOOK_PRESETS.marketplace, { hasLogo: true })).toMatchObject({ logo: true, productSize: true });
+    expect(moreOptionsVisibility(LOOK_PRESETS.marketplace, { scenesPaused: true }).sceneStyle).toBe(false);
+  });
+
+  it("resets the P1 controls with a look card, Reset and Keep my photos instead", () => {
+    const changed = reduce({ type: "scenes", count: 1 }, { type: "more", patch: { productSize: "smaller" } });
+    expect(outputFormReducer(changed, { type: "look", look: "marketplace" }).more).toEqual(DEFAULT_MORE_CHOICES);
+    expect(outputFormReducer(changed, { type: "reset" }).more).toEqual(DEFAULT_MORE_CHOICES);
+    expect(outputFormReducer(changed, { type: "keep_instead" }).more).toEqual(DEFAULT_MORE_CHOICES);
+  });
+
+  it("resolves with the P0 choices while the schema does not know a P1 field", () => {
+    const state = reduce({ type: "scenes", count: 2 });
+    const photos = planningPhotos([]);
+    const withMore = resolveFormOutput({ choices: state.choices, more: state.more, brandColors: [], brandKitsAllowed: false, photos });
+    const without = resolveFormOutput({ choices: state.choices, brandColors: [], brandKitsAllowed: false, photos });
+    expect(withMore.resolved.colorHex).toBe(without.resolved.colorHex);
+    expect(withMore.flags.extras).toEqual(without.flags.extras);
+  });
+});
+
+describe("background per photo", () => {
+  const photos = [
+    { id: "front", angle: "front" as const },
+    { id: "back", angle: "back" as const },
+  ];
+
+  it("lets a photo's own background win over the switch", () => {
+    expect(keptPhotoIds(photos, "remove")).toEqual([]);
+    expect(keptPhotoIds(photos, "keep")).toEqual(["front", "back"]);
+    expect(keptPhotoIds(photos, "remove", { back: "keep" })).toEqual(["back"]);
+    expect(keptPhotoIds(photos, "keep", { front: "remove", back: "pack" })).toEqual(["back"]);
+  });
+
+  it("resolves the kept photos and plans a mixed pack", () => {
+    const mixed = resolveFormOutput({
+      choices: initialOutputForm().choices,
+      brandColors: [],
+      brandKitsAllowed: false,
+      photos,
+      photoBackgrounds: { back: "keep" },
+    });
+    expect(mixed.resolved.keepMediaIds).toEqual(["back"]);
+    expect(mixed.flags.keepMediaIds).toEqual(["back"]);
+    expect(mixed.resolved.background).toBe("remove");
+  });
+
+  it("lets a pack whose every photo is kept start while cutouts are paused", () => {
+    const keepAll = resolveFormOutput({
+      choices: initialOutputForm().choices,
+      brandColors: [],
+      brandKitsAllowed: false,
+      photos,
+      photoBackgrounds: { front: "keep", back: "keep" },
+    });
+    const noWhite = withoutWhiteRequired(DEFAULT_CHANNELS).selected;
+    // Remove turns every extra on, so the front photo still feeds a cut out copy.
+    expect(pauseBlocksSubmit(true, noWhite, keepAll.flags)).toBe(true);
+    const noExtras = { ...keepAll.flags, extras: LOOK_PRESETS.keep_photo.extras };
+    expect(pauseBlocksSubmit(true, noWhite, noExtras)).toBe(false);
+  });
+
+  it("sends an upload's background only when the photo has its own", () => {
+    expect(uploadBackgroundField(undefined)).toEqual({});
+    expect(uploadBackgroundField("pack")).toEqual({});
+    expect(uploadBackgroundField("keep")).toEqual({ background: "keep" });
+    expect(isPhotoBackground("remove")).toBe(true);
+    expect(isPhotoBackground("blur")).toBe(false);
+  });
+});
+
+describe("remembered choices", () => {
+  const ctx = { brandColorCount: 1 };
+
+  it("prefills nothing for no record, a broken one, or Marketplace ready", () => {
+    expect(rememberedFormState(null, ctx)).toBeNull();
+    expect(rememberedFormState([1], ctx)).toBeNull();
+    expect(rememberedFormState({ background: "blur" }, ctx)).toBeNull();
+    expect(rememberedFormState({ unknown: true }, ctx)).toBeNull();
+    expect(rememberedFormState({ v: 1, sceneCount: 9 }, ctx)).toBeNull();
+    expect(rememberedFormState({ v: 1 }, ctx)).toBeNull();
+    expect(rememberedFormState({ ...DEFAULT_OUTPUT_OPTIONS, lookBase: "marketplace" }, ctx)).toBeNull();
+  });
+
+  it("prefills a Keep record with its look and P1 fields", () => {
+    const state = rememberedFormState(
+      { v: 1, lookBase: "keep_photo", background: "keep", fit: "crop", color: { kind: "edge_match" }, enlarge: false, extras: {} },
+      ctx,
+    );
+    expect(state).not.toBeNull();
+    expect(state!.lookBase).toBe("keep_photo");
+    expect(state!.choices.background).toBe("keep");
+    expect(state!.more).toMatchObject({ trim: true, edgeMatch: true, enlarge: false });
+    expect(state!.choices.extras).toEqual(LOOK_PRESETS.keep_photo.extras);
+  });
+
+  it("falls back to white when the kit lost the brand color, and derives the look without lookBase", () => {
+    const state = rememberedFormState({ v: 1, color: { kind: "brand", index: 2 }, sceneCount: 2 }, ctx);
+    expect(state!.choices.color).toEqual({ kind: "swatch", key: "white" });
+    expect(state!.more.sceneCount).toBe(2);
+    expect(state!.lookBase).toBe("marketplace");
+  });
+
+  it("round trips a body the form sent", () => {
+    const sent = reduce({ type: "look", look: "keep_photo" }, { type: "fit", fit: "pad" }, { type: "more", patch: { enlarge: false } });
+    const body = outputOptionsBody(sent.lookBase, sent.choices, sent.more);
+    const back = rememberedFormState(body, ctx);
+    expect(back).toEqual(sent);
+  });
+});
+
+describe("the keep my background hint", () => {
+  it("matches the seeded phrases as whole words, in any case and with curly apostrophes", () => {
+    expect(keepBackgroundPhrases.length).toBeGreaterThan(0);
+    expect(noteAsksToKeepBackground("Please KEEP THE BACKGROUND, it is our shop.")).toBe(true);
+    expect(noteAsksToKeepBackground("Don’t remove the background please")).toBe(true);
+    expect(noteAsksToKeepBackground("keep backgrounds varied")).toBe(false);
+    expect(noteAsksToKeepBackground("Hand made walnut board")).toBe(false);
+    expect(noteAsksToKeepBackground("")).toBe(false);
+  });
+
+  it("asks only while the switch is on", () => {
+    expect(keepBackgroundHint("keep my background", "remove")).toBe(KEEP_BACKGROUND_HINT);
+    expect(keepBackgroundHint("keep my background", "keep")).toBeNull();
+    expect(keepBackgroundHint("walnut board", "remove")).toBeNull();
+  });
+});
+
+describe("the cutout preview in the strip", () => {
+  const sources = { photoUrl: "blob:photo", cutoutUrl: "https://r2.example/p.png", hasPhoto: true };
+
+  it("shows the cutout on removed and white frames, and the photo on kept ones", () => {
+    expect(framePicture({ white: false }, "remove", sources)).toEqual({ kind: "cutout", src: sources.cutoutUrl });
+    expect(framePicture({ white: true }, "keep", sources)).toEqual({ kind: "cutout", src: sources.cutoutUrl });
+    expect(framePicture({ white: false }, "keep", sources)).toEqual({ kind: "photo", src: sources.photoUrl });
+    expect(framePicture({ white: false }, "remove", { hasPhoto: true })).toEqual({ kind: "silhouette" });
+    expect(framePicture({ white: false }, "keep", { hasPhoto: false })).toEqual({ kind: "none" });
   });
 });
