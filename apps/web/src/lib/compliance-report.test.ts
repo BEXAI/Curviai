@@ -1,14 +1,132 @@
 import { describe, expect, it } from "vitest";
+import { TREATMENT_NOTES, treatmentNotes, type TreatmentNoteKey } from "@curvi/pipeline/treatment";
 import { getSpec } from "@curvi/specs";
 import {
   buildComplianceReportView,
   channelTitle,
   demoComplianceReport,
   describeCheck,
+  describeNotes,
+  MEGAPIXELS_CHECK,
   NOT_MEASURED,
   specRequirementChecks,
   unavailableComplianceReport,
+  WHITE_OR_CLEAR_CHECK,
 } from "./compliance-report";
+
+// Rule 9: plain spoken, no emojis, no arrows, no dashes as punctuation.
+const FORBIDDEN = /[–—→←]| - |->|=>|[\u{1F300}-\u{1FAFF}]/u;
+
+/** One sample of every treatment note, built with the pipeline's own builders. */
+const SAMPLE_NOTES: Record<TreatmentNoteKey, string> = {
+  keptAtSellerRequest: TREATMENT_NOTES.keptAtSellerRequest,
+  unchangedFile: TREATMENT_NOTES.unchangedFile,
+  turnedUpright: TREATMENT_NOTES.turnedUpright,
+  resizedFrom: TREATMENT_NOTES.resizedFrom(4032, 3024),
+  padded: TREATMENT_NOTES.padded("#f4f4f5"),
+  cropped: TREATMENT_NOTES.cropped,
+  enlarged: TREATMENT_NOTES.enlarged(1.3),
+  colorConverted: TREATMENT_NOTES.colorConverted,
+  alphaFilled: TREATMENT_NOTES.alphaFilled("#F4F4F5"),
+  otherItems: TREATMENT_NOTES.otherItems,
+  alreadyWhite: TREATMENT_NOTES.alreadyWhite,
+  whiteRequired: TREATMENT_NOTES.whiteRequired,
+  color: TREATMENT_NOTES.color("#1f2a44"),
+};
+
+describe("treatment notes", () => {
+  it("maps every note to exactly one sentence from the plan", () => {
+    const expected: Record<TreatmentNoteKey, string> = {
+      keptAtSellerRequest: "Your photo, kept as you took it. Nothing in it was redrawn.",
+      unchangedFile: "Your photo file as uploaded, with location and camera details removed.",
+      turnedUpright: "Your photo was turned upright when you uploaded it.",
+      resizedFrom: "Resized from 4032 by 3024 pixels.",
+      padded: "Space added around your photo in #F4F4F5 to fit this channel's shape.",
+      cropped: "Trimmed to this channel's shape. Your whole product stays in the picture.",
+      enlarged: "Enlarged 1.3 times to reach this channel's minimum size.",
+      colorConverted: "Colors converted to the standard sRGB profile that marketplaces expect.",
+      alphaFilled: "Transparent areas of your photo were filled with #F4F4F5.",
+      otherItems: "Other items in this photo stay in the picture because you kept the background.",
+      alreadyWhite: "Your photo already had a pure white background, so we only resized it.",
+      whiteRequired: "This channel needs pure white, so this file uses white instead of your color.",
+      color: "Background color you chose, #1F2A44.",
+    };
+    expect(Object.keys(SAMPLE_NOTES).sort()).toEqual(Object.keys(TREATMENT_NOTES).sort());
+    for (const [key, note] of Object.entries(SAMPLE_NOTES)) {
+      const sentences = describeNotes([note], "none");
+      expect(sentences, key).toEqual([expected[key as TreatmentNoteKey]]);
+      expect(sentences[0]).not.toMatch(FORBIDDEN);
+    }
+  });
+
+  it("says a white required file on a Keep pack had its background removed for that file only", () => {
+    expect(describeNotes([TREATMENT_NOTES.whiteRequired], "none", { keptBackground: true })).toEqual([
+      "This channel needs a pure white background, so the background was removed for this file only.",
+    ]);
+  });
+
+  it("gives an unchanged file one sentence that says whether it was turned upright", () => {
+    const upright = treatmentNotes({ kind: "original_unchanged", reencodedAtUpload: true });
+    expect(describeNotes(upright, "none")).toEqual([
+      "Your photo, kept as you took it. Nothing in it was redrawn.",
+      "Your photo file, turned upright when you uploaded it, with location and camera details removed.",
+    ]);
+    const asUploaded = treatmentNotes({ kind: "original_unchanged", reencodedAtUpload: false });
+    expect(describeNotes(asUploaded, "none")).toEqual([
+      "Your photo, kept as you took it. Nothing in it was redrawn.",
+      "Your photo file as uploaded, with location and camera details removed.",
+    ]);
+    // An older upload with no ingest record carries a stored copy note of its own.
+    const stored = TREATMENT_NOTES.turnedUpright.split(",")[0] + ", no ingest record";
+    expect(describeNotes([TREATMENT_NOTES.unchangedFile, stored], "none")).toEqual([
+      "Your photo file as stored when you uploaded it, with location and camera details removed.",
+    ]);
+  });
+
+  it("describes a whole rendered kept photo in order", () => {
+    const notes = treatmentNotes({
+      kind: "original",
+      scale: 0.5,
+      sourceWidth: 4032,
+      sourceHeight: 3024,
+      colorConverted: true,
+      padHex: "#FFFFFF",
+      otherItems: true,
+    });
+    const sentences = describeNotes(notes, "none");
+    expect(sentences).toHaveLength(notes.length);
+    expect(sentences[0]).toContain("Nothing in it was redrawn");
+    for (const sentence of sentences) {
+      expect(sentence).not.toMatch(FORBIDDEN);
+      expect(sentence).not.toMatch(/identical|100 percent/i);
+    }
+  });
+});
+
+describe("PHASE_15 check labels", () => {
+  it("labels the white or clear check from the spec's rule", () => {
+    const check = { name: WHITE_OR_CLEAR_CHECK, pass: true, measured: 0.9995, limit: ">= 0.999" };
+    expect(describeCheck(check, "google.merchant.main")).toMatchObject({
+      label: "White or transparent background",
+      required: "at least 99.9 percent",
+    });
+    expect(describeCheck(check, "tiktokshop.main").label).toBe("White background");
+    expect(describeCheck(check).label).toBe("White or transparent background");
+  });
+
+  it("labels the megapixels check in megapixels", () => {
+    const row = describeCheck({ name: MEGAPIXELS_CHECK, pass: false, measured: 80_000_000, limit: "<= 64" });
+    expect(row).toMatchObject({ label: "Megapixels", measured: "80 megapixels", required: "at most 64 megapixels" });
+    expect(describeCheck({ name: MEGAPIXELS_CHECK, pass: true, measured: 12.19, limit: "<= 64000000" })).toMatchObject({
+      measured: "12.2 megapixels",
+      required: "at most 64 megapixels",
+    });
+    expect(specRequirementChecks(getSpec("google.merchant.lifestyle")).map((c) => c.label)).toContain("Megapixels");
+    for (const text of [row.label, row.measured, row.required]) {
+      expect(text).not.toMatch(FORBIDDEN);
+    }
+  });
+});
 
 const meta = { jobId: "00000000-0000-4000-8000-00000000a001", productTitle: "Copper kettle" };
 

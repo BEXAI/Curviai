@@ -9,7 +9,7 @@
 export const brandKitCopy = {
   intro:
     "Your next packs use this kit: your first brand color for the brand color background, your fonts and logo on infographic and social images, and your style preset for lifestyle scenes.",
-  colorsHint: "Packs use the first color for the brand color background.",
+  colorsHint: "Your first brand color is used for the brand color background and for Brand look.",
   fontsHint:
     "The heading font sets the size label on dimensions images. The body font sets the callouts on infographics.",
   logoHint:

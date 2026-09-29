@@ -4,6 +4,8 @@ import { photoBlockReason, photoTargetBox, type PhotoItem } from "@/components/a
 import {
   CUTOUT_UNAVAILABLE_NOTICE,
   joinNames,
+  keptPhotoHeadsUp,
+  OTHER_ITEMS_KEPT_COPY,
   PREFLIGHT_UNAVAILABLE_NOTICE,
   preflightBlockReason,
   readyLine,
@@ -177,6 +179,60 @@ describe("the form's gate", () => {
     expect(photoBlockReason(photo({ preflight: blocked }), ["amazon.main"])).toContain("weapons");
     expect(photoBlockReason(photo({ preflightPhase: "failed", preflight: null }), ["amazon.main"])).toBeNull();
     expect(photoBlockReason(photo({ phase: "uploading" }), ["amazon.main"])).toBeNull();
+  });
+});
+
+describe("the output context (PHASE_15 item 31)", () => {
+  const several = view(storedPreflightOf(run({ items: twoItems, rule: "ambiguous" }), ["k1", "k2"]));
+  const small: PreflightView = {
+    ...view(storedPreflightOf(run({}, { products: [{ label: "silver watch", box: watchBox, matchesIntent: "yes" }] }))),
+    photo: { width: 413, height: 486 },
+    productLongSide: 400,
+  };
+  const keptNoCutout = { kept: true, feedsCutout: false };
+  const keptWithCutout = { kept: true, feedsCutout: true };
+  const removed = { kept: false, feedsCutout: true };
+
+  it("does not ask for a tap on a kept photo that feeds no cutout, and says its items stay", () => {
+    expect(preflightBlockReason(several, ["amazon.secondary"], null, { output: keptNoCutout })).toBeNull();
+    expect(keptPhotoHeadsUp(several, ["amazon.secondary"], null, keptNoCutout)).toContain(OTHER_ITEMS_KEPT_COPY);
+  });
+
+  it("still asks for a tap when the kept photo feeds a cutout, like a white main image", () => {
+    expect(preflightBlockReason(several, ["amazon.main"], null, { output: keptWithCutout })).toBe(
+      "Tap the product this pack is for.",
+    );
+    expect(keptPhotoHeadsUp(several, ["amazon.main"], 1, keptWithCutout)).not.toContain(OTHER_ITEMS_KEPT_COPY);
+  });
+
+  it("never blocks a kept photo on size, and gives a heads up instead", () => {
+    const selected = ["amazon.main", "meta.feed_1x1"];
+    expect(preflightBlockReason(small, selected, null, { output: keptWithCutout })).toBeNull();
+    const headsUp = keptPhotoHeadsUp(small, selected, null, keptWithCutout);
+    expect(headsUp.some((line) => line.includes("may be too small for Amazon main"))).toBe(true);
+    // A photo that feeds no cutout is never measured by its product.
+    const photoOnly = sizeShortfalls(small, selected, null, keptNoCutout);
+    expect(photoOnly.every((s) => s.measure === "photo")).toBe(true);
+  });
+
+  it("keeps today's rules for a removed photo", () => {
+    expect(preflightBlockReason(several, ["amazon.main"], null, { output: removed })).toBe(
+      "Tap the product this pack is for.",
+    );
+    expect(preflightBlockReason(small, ["amazon.main"], null, { output: removed })).toContain("too small for Amazon main");
+    expect(keptPhotoHeadsUp(small, ["amazon.main"], null, removed)).toEqual([]);
+    expect(keptPhotoHeadsUp(small, ["amazon.main"], null, undefined)).toEqual([]);
+  });
+
+  it("keeps the new lines plain (rule 9)", () => {
+    const lines = [
+      ...keptPhotoHeadsUp(several, ["amazon.secondary"], null, keptNoCutout),
+      ...keptPhotoHeadsUp(small, ["amazon.main", "meta.feed_1x1"], null, keptWithCutout),
+    ];
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line).not.toMatch(/[–—→←]| - |->|=>|[\u{1F300}-\u{1FAFF}]/u);
+    }
   });
 });
 

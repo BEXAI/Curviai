@@ -9,8 +9,10 @@
  */
 
 import { z } from "zod";
+import { parseTreatmentNote, TREATMENT_NOTES } from "@curvi/pipeline/treatment";
 import { dimensionBounds, getSpec, hasSpec, type ChannelSpec } from "@curvi/specs";
 import { specDisplayName } from "@/components/marketing/spec-slug";
+import { FORCED_WHITE_NOTE } from "@/lib/output-options-copy";
 
 // The stored report, read leniently: fields the view does not use may change
 // without breaking the page.
@@ -202,10 +204,54 @@ function measuredText(value: number | string | null | undefined, format: (n: num
   return NOT_MEASURED;
 }
 
-/** One stored check as a plain spoken row. */
-export function describeCheck(check: z.infer<typeof StoredCheck>): ComplianceCheckView {
+/** Pixel check names added in PHASE_15 (qc/pixelChecks.ts). */
+export const WHITE_OR_CLEAR_CHECK = "backgroundWhiteOrClear";
+export const MEGAPIXELS_CHECK = "megapixels";
+
+/** Megapixels from a stored value: a count in megapixels, or in pixels when it is large. */
+function asMegapixels(value: number): number {
+  return value >= 10_000 ? value / 1_000_000 : value;
+}
+
+function megapixelText(value: number): string {
+  const mp = Math.round(asMegapixels(value) * 10) / 10;
+  return `${mp} megapixels`;
+}
+
+/**
+ * The label of the white or clear check, from the spec's registry rule:
+ * a white preferred spec (TikTok Shop) asks for white, a white or
+ * transparent one (Google main) takes either.
+ */
+function whiteOrClearLabel(specId: string | undefined): string {
+  const rule = specId && hasSpec(specId) ? getSpec(specId).background?.type : undefined;
+  return rule === "white_preferred" ? "White background" : "White or transparent background";
+}
+
+/** One stored check as a plain spoken row. The spec id picks labels that depend on the channel. */
+export function describeCheck(check: z.infer<typeof StoredCheck>, specId?: string): ComplianceCheckView {
   const { name, pass, measured, limit } = check;
   switch (name) {
+    case WHITE_OR_CLEAR_CHECK: {
+      const min = limitNumber(limit);
+      return {
+        key: name,
+        label: whiteOrClearLabel(specId),
+        pass,
+        measured: measuredText(measured, percent),
+        required: min === null ? (limit ?? "") : min >= 1 ? "100 percent" : `at least ${percent(min)}`,
+      };
+    }
+    case MEGAPIXELS_CHECK: {
+      const max = limitNumber(limit);
+      return {
+        key: name,
+        label: "Megapixels",
+        pass,
+        measured: measuredText(measured, megapixelText),
+        required: max === null ? (limit ?? "") : `at most ${megapixelText(max)}`,
+      };
+    }
     case "dimensions":
       return {
         key: name,
@@ -271,16 +317,104 @@ export function describeCheck(check: z.infer<typeof StoredCheck>): ComplianceChe
   }
 }
 
+/**
+ * The start every "stored copy" note shares. treatmentNotes writes the
+ * turned upright one today; a later note for an upload with no ingest
+ * record (PHASE_15 fidelity section) starts the same way.
+ */
+const STORED_COPY_PREFIX = TREATMENT_NOTES.turnedUpright.split(",")[0];
+
+/** The sentences for the treatment notes (PHASE_15 "describeNotes sentences"). */
+export const TREATMENT_SENTENCES = {
+  keptAtSellerRequest: "Your photo, kept as you took it. Nothing in it was redrawn.",
+  unchangedFile: "Your photo file as uploaded, with location and camera details removed.",
+  unchangedUpright: "Your photo file, turned upright when you uploaded it, with location and camera details removed.",
+  unchangedStored:
+    "Your photo file as stored when you uploaded it, with location and camera details removed.",
+  turnedUpright: "Your photo was turned upright when you uploaded it.",
+  resizedFrom: (size: string) => `Resized from ${size.replace(/^(\d+)x(\d+)$/, "$1 by $2")} pixels.`,
+  padded: (hex: string) => `Space added around your photo in ${hex} to fit this channel's shape.`,
+  cropped: "Trimmed to this channel's shape. Your whole product stays in the picture.",
+  enlarged: (scale: string) => `Enlarged ${scale} times to reach this channel's minimum size.`,
+  colorConverted: "Colors converted to the standard sRGB profile that marketplaces expect.",
+  alphaFilled: (hex: string) => `Transparent areas of your photo were filled with ${hex}.`,
+  otherItems: "Other items in this photo stay in the picture because you kept the background.",
+  alreadyWhite: "Your photo already had a pure white background, so we only resized it.",
+  whiteRequiredKept: "This channel needs a pure white background, so the background was removed for this file only.",
+  whiteRequiredColor: FORCED_WHITE_NOTE,
+  color: (hex: string) => `Background color you chose, ${hex}.`,
+} as const;
+
+/** What the report knows about the pack beyond each file's notes. */
+export interface DescribeNotesOptions {
+  /** The pack kept the seller's photos (output_options background keep),
+   * so a white required file had its background removed for that file only. */
+  keptBackground?: boolean;
+}
+
+/** One sentence for one treatment note, or null when the note says nothing on its own. */
+function treatmentSentence(note: string, all: ReadonlySet<string>, opts: DescribeNotesOptions): string | null {
+  const parsed = parseTreatmentNote(note);
+  if (!parsed) {
+    // Not a treatment note. Another stored copy note is read by the
+    // unchanged file's sentence.
+    return null;
+  }
+  const value = parsed.value ?? "";
+  switch (parsed.key) {
+    case "keptAtSellerRequest":
+      return TREATMENT_SENTENCES.keptAtSellerRequest;
+    case "unchangedFile": {
+      if (all.has(TREATMENT_NOTES.turnedUpright)) {
+        return TREATMENT_SENTENCES.unchangedUpright;
+      }
+      const storedOnly = [...all].some((n) => n.startsWith(STORED_COPY_PREFIX));
+      return storedOnly ? TREATMENT_SENTENCES.unchangedStored : TREATMENT_SENTENCES.unchangedFile;
+    }
+    case "turnedUpright":
+      // An unchanged file says it in its own sentence.
+      return all.has(TREATMENT_NOTES.unchangedFile) ? null : TREATMENT_SENTENCES.turnedUpright;
+    case "resizedFrom":
+      return TREATMENT_SENTENCES.resizedFrom(value);
+    case "padded":
+      return TREATMENT_SENTENCES.padded(value);
+    case "cropped":
+      return TREATMENT_SENTENCES.cropped;
+    case "enlarged":
+      return TREATMENT_SENTENCES.enlarged(value);
+    case "colorConverted":
+      return TREATMENT_SENTENCES.colorConverted;
+    case "alphaFilled":
+      return TREATMENT_SENTENCES.alphaFilled(value);
+    case "otherItems":
+      return TREATMENT_SENTENCES.otherItems;
+    case "alreadyWhite":
+      return TREATMENT_SENTENCES.alreadyWhite;
+    case "whiteRequired":
+      return opts.keptBackground ? TREATMENT_SENTENCES.whiteRequiredKept : TREATMENT_SENTENCES.whiteRequiredColor;
+    case "color":
+      return TREATMENT_SENTENCES.color(value);
+  }
+}
+
 /** Packager notes as plain sentences. Notes it does not know are left out. */
-export function describeNotes(notes: string[] | undefined, digitalSource: string | undefined): string[] {
+export function describeNotes(
+  notes: string[] | undefined,
+  digitalSource: string | undefined,
+  opts: DescribeNotesOptions = {},
+): string[] {
   const out: string[] = [];
   if (digitalSource === "composite") {
     out.push("Labeled in the file as a scene composited around your real product.");
   } else if (digitalSource === "trained") {
     out.push("Labeled in the file as an AI generated image.");
   }
+  const all = new Set(notes ?? []);
   for (const note of notes ?? []) {
-    if (note.startsWith("badge suppressed")) {
+    const treatment = treatmentSentence(note, all, opts);
+    if (treatment !== null) {
+      out.push(treatment);
+    } else if (note.startsWith("badge suppressed")) {
       out.push("The share badge was left off because this channel does not allow it.");
     } else if (note.startsWith("raw pixels not supplied")) {
       out.push("Only the file size and format were checked for this file.");
@@ -323,6 +457,7 @@ function groupByChannel(files: Array<ComplianceFileView & { channel: string }>):
 export function buildComplianceReportView(
   raw: unknown,
   meta: { jobId: string; productTitle: string },
+  opts: DescribeNotesOptions = {},
 ): ComplianceReportView | null {
   const parsed = StoredComplianceReport.safeParse(raw);
   if (!parsed.success) {
@@ -336,8 +471,8 @@ export function buildComplianceReportView(
       specId: file.specId,
       specLabel: specDisplayName(file.specId),
       pass: file.pass,
-      checks: file.checks.map(describeCheck),
-      notes: describeNotes(file.notes, file.digitalSource),
+      checks: file.checks.map((check) => describeCheck(check, file.specId)),
+      notes: describeNotes(file.notes, file.digitalSource, opts),
     })),
   );
   const dropped = (report.dropped ?? []).map((entry) => ({
@@ -408,7 +543,10 @@ export function specRequirementChecks(spec: ChannelSpec): ComplianceCheckView[] 
   if (spec.formats) {
     checks.push({ name: "format", pass: true, measured: null, limit: spec.formats.join(", ") });
   }
-  return checks.map(describeCheck);
+  if (spec.maxMegapixels) {
+    checks.push({ name: MEGAPIXELS_CHECK, pass: true, measured: null, limit: `<= ${spec.maxMegapixels}` });
+  }
+  return checks.map((check) => describeCheck(check, spec.id));
 }
 
 /** The demo pack's report: every file with its channel's requirements. */

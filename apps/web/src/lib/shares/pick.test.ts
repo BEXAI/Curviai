@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { isShareSlug, newShareSlug, pickDisplayVariant, pickHeroAsset, shotLabel, SLUG_LENGTH } from "./pick";
+import {
+  allHeroCandidatesOriginal,
+  isShareSlug,
+  newShareSlug,
+  pickDisplayVariant,
+  pickHeroAsset,
+  shotLabel,
+  SLUG_LENGTH,
+} from "./pick";
 
 describe("share slugs", () => {
   it("are random, well formed and distinct", () => {
@@ -32,6 +40,23 @@ describe("pickHeroAsset", () => {
     expect(pickHeroAsset(assets.filter((a) => !a.shotType.startsWith("lifestyle")))?.id).toBe("b");
     expect(pickHeroAsset([{ id: "x", shotType: "infographic", createdAt: at(1) }])?.id).toBe("x");
     expect(pickHeroAsset([])).toBeNull();
+  });
+
+  it("ranks the seller's kept photo after every made image", () => {
+    const assets = [
+      { id: "o", shotType: "original_photo", createdAt: at(1) },
+      { id: "m", shotType: "amazon_main", createdAt: at(2) },
+    ];
+    expect(pickHeroAsset(assets)?.id).toBe("m");
+    expect(pickHeroAsset([assets[0]])?.id).toBe("o");
+  });
+});
+
+describe("allHeroCandidatesOriginal", () => {
+  it("is true only when every candidate is the seller's kept photo", () => {
+    expect(allHeroCandidatesOriginal([{ shotType: "original_photo" }, { shotType: "original_photo:2" }])).toBe(true);
+    expect(allHeroCandidatesOriginal([{ shotType: "original_photo" }, { shotType: "amazon_main" }])).toBe(false);
+    expect(allHeroCandidatesOriginal([])).toBe(false);
   });
 });
 
