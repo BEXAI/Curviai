@@ -9,6 +9,7 @@ import type { PreflightIntake } from "@curvi/trigger/preflight-intake";
 import { isTemplateFontKey, presets, socialBadgeByTier, type TierKey } from "@curvi/pipeline/seed";
 import { isAngleRole, printableEndorsements, printableSellerLines } from "@curvi/pipeline/seller-inputs";
 import { ResolvedOutputOptions } from "@curvi/pipeline/output-options";
+import { parseSellerAnswers } from "@curvi/pipeline/questions";
 
 export interface PayloadProduct {
   id: string;
@@ -146,10 +147,14 @@ export function buildGeneratePackInput(args: {
   brandKit?: PayloadBrandKit | null;
   /** generation_jobs.output_options as stored; see payloadOutputOf. */
   outputOptions?: unknown;
+  /** generation_jobs.seller_answers as stored (PHASE_16 workstream 4). Read
+   * with the shared schema; a value out of shape is left out, never fatal. */
+  sellerAnswers?: unknown;
 }): GeneratePackPayload {
   const brand = brandStyleFor(args.workspaceId, args.brandKit);
   const output = payloadOutputOf(args.outputOptions);
   const endorsements = printableEndorsements(args.product.endorsements);
+  const sellerAnswers = parseSellerAnswers(args.sellerAnswers);
   return {
     jobId: args.jobId,
     workspaceId: args.workspaceId,
@@ -189,5 +194,6 @@ export function buildGeneratePackInput(args: {
     socialBadge: socialBadgeByTier[args.tier] ?? false,
     ...(brand ? { brand } : {}),
     ...(output ? { output } : {}),
+    ...(sellerAnswers ? { sellerAnswers } : {}),
   };
 }

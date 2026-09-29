@@ -99,6 +99,13 @@ import {
   matchProducts,
   itemLabel,
   noteSignals,
+  answerFor,
+  answerScenePreset,
+  applySceneAnswers,
+  intentWithAnswers,
+  parseSellerAnswers,
+  profileWithAnswers,
+  type SellerAnswers,
   unionBox,
   needsVisionPick,
   pickerNumbering,
@@ -131,6 +138,7 @@ import {
   planFlagsOf,
   ResolvedOutputOptions,
   sceneCountOf,
+  scenePresetOf,
   SELLER_OFF_REASON,
   type OutputPlanFlags,
 } from "@curvi/pipeline/output-options";
@@ -139,6 +147,7 @@ import {
   creditCosts,
   HARMONIZE_TASK,
   qcJudgePolicy,
+  questionSet,
   recipeSeedRows,
   SCENE_PLATE_TASK,
   sceneCountOptions,
@@ -1115,6 +1124,13 @@ export interface GeneratePackInput {
    * Absent means today's pack. Parsed again with the shared schema at the
    * start of the run: anything else fails the job before any spend. */
   output?: ResolvedOutputOptions;
+  /** The seller's answers to the question step (PHASE_16 workstream 4,
+   * generation_jobs.seller_answers), resolved by the web app against the
+   * stored questions. Read with the shared schema (parseSellerAnswers):
+   * answers only ever help, so an unreadable value is dropped, never a
+   * reason to fail the pack. They outweigh the note in the product choice,
+   * the seller intent and the scenes. */
+  sellerAnswers?: SellerAnswers;
 }
 
 /** Job error when the payload's output options fail the shared schema or
@@ -1462,6 +1478,19 @@ export function sellerWroteNote(note: string | null | undefined, intent: SellerI
   return (note ?? "").trim().length > 0 || !!intent?.featureOnly?.trim() || (intent?.exclude.length ?? 0) > 0;
 }
 
+/** The job's seller answers read with the shared schema, or null (none, or
+ * out of shape, which is logged and ignored). */
+export function jobSellerAnswers(input: Pick<GeneratePackInput, "jobId" | "sellerAnswers">): SellerAnswers | null {
+  if (input.sellerAnswers === undefined || input.sellerAnswers === null) {
+    return null;
+  }
+  const answers = parseSellerAnswers(input.sellerAnswers);
+  if (!answers) {
+    console.warn(`[runner] job ${input.jobId} seller answers failed the shared schema; running on the note alone`);
+  }
+  return answers;
+}
+
 /**
  * Picks the product each photo is for from the product inventory first, and
  * from intake alone (selectTargets) for photos without one: the demo
@@ -1481,13 +1510,17 @@ export function inventorySelection(
   note: string | undefined,
   jobId: string,
   picks: ReadonlyMap<string, VisionPick> = new Map(),
+  answers: SellerAnswers | null = null,
 ): { selection: TargetSelection; photos: PhotoInventoryResult[] } {
   const legacy = selectTargets(intake, judged, jobId);
   const selection: TargetSelection = { targets: { ...legacy.targets }, ambiguous: [...legacy.ambiguous] };
   const photos: PhotoInventoryResult[] = [];
   const mapped = intake.images.length === judged.length;
   const signals = noteSignals(note, intake.sellerIntent ?? null);
-  const noteGiven = sellerWroteNote(note, intake.sellerIntent ?? null);
+  // The seller's target answer (PHASE_16 workstream 4) outweighs the note
+  // on every photo; the chooser tap on its own photo still wins over it.
+  const answer = answerFor(answers?.target, questionSet.allOption.value);
+  const noteGiven = sellerWroteNote(note, intake.sellerIntent ?? null) || answer !== null;
   judged.forEach((photo, i) => {
     const inventory = cutouts.get(photo.mediaId);
     const image = mapped ? intake.images[i] : undefined;
@@ -1501,6 +1534,7 @@ export function inventorySelection(
       signals,
       multiItem: !!photo.angle && MULTI_ITEM_ANGLES.has(photo.angle),
       chosenBox: photo.targetBox ?? null,
+      answer,
     };
     let decision = chooseInventoryTarget(choiceInput);
     // The vision tie breaker, when the rules could not decide and the
@@ -3726,10 +3760,12 @@ export async function runGeneratePack(
     if (!intake.value) {
       throw new Error("Intake response failed schema validation");
     }
-    // The seller's note as structured intent (intake version 3), kept on
-    // the job so follow ups and retries keep it. Data only: never a reason
-    // to fail the pack.
-    const sellerIntent = intake.value.sellerIntent;
+    // The seller's note as structured intent (intake version 3), with the
+    // question step's answers over it (PHASE_16 workstream 4), kept on the
+    // job so follow ups and retries keep it. Data only: never a reason to
+    // fail the pack.
+    const answers = jobSellerAnswers(input);
+    const sellerIntent = intentWithAnswers(intake.value.sellerIntent, answers) ?? undefined;
     if (sellerIntent) {
       try {
         await store.saveSellerIntent?.(input.jobId, sellerIntent);
@@ -3810,6 +3846,8 @@ export async function runGeneratePack(
       cutouts,
       input.userDescription,
       input.jobId,
+      new Map(),
+      answers,
     );
     // The vision tie breaker: a photo of 2 to 6 pieces the rules left
     // ambiguous or in conflict, with a note to go on, is shown to the
@@ -3852,6 +3890,7 @@ export async function runGeneratePack(
         input.userDescription,
         input.jobId,
         picks,
+        answers,
       ));
     }
     if (inventoryPhotos.length > 0) {
@@ -3897,10 +3936,15 @@ export async function runGeneratePack(
       throw new Error(moderationBlockedMessage(profileBlock));
     }
     // A photo the seller marked with a role is that angle, whatever the
-    // analyzer saw, so the planner plans it from that exact photo.
-    const profile = withSellerAngles(
-      analysis.value,
-      images.map((image) => image.angle),
+    // analyzer saw, so the planner plans it from that exact photo. The
+    // answered mood, use and audience lead the scenes and the buyer
+    // (PHASE_16 workstream 4), on both planners.
+    const profile = profileWithAnswers(
+      withSellerAngles(
+        analysis.value,
+        images.map((image) => image.angle),
+      ),
+      answers,
     );
     await store.saveProfile?.(input.jobId, profile);
 
@@ -4011,11 +4055,13 @@ export async function runGeneratePack(
       chosen = fallback;
       plannerSource = "deterministic";
     }
-    // The seller's scene style for this pack, else the brand kit's style
-    // preset, replaces the planner's category pick on every shot that uses a
-    // preset (PHASE_15 P1).
+    // The seller's scene style for this pack, else the answered mood's
+    // preset (PHASE_16 workstream 4), else the brand kit's style preset,
+    // replaces the planner's category pick on every shot that uses a preset
+    // (PHASE_15 P1). The answered scenes lead the lifestyle shots.
+    const scenePreset = scenePresetOf(output) ?? answerScenePreset(answers);
     let shotList: ShotList = withSellerCopy(
-      applyBrandStylePreset(chosen, input.brand?.stylePreset, profile, output?.scenePreset),
+      applyBrandStylePreset(applySceneAnswers(chosen, answers), input.brand?.stylePreset, profile, scenePreset),
       sellerCopy,
     );
     // A+ module copy (PHASE_16 workstream 2): one copy_generator call writes

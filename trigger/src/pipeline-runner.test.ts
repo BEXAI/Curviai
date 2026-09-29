@@ -2646,7 +2646,13 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
   async function liveRun(
     intakeOutput: unknown,
     photo: Buffer,
-    opts: { note?: string; angle?: "front" | "in_the_box"; analyze?: MockProvider; picker?: MockProvider } = {},
+    opts: {
+      note?: string;
+      angle?: "front" | "in_the_box";
+      analyze?: MockProvider;
+      picker?: MockProvider;
+      answers?: GeneratePackInput["sellerAnswers"];
+    } = {},
   ) {
     const ai = makeAi({ intake: intakeWith(intakeOutput), ...(opts.analyze ? { analyze: opts.analyze } : {}) });
     if (opts.picker) {
@@ -2680,6 +2686,7 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
         channels: ["amazon.main"],
         images: [{ mediaId, angle: opts.angle ?? "front" }],
         userDescription: opts.note ?? "Feature only the blue bottle",
+        ...(opts.answers ? { sellerAnswers: opts.answers } : {}),
       },
       deps,
     );
@@ -2770,6 +2777,64 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     expect(colors.files).toBeGreaterThan(0);
     expect(colors.red).toBe(0);
     expect(colors.blue).toBeGreaterThan(0);
+  });
+
+  // docs/phases/PHASE_16.md workstream 4: the question step's answers.
+  describe("seller answers", () => {
+    const unsure = {
+      images: [
+        {
+          ...verdict,
+          products: [
+            { label: "red bottle", box: redBox, matchesIntent: "unclear" },
+            { label: "blue bottle", box: blueBox, matchesIntent: "unclear" },
+          ],
+        },
+      ],
+    };
+    const blueOnly: GeneratePackInput["sellerAnswers"] = {
+      version: 1,
+      target: { value: "item:2", label: "blue bottle", color: "blue", others: ["red bottle"] },
+    };
+
+    it("honors Blue bottle only without the note, with zero red delivered", async () => {
+      const silent = await liveRun(unsure, await twoProductPhoto(), { note: "" });
+      expect(silent.summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+
+      const { summary, deps, calls } = await liveRun(unsure, await twoProductPhoto(), { note: "", answers: blueOnly });
+      expect(summary.state).toBe("done");
+      expect(summary.passed).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.target?.label).toBe("blue bottle");
+        expect(call.target?.others.map((o) => o.label)).toEqual(["red bottle"]);
+      }
+      const colors = await deliveredColors(deps);
+      expect(colors.files).toBeGreaterThan(0);
+      expect(colors.red).toBe(0);
+      expect(colors.blue).toBeGreaterThan(0);
+      expect(deps.store.inventories.get(baseInput.jobId)?.photos[0].rule).toBe("answer");
+      // The answer becomes the seller intent kept on the job.
+      expect(deps.store.sellerIntents.get(baseInput.jobId)).toEqual({
+        featureOnly: "blue bottle",
+        exclude: ["red bottle"],
+        mustKeep: [],
+        styleNotes: null,
+      });
+    });
+
+    it("outweighs a note that names the other product", async () => {
+      const { summary, calls } = await liveRun(unsure, await twoProductPhoto(), { note: "the red one", answers: blueOnly });
+      expect(summary.state).toBe("done");
+      for (const call of calls) {
+        expect(call.target?.label).toBe("blue bottle");
+      }
+    });
+
+    it("runs on the note alone when the stored answers are out of shape", async () => {
+      const broken = { version: 7 } as unknown as GeneratePackInput["sellerAnswers"];
+      const { summary } = await liveRun(unsure, await twoProductPhoto(), { note: "", answers: broken });
+      expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+    });
   });
 
   it("refuses the shot at no charge when the picked product touches the other one", async () => {

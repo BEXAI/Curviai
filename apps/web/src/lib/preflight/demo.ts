@@ -7,9 +7,13 @@
  * - "several": two products, so the chooser shows (a watch and sneakers,
  *   the evaluator's cafe photo), with the note's pick preselected when the
  *   note names one of them;
- * - "screenshot": a screenshot, so the photo blocks the pack.
+ * - "screenshot": a screenshot, so the photo blocks the pack;
+ * - "questions": the two products with the question step (PHASE_16
+ *   workstream 4): which product, where it sells and the scene mood, as the
+ *   deterministic questions the step asks when its model is down.
  */
 
+import { deterministicQuestions, openQuestionKinds } from "@curvi/pipeline/questions";
 import { sizeNeeds } from "./result";
 import { problemFor } from "./copy";
 import type { PreflightItemView, PreflightView } from "./types";
@@ -71,6 +75,22 @@ export function demoPreflight(key: string, note?: string): PreflightView {
       productLongSide: null,
       problem: problemFor("screenshot"),
       previewUrl: null,
+    };
+  }
+  if (name.includes("questions")) {
+    const open = openQuestionKinds({ targetOpen: true, note }).filter((kind) => kind !== "use" && kind !== "audience");
+    const colors = ["gray", "white"];
+    return {
+      ...base,
+      status: "choose",
+      found: null,
+      productLongSide: null,
+      items: DEMO_ITEMS,
+      previewUrl: null,
+      questions: deterministicQuestions(
+        open,
+        DEMO_ITEMS.map((item, i) => ({ number: item.number, label: item.label, colorName: colors[i] ?? "gray" })),
+      ),
     };
   }
   if (name.includes("several")) {

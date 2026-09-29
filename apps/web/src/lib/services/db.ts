@@ -82,6 +82,7 @@ import {
   preflightAddedOverlaysOf,
   preflightProductBoxOf,
   preflightRowsFor,
+  sellerAnswersFor,
   preflightUpload as runPreflightUpload,
   reusableIntakeOf,
   type PreflightServiceDeps,
@@ -1803,6 +1804,13 @@ export class DbService implements Services {
     const media: PackMedia[] = merged.map((m) =>
       ingestByKey.has(m.r2Key) ? { ...m, reencoded: ingestByKey.get(m.r2Key)?.reencoded ?? null } : m,
     );
+    // The question step's taps, resolved against the questions stored for
+    // that upload (PHASE_16 workstream 4). Never a reason to refuse a pack.
+    const sellerAnswers = sellerAnswersFor(
+      preflights,
+      merged.map((m) => m.r2Key),
+      input.sellerAnswers,
+    );
     const blocked = uploadRows
       .filter((u) => u.kind === "image")
       .map((u) => preflights.get(u.key))
@@ -2011,6 +2019,8 @@ export class DbService implements Services {
             // The resolved options with the color snapshot (0023), which
             // the payload, the follow ups and the job page read back.
             outputOptions: { ...output.resolved },
+            // The seller's answers (0024), as the server resolved them.
+            ...(sellerAnswers ? { sellerAnswers: { ...sellerAnswers } } : {}),
           })
           .returning({ id: generationJobs.id });
         try {
@@ -2076,6 +2086,7 @@ export class DbService implements Services {
           brandColors,
           brandKit,
           outputOptions: output.resolved,
+          ...(sellerAnswers ? { sellerAnswers } : {}),
         }),
         runKey,
       });

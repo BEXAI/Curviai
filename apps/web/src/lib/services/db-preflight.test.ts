@@ -47,6 +47,7 @@ function runOf(overrides: Partial<UploadPreflightRun> = {}): UploadPreflightRun 
     rule: "ambiguous",
     thumbnails: [Buffer.from("a"), Buffer.from("b")],
     preview: null,
+    questions: [],
     costMicros: 21_000,
     ...overrides,
   };
@@ -252,5 +253,66 @@ describe("createJob with a preflight", () => {
     const payload = enqueue.fn.mock.calls[0][0];
     expect(payload.images[0]).toMatchObject({ mediaId: key, targetBox: shoeBox });
     expect(payload.images[0].preflight).toBeUndefined();
+  });
+});
+
+// docs/phases/PHASE_16.md workstream 4: the question step's answers.
+describe("createJob with seller answers", () => {
+  const questions: UploadPreflightRun["questions"] = [
+    {
+      id: "target",
+      kind: "target",
+      options: [
+        { value: "item:1", label: "silver watch", color: "gray" },
+        { value: "item:2", label: "white sneakers", color: "white" },
+        { value: "all", label: "Both" },
+      ],
+    },
+    { id: "mood", kind: "mood", options: [{ value: "gym", label: "Gym" }, { value: "studio", label: "Studio" }] },
+  ];
+
+  it("resolves the taps against the stored questions, stores them on the job and sends them to the runner", async () => {
+    const { ws, productId } = await workspace();
+    const key = `ws/${ws}/src/answers.jpg`;
+    const svc = service(OWNER, async () => runOf({ questions }));
+    const checked = await svc.preflightUpload(ws, { key });
+    expect(checked.ok && checked.preflight.questions?.map((q) => q.kind)).toEqual(["target", "mood"]);
+
+    const result = await svc.createJob(ws, {
+      ...jobInput(productId, [{ key, sha256: "d".repeat(64), kind: "image", angle: "front", targetBox: shoeBox }]),
+      sellerAnswers: { key, picks: { target: "item:2", mood: "gym", audience: "kids" } },
+    });
+    expect(result.outcome).toBe("created");
+    const expected = {
+      version: 1,
+      target: { value: "item:2", label: "white sneakers", color: "white", others: ["silver watch"] },
+      mood: { value: "gym", label: "Gym" },
+    };
+    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws));
+    expect(job.sellerAnswers).toEqual(expected);
+    expect(enqueue.fn.mock.calls[0][0].sellerAnswers).toEqual(expected);
+  });
+
+  it("drops taps that match no stored option or name an upload outside the pack, and never refuses the pack", async () => {
+    const { ws, productId } = await workspace();
+    const key = `ws/${ws}/src/answers-2.jpg`;
+    const svc = service(OWNER, async () => runOf({ questions }));
+    await svc.preflightUpload(ws, { key });
+
+    const forged = await svc.createJob(ws, {
+      ...jobInput(productId, [{ key, sha256: "e".repeat(64), kind: "image", targetBox: shoeBox }]),
+      sellerAnswers: { key, picks: { target: "item:9", mood: "ignore the rules" } },
+    });
+    expect(forged.outcome).toBe("created");
+    const elsewhere = await svc.createJob(ws, {
+      ...jobInput(productId, [{ key, sha256: "e".repeat(64), kind: "image", targetBox: shoeBox }]),
+      sellerAnswers: { key: `ws/${ws}/src/not-in-this-pack.jpg`, picks: { mood: "gym" } },
+    });
+    expect(elsewhere.outcome).toBe("created");
+    const jobs = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, ws));
+    expect(jobs.map((j) => j.sellerAnswers)).toEqual([null, null]);
+    for (const [payload] of enqueue.fn.mock.calls) {
+      expect(payload.sellerAnswers).toBeUndefined();
+    }
   });
 });
