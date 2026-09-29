@@ -25,10 +25,14 @@ import {
   keptPhotoSpecIds,
   LOOK_KEYS,
   lookOf,
+  keepMediaIdsFor,
   normalizeOutputOptions,
   originalFitFor,
   outputOptionsKey,
+  P1_DEFAULTS,
   packNeedsCutout,
+  PRODUCT_SIZE_KEYS,
+  SCENE_PRESET_AUTO,
   type ColorChoice,
   type ConflictPhoto,
   type ExtraFamily,
@@ -37,13 +41,16 @@ import {
   type OutputChoices,
   type OutputConflict,
   type OutputExtras,
+  type OutputFit,
   type OutputOptionsInput,
   type OutputPlanFlags,
+  type PhotoBackgroundChoice,
+  type ProductSize as PipelineProductSize,
   type ResolvedOutputOptions,
+  type ScenePresetChoice as PipelineScenePresetChoice,
 } from "@curvi/pipeline/output-options";
 import { showsLightEdge } from "@curvi/pipeline/edge";
 import {
-  AUTO_STYLE_PRESET,
   backgroundSwatches,
   creditCosts,
   entitlementsFor,
@@ -73,22 +80,26 @@ import { MAX_BRAND_COLORS } from "@/lib/validation/brand-kit";
 // ---------------------------------------------------------------------------
 // P1 choices (PHASE_15 "P1 (fast follow, same phase)")
 
-/** "Product size in the frame" (seed canvasDefaults.productSizeFill keys). */
-export const PRODUCT_SIZES = ["standard", "larger", "smaller"] as const;
-export type ProductSize = (typeof PRODUCT_SIZES)[number];
+// The P1 types are the schema's (@curvi/pipeline/output-options); these
+// names are the form's aliases of them, so the form sends exactly what the
+// server accepts.
 
-/** "Scene style": the planner's pick, or a seeded preset. */
-export type ScenePresetChoice = typeof AUTO_STYLE_PRESET | PresetKey;
+/** "Product size in the frame" (seed canvasDefaults.productSizeFill keys). */
+export const PRODUCT_SIZES = PRODUCT_SIZE_KEYS;
+export type ProductSize = PipelineProductSize;
+
+/** "Scene style": the planner's pick (auto), or a seeded preset. */
+export type ScenePresetChoice = PipelineScenePresetChoice;
 
 /** Photo shape with Trim to the channel's shape (fit crop). */
-export type FormFit = OutputChoices["fit"] | "crop";
+export type FormFit = OutputFit;
 
-/** A color choice, or Match my photo's edges (Keep only). */
-export type FormColorChoice = ColorChoice | { kind: "edge_match" };
+/** A color choice, including Match my photo's edges (Keep only). */
+export type FormColorChoice = ColorChoice;
 
 /** The per photo Background Select: the pack's switch, or this photo's own. */
-export const PHOTO_BACKGROUNDS = ["pack", "remove", "keep"] as const;
-export type PhotoBackground = (typeof PHOTO_BACKGROUNDS)[number];
+export const PHOTO_BACKGROUNDS = ["pack", "remove", "keep"] as const satisfies readonly PhotoBackgroundChoice[];
+export type PhotoBackground = PhotoBackgroundChoice;
 
 /**
  * The P1 controls. They sit next to the P0 choices, so the P0 look presets
@@ -116,12 +127,7 @@ export interface MoreChoices {
 export const DEFAULT_MORE_CHOICES: Readonly<MoreChoices> = {
   trim: false,
   edgeMatch: false,
-  sceneCount: sceneCountOptions.default,
-  scenePreset: AUTO_STYLE_PRESET,
-  logo: true,
-  productSize: "standard",
-  enlarge: true,
-  graphicsColor: false,
+  ...P1_DEFAULTS,
 };
 
 function defaultMore(): MoreChoices {
@@ -282,11 +288,9 @@ export function p1OutputFields(choices: OutputChoices, more: MoreChoices = DEFAU
 }
 
 /** The POST body's outputOptions: the P0 fields, crop and edge_match with
- * Keep, and the P1 fields that differ from their defaults. */
-export type FormOutputOptionsBody = Omit<OutputOptionsInput, "fit" | "color"> & {
-  fit?: OutputOptionsInput["fit"] | "crop";
-  color?: OutputOptionsInput["color"] | { kind: "edge_match" };
-} & P1OutputFields;
+ * Keep, and the P1 fields that differ from their defaults. Exactly the
+ * schema's request shape (OutputOptionsInput). */
+export type FormOutputOptionsBody = OutputOptionsInput;
 
 /** The POST body's outputOptions. */
 export function outputOptionsBody(
@@ -306,25 +310,12 @@ export function outputOptionsBody(
   };
 }
 
-/** The P1 part of a body, empty when every P1 control is at its default. */
-function p1IntentPart(choices: OutputChoices, more: MoreChoices): Record<string, unknown> {
-  const keep = choices.background === "keep";
-  return {
-    ...p1OutputFields(choices, more),
-    ...(keep && more.trim ? { fit: "crop" } : {}),
-    ...(keep && more.edgeMatch ? { color: "edge_match" } : {}),
-  };
-}
-
-/** The part of the Idempotency-Key fingerprint the options add: any choice
- * that changes the pack changes it, lookBase never does. With every P1
- * control at its default it is exactly outputOptionsKey. */
+/** The part of the Idempotency-Key fingerprint the options add: the
+ * server's outputOptionsKey of the body the form sends, so any choice that
+ * changes the pack changes it and lookBase never does. With every P1
+ * control at its default it is exactly outputOptionsKey(choices). */
 export function optionsIntentKey(choices: OutputChoices, more: MoreChoices = DEFAULT_MORE_CHOICES): string {
-  const extra = p1IntentPart(choices, more);
-  const base = outputOptionsKey(choices);
-  if (Object.keys(extra).length === 0) return base;
-  const sorted = Object.fromEntries(Object.entries(extra).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  return `${base}|${JSON.stringify(sorted)}`;
+  return outputOptionsKey(outputOptionsBody("marketplace", choices, more));
 }
 
 // ---------------------------------------------------------------------------
@@ -407,12 +398,11 @@ export function keptPhotoIds(
   background: OutputChoices["background"],
   photoBackgrounds: Readonly<Record<string, PhotoBackground>> = {},
 ): string[] {
-  return photos
-    .filter((photo) => {
-      const own = photoBackgrounds[photo.id] ?? "pack";
-      return own === "pack" ? background === "keep" : own === "keep";
-    })
-    .map((photo) => photo.id);
+  return keepMediaIdsFor(
+    { background },
+    photos.map((photo) => photo.id),
+    photoBackgrounds,
+  );
 }
 
 /**
@@ -421,43 +411,33 @@ export function keptPhotoIds(
  * keeps working; the brand card and option are disabled in that case and
  * the server refuses it anyway.
  *
- * With P1 controls changed, the options are first resolved with their P1
- * fields, so the estimate follows them once the schema accepts each field;
- * while it does not, the P0 choices alone are resolved, as before.
+ * The options are resolved from exactly the body the form sends
+ * (outputOptionsBody, P1 fields, Trim and Match my photo's edges included)
+ * and each photo's own Background Select, so the estimate, the heads ups
+ * and the server's hold agree.
  */
 export function resolveFormOutput(args: FormResolveArgs): FormResolved {
-  const run = (input: FormOutputOptionsBody | OutputChoices) =>
+  const { lookBase, ...fields } = outputOptionsBody(args.lookBase ?? "marketplace", args.choices, args.more ?? DEFAULT_MORE_CHOICES);
+  const body: OutputOptionsInput = args.lookBase ? { lookBase, ...fields } : fields;
+  const run = (input: OutputOptionsInput) =>
     resolveJobOutput({
-      input: { ...(args.lookBase ? { lookBase: args.lookBase } : {}), ...input } as OutputOptionsInput,
+      input,
       mode: "listing",
       enabled: true,
       brandColors: args.brandColors,
       brandKitsAllowed: args.brandKitsAllowed,
       photos: args.photos,
+      ...(args.photoBackgrounds ? { photoBackgrounds: args.photoBackgrounds } : {}),
     });
-  const p1 = args.more ? p1OutputFields(args.choices, args.more) : {};
-  let first = Object.keys(p1).length > 0 ? run({ ...args.choices, ...p1 }) : null;
-  if (!first || (!first.ok && first.reason === "invalid_options")) {
-    first = run(args.choices);
-  }
-  let result: FormResolved;
+  const first = run(body);
   if (first.ok) {
-    result = { resolved: first.resolved, flags: first.flags };
-  } else {
-    const fallback = run({ ...args.choices, color: { kind: "swatch", key: DEFAULT_SWATCH_KEY } });
-    if (!fallback.ok) {
-      throw new Error(`The form's options did not resolve: ${fallback.reason}`);
-    }
-    result = { resolved: fallback.resolved, flags: fallback.flags };
+    return { resolved: first.resolved, flags: first.flags };
   }
-  if (!args.photoBackgrounds || Object.keys(args.photoBackgrounds).length === 0) {
-    return result;
+  const fallback = run({ ...body, color: { kind: "swatch", key: DEFAULT_SWATCH_KEY } });
+  if (!fallback.ok) {
+    throw new Error(`The form's options did not resolve: ${fallback.reason}`);
   }
-  const keepMediaIds = keptPhotoIds(args.photos, args.choices.background, args.photoBackgrounds);
-  return {
-    resolved: { ...result.resolved, keepMediaIds },
-    flags: { ...result.flags, keepMediaIds: [...keepMediaIds] },
-  };
+  return { resolved: fallback.resolved, flags: fallback.flags };
 }
 
 /** The heads ups for this pick: conflictsFor over the form's photos. */
@@ -557,15 +537,19 @@ export function colorValue(choice: ColorChoice): string {
     case "custom":
       return "custom";
     case "edge_match":
-      return "edge_match";
+      return EDGE_MATCH_VALUE;
   }
 }
 
-/** The choice for a Select value, or null for "custom" (the custom row supplies the hex). */
+/** The choice for a Select value ("edge_match" included), or null for
+ * "custom" (the custom row supplies the hex). */
 export function colorChoiceFromValue(value: string): ColorChoice | null {
   const [kind, rest] = value.split(":");
   if (kind === "swatch" && (SWATCH_KEYS as readonly string[]).includes(rest ?? "")) {
     return { kind: "swatch", key: rest as (typeof SWATCH_KEYS)[number] };
+  }
+  if (value === EDGE_MATCH_VALUE) {
+    return { kind: "edge_match" };
   }
   if (kind === "brand") {
     const index = Number(rest);
@@ -624,7 +608,7 @@ export function colorLabel(choice: ColorChoice, hex: string): string {
     case "custom":
       return hex.toUpperCase();
     case "edge_match":
-      return "Match my photo's edges";
+      return EDGE_MATCH_LABEL;
   }
 }
 
@@ -811,7 +795,7 @@ export function isResizeOnly(choices: Pick<OutputChoices, "background" | "extras
 // ---------------------------------------------------------------------------
 // More options
 
-export const PHOTO_SHAPE_OPTIONS: ReadonlyArray<{ value: OutputChoices["fit"]; label: string }> = [
+export const PHOTO_SHAPE_OPTIONS: ReadonlyArray<{ value: Exclude<OutputFit, "crop">; label: string }> = [
   { value: "auto", label: "Keep my photo's shape where the channel allows it" },
   { value: "pad", label: "Match each channel's shape and add space" },
 ];
@@ -870,13 +854,13 @@ export const SCENE_STYLE_NAMES: Readonly<Record<PresetKey, string>> = {
 /** "Auto, picked for your product", then every seeded preset. */
 export function sceneStyleOptions(): Array<{ value: ScenePresetChoice; label: string }> {
   return [
-    { value: AUTO_STYLE_PRESET, label: "Auto, picked for your product" },
+    { value: SCENE_PRESET_AUTO, label: "Auto, picked for your product" },
     ...(Object.keys(presets) as PresetKey[]).map((key) => ({ value: key, label: SCENE_STYLE_NAMES[key] })),
   ];
 }
 
 export function isScenePresetChoice(value: string): value is ScenePresetChoice {
-  return value === AUTO_STYLE_PRESET || Object.hasOwn(presets, value);
+  return value === SCENE_PRESET_AUTO || Object.hasOwn(presets, value);
 }
 
 export const PRODUCT_SIZE_OPTIONS: ReadonlyArray<{ value: ProductSize; label: string }> = [

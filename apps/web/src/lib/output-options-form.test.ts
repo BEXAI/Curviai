@@ -3,8 +3,8 @@ import {
   DEFAULT_OUTPUT_OPTIONS,
   EXTRA_FAMILY_KEYS,
   LOOK_PRESETS,
+  OutputOptionsInput,
   outputOptionsKey,
-  type OutputOptionsInput,
   type OutputPlanFlags,
 } from "@curvi/pipeline/output-options";
 import {
@@ -65,6 +65,7 @@ import {
   colorChoiceFromValue,
   colorOptions,
   colorValue,
+  EDGE_MATCH_VALUE,
   conflictContextOf,
   customChipText,
   darkColorNote,
@@ -624,13 +625,50 @@ describe("P1 controls", () => {
     expect(outputFormReducer(changed, { type: "keep_instead" }).more).toEqual(DEFAULT_MORE_CHOICES);
   });
 
-  it("resolves with the P0 choices while the schema does not know a P1 field", () => {
-    const state = reduce({ type: "scenes", count: 2 });
+  it("sends only what the server schema accepts, and resolves with every P1 field", () => {
     const photos = planningPhotos([]);
-    const withMore = resolveFormOutput({ choices: state.choices, more: state.more, brandColors: [], brandKitsAllowed: false, photos });
-    const without = resolveFormOutput({ choices: state.choices, brandColors: [], brandKitsAllowed: false, photos });
-    expect(withMore.resolved.colorHex).toBe(without.resolved.colorHex);
-    expect(withMore.flags.extras).toEqual(without.flags.extras);
+    const kept = reduce(
+      { type: "look", look: "keep_photo" },
+      { type: "fit", fit: "crop" },
+      { type: "color", color: { kind: "edge_match" } },
+      { type: "more", patch: { enlarge: false } },
+    );
+    const removed = reduce(
+      { type: "scenes", count: 2 },
+      { type: "more", patch: { scenePreset: "holiday", productSize: "larger", logo: false, graphicsColor: true } },
+    );
+    for (const state of [kept, removed]) {
+      const body = outputOptionsBody(state.lookBase, state.choices, state.more);
+      // The server parses the body with the same strict schema.
+      expect(() => OutputOptionsInput.parse(body)).not.toThrow();
+      const resolved = resolveFormOutput({
+        choices: state.choices,
+        lookBase: state.lookBase,
+        more: state.more,
+        brandColors: [],
+        brandKitsAllowed: false,
+        photos,
+      }).resolved;
+      expect(outputOptionsKey(resolved)).toBe(outputOptionsKey(body));
+      expect(optionsIntentKey(state.choices, state.more)).toBe(outputOptionsKey(body));
+    }
+    const keptResolved = resolveFormOutput({ choices: kept.choices, more: kept.more, brandColors: [], brandKitsAllowed: false, photos });
+    expect(keptResolved.resolved).toMatchObject({ fit: "crop", color: { kind: "edge_match" }, enlarge: false });
+    expect(keptResolved.flags.enlarge).toBe(false);
+    const removedResolved = resolveFormOutput({
+      choices: removed.choices,
+      more: removed.more,
+      brandColors: [],
+      brandKitsAllowed: false,
+      photos,
+    });
+    expect(removedResolved.resolved).toMatchObject({ sceneCount: 2, scenePreset: "holiday", productSize: "larger", logo: false, graphicsColor: true });
+    expect(removedResolved.flags.sceneCount).toBe(2);
+  });
+
+  it("parses Match my photo's edges from the color Select", () => {
+    expect(colorChoiceFromValue(EDGE_MATCH_VALUE)).toEqual({ kind: "edge_match" });
+    expect(colorValue({ kind: "edge_match" })).toBe(EDGE_MATCH_VALUE);
   });
 });
 

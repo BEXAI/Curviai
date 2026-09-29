@@ -21,6 +21,7 @@ import {
   sceneCountSelectOptions,
   sceneCountValue,
   sceneStyleOptions,
+  type FormFit,
   type OutputFormAction,
   type OutputFormState,
 } from "@/lib/output-options-form";
@@ -46,7 +47,7 @@ export function MoreOptionsControls({ state, onAction, hasLogo, scenesPaused }: 
   const { choices, more } = state;
   const show = moreOptionsVisibility(choices, { hasLogo, scenesPaused });
   const fit = formFit(state);
-  const shapeOptions = [...PHOTO_SHAPE_OPTIONS, TRIM_SHAPE_OPTION];
+  const shapeOptions: ReadonlyArray<{ value: FormFit; label: string; helper?: string }> = [...PHOTO_SHAPE_OPTIONS, TRIM_SHAPE_OPTION];
 
   return (
     <div className="space-y-5 px-4 pb-4" data-testid="more-options-controls">
@@ -66,7 +67,7 @@ export function MoreOptionsControls({ state, onAction, hasLogo, scenesPaused }: 
                 />
                 <span className="min-w-0">
                   <span className="block text-sm text-ink-800">{option.label}</span>
-                  {"helper" in option ? <span className="block text-xs text-ink-500">{option.helper}</span> : null}
+                  {option.helper ? <span className="block text-xs text-ink-500">{option.helper}</span> : null}
                 </span>
               </label>
             ))}
