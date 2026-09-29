@@ -26,7 +26,7 @@ export function Wordmark({ className }: { className?: string }) {
 
 export function SiteHeader() {
   return (
-    <header className="sticky top-0 z-40 border-b border-white/10 bg-night/80 backdrop-blur">
+    <header className="theme-base sticky top-0 z-40 border-b border-white/10 bg-night/80 backdrop-blur">
       <div className="relative mx-auto flex h-16 max-w-6xl items-center justify-between gap-6 px-6">
         <Link href="/" aria-label="Curvi home">
           <Wordmark className="text-white" />

@@ -90,7 +90,7 @@ export default function HomePage() {
   const soonFeatures = homeFeatures.filter((feature) => feature.status === "coming_soon");
 
   return (
-    <div className="bg-night text-ink-100">
+    <div className="theme-base bg-night text-ink-100">
       <JsonLd
         data={jsonLdGraph([
           organizationJsonLd(),

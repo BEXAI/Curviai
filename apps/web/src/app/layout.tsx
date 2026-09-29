@@ -46,7 +46,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${grotesk.variable} ${jbMono.variable}`}>
-      <body className="min-h-screen bg-white font-sans text-ink-950 antialiased">
+      <body className="theme-dark min-h-screen bg-night font-sans text-ink-950 antialiased">
         {children}
         <Analytics />
         <CookieConsent />

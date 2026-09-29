@@ -20,7 +20,7 @@ const resourceLinks = [
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-white/10 bg-night">
+    <footer className="theme-base border-t border-white/10 bg-night">
       <div className="mx-auto max-w-6xl px-6 py-12">
         <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
           <div>

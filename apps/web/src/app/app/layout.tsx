@@ -46,7 +46,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     loadHeaderBalance(demo || Boolean(user)),
   ]);
   return (
-    <div className="min-h-screen bg-ink-50">
+    <div className="theme-dark min-h-screen bg-night text-ink-900">
       <header className="border-b border-ink-100 bg-white">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-3">
           <Link href="/app" aria-label="Curvi app home">

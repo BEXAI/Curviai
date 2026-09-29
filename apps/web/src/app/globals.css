@@ -82,3 +82,108 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * Dark theme scope. The home page is drawn dark by hand (bg-night with light
+ * ink shades); every other page and the app use the light ink palette with
+ * white cards. Inside .theme-dark the ink scale is flipped (ink-50 becomes a
+ * dark surface, ink-950 near white), white cards become a raised dark surface
+ * and the light status tints become deep tints, so the same components render
+ * on the home page's night background without per component rewrites.
+ * .theme-base restores the light palette for content already designed for
+ * dark (the home page) or that must stay light.
+ */
+.theme-dark {
+  color-scheme: dark;
+  --surface: #131722;
+  --surface-2: #1a1f2c;
+
+  --color-ink-50: #171b26;
+  --color-ink-100: #252b3a;
+  --color-ink-200: #313a4c;
+  --color-ink-300: #4a566d;
+  --color-ink-400: #6c7d99;
+  --color-ink-500: #8e9db4;
+  --color-ink-600: #adb8c9;
+  --color-ink-700: #c7cfdb;
+  --color-ink-800: #dde2ea;
+  --color-ink-900: #edf0f5;
+  --color-ink-950: #f7f8fa;
+
+  --color-accent-50: #2a1a0c;
+  --color-accent-100: #3a220c;
+  --color-accent-200: #5c330d;
+  --color-accent-600: #ff9c37;
+  --color-accent-700: #ffb566;
+  --color-accent-800: #ffc98f;
+
+  --color-red-50: #2a1417;
+  --color-red-100: #3a1a1e;
+  --color-red-200: #5a2429;
+  --color-red-600: #f87171;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+  --color-red-900: #fee2e2;
+  --color-amber-50: #2a2010;
+  --color-amber-100: #3a2c12;
+  --color-amber-200: #5a4416;
+  --color-amber-700: #fcd34d;
+  --color-amber-800: #fde68a;
+  --color-amber-900: #fef3c7;
+  --color-emerald-50: #0f2620;
+  --color-emerald-200: #1d4a3c;
+  --color-emerald-700: #6ee7b7;
+  --color-emerald-900: #d1fae5;
+
+  --shadow-card: var(--shadow-sheen);
+}
+
+.theme-base {
+  color-scheme: light;
+  --color-ink-50: #f6f7f9;
+  --color-ink-100: #e9ecf1;
+  --color-ink-200: #d3d9e3;
+  --color-ink-300: #aeb9cb;
+  --color-ink-400: #8494ad;
+  --color-ink-500: #647694;
+  --color-ink-600: #4f5e7a;
+  --color-ink-700: #414d63;
+  --color-ink-800: #384153;
+  --color-ink-900: #1d2433;
+  --color-ink-950: #131826;
+  --color-accent-50: #fff8ed;
+  --color-accent-100: #ffefd4;
+  --color-accent-200: #ffdba8;
+  --color-accent-600: #ee6407;
+  --color-accent-700: #c54a08;
+  --color-accent-800: #9c3a0f;
+  --shadow-card: 0 1px 2px 0 rgb(19 24 38 / 0.06), inset 0 1px 0 0 rgb(255 255 255 / 0.7);
+}
+
+/* White cards and panels become the raised dark surface. */
+.theme-dark .bg-white:not(.theme-base .bg-white),
+.theme-dark .bg-white\/90:not(.theme-base *),
+.theme-dark .bg-white\/95:not(.theme-base *) {
+  background-color: var(--surface);
+}
+
+/* Solid dark fills (primary buttons, active tabs) turn light in the flipped
+ * scale, so their white text switches to night for contrast. */
+.theme-dark :is(.bg-ink-800, .bg-ink-900, .bg-ink-950):not(.theme-base *) {
+  color: var(--color-night);
+}
+
+/* Translucent dark chips over photos (Before, After labels) stay dark. */
+.theme-dark :is(.bg-ink-900\/80, .bg-ink-950\/40):not(.theme-base *) {
+  background-color: rgb(11 13 20 / 0.8);
+  color: #fff;
+}
+
+/* Native form fields default to a white box; give them the dark surface. */
+.theme-dark
+  :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), textarea, select):not(
+    .theme-base *
+  ) {
+  background-color: var(--surface-2);
+  color: var(--color-ink-900);
+}
