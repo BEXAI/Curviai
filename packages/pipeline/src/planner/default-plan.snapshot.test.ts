@@ -1,8 +1,10 @@
 /**
  * PHASE_15 guard: with no output options, and with the default options
- * (Marketplace ready), the deterministic planner plans exactly the shots it
- * planned before seller controls existed, for every channel preset. The
- * snapshot was captured on the pre PHASE_15 planner and must not change.
+ * (Marketplace ready), the deterministic planner plans exactly the same
+ * shots, for every channel preset. The snapshot was captured on the pre
+ * PHASE_15 planner and moved once, with P1 sceneCount (founder decision 4):
+ * every default pack now plans exactly 3 lifestyle scenes, and the gallery
+ * reserves 3 slots for them. It must not change otherwise.
  */
 import { describe, expect, it } from "vitest";
 import { listSpecs } from "@curvi/specs";

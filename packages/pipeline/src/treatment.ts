@@ -25,6 +25,9 @@ export const PackAssetTreatment = z
     padHex: HexValue.optional(),
     /** Trimmed around the product box (P1 crop fit). */
     cropped: z.boolean().optional(),
+    /** The seller asked for a crop, but the product box was unknown or did
+     * not fit the channel's shape, so the photo was fitted without one. */
+    cropFallback: z.boolean().optional(),
     /** Resize factor applied to the photo; 1 means none. */
     scale: z.number().positive().optional(),
     /** Stored photo size, for the resized note. */
@@ -58,6 +61,7 @@ export const TREATMENT_NOTES = {
   resizedFrom: (width: number, height: number) => `original: resized from ${width}x${height}`,
   padded: (hex: string) => `original: padded ${hex.toUpperCase()}`,
   cropped: "original: cropped around product",
+  cropFallback: "original: not cropped, product box did not fit",
   enlarged: (scale: number) => `original: enlarged ${scale.toFixed(1)}x`,
   colorConverted: "original: color converted to srgb",
   alphaFilled: (hex: string) => `original: transparent areas filled ${hex.toUpperCase()}`,
@@ -105,6 +109,9 @@ export function treatmentNotes(treatment: PackAssetTreatment | null | undefined)
   }
   if (treatment.cropped) {
     notes.push(TREATMENT_NOTES.cropped);
+  }
+  if (treatment.cropFallback) {
+    notes.push(TREATMENT_NOTES.cropFallback);
   }
   const scale = treatment.scale;
   if (scale !== undefined && scale < 1 - SCALE_EPSILON && treatment.sourceWidth && treatment.sourceHeight) {

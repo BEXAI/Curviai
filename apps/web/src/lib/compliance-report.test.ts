@@ -25,6 +25,7 @@ const SAMPLE_NOTES: Record<TreatmentNoteKey, string> = {
   resizedFrom: TREATMENT_NOTES.resizedFrom(4032, 3024),
   padded: TREATMENT_NOTES.padded("#f4f4f5"),
   cropped: TREATMENT_NOTES.cropped,
+  cropFallback: TREATMENT_NOTES.cropFallback,
   enlarged: TREATMENT_NOTES.enlarged(1.3),
   colorConverted: TREATMENT_NOTES.colorConverted,
   alphaFilled: TREATMENT_NOTES.alphaFilled("#F4F4F5"),
@@ -43,6 +44,8 @@ describe("treatment notes", () => {
       resizedFrom: "Resized from 4032 by 3024 pixels.",
       padded: "Space added around your photo in #F4F4F5 to fit this channel's shape.",
       cropped: "Trimmed to this channel's shape. Your whole product stays in the picture.",
+      cropFallback:
+        "We never trim your product. It could not be trimmed to this channel's shape without cutting into it, so it was fitted without trimming.",
       enlarged: "Enlarged 1.3 times to reach this channel's minimum size.",
       colorConverted: "Colors converted to the standard sRGB profile that marketplaces expect.",
       alphaFilled: "Transparent areas of your photo were filled with #F4F4F5.",

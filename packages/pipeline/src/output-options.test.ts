@@ -11,6 +11,7 @@ import {
   MAX_SOURCE_UPSCALE,
   NEVER_SWITCHABLE_SHOT_TYPES,
   OutputOptionsInput,
+  P1_DEFAULTS,
   ResolvedOutputOptions,
   SELLER_OFF_REASON,
   SOURCE_TOO_SMALL_REASON,
@@ -20,8 +21,11 @@ import {
   conflictsFor,
   cutoutMediaIds,
   extraFamilyOf,
+  graphicsFollowColor,
   hexToRgb,
   keepMediaIdsFor,
+  keptMaxUpscale,
+  logoOn,
   lookOf,
   normalizeOutputOptions,
   originalFitFor,
@@ -29,9 +33,12 @@ import {
   outputOptionsKey,
   packNeedsCutout,
   planFlagsOf,
+  productSizeFillFor,
   resolveColorHex,
   resolveOutputOptions,
   rgbToHex,
+  sceneCountOf,
+  scenePresetOf,
   specAcceptsImage,
   whiteRequiredGallerySpecIds,
   type OutputPlanFlags,
@@ -41,7 +48,7 @@ import {
 import { minLongSideFor } from "./qc/pixelChecks";
 import { MAX_SOURCE_UPSCALE as SIZE_GATE_UPSCALE } from "./size-gate";
 import { MAX_BRAND_COLORS } from "./seed/brand";
-import { backgroundSwatches, originalFit, stillStyle } from "./seed/templates";
+import { backgroundSwatches, canvasDefaults, originalFit, sceneCountOptions, stillStyle } from "./seed/templates";
 import { Shot } from "./schemas";
 
 const WHITE_SPECS = ["amazon.main", "google.merchant.main", "walmart.main", "tiktokshop.main"];
@@ -59,7 +66,19 @@ function resolved(input: Parameters<typeof normalizeOutputOptions>[0], snapshot:
 
 describe("normalizeOutputOptions", () => {
   it("normalizes an empty object and an absent one to today's pack", () => {
-    const expected = { v: 1, background: "remove", color: { kind: "swatch", key: "white" }, fit: "auto", extras: ALL_ON };
+    const expected = {
+      v: 1,
+      background: "remove",
+      color: { kind: "swatch", key: "white" },
+      fit: "auto",
+      extras: ALL_ON,
+      sceneCount: 3,
+      scenePreset: "auto",
+      logo: true,
+      productSize: "standard",
+      enlarge: true,
+      graphicsColor: false,
+    };
     expect(normalizeOutputOptions({})).toEqual(expected);
     expect(normalizeOutputOptions(undefined)).toEqual(expected);
     expect(normalizeOutputOptions(null)).toEqual(expected);
@@ -79,7 +98,30 @@ describe("normalizeOutputOptions", () => {
     expect(normalizeOutputOptions({ lookBase: "keep_photo" }).lookBase).toBe("keep_photo");
   });
 
-  it("refuses bad colors, P1 values and unknown keys", () => {
+  it("accepts every P1 field, with the seeded bounds, and absent equals explicit defaults", () => {
+    const p1 = {
+      fit: "crop",
+      color: { kind: "edge_match" },
+      sceneCount: 1,
+      scenePreset: "outdoor",
+      logo: false,
+      productSize: "larger",
+      enlarge: false,
+      graphicsColor: true,
+    } as const;
+    const normalized = normalizeOutputOptions({ background: "keep", ...p1 });
+    expect(normalized).toMatchObject(p1);
+    expect(OutputOptionsInput.safeParse({ sceneCount: sceneCountOptions.max }).success).toBe(true);
+    expect(OutputOptionsInput.safeParse({ sceneCount: sceneCountOptions.min }).success).toBe(true);
+    expect(outputOptionsKey({})).toBe(outputOptionsKey({ ...P1_DEFAULTS }));
+    expect(outputOptionsKey({ sceneCount: 3 })).toBe(outputOptionsKey(undefined));
+    for (const [key, value] of Object.entries(p1)) {
+      expect(outputOptionsKey({ [key]: value }), key).not.toBe(outputOptionsKey({}));
+      expect(lookOf(normalizeOutputOptions({ [key]: value })), key).toBe("custom");
+    }
+  });
+
+  it("refuses bad colors, out of range P1 values and unknown keys", () => {
     const bad: unknown[] = [
       { color: { kind: "custom", hex: "#FFF" } },
       { color: { kind: "custom", hex: "red" } },
@@ -90,11 +132,17 @@ describe("normalizeOutputOptions", () => {
       { color: { kind: "brand", index: 1.5 } },
       { color: { kind: "swatch", key: "neon" } },
       { color: { kind: "swatch", key: "white", extra: 1 } },
-      { color: { kind: "edge_match" } },
-      { fit: "crop" },
+      { color: { kind: "edge_match", hex: "#FFFFFF" } },
+      { fit: "stretch" },
       { background: "blur" },
       { v: 2 },
-      { sceneCount: 3 },
+      { sceneCount: sceneCountOptions.min - 1 },
+      { sceneCount: sceneCountOptions.max + 1 },
+      { sceneCount: 2.5 },
+      { scenePreset: "neon" },
+      { productSize: "huge" },
+      { logo: "yes" },
+      { enlarge: 0 },
       { extras: { video: true } },
       { lookBase: "custom" },
     ];
@@ -184,7 +232,8 @@ describe("ResolvedOutputOptions", () => {
       { ...value, extras: { scenes: true } },
       { ...value, look: "fancy" },
       { ...value, keepMediaIds: [""] },
-      { ...value, sceneCount: 3 },
+      { ...value, sceneCount: sceneCountOptions.max + 1 },
+      { ...value, scenePreset: "neon" },
       (({ colorHex: _drop, ...rest }) => rest)(value),
     ]) {
       expect(ResolvedOutputOptions.safeParse(bad).success).toBe(false);
@@ -245,7 +294,15 @@ describe("planFlagsOf", () => {
     ]);
     const json = JSON.stringify(flags);
     expect(json).not.toMatch(/#[0-9A-Fa-f]{6}/);
-    expect(Object.keys(flags).sort()).toEqual(["background", "extras", "fit", "keepMediaIds", "photos"]);
+    expect(Object.keys(flags).sort()).toEqual([
+      "background",
+      "enlarge",
+      "extras",
+      "fit",
+      "keepMediaIds",
+      "photos",
+      "sceneCount",
+    ]);
     expect(flags.photos[1]).toEqual({ id: "ws/a/src/2.jpg" });
     expect(flags.keepMediaIds).toEqual(["ws/a/src/1.jpg", "ws/a/src/2.jpg"]);
   });
@@ -253,6 +310,62 @@ describe("planFlagsOf", () => {
   it("keeps every photo with Keep and none with Remove", () => {
     expect(keepMediaIdsFor({ background: "keep" }, ["a", "b"])).toEqual(["a", "b"]);
     expect(keepMediaIdsFor({ background: "remove" }, ["a", "b"])).toEqual([]);
+  });
+
+  it("lets each photo override the pack (P1 background per photo)", () => {
+    const ids = ["a", "b", "c"];
+    expect(keepMediaIdsFor({ background: "remove" }, ids, { b: "keep" })).toEqual(["b"]);
+    expect(keepMediaIdsFor({ background: "keep" }, ids, { a: "remove", b: "pack" })).toEqual(["b", "c"]);
+    expect(keepMediaIdsFor({ background: "keep" }, ids, {})).toEqual(ids);
+  });
+
+  it("carries the scene count and the enlarge cap, with defaults for rows stored before P1", () => {
+    const old = resolved({});
+    const { sceneCount: _s, enlarge: _e, ...stored } = old;
+    expect(ResolvedOutputOptions.safeParse(stored).success).toBe(true);
+    expect(planFlagsOf(ResolvedOutputOptions.parse(stored), []).sceneCount).toBe(sceneCountOptions.default);
+    expect(planFlagsOf(resolved({ sceneCount: 1, enlarge: false }), [])).toMatchObject({ sceneCount: 1, enlarge: false });
+  });
+});
+
+describe("P1 accessors", () => {
+  it("fill the defaults for options without P1 fields", () => {
+    expect(sceneCountOf(null)).toBe(sceneCountOptions.default);
+    expect(scenePresetOf(null)).toBeNull();
+    expect(scenePresetOf({ scenePreset: "holiday" })).toBe("holiday");
+    expect(logoOn(undefined)).toBe(true);
+    expect(logoOn({ logo: false })).toBe(false);
+    expect(graphicsFollowColor(undefined)).toBe(false);
+    expect(keptMaxUpscale(undefined)).toBe(MAX_SOURCE_UPSCALE);
+    expect(keptMaxUpscale({ enlarge: false })).toBe(1);
+  });
+
+  it("resolves edge match to seed white for removed photos and extras", () => {
+    expect(resolveColorHex({ kind: "edge_match" }, [])).toBe(stillStyle.whiteHex);
+  });
+
+  it("clamps the product size into spec.fill, so amazon.main stays within 0.85 to 0.9", () => {
+    const main = getSpec("amazon.main");
+    for (const size of ["standard", "larger", "smaller"] as const) {
+      const fill = productSizeFillFor(main, { productSize: size });
+      expect(fill).toBeGreaterThanOrEqual(0.85);
+      expect(fill).toBeLessThanOrEqual(0.9);
+      const google = productSizeFillFor(getSpec("google.merchant.main"), { productSize: size });
+      expect(google).toBeGreaterThanOrEqual(getSpec("google.merchant.main").fill!.min);
+      expect(google).toBeLessThanOrEqual(getSpec("google.merchant.main").fill!.max);
+    }
+    const open = getSpec("amazon.secondary");
+    expect(productSizeFillFor(open, { productSize: "larger" })).toBe(canvasDefaults.productSizeFill.larger);
+    expect(productSizeFillFor(open, { productSize: "smaller" })).toBe(canvasDefaults.productSizeFill.smaller);
+    expect(productSizeFillFor(open, null)).toBe(canvasDefaults.productSizeFill.standard);
+  });
+
+  it("maps crop to crop on every spec, and plans it as its fallback", () => {
+    for (const spec of listSpecs()) {
+      expect(originalFitFor(spec, { fit: "crop" })).toBe("crop");
+    }
+    // Planned without a box, a crop never skips where it falls back to pad.
+    expect(originalScale({ width: 400, height: 400 }, getSpec("meta.feed_4x5"), { fit: "crop" }).skip).toBeUndefined();
   });
 });
 

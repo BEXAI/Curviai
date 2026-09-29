@@ -357,6 +357,8 @@ export function colorValue(choice: ColorChoice): string {
       return `brand:${choice.index}`;
     case "custom":
       return "custom";
+    case "edge_match":
+      return "edge_match";
   }
 }
 
@@ -422,6 +424,8 @@ export function colorLabel(choice: ColorChoice, hex: string): string {
       return `Brand color ${choice.index + 1}, ${hex.toUpperCase()}`;
     case "custom":
       return hex.toUpperCase();
+    case "edge_match":
+      return "Match my photo's edges";
   }
 }
 

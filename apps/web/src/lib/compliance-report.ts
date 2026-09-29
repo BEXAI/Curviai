@@ -340,6 +340,8 @@ export const TREATMENT_SENTENCES = {
   resizedFrom: (size: string) => `Resized from ${size.replace(/^(\d+)x(\d+)$/, "$1 by $2")} pixels.`,
   padded: (hex: string) => `Space added around your photo in ${hex} to fit this channel's shape.`,
   cropped: "Trimmed to this channel's shape. Your whole product stays in the picture.",
+  cropFallback:
+    "We never trim your product. It could not be trimmed to this channel's shape without cutting into it, so it was fitted without trimming.",
   enlarged: (scale: string) => `Enlarged ${scale} times to reach this channel's minimum size.`,
   colorConverted: "Colors converted to the standard sRGB profile that marketplaces expect.",
   alphaFilled: (hex: string) => `Transparent areas of your photo were filled with ${hex}.`,
@@ -385,6 +387,8 @@ function treatmentSentence(note: string, all: ReadonlySet<string>, opts: Describ
       return TREATMENT_SENTENCES.padded(value);
     case "cropped":
       return TREATMENT_SENTENCES.cropped;
+    case "cropFallback":
+      return TREATMENT_SENTENCES.cropFallback;
     case "enlarged":
       return TREATMENT_SENTENCES.enlarged(value);
     case "colorConverted":

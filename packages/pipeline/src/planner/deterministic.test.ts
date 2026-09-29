@@ -16,6 +16,7 @@ import {
   type PlanPhoto,
 } from "../output-options";
 import { creditCosts, undeliverableShotMethods } from "../seed/credits";
+import { lifestyleFallbackScenes, sceneCountOptions } from "../seed/templates";
 import { ShotList, type ProductProfile, type Shot } from "../schemas";
 import {
   CHANNEL_LIMIT_REASON,
@@ -23,11 +24,14 @@ import {
   CREDIT_BUDGET_REASON,
   NO_COMPATIBLE_CHANNEL_REASON,
   RESERVED_GALLERY_SLOTS,
+  SCENE_COUNT_REASON,
   UNDELIVERABLE_METHOD_REASON,
   applyOriginalSizes,
+  capSceneCount,
   capShotsPerChannel,
   channelLimitViolations,
   coverSellerOffSpecs,
+  lifestyleScenesFor,
   planShots,
   printableDimensions,
   reservedSlotsFor,
@@ -61,6 +65,18 @@ function profile(overrides: Partial<ProductProfile> = {}): ProductProfile {
     complianceFlags: ["none"],
     imageQuality: { usableForMain: true, issues: [] },
     ...overrides,
+  };
+}
+
+/** Marketplace ready flags with the seller's number of scenes. */
+function sceneFlags(sceneCount: number): OutputPlanFlags {
+  return {
+    background: "remove",
+    keepMediaIds: [],
+    extras: { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: true },
+    fit: "auto",
+    photos: [],
+    sceneCount,
   };
 }
 
@@ -280,9 +296,9 @@ describe("planShots lifestyle scenes by category (Update.md 2.16)", () => {
 
   it("keeps ghost style when apparel has 5 contexts", () => {
     const scenes = lifestyleScenes(planShots(apparel(["beach", "office", "gym", "park", "cafe"]), baseOpts));
-    expect(scenes).toHaveLength(4);
+    expect(scenes).toHaveLength(sceneCountOptions.default);
     expect(scenes).toContain(GHOST);
-    expect(scenes.filter((s) => s.startsWith("flat lay, "))).toHaveLength(3);
+    expect(scenes.filter((s) => s.startsWith("flat lay, "))).toHaveLength(sceneCountOptions.default - 1);
   });
 
   it("dedupes repeated apparel contexts and still meets the minimum", () => {
@@ -294,14 +310,15 @@ describe("planShots lifestyle scenes by category (Update.md 2.16)", () => {
 
   it("uses the seller's contexts without flat lay or ghost style when on model photos exist", () => {
     const scenes = lifestyleScenes(planShots(apparel(["beach", "office"], ["front", "in_use"]), baseOpts));
-    expect(scenes).toEqual(["beach", "office"]);
+    // The seed's first fallback scene fills the default count of 3.
+    expect(scenes).toEqual(["beach", "office", lifestyleFallbackScenes[0]]);
   });
 
   it("keeps the jewelry additions when there are 4 or more contexts", () => {
     const scenes = lifestyleScenes(
       planShots(profile({ category: "jewelry", useContexts: ["a", "b", "c", "d", "e"] }), baseOpts),
     );
-    expect(scenes).toHaveLength(4);
+    expect(scenes).toHaveLength(sceneCountOptions.default);
     expect(scenes).toContain("detail macro");
     expect(scenes).toContain("scale on hand");
   });
@@ -310,7 +327,79 @@ describe("planShots lifestyle scenes by category (Update.md 2.16)", () => {
     const scenes = lifestyleScenes(
       planShots(profile({ category: "furniture", useContexts: ["a", "b", "c", "d"] }), baseOpts),
     );
-    expect(scenes).toEqual(["a", "b", "c", "room scale scene"]);
+    expect(scenes).toEqual(["a", "b", "room scale scene"]);
+  });
+});
+
+describe("number of scenes (PHASE_15 P1, founder decision 4)", () => {
+  const CATEGORIES: ProductProfile["category"][] = [
+    "apparel",
+    "jewelry",
+    "food_beverage",
+    "furniture",
+    "electronics",
+    "home_kitchen",
+    "beauty",
+    "pet",
+  ];
+  const CONTEXTS: string[][] = [[], ["a"], ["a", "a"], ["a", "b", "c", "d", "e", "f"]];
+
+  it("plans exactly n scenes for every category, n from the seed bounds, category scenes first", () => {
+    for (let n = sceneCountOptions.min; n <= sceneCountOptions.max; n++) {
+      for (const category of CATEGORIES) {
+        for (const useContexts of CONTEXTS) {
+          const product = profile({ category, useContexts });
+          const scenes = lifestyleScenesFor(product, n);
+          expect(scenes, `${category} ${n} ${useContexts.join(",")}`).toHaveLength(n);
+          expect(new Set(scenes).size).toBe(n);
+          const planned = lifestyleScenes(planShots(product, { ...baseOpts, creditBudget: 1000, output: sceneFlags(n) }));
+          expect(planned).toEqual(scenes);
+        }
+      }
+    }
+    // With one scene, jewelry keeps its first category scene.
+    expect(lifestyleScenesFor(profile({ category: "jewelry", useContexts: ["a"] }), 1)).toEqual(["detail macro"]);
+  });
+
+  it("plans the seed default when the pack names no count", () => {
+    expect(lifestyleScenes(planShots(profile(), baseOpts))).toHaveLength(sceneCountOptions.default);
+    expect(lifestyleScenesFor(profile())).toHaveLength(sceneCountOptions.default);
+  });
+
+  it("changes the credits by exactly one scene per step", () => {
+    const totalFor = (n: number): number =>
+      planShots(profile(), { ...baseOpts, creditBudget: 1000, output: sceneFlags(n) }).shots.reduce(
+        (sum, s) => sum + s.credits,
+        0,
+      );
+    for (let n = sceneCountOptions.min; n < sceneCountOptions.max; n++) {
+      expect(totalFor(n + 1) - totalFor(n)).toBe(creditCosts.generativeStill);
+    }
+  });
+
+  it("reserves the pack's scene count on a full gallery", () => {
+    expect(reservedSlotsFor([], 4).find((r) => r.type === "lifestyle")?.count).toBe(4);
+    expect(reservedSlotsFor([]).find((r) => r.type === "lifestyle")?.count).toBe(sceneCountOptions.default);
+    const list = planShots(
+      profile({ photographedAngles: allAngles, missingAnglesNeeded: [], useContexts: ["a", "b", "c", "d"] }),
+      { ...baseOpts, creditBudget: 1000, channels: ["amazon"], output: sceneFlags(4) },
+    );
+    const secondary = list.shots.filter((s) => s.channels.includes("amazon.secondary"));
+    expect(secondary.filter((s) => s.type === "lifestyle")).toHaveLength(4);
+  });
+
+  it("capSceneCount keeps the first n scenes of a plan it did not make", () => {
+    const base = planShots(profile(), { ...baseOpts, creditBudget: 1000 }).shots;
+    const scene = base.find((s) => s.type === "lifestyle")!;
+    const scenes = Array.from({ length: 4 }, (_, i) => ({ ...scene, id: `l${i}` }));
+    const skipped: SkippedShot[] = [];
+    const out = capSceneCount([...scenes, base[0]], { sceneCount: 2 }, skipped);
+    expect(out.map((s) => s.id)).toEqual(["l0", "l1", base[0].id]);
+    expect(skipped).toEqual([
+      { type: "lifestyle", reason: SCENE_COUNT_REASON },
+      { type: "lifestyle", reason: SCENE_COUNT_REASON },
+    ]);
+    expect(capSceneCount(scenes, undefined, []).length).toBe(sceneCountOptions.default);
   });
 });
 
@@ -331,7 +420,7 @@ describe("planShots channel image limits (Update.md 2.10 and 2.12)", () => {
   const richOpts = { ...baseOpts, creditBudget: 1000, hasBoxContents: true, hasComparisonFacts: true };
   const onSpec = (list: ShotList, specId: string) => list.shots.filter((s) => s.channels.includes(specId));
 
-  it("caps a pack with 9 or more secondary shots at 8 and keeps 2 lifestyle scenes and the infographic", () => {
+  it("caps a pack with 9 or more secondary shots at 8 and keeps the scene count and the infographic", () => {
     const list = planShots(
       profile({ photographedAngles: allAngles, missingAnglesNeeded: [], useContexts: ["a", "b", "c", "d"] }),
       { ...richOpts, channels: ["amazon"] },
@@ -339,26 +428,28 @@ describe("planShots channel image limits (Update.md 2.10 and 2.12)", () => {
     const secondary = onSpec(list, "amazon.secondary");
     expect(secondary).toHaveLength(8);
     const count = (type: string): number => secondary.filter((s) => s.type === type).length;
-    // Founder decision: 2 lifestyle scenes and the infographic keep their
-    // slots, the rest go by priority (the best 5 alternate angles).
+    // Founder decisions: the pack's scenes (3 by default) and the
+    // infographic keep their slots, the rest go by priority (the best 4
+    // alternate angles).
     expect(count("lifestyle")).toBe(RESERVED_GALLERY_SLOTS.find((r) => r.type === "lifestyle")!.count);
+    expect(count("lifestyle")).toBe(sceneCountOptions.default);
     expect(count("infographic")).toBe(1);
-    expect(count("alt_angle_white")).toBe(5);
+    expect(count("alt_angle_white")).toBe(4);
     expect(secondary.filter((s) => s.type === "alt_angle_white").map((s) => s.scene)).toEqual([
       "45 angle on white",
       "side angle on white",
       "back angle on white",
       "top angle on white",
-      "bottom angle on white",
     ]);
-    // The best two scenes by plan order are the ones kept.
-    expect(secondary.filter((s) => s.type === "lifestyle").map((s) => s.scene)).toEqual(["a", "b"]);
+    // The pack plans its first three contexts, and all three are kept.
+    expect(secondary.filter((s) => s.type === "lifestyle").map((s) => s.scene)).toEqual(["a", "b", "c"]);
 
-    // 8 angles, cutout, 2 sweeps, 4 scenes, infographic, dimensions, in the
-    // box and comparison: 19 secondary candidates, 8 slots, 11 extras.
+    // 8 angles, cutout, 2 sweeps, 3 scenes, infographic, dimensions, in the
+    // box and comparison: 18 secondary candidates, 8 slots, 10 extras.
     const extras = list.skipped.filter((s) => s.reason === CHANNEL_LIMIT_REASON).map((s) => s.type).sort();
     expect(extras).toEqual(
       [
+        "alt_angle_white",
         "alt_angle_white",
         "alt_angle_white",
         "alt_angle_white",
@@ -366,8 +457,6 @@ describe("planShots channel image limits (Update.md 2.10 and 2.12)", () => {
         "cutout_png",
         "dimensions",
         "in_the_box",
-        "lifestyle",
-        "lifestyle",
         "sweep_brand",
         "sweep_gray",
       ].sort(),
@@ -397,16 +486,16 @@ describe("planShots channel image limits (Update.md 2.10 and 2.12)", () => {
     );
     expect(onSpec(list, "amazon.secondary")).toHaveLength(8);
     const lifestyle = list.shots.filter((s) => s.type === "lifestyle");
-    expect(lifestyle).toHaveLength(4);
+    expect(lifestyle).toHaveLength(3);
     expect(lifestyle.map((s) => s.channels)).toEqual([
       ["amazon.secondary", "shopify.product"],
       ["amazon.secondary", "shopify.product"],
-      ["shopify.product"],
-      ["shopify.product"],
+      ["amazon.secondary", "shopify.product"],
     ]);
     const alternates = list.shots.filter((s) => s.type === "alt_angle_white");
     expect(alternates).toHaveLength(8);
-    expect(alternates.filter((s) => s.channels.includes("amazon.secondary"))).toHaveLength(5);
+    // The 4 best angles keep amazon.secondary; the others ship to Shopify only.
+    expect(alternates.filter((s) => s.channels.includes("amazon.secondary"))).toHaveLength(4);
     expect(alternates.every((s) => s.channels.includes("shopify.product"))).toBe(true);
     expect(list.skipped.some((s) => s.reason === CHANNEL_LIMIT_REASON)).toBe(false);
   });
@@ -432,7 +521,7 @@ describe("planShots channel image limits (Update.md 2.10 and 2.12)", () => {
     expect(list.shots.filter((s) => s.type === "lifestyle").map((s) => s.scene)).toEqual(["a"]);
     // Every skipped shot is recorded once.
     const lifestyles = list.shots.filter((s) => s.type === "lifestyle").length;
-    expect(lifestyles + list.skipped.filter((s) => s.type === "lifestyle").length).toBe(4);
+    expect(lifestyles + list.skipped.filter((s) => s.type === "lifestyle").length).toBe(sceneCountOptions.default);
   });
 
   it("applies the reservation to a shot list capped directly, as the LLM plan check does", () => {
@@ -443,7 +532,7 @@ describe("planShots channel image limits (Update.md 2.10 and 2.12)", () => {
     const scenes = Array.from({ length: 3 }, (_, i) => ({ ...scene, id: `l${i}`, channels: ["amazon.secondary"] }));
     const skipped: ShotList["skipped"] = [];
     const capped = capShotsPerChannel([...angles, ...scenes], skipped);
-    expect(capped.map((s) => s.id)).toEqual(["a0", "a1", "a2", "a3", "a4", "a5", "l0", "l1"]);
+    expect(capped.map((s) => s.id)).toEqual(["a0", "a1", "a2", "a3", "a4", "l0", "l1", "l2"]);
     expect(skipped).toHaveLength(4);
     // With no reservations the limit goes by priority alone.
     const plain = capShotsPerChannel([...angles, ...scenes], [], []);
@@ -601,7 +690,9 @@ describe("planShots marketplaces beyond Amazon, Shopify and Google", () => {
     }
     expect(types.filter((t) => t === "alt_angle_white")).toHaveLength(4);
     // No generated scene ships to Etsy, and nothing falls back to Shopify.
-    expect(skippedAs(list, NO_COMPATIBLE_CHANNEL_REASON).filter((t) => t === "lifestyle")).toHaveLength(2);
+    expect(skippedAs(list, NO_COMPATIBLE_CHANNEL_REASON).filter((t) => t === "lifestyle")).toHaveLength(
+      sceneCountOptions.default,
+    );
     expect(on(list, "shopify.product")).toEqual([]);
     // A family string selects the same plan.
     expect(planShots(profile(), opts(["etsy"])).shots).toEqual(list.shots);
@@ -612,7 +703,7 @@ describe("planShots marketplaces beyond Amazon, Shopify and Google", () => {
     const types = expectCompliant(list, "ebay.listing").map((s) => s.type);
     expect(types).toEqual(expect.arrayContaining(["cutout_png", "sweep_gray", "sweep_brand"]));
     expect(skippedAs(list, NO_COMPATIBLE_CHANNEL_REASON).sort()).toEqual(
-      ["comparison", "dimensions", "in_the_box", "infographic", "lifestyle", "lifestyle"].sort(),
+      ["comparison", "dimensions", "in_the_box", "infographic", "lifestyle", "lifestyle", "lifestyle"].sort(),
     );
   });
 
@@ -627,6 +718,7 @@ describe("planShots marketplaces beyond Amazon, Shopify and Google", () => {
         "dimensions",
         "in_the_box",
         "infographic",
+        "lifestyle",
         "lifestyle",
         "lifestyle",
         "sweep_brand",
@@ -1209,6 +1301,27 @@ describe("planShots with output options (PHASE_15 item 3)", () => {
     expect(sorted(other.channels)).toEqual(["amazon.secondary", "etsy.listing"]);
   });
 
+  it("applyOriginalSizes caps the enlarge at 1 with Never enlarge my photo (P1)", () => {
+    const shot: Shot = {
+      id: "s01_original_photo",
+      type: "original_photo",
+      sourceMediaId: "m_front",
+      method: "deterministic",
+      channels: ["amazon.secondary", "etsy.listing"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    };
+    // 1400 px reaches amazon.secondary's 1600 within 1.5, but not at 1.
+    const photos = [{ id: "m_front", angle: "front", width: 1400, height: 1400 }];
+    const enlarged: SkippedShot[] = [];
+    expect(applyOriginalSizes([shot], flags("keep", {}, photos), enlarged)).toEqual([shot]);
+    const never: SkippedShot[] = [];
+    const out = applyOriginalSizes([shot], { ...flags("keep", {}, photos), enlarge: false }, never);
+    expect(out.map((s) => s.channels)).toEqual([["etsy.listing"]]);
+    expect(never).toContainEqual({ type: "original_photo:amazon.secondary", reason: SOURCE_TOO_SMALL_REASON });
+  });
+
   it("applyOriginalSizes treats a photo of unknown size as fitting", () => {
     const shot: Shot = {
       id: "s01_original_photo",
@@ -1231,7 +1344,7 @@ describe("planShots with output options (PHASE_15 item 3)", () => {
       { type: "original_photo", count: 2 },
       ...RESERVED_GALLERY_SLOTS,
     ]);
-    expect(reservedSlotsFor([])).toBe(RESERVED_GALLERY_SLOTS);
+    expect(reservedSlotsFor([])).toEqual(RESERVED_GALLERY_SLOTS);
   });
 
   it("skipSellerOffShots filters a plan it did not make and records the specs", () => {

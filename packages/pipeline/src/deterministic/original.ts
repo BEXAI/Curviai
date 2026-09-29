@@ -4,7 +4,8 @@
  * or cut out. The only operations, in order, in one sharp pipeline reading
  * the stored bytes:
  *
- * 1. Crop (P1 crop fit, and the already white file below).
+ * 1. Crop (the P1 crop fit around the product box, and the already white
+ *    file below).
  * 2. Resize with PRODUCT_RESIZE_KERNEL, one pass, fastShrinkOnLoad off, and
  *    only when the size changes. No sharpen, modulate or gamma.
  * 3. Conversion to 8 bit sRGB: an embedded ICC profile is transformed to
@@ -24,9 +25,19 @@
  */
 import { createHash } from "node:crypto";
 import sharp from "sharp";
-import { dimensionBounds, requiresWhiteBackground, type ChannelSpec } from "@curvi/specs";
+import { dimensionBounds, isExactSize, requiresWhiteBackground, type ChannelSpec } from "@curvi/specs";
 import { dilate, type BBox } from "../mask";
-import { canvasSizeFor, hexToRgb, originalFitFor, rgbToHex, SOURCE_TOO_SMALL_REASON } from "../output-options";
+import {
+  canvasSizeFor,
+  cropFallbackFor,
+  cropWindowFor,
+  hexToRgb,
+  originalFitFor,
+  rgbToHex,
+  SOURCE_TOO_SMALL_REASON,
+  type OutputFit,
+  type PixelBox,
+} from "../output-options";
 import { minLongSideFor, QC_THRESHOLDS } from "../qc/pixelChecks";
 import type { RawImage, RawMask } from "../raw";
 import { canvasDefaults, originalFit, stillStyle } from "../seed/templates";
@@ -34,17 +45,23 @@ import type { PackAssetTreatment } from "../treatment";
 import { PRODUCT_RESIZE_KERNEL, type ProductPlacement, type Rgb } from "./whiten";
 
 /** A kept photo's fit: the seller's P0 choices, plus crop from P1. */
-export type OriginalFitMode = "auto" | "pad" | "crop";
+export type OriginalFitMode = OutputFit;
 
 export interface OriginalFitOptions {
   fit: OriginalFitMode;
   /** Color of added space and of flattened transparent areas. */
   padRgb: Rgb;
+  /** Match my photo's edges (P1): added space and flattened areas take the
+   * median color of the placed photo's outer ring (seed
+   * originalFit.edgeRingPx) instead of padRgb. One flat color, never a blur
+   * or an extension of the photo. */
+  edgeMatch?: boolean;
   /** The most the photo is enlarged (MAX_SOURCE_UPSCALE, or 1 with Never enlarge in P1). */
   maxUpscale: number;
   /** Megapixel cap for every kept output (seed originalFit.maxMegapixels). */
   maxMegapixels: number;
-  /** The product box in upright source pixels, needed by the P1 crop fit. */
+  /** The product box in upright source pixels, for the P1 crop fit. Without
+   * it a crop falls back (cropFallbackFor) with a note. */
   productBox?: BBox;
   /** The stored copy was written again at upload (source_media.ingest.reencoded). */
   reencodedAtUpload?: boolean;
@@ -94,14 +111,6 @@ export class SourceTooSmallError extends Error {
   constructor(specId: string) {
     super(`${SOURCE_TOO_SMALL_REASON}: ${specId}`);
     this.name = "SourceTooSmallError";
-  }
-}
-
-/** Seam for the P1 crop fit (PHASE_15 P1 "Trim to the channel's shape"). */
-export class CropFitUnavailableError extends Error {
-  constructor() {
-    super("The crop fit is not available yet");
-    this.name = "CropFitUnavailableError";
   }
 }
 
@@ -173,23 +182,31 @@ export function isSrgbProfileName(description: string | null): boolean {
  * section). auto keeps the photo's shape; pad (and every exact size spec)
  * places it on canvasSizeFor(spec) with flat added space, inside the safe
  * zone when the spec has one; a spec that refuses added borders always keeps
- * the photo's shape (originalFitFor). Throws SourceTooSmallError when auto
- * cannot reach the spec within maxUpscale, and CropFitUnavailableError for
- * the P1 crop fit.
+ * the photo's shape (originalFitFor). crop (P1) trims to the spec's shape
+ * around the product box (cropFor); with no box, a box that does not fit or
+ * a window that would need more than maxUpscale, it falls back to pad (auto
+ * on a spec that refuses borders) and the treatment says so. Throws
+ * SourceTooSmallError when auto cannot reach the spec within maxUpscale.
  */
 export async function makeOriginalFit(
   sourceBytes: Buffer,
   spec: ChannelSpec,
   opts: OriginalFitOptions,
 ): Promise<OriginalFitResult> {
-  if (opts.fit === "crop") {
-    throw new CropFitUnavailableError();
-  }
   const facts = await sourceFacts(sourceBytes);
   if (!(facts.width > 0 && facts.height > 0)) {
     throw new Error("The stored photo has no readable size");
   }
-  const fit = originalFitFor(spec, { fit: opts.fit });
+  let fit = originalFitFor(spec, { fit: opts.fit });
+  let cropFallback = false;
+  if (fit === "crop") {
+    const cropped = cropFor(facts, spec, opts);
+    if (cropped) {
+      return renderCropped(sourceBytes, facts, spec, opts, cropped);
+    }
+    fit = cropFallbackFor(spec);
+    cropFallback = true;
+  }
   const scaled = keptScale(facts, spec, fit, opts);
   if (scaled.skip) {
     throw new SourceTooSmallError(spec.id);
@@ -218,24 +235,15 @@ export async function makeOriginalFit(
     kernel: PRODUCT_RESIZE_KERNEL,
   };
   const added = canvasW !== placedW || canvasH !== placedH;
-  const colorConverted = needsColorConversion(facts);
-  const treatment: PackAssetTreatment = {
-    kind: "original",
-    scale,
-    sourceWidth: facts.width,
-    sourceHeight: facts.height,
-    ...(opts.reencodedAtUpload ? { reencodedAtUpload: true } : {}),
-    ...(colorConverted ? { colorConverted: true } : {}),
-    ...(facts.realAlpha ? { alphaFilledHex: rgbToHex(opts.padRgb) } : {}),
-    ...(added ? { padHex: rgbToHex(opts.padRgb) } : {}),
-  };
+  const treatmentWith = (padRgb: Rgb): PackAssetTreatment =>
+    keptTreatment(facts, opts, { scale, padRgb, added, ...(cropFallback ? { cropFallback } : {}) });
 
   if (!added && scale === 1 && passesThrough(facts, sourceBytes.length, spec, opts.maxMegapixels)) {
     return {
       width: placedW,
       height: placedH,
       placement,
-      treatment: { ...treatment, kind: "original_unchanged" },
+      treatment: { ...treatmentWith(opts.padRgb), kind: "original_unchanged" },
       passthrough: {
         bytes: sourceBytes,
         format: facts.format,
@@ -244,8 +252,166 @@ export async function makeOriginalFit(
     };
   }
 
-  const { raw, mask } = await renderPlaced(sourceBytes, facts, placement, { width: canvasW, height: canvasH }, opts.padRgb);
-  return { width: canvasW, height: canvasH, placement, treatment, raw, mask, preferPng: facts.lossless };
+  const { raw, mask, padRgb } = await renderPlaced(
+    sourceBytes,
+    facts,
+    placement,
+    { width: canvasW, height: canvasH },
+    opts.padRgb,
+    opts.edgeMatch ? originalFit.edgeRingPx : 0,
+  );
+  return { width: canvasW, height: canvasH, placement, treatment: treatmentWith(padRgb), raw, mask, preferPng: facts.lossless };
+}
+
+/** The treatment of a rendered or unchanged kept photo. */
+function keptTreatment(
+  facts: SourceFacts,
+  opts: OriginalFitOptions,
+  done: { scale: number; padRgb: Rgb; added: boolean; cropped?: boolean; cropFallback?: boolean },
+): PackAssetTreatment {
+  return {
+    kind: "original",
+    scale: done.scale,
+    sourceWidth: facts.width,
+    sourceHeight: facts.height,
+    ...(opts.reencodedAtUpload ? { reencodedAtUpload: true } : {}),
+    ...(done.cropped ? { cropped: true } : {}),
+    ...(done.cropFallback ? { cropFallback: true } : {}),
+    ...(needsColorConversion(facts) ? { colorConverted: true } : {}),
+    ...(facts.realAlpha ? { alphaFilledHex: rgbToHex(done.padRgb) } : {}),
+    ...(done.added ? { padHex: rgbToHex(done.padRgb) } : {}),
+  };
+}
+
+/** A crop fit that works: the window in upright source pixels and the output size. */
+export interface CropFit {
+  window: PixelBox;
+  scale: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The P1 crop fit for one spec, or null when it must fall back: the window
+ * from cropWindowFor, scaled like auto (never past the spec's maximums or
+ * the megapixel cap, raised to its minimums within maxUpscale) and never
+ * past the spec's canvas. An exact size spec gets exactly its canvas, which
+ * must be reachable within maxUpscale. Pure.
+ */
+export function cropFor(
+  photo: { width: number; height: number },
+  spec: ChannelSpec,
+  opts: Pick<OriginalFitOptions, "productBox" | "maxUpscale" | "maxMegapixels">,
+): CropFit | null {
+  const window = cropWindowFor(photo, opts.productBox, spec);
+  if (!window) {
+    return null;
+  }
+  const canvas = canvasSizeFor(spec);
+  const toCanvas = canvas.width / window.width;
+  if (isExactSize(spec)) {
+    return toCanvas <= opts.maxUpscale ? { window, scale: toCanvas, width: canvas.width, height: canvas.height } : null;
+  }
+  const auto = keptScale(window, spec, "auto", opts);
+  if (auto.skip) {
+    return null;
+  }
+  if (auto.scale <= toCanvas) {
+    return { window, scale: auto.scale, width: auto.width, height: auto.height };
+  }
+  return {
+    window,
+    scale: toCanvas,
+    width: Math.max(1, Math.round(window.width * toCanvas)),
+    height: Math.max(1, Math.round(window.height * toCanvas)),
+  };
+}
+
+/** Renders a crop fit: the window resized to the output, nothing added. The
+ * window only ever holds the whole product box plus its margin. */
+async function renderCropped(
+  sourceBytes: Buffer,
+  facts: SourceFacts,
+  spec: ChannelSpec,
+  opts: OriginalFitOptions,
+  cropped: CropFit,
+): Promise<OriginalFitResult> {
+  const placement: ProductPlacement = {
+    crop: { ...cropped.window },
+    left: 0,
+    top: 0,
+    width: cropped.width,
+    height: cropped.height,
+    kernel: PRODUCT_RESIZE_KERNEL,
+  };
+  const whole =
+    cropped.window.left === 0 &&
+    cropped.window.top === 0 &&
+    cropped.window.width === facts.width &&
+    cropped.window.height === facts.height;
+  const treatmentWith = (padRgb: Rgb): PackAssetTreatment =>
+    keptTreatment(facts, opts, { scale: cropped.scale, padRgb, added: false, cropped: !whole });
+  if (
+    whole &&
+    cropped.width === facts.width &&
+    cropped.height === facts.height &&
+    passesThrough(facts, sourceBytes.length, spec, opts.maxMegapixels)
+  ) {
+    return {
+      width: cropped.width,
+      height: cropped.height,
+      placement,
+      treatment: { ...treatmentWith(opts.padRgb), kind: "original_unchanged" },
+      passthrough: {
+        bytes: sourceBytes,
+        format: facts.format,
+        sha256: createHash("sha256").update(sourceBytes).digest("hex"),
+      },
+    };
+  }
+  const canvas = { width: cropped.width, height: cropped.height };
+  const { raw, mask, padRgb } = await renderPlaced(
+    sourceBytes,
+    facts,
+    placement,
+    canvas,
+    opts.padRgb,
+    opts.edgeMatch ? originalFit.edgeRingPx : 0,
+  );
+  return { ...canvas, placement, treatment: treatmentWith(padRgb), raw, mask, preferPng: facts.lossless };
+}
+
+/**
+ * The median color, per channel, of the opaque pixels in the outer ring of
+ * a placed RGBA photo, ringPx wide. null when the ring has no opaque pixel.
+ */
+export function edgeRingMedian(rgba: Buffer, width: number, height: number, ringPx: number): Rgb | null {
+  const ring = Math.max(1, Math.min(ringPx, Math.floor(Math.min(width, height) / 2) || 1));
+  const channels: [number[], number[], number[]] = [[], [], []];
+  for (let y = 0; y < height; y++) {
+    const edgeRow = y < ring || y >= height - ring;
+    for (let x = 0; x < width; x++) {
+      if (!edgeRow && x >= ring && x < width - ring) {
+        continue;
+      }
+      const o = (y * width + x) * 4;
+      if (rgba[o + 3] !== 255) {
+        continue;
+      }
+      channels[0].push(rgba[o]);
+      channels[1].push(rgba[o + 1]);
+      channels[2].push(rgba[o + 2]);
+    }
+  }
+  if (channels[0].length === 0) {
+    return null;
+  }
+  const median = (values: number[]): number => {
+    values.sort((a, b) => a - b);
+    const mid = values.length >> 1;
+    return values.length % 2 === 1 ? values[mid] : Math.round((values[mid - 1] + values[mid]) / 2);
+  };
+  return [median(channels[0]), median(channels[1]), median(channels[2])];
 }
 
 /**
@@ -288,9 +454,13 @@ export interface KeptScale {
 export function keptScale(
   photo: { width: number; height: number },
   spec: ChannelSpec,
-  fit: "auto" | "pad",
+  fit: OutputFit,
   caps: { maxUpscale: number; maxMegapixels: number },
 ): KeptScale {
+  // A crop is sized by cropFor; planned without its box, it is its fallback.
+  if (fit === "crop") {
+    return keptScale(photo, spec, cropFallbackFor(spec), caps);
+  }
   const { width: w, height: h } = photo;
   const maxMegapixels = Math.min(spec.maxMegapixels ?? Number.POSITIVE_INFINITY, caps.maxMegapixels);
   // Rounding may land a pixel over the megapixel cap; round down then.
@@ -324,15 +494,18 @@ export function keptScale(
 
 /**
  * The one sharp pipeline every rendered kept output goes through, then the
- * flat canvas. Only the placed rectangle is decoded into JS memory.
+ * flat canvas. Only the placed rectangle is decoded into JS memory. With
+ * edgeRingPx, the pad color is the median of the placed photo's outer ring
+ * (edge match), else padRgb; the color used comes back.
  */
 async function renderPlaced(
   sourceBytes: Buffer,
   facts: SourceFacts,
   placement: ProductPlacement,
   canvas: { width: number; height: number },
-  padRgb: Rgb,
-): Promise<{ raw: RawImage; mask: RawMask }> {
+  fallbackRgb: Rgb,
+  edgeRingPx = 0,
+): Promise<{ raw: RawImage; mask: RawMask; padRgb: Rgb }> {
   const { crop, width, height, left, top } = placement;
   let pipeline = sharp(sourceBytes).rotate();
   if (facts.hasIcc) {
@@ -353,6 +526,7 @@ async function renderPlaced(
     throw new Error(`Kept photo decode gave ${info.width}x${info.height}x${info.channels}, expected ${width}x${height}x4`);
   }
 
+  const padRgb = (edgeRingPx > 0 ? edgeRingMedian(placed, width, height, edgeRingPx) : null) ?? fallbackRgb;
   const [padR, padG, padB] = padRgb;
   const flatten = facts.realAlpha;
   const sameCanvas = canvas.width === width && canvas.height === height && left === 0 && top === 0;
@@ -389,6 +563,7 @@ async function renderPlaced(
   return {
     raw: { data: out, width: canvas.width, height: canvas.height, channels: 4 },
     mask: { data: maskData, width: canvas.width, height: canvas.height },
+    padRgb,
   };
 }
 
