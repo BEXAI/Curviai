@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/app", label: "Dashboard" },
   { href: "/app/new", label: "New pack" },
   { href: "/app/products", label: "Products" },
+  { href: "/app/library", label: "Library" },
   { href: "/app/brand", label: "Brand kit" },
   { href: "/app/billing", label: "Billing" },
   { href: "/app/settings", label: "Settings" },

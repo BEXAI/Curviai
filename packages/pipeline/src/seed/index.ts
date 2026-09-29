@@ -34,6 +34,7 @@ export {
   stillStyle,
   templates,
 } from "./templates";
+export { variationOptions } from "./variations";
 export type {
   AplusModuleKey,
   AplusModuleLayout,

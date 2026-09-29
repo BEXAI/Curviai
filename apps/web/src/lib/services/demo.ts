@@ -71,8 +71,15 @@ import type {
   ShotCompliance,
   ShotOpResult,
   ShotStatus,
+  VersionPickResult,
   WorkspaceSummary,
+  FavoriteResult,
+  LibraryView,
 } from "./types";
+import { expandVariations } from "@curvi/pipeline/variations";
+import type { GalleryFilters } from "@/lib/library";
+import { reuseOutputOptions, type ReusePrefill } from "@/lib/reuse";
+import { shotVersionsOf, VERSION_COPY } from "@/lib/variation-picks";
 
 export const DEMO_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
 export const DEMO_WORKSPACE_NAME = "Demo Workspace";
@@ -154,6 +161,8 @@ interface DemoJobRecord {
   /** The poll count at which the seller canceled it; the simulation stops
    * there and its hold goes back to the balance. */
   canceledAt?: number;
+  /** Versions of a scene the seller picked or left out, by shot id. */
+  picks?: Map<string, boolean>;
 }
 
 /** Shared in memory state. Lives on globalThis so every route bundle in one
@@ -291,6 +300,12 @@ function projectJob(record: DemoJobRecord, productTitle: string): JobView {
   const count = record.shots.length;
   const status = recordStatus(record);
   const polls = record.canceledAt ?? record.polls;
+  // Versions of a scene (PHASE_16 workstream 6), picked as the pack stores
+  // them: the scene itself in the files, an extra version not yet.
+  const versions = shotVersionsOf(
+    record.shots.map((shot) => shot.id),
+    (shotId) => record.picks?.get(shotId),
+  );
   const shots: JobShotView[] = record.shots.map((shot, i) => {
     const reached = shotStatusAt(polls, shotTimeline(i, count));
     // A canceled simulation delivers nothing: unfinished shots were not made.
@@ -306,6 +321,7 @@ function projectJob(record: DemoJobRecord, productTitle: string): JobView {
       // The same inline drawing the files list previews, so the before and
       // after reveal works with zero stored files.
       imageUrl: shotStatus === "done" ? demoShotImage(shot.type, shot.channels[0], record.output) : null,
+      ...(versions.has(shot.id) ? { version: versions.get(shot.id) } : {}),
     };
   });
   return {
@@ -460,8 +476,10 @@ export class DemoService implements Services {
     const counters = new Map<string, number>();
     const channels = new Set<string>();
     // A real pack delivers one file per channel a shot is made for, so a
-    // shot shared by several channels lists one file for each of them.
-    for (const shot of record.shots) {
+    // shot shared by several channels lists one file for each of them. Only
+    // picked versions of a scene ship.
+    const versions = shotVersionsOf(record.shots.map((shot) => shot.id), (id) => record.picks?.get(id));
+    for (const shot of record.shots.filter((s) => versions.get(s.id)?.picked !== false)) {
       shot.channels.forEach((specId, index) => {
         const spec = tryGetSpec(specId);
         if (!spec) {
@@ -725,7 +743,9 @@ export class DemoService implements Services {
       bodyHash,
       createdAt: this.now().toISOString(),
       creditsReserved,
-      shots,
+      // Each scene runs in its versions, as the runner runs them; the credits
+      // held above already count every version.
+      shots: expandVariations(shots),
       output: output.resolved,
       photoCount: packPhotos.length,
       polls: 0,
@@ -759,6 +779,51 @@ export class DemoService implements Services {
 
   async listIntegrations(_workspaceId: string): Promise<IntegrationView[]> {
     return DEMO_INTEGRATIONS;
+  }
+
+  async getReusePrefill(_workspaceId: string, jobId: string): Promise<ReusePrefill | null> {
+    const record = this.store.jobs.get(jobId);
+    if (!record) {
+      return null;
+    }
+    return {
+      jobId: record.id,
+      productId: record.productId,
+      mode: record.mode,
+      channels: [...record.channels],
+      outputOptions: reuseOutputOptions(record.output),
+      answers: {},
+      note: "",
+      createdAt: record.createdAt,
+    };
+  }
+
+  /** Demo packs keep no stored files, so the library has nothing to list. */
+  async listLibrary(_workspaceId: string, _filters: GalleryFilters): Promise<LibraryView> {
+    return { items: [], facets: { channels: [], shotTypes: [] }, truncated: false };
+  }
+
+  async setFavorite(_workspaceId: string, _assetId: string, _favorite: boolean): Promise<FavoriteResult> {
+    return { outcome: "rejected", reason: "demo", message: READ_ONLY_NOTICE };
+  }
+
+  /** Picks a version on the simulated pack, so the job page can be tried
+   * without a database. Nothing is charged, as in db mode. */
+  async pickShotVersion(_workspaceId: string, jobId: string, shotId: string, picked: boolean): Promise<VersionPickResult> {
+    const record = this.store.jobs.get(jobId);
+    if (!record) {
+      return { outcome: "rejected", reason: "not_found", message: "This pack does not exist in your workspace." };
+    }
+    if (recordStatus(record) !== "done") {
+      return { outcome: "rejected", reason: "not_ready", message: VERSION_COPY.notReady };
+    }
+    const versions = shotVersionsOf(record.shots.map((shot) => shot.id), (id) => record.picks?.get(id));
+    if (!versions.has(shotId)) {
+      return { outcome: "rejected", reason: "not_a_version", message: VERSION_COPY.notAVersion };
+    }
+    record.picks ??= new Map();
+    record.picks.set(shotId, picked);
+    return { outcome: "saved", job: projectJob(record, this.productTitle(record.productId)) };
   }
 
   private productTitle(productId: string): string {

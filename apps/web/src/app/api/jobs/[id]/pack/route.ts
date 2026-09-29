@@ -98,7 +98,9 @@ export async function GET(
       where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId), eq(t.kind, "report")),
     }),
   ]);
-  const ownVariants = variants.filter((v) => isWorkspaceKey(workspaceId, v.r2Key));
+  // Only picked files ship (PHASE_16 workstream 6): an extra scene version
+  // the seller has not picked stays out of the zip.
+  const ownVariants = variants.filter((v) => v.picked && isWorkspaceKey(workspaceId, v.r2Key));
   if (ownVariants.length === 0) {
     return NextResponse.json({ error: "This pack has no files to download." }, { status: 404 });
   }

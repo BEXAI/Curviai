@@ -25,6 +25,7 @@
 import { keepMediaIdsFor, type OutputPlanFlags, type PlanPhoto } from "@curvi/pipeline/output-options";
 import { planShots, type PlanOptions } from "@curvi/pipeline/planner";
 import type { ProductProfile, Shot } from "@curvi/pipeline/schemas";
+import { extraVariationCredits } from "@curvi/pipeline/variations";
 import { planAngleKey, withSellerAngles, type AngleRole } from "@curvi/pipeline/seller-inputs";
 import { isShotMethodDeliverable, stillStyle, type TierKey } from "@curvi/pipeline/seed";
 import { getSpec, hasSpec, isMarketplaceChannel, requiresWhiteBackground } from "@curvi/specs";
@@ -245,6 +246,14 @@ const MADE_WHITE_LINE: { key: string; name: LineName } = {
   },
 };
 
+const VARIATIONS_LINE: { key: string; name: LineName } = {
+  key: "scene_variations",
+  name: {
+    one: "Extra version of a scene",
+    many: (n) => `Extra versions of scenes, ${n}`,
+  },
+};
+
 /** True when the shot lands on the seller's color on some spec it targets. */
 function onSellerColor(shot: Shot, context: LineContext): boolean {
   return (
@@ -348,14 +357,23 @@ export function estimatePackCredits(
     kept: pack.kept,
     colorIsWhite: (inputs?.colorHex ?? white).toUpperCase() === white,
   };
+  const add = (key: string, name: LineName, count: number, credits: number, deliverable: boolean): void => {
+    const group = groups.get(key) ?? { name, count: 0, credits: 0, deliverable };
+    group.count += count;
+    group.credits += deliverable ? credits : 0;
+    group.deliverable &&= deliverable;
+    groups.set(key, group);
+  };
   for (const shot of pack.shots) {
     const { key, name } = lineFor(shot, context);
     const deliverable = isShotMethodDeliverable(shot.method);
-    const group = groups.get(key) ?? { name, count: 0, credits: 0, deliverable };
-    group.count += 1;
-    group.credits += deliverable ? shot.credits : 0;
-    group.deliverable &&= deliverable;
-    groups.set(key, group);
+    // Extra scene versions (PHASE_16 workstream 6) get their own line, at
+    // the seed price per version, so the scene line keeps its own price.
+    const extra = shot.variations !== undefined ? extraVariationCredits(shot.variations) : 0;
+    add(key, name, 1, shot.credits - extra, deliverable);
+    if (shot.variations !== undefined) {
+      add(VARIATIONS_LINE.key, VARIATIONS_LINE.name, shot.variations - 1, extra, deliverable);
+    }
   }
 
   const lines: EstimateLine[] = [...groups.values()].map((group) => {

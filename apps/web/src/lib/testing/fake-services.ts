@@ -63,6 +63,10 @@ export function createFakeServices(role: WorkspaceRole | null = "owner"): Servic
     })),
     listMembers: vi.fn(async () => []),
     listIntegrations: vi.fn(async () => []),
+    getReusePrefill: vi.fn(async () => null),
+    listLibrary: vi.fn(async () => ({ items: [], facets: { channels: [], shotTypes: [] }, truncated: false })),
+    setFavorite: vi.fn(async () => ({ outcome: "rejected" as const, reason: "not_found" as const, message: "Not found." })),
+    pickShotVersion: vi.fn(async () => ({ outcome: "rejected" as const, reason: "not_found" as const, message: "Not found." })),
   };
 }
 

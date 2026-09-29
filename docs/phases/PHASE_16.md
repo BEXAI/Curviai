@@ -142,6 +142,15 @@ Higgsfield's marketplace cards send the seller's photo through a generative imag
 
 **Tests.** Reuse restores every field; unpicked variations are never packaged or charged beyond the seed price; favorites are workspace scoped.
 
+**Implementation (p16/reuse).**
+- Seed: `variationOptions` (min 1, max 4, default 1) in packages/pipeline/src/seed/variations.ts. No new price key: each extra version is `creditCosts.generativeStill`.
+- Options: `variations` joins the output options like the bundle: present in the normalized, resolved and plan flag objects only past the default, read with `variationsOf`, never part of a look (lookOf ignores it), and part of `outputOptionsKey`.
+- Plan: `applyVariations` (packages/pipeline/src/variations.ts) marks each lifestyle shot with `Shot.variations` and adds the extra versions to its credits, in planShots and in the runner's fitShotsToChannels before the budget trim, so the estimate, the hold and the trim agree. The shot keeps one slot per channel. LlmShot leaves `variations` and `variation` out.
+- Run: `expandVariations` turns a marked shot into the scene itself plus shots `{id}.v2` to `.v4` (`Shot.variation`), each its own generation through the same composite and fidelity gate. The runner packages only the scene itself; each extra version number is packaged on its own (same checks) into `StoredPack.variations`, never zipped. DbJobStore uploads those files under `files/{channel}/variation-{n}/` and records them with `picked` false. A passing extra version is charged `generativeStill`; one that does not pass is released.
+- Web: `pickShotVersion` (PUT /api/jobs/[id]/shots/[shotId]/pick) flips `picked` for one version's files under the workspace lock, refuses a channel past its file limit, drops the stale channel zip rows and never touches the ledger. The file list, the all files zip and the share page read picked files only.
+- Reuse: `getReusePrefill` and /app/new?from={jobId} fill the form with the job's channels, options (bundle and versions included), answers (tapped where the new questions offer them) and note. A prefill only.
+- Favorites: `setFavorite` (PUT /api/assets/[assetId]/favorite), owners, admins and editors, the workspace's own assets only. Gallery: `GalleryGrid` on the job page and /app/library (`listLibrary`), a masonry grid at each file's measured size, filters by channel family, shot type and favorites. Rate limit policy `assets.write`.
+
 ## 7. Brand kit from a logo
 
 **What the seller gets.** Upload a logo at /app/brand and the kit fills in: 3 to 5 brand colors, a suggested background color, and a text color that passes contrast on each.

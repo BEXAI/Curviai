@@ -2,6 +2,7 @@
 
 import { useId } from "react";
 import { Label, Select } from "@curvi/ui";
+import { variationsOf } from "@curvi/pipeline/output-options";
 import {
   GRAPHICS_COLOR_HELPER,
   GRAPHICS_COLOR_LABEL,
@@ -14,6 +15,7 @@ import {
   SCENE_COUNT_LABEL,
   SCENE_STYLE_LABEL,
   TRIM_SHAPE_OPTION,
+  VARIATIONS_LABEL,
   formFit,
   isScenePresetChoice,
   moreOptionsVisibility,
@@ -21,6 +23,9 @@ import {
   sceneCountSelectOptions,
   sceneCountValue,
   sceneStyleOptions,
+  variationSelectOptions,
+  variationsFromValue,
+  variationsHelper,
   type FormFit,
   type OutputFormAction,
   type OutputFormState,
@@ -118,6 +123,29 @@ export function MoreOptionsControls({ state, onAction, hasLogo, scenesPaused }: 
                 </option>
               ))}
             </Select>
+          </div>
+        ) : null}
+
+        {show.sceneStyle ? (
+          <div className="sm:col-span-2">
+            <Label htmlFor={`${id}-variations`}>{VARIATIONS_LABEL}</Label>
+            <Select
+              id={`${id}-variations`}
+              value={String(variationsOf(choices))}
+              onChange={(event) => {
+                const count = variationsFromValue(event.target.value);
+                if (count !== null) onAction({ type: "variations", count });
+              }}
+              className="mt-1 [&_select]:h-11"
+              data-testid="scene-variations"
+            >
+              {variationSelectOptions().map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+            <p className="mt-1 text-xs text-ink-500">{variationsHelper()}</p>
           </div>
         ) : null}
 

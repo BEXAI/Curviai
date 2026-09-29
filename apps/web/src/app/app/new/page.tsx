@@ -31,6 +31,9 @@ export default async function NewPackPage({
   }
   const params = await searchParams;
   const requestedProduct = typeof params.product === "string" ? params.product : null;
+  // "Make this pack again" (PHASE_16 workstream 6): an earlier pack of this
+  // workspace fills the form in. A prefill only; nothing starts here.
+  const reuse = typeof params.from === "string" ? await services.getReusePrefill(workspace.id, params.from) : null;
   const products = await services.listProducts(workspace.id);
   const tier = tierKeyOf(workspace.plan);
   // Channels whose feature is not live, or not in this plan, are shown but
@@ -116,6 +119,7 @@ export default async function NewPackPage({
           brandKitsAllowed={brandKitsAllowed}
           brandHasLogo={brandHasLogo}
           scenesPausedNote={outputOptionsEnabled && preflight === "scenes_paused" ? SCENES_PAUSED_COPY : null}
+          reuse={reuse}
         />
       </div>
     </div>

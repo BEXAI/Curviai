@@ -109,7 +109,7 @@ describe("PackAssetTreatment", () => {
 
 describe("client safe modules", () => {
   it("import no sharp and no node APIs", () => {
-    for (const file of ["./treatment.ts", "./output-options.ts", "./seed/templates.ts", "./seed/brand.ts", "./schemas.ts"]) {
+    for (const file of ["./treatment.ts", "./output-options.ts", "./seed/templates.ts", "./seed/brand.ts", "./seed/variations.ts", "./schemas.ts"]) {
       const source = readFileSync(new URL(file, import.meta.url), "utf8");
       const imports = [...source.matchAll(/^(?:import|export)\b[^;]*?\sfrom "([^"]+)";/gm)].map((m) => m[1]);
       if (file === "./treatment.ts" || file === "./output-options.ts") {
@@ -118,8 +118,9 @@ describe("client safe modules", () => {
       }
       for (const spec of imports) {
         expect(spec, `${file} imports ${spec}`).not.toMatch(/^(sharp|node:|fs$|path$|exiftool)/);
-        // seed/templates.ts reads Shot from ../schemas (PHASE_16 packBundles), the same module.
-        expect(["zod", "@curvi/specs", "./schemas", "../schemas", "./seed/brand", "./seed/templates"], `${file} imports ${spec}`).toContain(spec);
+        // seed/templates.ts reads Shot from ../schemas (PHASE_16 packBundles), the same module;
+        // the Shot schema and the options read the variation limits (PHASE_16 workstream 6).
+        expect(["zod", "@curvi/specs", "./schemas", "../schemas", "./seed/brand", "./seed/templates", "./seed/variations"], `${file} imports ${spec}`).toContain(spec);
       }
     }
   });

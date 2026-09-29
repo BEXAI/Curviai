@@ -102,6 +102,7 @@ import {
   visibleQuestions,
 } from "@/lib/question-step";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
+import { prefilledPicks, reuseNotice, type ReusePrefill } from "@/lib/reuse";
 
 export interface ChannelOption {
   id: string;
@@ -170,13 +171,27 @@ interface NewPackFormProps {
   brandHasLogo?: boolean;
   /** Set while scenes are paused: the scenes extra is forced off and shows this. */
   scenesPausedNote?: string | null;
+  /** "Make this pack again" (PHASE_16 workstream 6): an earlier pack's
+   * channels, choices, answers and note, filled in once. A prefill only. */
+  reuse?: ReusePrefill | null;
 }
 
-/** The form's first options: the preselected product's remembered choices, else Marketplace ready. */
-function initialOptionsFor(product: ProductOption | null, enabled: boolean, brandColorCount: number): {
+/** The form's first options: an earlier pack's choices when making it
+ * again, else the preselected product's remembered choices, else
+ * Marketplace ready. */
+function initialOptionsFor(
+  product: ProductOption | null,
+  enabled: boolean,
+  brandColorCount: number,
+  reuse?: ReusePrefill | null,
+): {
   state: OutputFormState;
   remembered: boolean;
 } {
+  const reused = enabled && reuse ? rememberedFormState(reuse.outputOptions, { brandColorCount }) : null;
+  if (reused) {
+    return { state: reused, remembered: false };
+  }
   const remembered = enabled && product ? rememberedFormState(product.outputDefaults, { brandColorCount }) : null;
   return remembered ? { state: remembered, remembered: true } : { state: initialOutputForm(), remembered: false };
 }
@@ -406,6 +421,7 @@ export function NewPackForm({
   brandKitsAllowed = false,
   brandHasLogo = false,
   scenesPausedNote = null,
+  reuse = null,
 }: NewPackFormProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -431,12 +447,13 @@ export function NewPackForm({
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   // A new photo is a new product unless the seller picks an existing one
   // and confirms the photo shows it, so photos of two items never mix.
-  const [productId, setProductId] = useState(() =>
-    initialProductId && products.some((p) => p.id === initialProductId) ? initialProductId : "new",
-  );
+  const [productId, setProductId] = useState(() => {
+    const wanted = initialProductId ?? reuse?.productId ?? null;
+    return wanted && products.some((p) => p.id === wanted) ? wanted : "new";
+  });
   const [confirmedAttach, setConfirmedAttach] = useState<string | null>(null);
   const [newProductTitle, setNewProductTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const [description, setDescription] = useState(reuse?.note ?? "");
   // The note as typed right now, for checks that finish after a keystroke.
   const descriptionRef = useRef("");
   descriptionRef.current = description;
@@ -446,10 +463,14 @@ export function NewPackForm({
   const [boxText, setBoxText] = useState((initialProduct?.boxContents ?? []).join("\n"));
   const [comparisonText, setComparisonText] = useState((initialProduct?.comparisonFacts ?? []).join("\n"));
   const [endorsementText, setEndorsementText] = useState((initialProduct?.endorsements ?? []).join("\n"));
-  const [selected, setSelected] = useState<string[]>(
-    DEFAULT_CHANNELS.filter((id) => channels.some((c) => c.id === id && isPickable(c))),
-  );
-  const [mode, setMode] = useState<EstimateMode>("listing");
+  const [selected, setSelected] = useState<string[]>(() => {
+    const pickable = (id: string) => channels.some((c) => c.id === id && isPickable(c));
+    // Making a pack again restores its channels, less any the plan can no
+    // longer pick; with none left it starts from the default pick.
+    const reused = (reuse?.channels ?? []).filter(pickable);
+    return reused.length > 0 ? reused : DEFAULT_CHANNELS.filter(pickable);
+  });
+  const [mode, setMode] = useState<EstimateMode>(reuse?.mode ?? "listing");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [outOfCredits, setOutOfCredits] = useState<PaywallCopy | null>(null);
@@ -472,7 +493,7 @@ export function NewPackForm({
   const optionsOn = outputOptionsEnabled;
   // Brand colors a remembered choice may still use: the kit's, on a plan with kits.
   const brandColorCount = brandKitsAllowed ? usableBrandColors(brandColors).length : 0;
-  const [initialOptions] = useState(() => initialOptionsFor(initialProduct, optionsOn, brandColorCount));
+  const [initialOptions] = useState(() => initialOptionsFor(initialProduct, optionsOn, brandColorCount, reuse));
   const [outputForm, dispatchOutput] = useReducer(outputFormReducer, initialOptions.state);
   // The title whose remembered choices filled the options, for the notice.
   const [rememberedTitle, setRememberedTitle] = useState<string | null>(
@@ -617,10 +638,13 @@ export function NewPackForm({
   const questionsShown = questions.length > 0 && !questionsSkipped;
   // The target question replaces the chooser of its own photo while shown.
   const chooserInStep = questionsShown && questions.some((q) => q.kind === "target") ? questionPhoto?.id : undefined;
+  // Making a pack again taps the earlier pack's answers wherever the new
+  // photo's questions offer them; the seller's own taps win.
+  const effectivePicks = reuse ? prefilledPicks(questions, reuse.answers, questionPicks) : questionPicks;
   const questionValues: Record<string, string | null> = Object.fromEntries(
-    questions.map((q) => [q.id, q.kind === "target" && questionPhoto ? targetValueOf(questionPhoto) : (questionPicks[q.id] ?? null)]),
+    questions.map((q) => [q.id, q.kind === "target" && questionPhoto ? targetValueOf(questionPhoto) : (effectivePicks[q.id] ?? null)]),
   );
-  const answersBody = sellerAnswersBody({ photo: questionPhoto, questions, picks: questionPicks, skipped: questionsSkipped });
+  const answersBody = sellerAnswersBody({ photo: questionPhoto, questions, picks: effectivePicks, skipped: questionsSkipped });
 
   function pickAnswer(question: SellerQuestion, value: string) {
     setSubmitError(null);
@@ -1128,6 +1152,15 @@ export function NewPackForm({
   return (
     <div className={cn("grid gap-8 lg:grid-cols-[1fr_20rem]", optionsOn && "pb-28 lg:pb-0")} {...focusProps}>
       <div className="min-w-0 space-y-8">
+        {reuse ? (
+          <p
+            role="status"
+            className="rounded-lg border border-ink-200 bg-ink-50 px-4 py-3 text-sm text-ink-700"
+            data-testid="reuse-notice"
+          >
+            {reuseNotice(reuse.createdAt)}
+          </p>
+        ) : null}
         {optionsOn && packsPaused ? (
           <div
             role="status"
