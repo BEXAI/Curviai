@@ -6,6 +6,7 @@ import { listSpecs } from "@curvi/specs";
 import { creditBalanceLine, submitFailureSpendsKey } from "@/components/app/new-pack-form";
 import { checkChannelEntitlements } from "@/lib/entitlements";
 import { isSpecLive } from "@/lib/marketing-facts";
+import { PACKS_PAUSED_COPY } from "@/lib/provider-preflight";
 import { newPackChannelOptions } from "./channel-options";
 
 // The new pack form must never offer a channel createJob refuses: a channel
@@ -233,7 +234,7 @@ describe("/app/new", () => {
     try {
       const html = await renderPage();
       expect(html).toContain('data-testid="preflight-banner"');
-      expect(html).toContain("Packs are paused for a few minutes while an image service recovers. Nothing will be charged.");
+      expect(html).toContain(PACKS_PAUSED_COPY);
       expect(createButton(html)).toContain('disabled=""');
     } finally {
       preflight.verdict = "ok";
