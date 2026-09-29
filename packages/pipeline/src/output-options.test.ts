@@ -34,12 +34,14 @@ import {
   packNeedsCutout,
   planFlagsOf,
   productSizeFillFor,
+  relativeLuminance,
   resolveColorHex,
   resolveOutputOptions,
   rgbToHex,
   sceneCountOf,
   scenePresetOf,
   specAcceptsImage,
+  templateCardColors,
   whiteRequiredGallerySpecIds,
   type OutputPlanFlags,
   type PlanPhoto,
@@ -358,6 +360,26 @@ describe("P1 accessors", () => {
     expect(productSizeFillFor(open, { productSize: "larger" })).toBe(canvasDefaults.productSizeFill.larger);
     expect(productSizeFillFor(open, { productSize: "smaller" })).toBe(canvasDefaults.productSizeFill.smaller);
     expect(productSizeFillFor(open, null)).toBe(canvasDefaults.productSizeFill.standard);
+  });
+
+  it("puts template cards on the preset color, or the seller's with text flipped below the seeded luminance", () => {
+    const spec = getSpec("meta.feed_1x1");
+    const off = templateCardColors(spec, "outdoor", { colorHex: "#1B1F24" });
+    expect(off).toEqual({ backgroundHex: stillStyle.presetBackgroundHex.outdoor, textHex: stillStyle.textHex });
+    expect(templateCardColors(spec, "none", null).backgroundHex).toBe(stillStyle.defaultBackgroundHex);
+    const dark = templateCardColors(spec, "outdoor", { colorHex: "#1B1F24", graphicsColor: true });
+    expect(dark).toEqual({ backgroundHex: "#1B1F24", textHex: stillStyle.textOnDarkHex });
+    const light = templateCardColors(spec, "outdoor", { colorHex: backgroundSwatches.sand.hex, graphicsColor: true });
+    expect(light).toEqual({ backgroundHex: backgroundSwatches.sand.hex, textHex: stillStyle.textHex });
+    expect(relativeLuminance("#FFFFFF")).toBeCloseTo(1, 5);
+    expect(relativeLuminance("#000000")).toBe(0);
+    // Every seeded swatch keeps dark text; a white required spec stays white.
+    for (const swatch of Object.values(backgroundSwatches)) {
+      expect(relativeLuminance(swatch.hex)).toBeGreaterThanOrEqual(stillStyle.darkBackgroundLuminance);
+    }
+    expect(templateCardColors(getSpec("amazon.main"), "outdoor", { colorHex: "#1B1F24", graphicsColor: true }).backgroundHex).toBe(
+      stillStyle.whiteHex,
+    );
   });
 
   it("maps crop to crop on every spec, and plans it as its fallback", () => {

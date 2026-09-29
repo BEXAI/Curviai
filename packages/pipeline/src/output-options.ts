@@ -645,6 +645,36 @@ export function packNeedsCutout(specIds: readonly string[], flags: OutputPlanFla
   return cutoutMediaIds(flags.photos, specIds, flags).length > 0;
 }
 
+/** WCAG relative luminance of an sRGB color, 0 (black) to 1 (white). */
+export function relativeLuminance(hex: string): number {
+  const linear = hexToRgb(hex).map((c) => {
+    const v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+/**
+ * The card and text colors of a template graphic (infographic, dimensions,
+ * in the box, comparison, social cards, banners). Today's look: the style
+ * preset's seeded card color. With "Graphics follow your color" (P1) the
+ * card takes the spec's resolved background (backgroundFor, so a white
+ * required spec stays white), and the text flips to seed
+ * stillStyle.textOnDarkHex on a card darker than darkBackgroundLuminance.
+ */
+export function templateCardColors(
+  spec: ChannelSpec,
+  stylePreset: string,
+  resolved?: (Pick<ResolvedOutputOptions, "colorHex"> & { graphicsColor?: boolean }) | null,
+): { backgroundHex: string; textHex: string } {
+  const preset = (stillStyle.presetBackgroundHex as Record<string, string>)[stylePreset];
+  const backgroundHex = graphicsFollowColor(resolved)
+    ? rgbToHex(backgroundFor(spec, resolved).rgb)
+    : (preset ?? stillStyle.defaultBackgroundHex);
+  const dark = relativeLuminance(backgroundHex) < stillStyle.darkBackgroundLuminance;
+  return { backgroundHex, textHex: dark ? stillStyle.textOnDarkHex : stillStyle.textHex };
+}
+
 /** "#1F2A44" as [31, 42, 68]. */
 export function hexToRgb(hex: string): [number, number, number] {
   if (!HEX.test(hex)) {

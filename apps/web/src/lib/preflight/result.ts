@@ -31,6 +31,9 @@ export interface StoredPreflightItem extends Omit<PreflightItemView, "thumbUrl">
 /** What upload_preflights.result holds. */
 export interface StoredPreflight extends Omit<PreflightView, "key" | "items"> {
   items: StoredPreflightItem[];
+  /** The product box the inventory found, for the P1 crop fit (jsonb, no
+   * migration). The worker reads it when the seller tapped no target. */
+  productBox?: PreflightBox | null;
 }
 
 /** What every image channel spec needs from a photo, from the registry. */
@@ -102,6 +105,7 @@ export function storedPreflightOf(run: UploadPreflightRun, thumbKeys: ReadonlyAr
     items: status === "choose" ? items : [],
     preselect,
     productLongSide,
+    ...(run.productBox ? { productBox: run.productBox } : {}),
   };
 }
 

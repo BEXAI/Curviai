@@ -42,6 +42,7 @@ import {
   badgeEligible,
   applyBrandStylePreset,
   buildPack,
+  capSceneCount,
   capShotsPerChannel,
   coverSellerOffSpecs,
   headerChecks,
@@ -116,8 +117,10 @@ import {
 } from "@curvi/pipeline";
 import {
   cutoutMediaIds,
+  hexToRgb,
   planFlagsOf,
   ResolvedOutputOptions,
+  sceneCountOf,
   SELLER_OFF_REASON,
   type OutputPlanFlags,
 } from "@curvi/pipeline/output-options";
@@ -561,6 +564,10 @@ export interface ShotGenerateArgs {
   output?: ResolvedOutputOptions;
   /** The shot's photo was written again at upload (source_media.ingest). */
   reencodedAtUpload?: boolean;
+  /** The product box in the shot's photo, normalized to the upright photo:
+   * the seller's tap (source_media.target_box), else the upload preflight's
+   * productBox. The P1 crop fit trims around it; without one it falls back. */
+  productBox?: NormalizedBox;
 }
 
 /**
@@ -675,6 +682,9 @@ export interface ShotContext {
   /** Media ids of kept photos that show other items, which stay in the
    * picture (PHASE_15, several products in one photo). */
   otherItems?: string[];
+  /** The product box per photo, by media id, normalized to the upright
+   * photo (target_box, else the preflight productBox), for the P1 crop fit. */
+  productBoxes?: Record<string, NormalizedBox>;
 }
 
 /** IPTC digital source marking per plan 5.7.2: composited scenes carry
@@ -1051,6 +1061,9 @@ export interface GeneratePackInput {
     height?: number;
     /** The stored copy was written again at upload (source_media.ingest). */
     reencoded?: boolean;
+    /** The product box the upload preflight found (upload_preflights.result
+     * productBox), normalized to the upright photo; targetBox wins over it. */
+    productBox?: NormalizedBox;
   }>;
   userDescription?: string;
   sku?: string;
@@ -2063,6 +2076,18 @@ function coloredOutput(generation: ShotGeneration): boolean {
 }
 
 /**
+ * The background a colored output was asked to have ("Background matches
+ * your color", PHASE_15 P1): the chosen color behind a cut out product, or
+ * the added space of a kept photo. Null for every other file, which keeps
+ * today's checks.
+ */
+function expectedBackgroundOf(generation: ShotGeneration): [number, number, number] | null {
+  const treatment = generation.treatment;
+  const hex = treatment?.kind === "background" ? treatment.colorHex : treatment?.padHex;
+  return hex ? hexToRgb(hex) : null;
+}
+
+/**
  * QC of a kept photo shipped as the stored upload (PHASE_15 fidelity
  * section): the delivered sha256 must equal the stored one, which replaces
  * the RGBA decode, and the pixel checks read the header only (dimensions,
@@ -2133,9 +2158,11 @@ async function checkGeneration(
     shippedProblem = "does not decode";
   }
 
+  const expectedBackground = expectedBackgroundOf(generation);
   let pixel = await pixelChecks(shipped, qcMask, spec, {
     encoded: { bytes: generation.encoded.buffer.length, format: generation.encoded.format },
     edgeMarginPx: QC_EDGE_MARGIN_PX,
+    ...(expectedBackground ? { expectedBackground } : {}),
   });
   if (shippedProblem) {
     pixel = {
@@ -2449,10 +2476,15 @@ export function extraItemsFailure(target: ProductTarget | undefined, generation:
 }
 
 /** What the generator needs from the job's output options for one shot. */
-function outputArgs(ctx: ShotContext, shot: Shot): Pick<ShotGenerateArgs, "output" | "reencodedAtUpload"> {
+function outputArgs(
+  ctx: ShotContext,
+  shot: Shot,
+): Pick<ShotGenerateArgs, "output" | "reencodedAtUpload" | "productBox"> {
+  const productBox = ctx.productBoxes?.[shot.sourceMediaId];
   return {
     ...(ctx.output ? { output: ctx.output } : {}),
     ...(ctx.reencoded?.includes(shot.sourceMediaId) ? { reencodedAtUpload: true } : {}),
+    ...(productBox ? { productBox } : {}),
   };
 }
 
@@ -3072,7 +3104,8 @@ const MAX_PLAN_SHOTS = 40;
  *    spec in concept mode), and a shot left with none is skipped, so
  *    unselected crops, banners and heroes cost nothing;
  * 3. shots in an extra family the seller turned off are skipped with
- *    SELLER_OFF_REASON (the excluded types, PHASE_15), and each kept photo
+ *    SELLER_OFF_REASON (the excluded types, PHASE_15), lifestyle scenes past
+ *    the pack's scene count are skipped (capSceneCount), and each kept photo
  *    leaves the specs it is too small for (applyOriginalSizes);
  * 4. when google.merchant.main is picked its slot is filled: the white main
  *    image also ships to Google when there is one, otherwise a white front
@@ -3109,6 +3142,7 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
     shots.push({ ...shot, channels: kept });
   }
   shots = skipSellerOffShots(shots, opts.output, skipped);
+  shots = capSceneCount(shots, opts.output, skipped);
   shots = applyOriginalSizes(shots, opts.output, skipped);
 
   const frontUsable = opts.profile.imageQuality.usableForMain && opts.profile.photographedAngles.includes("front");
@@ -3138,7 +3172,7 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
   }
 
   shots = coverSellerOffSpecs(shots, skipped, opts.output, { frontMediaId: opts.primaryMediaId, frontUsable });
-  shots = capShotsPerChannel(shots, skipped, reservedSlotsFor(shots));
+  shots = capShotsPerChannel(shots, skipped, reservedSlotsFor(shots, sceneCountOf(opts.output)));
   shots = trimShotsToBudget(shots, opts.budget, skipped);
 
   // Shot ids key the ledger charges; a duplicate would hold credits forever.
@@ -3365,6 +3399,19 @@ export function runPlanFlags(output: ResolvedOutputOptions, images: GeneratePack
       ...(image.height !== undefined ? { height: image.height } : {}),
     })),
   );
+}
+
+/** The product box per photo for the P1 crop fit: the seller's tap
+ * (targetBox) wins over the preflight's productBox. */
+export function productBoxesOf(images: GeneratePackInput["images"]): { productBoxes?: Record<string, NormalizedBox> } {
+  const boxes: Record<string, NormalizedBox> = {};
+  for (const image of images) {
+    const box = image.targetBox ?? image.productBox;
+    if (box) {
+      boxes[image.mediaId] = box;
+    }
+  }
+  return Object.keys(boxes).length > 0 ? { productBoxes: boxes } : {};
 }
 
 /** The media ids of photos whose stored copy was written again at upload. */
@@ -3781,9 +3828,13 @@ export async function runGeneratePack(
       chosen = fallback;
       plannerSource = "deterministic";
     }
-    // The brand kit's style preset, when it names one, replaces the
-    // planner's category pick on every shot that uses a preset.
-    const shotList: ShotList = withSellerCopy(applyBrandStylePreset(chosen, input.brand?.stylePreset, profile), sellerCopy);
+    // The seller's scene style for this pack, else the brand kit's style
+    // preset, replaces the planner's category pick on every shot that uses a
+    // preset (PHASE_15 P1).
+    const shotList: ShotList = withSellerCopy(
+      applyBrandStylePreset(chosen, input.brand?.stylePreset, profile, output?.scenePreset),
+      sellerCopy,
+    );
     plannedShots = shotList.shots.length;
     skipped = [
       ...conceptExcluded.map((channel) => ({
@@ -3818,6 +3869,7 @@ export async function runGeneratePack(
       ...(output ? { output } : {}),
       ...reencodedOf(images),
       ...(otherItems.length > 0 ? { otherItems } : {}),
+      ...productBoxesOf(images),
       deferTransientFailures: true,
     };
     // Pack level spend cap: a shared tracker gates every generation attempt

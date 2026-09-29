@@ -31,6 +31,7 @@ import {
   normalizeOutputOptions,
   resolveColorHex,
   resolveOutputOptions,
+  templateCardColors,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
 import { getSpec } from "@curvi/specs";
@@ -44,6 +45,7 @@ import {
   llmModelPrices,
   recipeSeedRows,
   sceneDefaults,
+  stillStyle,
   templates,
 } from "@curvi/pipeline/seed";
 import { GeminiImageProvider } from "@curvi/ai";
@@ -329,6 +331,45 @@ describe("LiveShotGenerator", () => {
     const foreign = await generator.generate(social("s3", "ws/ws-2/src/logo.png"));
     expect(loaded).not.toContain("ws/ws-2/src/logo.png");
     expect(foreign.encoded.buffer.length).toBeGreaterThan(0);
+  });
+
+  it("P1: draws no logo with Logo on graphics off, and puts cards on the seller's color with text flipped", async () => {
+    const scene = new FakeSceneProvider();
+    const { ai, wiring } = liveDeps(scene, await productCutoutPng(96));
+    const logo = await encodePng(solidCanvas(120, 48, 230, 20, 20));
+    const loaded: string[] = [];
+    const generator = new LiveShotGenerator({
+      ai,
+      wiring,
+      loadMedia: async (key) => {
+        loaded.push(key);
+        return key.endsWith("logo.png") ? logo : Buffer.from("source-photo");
+      },
+    });
+    const dark = "#1B1F24";
+    const output = (input: Parameters<typeof normalizeOutputOptions>[0]): ResolvedOutputOptions =>
+      resolveOutputOptions(normalizeOutputOptions(input), { colorHex: dark, brandSweepHex: dark, keepMediaIds: [] });
+    const social = (id: string, out: ResolvedOutputOptions) => ({
+      ...argsFor({ ...compositeShotArgs, id, type: "social_1x1", method: "template", channels: ["meta.feed_1x1"] }),
+      brand: { logoKey: "ws/ws-1/src/logo.png" },
+      output: out,
+    });
+
+    const noLogo = await generator.generate(
+      social("s1", output({ color: { kind: "custom", hex: dark }, logo: false })),
+    );
+    expect(noLogo.encoded.buffer.length).toBeGreaterThan(0);
+    expect(loaded).not.toContain("ws/ws-1/src/logo.png");
+
+    const colored = await generator.generate(
+      social("s2", output({ color: { kind: "custom", hex: dark }, graphicsColor: true })),
+    );
+    const card = await decodeToRgba(colored.encoded.buffer);
+    // The card's corner is the seller's dark color, not the preset card color.
+    expect([card.data[0], card.data[1], card.data[2]].every((c, i) => Math.abs(c - [0x1b, 0x1f, 0x24][i]) <= 3)).toBe(true);
+    expect(templateCardColors(getSpec("meta.feed_1x1"), "minimal_studio", output({ color: { kind: "custom", hex: dark }, graphicsColor: true })).textHex).toBe(
+      stillStyle.textOnDarkHex,
+    );
   });
 
   it("refuses stills that can never render before paying for the cutout", async () => {

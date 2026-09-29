@@ -72,6 +72,7 @@ import {
   putGeneratedObject,
 } from "@/lib/r2";
 import {
+  preflightProductBoxOf,
   preflightRowsFor,
   preflightUpload as runPreflightUpload,
   reusableIntakeOf,
@@ -1883,6 +1884,7 @@ export class DbService implements Services {
           media: media.map((m) => ({
             ...m,
             preflight: reusableIntakeOf(preflights.get(m.r2Key), new Date()),
+            productBox: preflightProductBoxOf(preflights.get(m.r2Key)),
           })),
           userDescription: input.userDescription,
           brandColors,

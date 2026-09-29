@@ -18,6 +18,7 @@ import {
   encodePng,
   fidelityReport,
   planShots,
+  SCENE_COUNT_REASON,
   solidCanvas,
   type PackFileReport,
   type PlanOptions,
@@ -34,7 +35,7 @@ import {
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
 import { createHash } from "node:crypto";
-import { creditCosts, CUTOUT_TASK } from "@curvi/pipeline/seed";
+import { creditCosts, CUTOUT_TASK, sceneCountOptions } from "@curvi/pipeline/seed";
 import type { Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
 import { isMarketplaceSpec } from "@curvi/specs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
@@ -67,6 +68,7 @@ import {
   MULTIPLE_PRODUCTS_MESSAGE,
   OUTPUT_OPTIONS_UNREADABLE,
   parseRunOutput,
+  productBoxesOf,
   runPlanFlags,
   shotFailureOutcome,
   moderationBlockedMessage,
@@ -1143,6 +1145,49 @@ describe("every selected channel gets its files (2.11)", () => {
     expect(fitted.shots.map((s) => s.id)).toEqual(["dup", "dup_2"]);
     expect(fitted.shots.every((s) => s.channels.join() === "amazon.secondary")).toBe(true);
     expect(fitted.skipped).toEqual([{ type: "cutout_png", reason: "channel not selected" }]);
+  });
+
+  it("keeps an LLM plan to the pack's scene count (PHASE_15 P1)", () => {
+    const scene: Shot = {
+      id: "l0",
+      type: "lifestyle",
+      sourceMediaId: "m1",
+      method: "composite_generate",
+      channels: ["amazon.secondary"],
+      stylePreset: "kitchen_lifestyle",
+      scene: "kitchen",
+      credits: creditCosts.generativeStill,
+      priority: 4,
+    };
+    const scenes = [0, 1, 2, 3].map((i) => ({ ...scene, id: `l${i}` }));
+    const fit = { channels: ["amazon"], mode: "listing" as const, budget: 100, profile: demoProfile, primaryMediaId: "m1" };
+    const flags = runPlanFlags(
+      resolveOutputOptions(normalizeOutputOptions({ sceneCount: 2 }), {
+        colorHex: "#FFFFFF",
+        brandSweepHex: "#FFFFFF",
+        keepMediaIds: [],
+      }),
+      [{ mediaId: "m1" }],
+    );
+    const two = fitShotsToChannels({ shots: scenes.map((s) => ({ ...s })), skipped: [] }, { ...fit, output: flags });
+    expect(two.shots.filter((s) => s.type === "lifestyle").map((s) => s.id)).toEqual(["l0", "l1"]);
+    expect(two.skipped.filter((s) => s.reason === SCENE_COUNT_REASON)).toHaveLength(2);
+    // Without options the seed default holds.
+    const plain = fitShotsToChannels({ shots: scenes.map((s) => ({ ...s })), skipped: [] }, fit);
+    expect(plain.shots.filter((s) => s.type === "lifestyle")).toHaveLength(sceneCountOptions.default);
+  });
+
+  it("takes each photo's product box from the seller's tap, else the preflight", () => {
+    const tap = { x: 0.1, y: 0.1, width: 0.5, height: 0.5 };
+    const found = { x: 0.2, y: 0.2, width: 0.3, height: 0.3 };
+    expect(
+      productBoxesOf([
+        { mediaId: "a", targetBox: tap, productBox: found },
+        { mediaId: "b", productBox: found },
+        { mediaId: "c" },
+      ]),
+    ).toEqual({ productBoxes: { a: tap, b: found } });
+    expect(productBoxesOf([{ mediaId: "c" }])).toEqual({});
   });
 });
 
