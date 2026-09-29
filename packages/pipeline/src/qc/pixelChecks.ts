@@ -54,14 +54,15 @@ export const QC_THRESHOLDS = {
 } as const;
 
 /**
- * Whether pixelChecks runs backgroundWhiteOrClear by default. Off: today's
- * white renders for google.merchant.main and tiktokshop.main pass it as
- * rendered and as PNG, but ship as a quality 90 JPEG whose ringing leaves
- * about 0.99 of the background exactly white outside the edge margin
- * (qc/whiteOrClear.test.ts). Turn it on once encodeForSpec escapes these
- * specs to PNG the way it does for solid white specs, and a golden set run
- * passes. A caller can opt in per call with
- * PixelCheckOptions.backgroundWhiteOrClear.
+ * Whether pixelChecks runs backgroundWhiteOrClear by default. The white
+ * renders for google.merchant.main and tiktokshop.main pass it as rendered
+ * and as PNG, but a plain quality 90 JPEG's ringing leaves about 0.99 of the
+ * background exactly white outside the edge margin (qc/whiteOrClear.test.ts).
+ * encodeForSpec now escapes these specs to PNG whenever a JPEG's white is not
+ * exact (trigger/src/shot-outputs.ts exactBackgroundRgb, PHASE_15 item 19).
+ * The plan turns this on only after a golden set run passes on that escape;
+ * that live run has not happened, so it stays off. A caller can opt in per
+ * call with PixelCheckOptions.backgroundWhiteOrClear.
  */
 export const BACKGROUND_WHITE_OR_CLEAR_ENABLED = false;
 
