@@ -8,8 +8,16 @@ import {
   SHOT_NOT_DELIVERED,
   SHOT_PROVIDER_TROUBLE,
 } from "@curvi/trigger/runner";
+import {
+  MAX_SOURCE_UPSCALE,
+  normalizeOutputOptions,
+  resolveOutputOptions,
+  SELLER_OFF_REASON,
+  SOURCE_TOO_SMALL_REASON,
+} from "@curvi/pipeline/output-options";
+import { listSpecs } from "@curvi/specs";
 import { SETTLED_JOB_MESSAGES } from "@/lib/jobs/enqueue";
-import { needsReviewNote, packSummaryLine, publicJobError, skippedCopy } from "./job-copy";
+import { needsReviewNote, outputOptionsSummary, packSummaryLine, publicJobError, skippedCopy } from "./job-copy";
 
 // enqueue.ts schedules inline packs with next/server's after(); only its
 // settled messages are read here.
@@ -180,5 +188,112 @@ describe("packSummaryLine", () => {
     expect(packSummaryLine({ delivered: 1, needsReview: 1, skipped: 0, creditsCharged: 0.5 })).toBe(
       "1 shot delivered. 1 needs review, no charge for that one. 0.5 credits charged.",
     );
+  });
+});
+
+describe("PHASE_15 reasons", () => {
+  it("gives a shot the seller turned off its own copy", () => {
+    const copy = skippedCopy(SELLER_OFF_REASON, "lifestyle");
+    expect(copy).toEqual({ label: "Turned off", note: "You turned this off for this pack. Not charged." });
+  });
+
+  it("asks for a larger photo, with the enlarge limit from MAX_SOURCE_UPSCALE", () => {
+    const copy = skippedCopy(`original_photo:amazon.secondary ${SOURCE_TOO_SMALL_REASON}`, "original_photo");
+    expect(copy.label).toBe("Needs a larger photo");
+    expect(copy.note).toBe(
+      `Your photo is too small for this channel without enlarging it more than ${MAX_SOURCE_UPSCALE} times. Upload the original from your camera, or untick this channel. Not charged.`,
+    );
+  });
+
+  it("never lands source too small in the needs photo or source photo branches", () => {
+    expect(skippedCopy(SOURCE_TOO_SMALL_REASON).label).not.toBe("Needs photo");
+    const note = needsReviewNote(SOURCE_TOO_SMALL_REASON);
+    expect(note).toContain("too small for this channel");
+    expect(note).toContain(`${MAX_SOURCE_UPSCALE} times`);
+    expect(note).not.toContain("could not find the product");
+    expect(note).toContain("No credits were charged");
+    expect(needsReviewNote(SELLER_OFF_REASON)).toContain("You turned this off");
+  });
+
+  it("keeps every new line plain spoken (rule 9)", () => {
+    const lines = [
+      skippedCopy(SELLER_OFF_REASON).label,
+      skippedCopy(SELLER_OFF_REASON).note,
+      skippedCopy(SOURCE_TOO_SMALL_REASON).label,
+      skippedCopy(SOURCE_TOO_SMALL_REASON).note,
+      needsReviewNote(SOURCE_TOO_SMALL_REASON),
+      needsReviewNote(SELLER_OFF_REASON),
+    ];
+    for (const line of lines) {
+      expect(line).not.toMatch(FORBIDDEN);
+    }
+  });
+});
+
+describe("outputOptionsSummary", () => {
+  const keepResolved = resolveOutputOptions(normalizeOutputOptions({ background: "keep" }), {
+    colorHex: "#FFFFFF",
+    brandSweepHex: "#1F2A44",
+    keepMediaIds: ["ws/a", "ws/b", "ws/c"],
+  });
+
+  it("reads a job with no stored options as Marketplace ready on white", () => {
+    expect(outputOptionsSummary(null, { specIds: ["amazon.main", "shopify.product"], photoCount: 1 })).toEqual({
+      look: "marketplace",
+      lines: ["Background removed, on white."],
+    });
+  });
+
+  it("describes a Keep pack the way the plan's card does", () => {
+    const summary = outputOptionsSummary(keepResolved, {
+      specIds: ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"],
+      photoCount: 3,
+    });
+    expect(summary.look).toBe("keep_photo");
+    expect(summary.lines).toEqual([
+      "Background kept as you took it, on 3 photos.",
+      "Amazon main image: background removed, because Amazon requires white.",
+      "Added space: white.",
+      "Turned off: lifestyle scenes, studio backdrops, transparent PNG, graphics, social posts and banners.",
+    ]);
+  });
+
+  it("leaves out added space when no kept output gets any", () => {
+    const summary = outputOptionsSummary(keepResolved, { specIds: ["etsy.listing"], photoCount: 3 });
+    expect(summary.lines.some((line) => line.startsWith("Added space"))).toBe(false);
+  });
+
+  it("names the color and the channels that stay white with Remove", () => {
+    const resolved = resolveOutputOptions(
+      normalizeOutputOptions({ color: { kind: "swatch", key: "sand" }, extras: { scenes: false } }),
+      { colorHex: "#EADFCF", brandSweepHex: "#1F2A44", keepMediaIds: [] },
+    );
+    const summary = outputOptionsSummary(resolved, {
+      specIds: ["amazon.main", "walmart.main", "etsy.listing"],
+      photoCount: 1,
+    });
+    expect(summary.look).toBe("custom");
+    expect(summary.lines).toEqual([
+      "Background removed, on sand.",
+      "Amazon main image: pure white, because Amazon requires white.",
+      "Walmart main image: pure white, because Walmart requires white.",
+      "Turned off: lifestyle scenes.",
+    ]);
+    const brand = resolveOutputOptions(normalizeOutputOptions({ color: { kind: "brand", index: 0 } }), {
+      colorHex: "#1f2a44",
+      brandSweepHex: "#1F2A44",
+      keepMediaIds: [],
+    });
+    expect(outputOptionsSummary(brand, { specIds: [], photoCount: 1 }).lines[0]).toBe(
+      "Background removed, on brand color 1, #1F2A44.",
+    );
+  });
+
+  it("keeps every line plain spoken (rule 9)", () => {
+    const summary = outputOptionsSummary(keepResolved, { specIds: listSpecs().map((s) => s.id), photoCount: 1 });
+    expect(summary.lines.length).toBeGreaterThan(2);
+    for (const line of summary.lines) {
+      expect(line).not.toMatch(FORBIDDEN);
+    }
   });
 });
