@@ -1,7 +1,17 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { and, eq } from "drizzle-orm";
-import { actAs, actAsAnon, actAsSuperuser, createAppUserRole, createTestDb, type TestDb } from "./test-helpers";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import {
+  actAs,
+  actAsAnon,
+  actAsAuthenticated,
+  actAsSuperuser,
+  createAppUserRole,
+  createTestDb,
+  type TestDb,
+} from "./test-helpers";
 import {
   apiKeys,
   assets,
@@ -16,7 +26,8 @@ import {
 // Migration 0024 (docs/phases/PHASE_16.md): generation_jobs.seller_answers
 // and asset_variants.picked on existing tenant tables (RLS unchanged), and
 // two new tenant tables, api_keys and favorites (CLAUDE.md rule 5). Owners
-// and admins manage api_keys; members read favorites and every seat but the
+// and admins read api_keys, and since 0026 only the owner connection writes
+// them; members read favorites and every seat but the
 // client adds and removes them. Another workspace never sees or changes
 // either.
 
@@ -207,27 +218,97 @@ describe("0024 api_keys", () => {
     }
   });
 
-  it("lets an admin create a key as themselves and revoke it", async () => {
-    await actAs(client, ADMIN_A);
-    await client.query(
-      `insert into api_keys (workspace_id, name, prefix, key_hash, created_by) values ($1, 'Admin key', 'cv_live_admin', 'a', $2)`,
-      [wsA, ADMIN_A],
+  // Migration 0026: keys are written only through the owner connection
+  // (createApiKey and revokeApiKey), so every client role is read only. An
+  // admin with a session JWT must not mint a key directly, rewrite created_by
+  // to borrow the owner's membership, swap another member's key_hash, or bring
+  // back a key the owner revoked.
+  it("has no insert, update or delete policy on api_keys", async () => {
+    const res = await client.query<{ policyname: string; cmd: string }>(
+      "select policyname, cmd from pg_policies where schemaname = 'public' and tablename = 'api_keys' order by policyname",
     );
-    await client.query("update api_keys set revoked_at = now() where prefix = 'cv_live_admin'");
-    await actAsSuperuser(client);
-    const [k] = await db.select().from(apiKeys).where(eq(apiKeys.prefix, "cv_live_admin"));
-    expect(k.createdBy).toBe(ADMIN_A);
-    expect(k.revokedAt).toBeInstanceOf(Date);
+    expect(res.rows).toEqual([{ policyname: "api_keys_select_owner_admin", cmd: "SELECT" }]);
   });
 
-  it("refuses a key created in someone else's name", async () => {
-    await actAs(client, OWNER_A);
-    await expect(
-      client.query(
-        `insert into api_keys (workspace_id, name, prefix, key_hash, created_by) values ($1, 'n', 'cv_live_spoof', 'a', $2)`,
-        [wsA, ADMIN_A],
-      ),
-    ).rejects.toThrow();
+  it("refuses a key inserted by an owner or admin through a client role, even as themselves", async () => {
+    for (const [user, act] of [
+      [OWNER_A, actAs],
+      [ADMIN_A, actAs],
+      [ADMIN_A, actAsAuthenticated],
+    ] as const) {
+      await act(client, user);
+      await expect(
+        client.query(
+          `insert into api_keys (workspace_id, name, prefix, key_hash, created_by) values ($1, 'n', $2, 'a', $3)`,
+          [wsA, `cv_live_direct_${user.slice(-2)}`, user],
+        ),
+        user,
+      ).rejects.toThrow();
+    }
+  });
+
+  it("refuses an admin rewriting created_by, key_hash, prefix or scopes", async () => {
+    for (const act of [actAs, actAsAuthenticated]) {
+      await act(client, ADMIN_A);
+      await client
+        .query("update api_keys set created_by = $1 where id = $2", [OWNER_A, keyA])
+        .catch(() => undefined);
+      await client.query("update api_keys set created_by = $1 where id = $2", [ADMIN_A, keyA]).catch(() => undefined);
+      await client.query("update api_keys set key_hash = 'taken' where id = $1", [keyA]).catch(() => undefined);
+      await client.query("update api_keys set prefix = 'cv_live_moved' where id = $1", [keyA]).catch(() => undefined);
+      await client
+        .query("update api_keys set scopes = '{packs:write}'::text[] where id = $1", [keyA])
+        .catch(() => undefined);
+    }
+    await actAsSuperuser(client);
+    const [k] = await db.select().from(apiKeys).where(eq(apiKeys.id, keyA));
+    expect(k.createdBy).toBe(OWNER_A);
+    expect(k.keyHash).toBe("h".repeat(64));
+    expect(k.prefix).toBe("cv_live_aaaa");
+    expect(k.scopes).toEqual([]);
+  });
+
+  it("refuses an owner or admin un-revoking a revoked key", async () => {
+    const [revoked] = await db
+      .insert(apiKeys)
+      .values({
+        workspaceId: wsA,
+        name: "Leaked",
+        prefix: "cv_live_leaked",
+        keyHash: "l",
+        createdBy: ADMIN_A,
+        revokedAt: new Date("2026-09-01T00:00:00Z"),
+      })
+      .returning();
+    for (const user of [OWNER_A, ADMIN_A]) {
+      for (const act of [actAs, actAsAuthenticated]) {
+        await act(client, user);
+        await client
+          .query("update api_keys set revoked_at = null where id = $1", [revoked.id])
+          .catch(() => undefined);
+      }
+    }
+    await actAsSuperuser(client);
+    const [k] = await db.select().from(apiKeys).where(eq(apiKeys.id, revoked.id));
+    expect(k.revokedAt).toEqual(new Date("2026-09-01T00:00:00Z"));
+  });
+
+  it("revokes client write grants on api_keys and keeps the owner connection writing", async () => {
+    // The test harness re-grants every table to the Supabase roles after
+    // migrations, so check the migration text carries the revoke, and that
+    // the owner connection (used by DbApiKeyStore) still revokes a key.
+    const sqlText = readFileSync(
+      fileURLToPath(new URL("../migrations/0026_api_keys_client_read_only.sql", import.meta.url)),
+      "utf8",
+    );
+    expect(sqlText).toMatch(/REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public\.api_keys/);
+    const [k] = await db
+      .insert(apiKeys)
+      .values({ workspaceId: wsA, name: "Owner conn", prefix: "cv_live_ownerconn", keyHash: "o", createdBy: ADMIN_A })
+      .returning();
+    await db.update(apiKeys).set({ revokedAt: new Date() }).where(eq(apiKeys.id, k.id));
+    const [after] = await db.select().from(apiKeys).where(eq(apiKeys.id, k.id));
+    expect(after.revokedAt).toBeInstanceOf(Date);
   });
 
   it("refuses writes from editors and clients", async () => {
