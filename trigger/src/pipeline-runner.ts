@@ -2397,6 +2397,15 @@ export type LlmPlanCheck = { ok: true; shotList: ShotList } | { ok: false; reaso
  * really run. Otherwise the deterministic planner runs, and the reason is
  * reported.
  */
+/** Shot types only the pixel pipeline makes, never an image model. */
+export const PACKSHOT_TYPES: ReadonlySet<Shot["type"]> = new Set<Shot["type"]>([
+  "amazon_main",
+  "alt_angle_white",
+  "cutout_png",
+  "sweep_gray",
+  "sweep_brand",
+]);
+
 export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanCheck {
   const parsed = ShotList.safeParse(raw);
   if (!parsed.success) {
@@ -2405,7 +2414,16 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
   const excluded = new Set(rules.excludeMethods ?? []);
   const skipped: ShotList["skipped"] = [...parsed.data.skipped];
   const shots: Shot[] = [];
-  for (const shot of parsed.data.shots) {
+  // Packshots (white main, alternate angles, the transparent cutout and the
+  // plain sweeps) are always made from the real photo by the pixel
+  // pipeline. An image model asked for a "cutout" draws a studio and a fake
+  // checkerboard, so the planner's method is overruled for these types.
+  const packshotsFixed = parsed.data.shots.map((shot) =>
+    PACKSHOT_TYPES.has(shot.type) && shot.method !== "deterministic"
+      ? { ...shot, method: "deterministic" as const, stylePreset: "none", scene: undefined }
+      : shot,
+  );
+  for (const shot of packshotsFixed) {
     if (excluded.has(shot.method)) {
       skipped.push({ type: shot.type, reason: PROVIDER_NOT_ENABLED });
     } else {

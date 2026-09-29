@@ -242,6 +242,24 @@ describe("validateLlmShotList (1.7)", () => {
     validateLlmShotList({ shots, skipped: [] }, { ...rules, ...overrides });
   const rejected = (result: LlmPlanCheck): string => (result.ok ? "" : result.reason);
 
+  it("overrules a plan that asks an image model for a packshot such as the cutout", () => {
+    const cutout = {
+      ...validShot,
+      id: "s3",
+      type: "cutout_png",
+      method: "composite_generate",
+      stylePreset: "minimal_studio",
+      scene: "photo studio",
+      channels: ["shopify.product"],
+      priority: 3,
+    };
+    const result = check([validShot, altShot, cutout]);
+    expect(result.ok).toBe(true);
+    const fixed = result.ok ? result.shotList.shots.find((s) => s.id === "s3") : undefined;
+    expect(fixed).toMatchObject({ method: "deterministic", stylePreset: "none" });
+    expect(fixed?.scene).toBeUndefined();
+  });
+
   it("accepts a valid list within budget", () => {
     const result = check([validShot, altShot]);
     expect(result.ok).toBe(true);

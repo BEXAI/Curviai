@@ -5,7 +5,7 @@
  */
 
 export const presets = {
-  minimal_studio: { surface: "seamless light gray paper sweep" },
+  minimal_studio: { surface: "clean matte light gray tabletop in front of a smooth, evenly lit pale gray wall" },
   luxury_marble: { surface: "white Carrara marble slab with soft window light" },
   kitchen_lifestyle: { surface: "warm oak kitchen counter, blurred modern kitchen background" },
   outdoor: { surface: "natural stone ledge in late afternoon sun, shallow depth of field" },
@@ -18,7 +18,11 @@ export const templates = {
   /** Scene plate prompt. A repair hint from the QC judge is appended on
    * retries so the next plate fixes what the previous attempt got wrong. */
   lifestyle_plate_flux2: ({ scene, preset, repairHint }: { scene: string; preset: PresetKey; repairHint?: string }) => {
-    const base = `Professional commercial product photograph, empty ${scene} set prepared for a product placed at center, ${presets[preset].surface}, softbox key light at 45 degrees camera left, white fill card camera right, subtle rim light, shot on 100mm macro lens at f/8, focus stacked, color accurate, natural contact area on the surface at center, no text, no people, no other products.`;
+    // The light is described by its look, never by its equipment: naming
+    // softboxes or fill cards made the image model draw them into the frame.
+    // Secondary images follow the marketplace norm of a real setting where
+    // the product is used, with nothing in the frame that reveals a studio.
+    const base = `Editorial lifestyle photograph of a real ${scene}, ${presets[preset].surface}, with an empty clear spot at the center of the surface where a product will stand. Soft, even, natural looking light from the upper left with gentle shadows and a subtle highlight along edges, true to life color, shallow depth of field so the background falls into a soft blur, eye level camera. The whole frame shows only the setting itself: no photography equipment, lights, stands, tripods, reflectors, cables, backdrop paper or backdrop edges anywhere in the picture, and no checkerboard or transparency pattern. No text, no people, no other products.`;
     const hint = repairHint?.trim();
     return hint ? `${base} Repair instruction from the previous attempt: ${hint}` : base;
   },

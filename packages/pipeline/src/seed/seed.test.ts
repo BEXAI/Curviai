@@ -110,14 +110,14 @@ describe("templates and presets", () => {
     expect(Object.keys(presets).sort()).toEqual(
       ["holiday", "kitchen_lifestyle", "luxury_marble", "minimal_studio", "outdoor"].sort(),
     );
-    expect(presets.minimal_studio.surface).toBe("seamless light gray paper sweep");
+    expect(presets.minimal_studio.surface).toBe("clean matte light gray tabletop in front of a smooth, evenly lit pale gray wall");
   });
 
   it("compiles the lifestyle plate prompt with scene and preset surface", () => {
     const prompt = templates.lifestyle_plate_flux2({ scene: "kitchen", preset: "luxury_marble" });
-    expect(prompt).toContain("empty kitchen set");
+    expect(prompt).toContain("real kitchen");
     expect(prompt).toContain("white Carrara marble slab with soft window light");
-    expect(prompt).toContain("no text, no people, no other products");
+    expect(prompt).toContain("No text, no people, no other products");
   });
 
   it("keeps the harmonize prompt strictly non destructive", () => {
@@ -193,5 +193,15 @@ describe("schemas", () => {
     expect(() =>
       QCVerdict.parse({ pass: true, fidelity: 1.4, issues: [], repairHint: "" }),
     ).toThrow();
+  });
+});
+
+describe("scene plate prompt", () => {
+  it("describes light by its look and keeps studio equipment out of the frame", () => {
+    const prompt = templates.lifestyle_plate_flux2({ scene: "gym bench after a workout", preset: "minimal_studio" });
+    expect(prompt).not.toMatch(/softbox|fill card|macro lens|set prepared/i);
+    expect(prompt).toContain("no photography equipment");
+    expect(prompt).toContain("no checkerboard");
+    expect(prompt).toContain("gym bench after a workout");
   });
 });
