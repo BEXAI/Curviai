@@ -45,7 +45,8 @@ export type TierFeature =
   | "priorityQueue"
   | "clientWorkspaces"
   | "clientReviewLinks"
-  | "whiteLabelShare";
+  | "whiteLabelShare"
+  | "apiAccess";
 
 export type FeatureStatus = "live" | "coming_soon";
 
@@ -70,6 +71,9 @@ export const featureStatus: Record<TierFeature, FeatureStatus> = {
   clientWorkspaces: "coming_soon",
   clientReviewLinks: "coming_soon",
   whiteLabelShare: "coming_soon",
+  // Workspace API keys, the public API v1 and the hosted MCP server
+  // (PHASE_16 workstream 5, founder decision 5: Growth and up).
+  apiAccess: "live",
 };
 
 export interface TierEntitlements {
@@ -192,7 +196,15 @@ export const tierEntitlements: Record<TierKey, TierEntitlements> = {
   growth: {
     brandKits: 1,
     clientWorkspaces: 0,
-    features: ["sharePage", "brandKit", "templatedVideo", "generativeVideo", "freshDrop", "shopifyAutoPacks"],
+    features: [
+      "sharePage",
+      "brandKit",
+      "templatedVideo",
+      "generativeVideo",
+      "freshDrop",
+      "shopifyAutoPacks",
+      "apiAccess",
+    ],
   },
   pro: {
     brandKits: 3,
@@ -204,6 +216,7 @@ export const tierEntitlements: Record<TierKey, TierEntitlements> = {
       "generativeVideo",
       "freshDrop",
       "shopifyAutoPacks",
+      "apiAccess",
       "lifestyleVideo",
       "ugcAds",
       "multipleBrandKits",
@@ -220,6 +233,7 @@ export const tierEntitlements: Record<TierKey, TierEntitlements> = {
       "generativeVideo",
       "freshDrop",
       "shopifyAutoPacks",
+      "apiAccess",
       "lifestyleVideo",
       "ugcAds",
       "multipleBrandKits",
