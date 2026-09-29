@@ -8,8 +8,10 @@ import {
   jsonSchemaFor,
 } from "../schemas";
 import { llmModelPrices } from "./models";
-import { RecipeRow, recipeSeedRows } from "./recipes";
-import { presets, templates } from "./templates";
+import { getSpec } from "@curvi/specs";
+import { MAX_BRAND_COLORS } from "./brand";
+import { RecipeRow, qcJudgePolicy, recipeSeedRows } from "./recipes";
+import { backgroundSwatches, canvasDefaults, originalFit, presets, stillStyle, templates } from "./templates";
 import { annualDiscountPct, creditCosts, tierByKey, tiers, topUps } from "./credits";
 
 describe("recipe seed rows", () => {
@@ -226,6 +228,71 @@ describe("schemas", () => {
     expect(() =>
       QCVerdict.parse({ pass: true, fidelity: 1.4, issues: [], repairHint: "" }),
     ).toThrow();
+  });
+});
+
+describe("output option seeds (PHASE_15)", () => {
+  const hexes = Object.values(backgroundSwatches).map((swatch) => swatch.hex);
+
+  it("lists the background swatches in dropdown order as valid unique hexes", () => {
+    expect(Object.keys(backgroundSwatches)).toEqual([
+      "white",
+      "light_gray",
+      "studio_gray",
+      "warm_white",
+      "sand",
+      "sage",
+      "slate",
+      "charcoal",
+    ]);
+    for (const hex of hexes) {
+      expect(hex).toMatch(/^#[0-9A-F]{6}$/);
+    }
+    expect(new Set(hexes).size).toBe(hexes.length);
+  });
+
+  it("reuses a seeded hex for every swatch except white", () => {
+    const seeded = new Set<string>([
+      stillStyle.sweepGrayHex,
+      stillStyle.fallbackBrandHex,
+      stillStyle.defaultBackgroundHex,
+      stillStyle.textHex,
+      ...Object.values(stillStyle.presetBackgroundHex),
+    ]);
+    for (const [key, swatch] of Object.entries(backgroundSwatches)) {
+      if (key !== "white") {
+        expect(seeded.has(swatch.hex), key).toBe(true);
+      }
+    }
+  });
+
+  it("keeps one white: the swatch, stillStyle.whiteHex and the amazon.main registry rgb", () => {
+    expect(backgroundSwatches.white.hex).toBe(stillStyle.whiteHex);
+    const rgb = getSpec("amazon.main").background?.rgb;
+    expect(rgb).toBeDefined();
+    const fromRegistry = `#${(rgb ?? []).map((c) => c.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+    expect(stillStyle.whiteHex).toBe(fromRegistry);
+  });
+
+  it("prices every credit cost as a multiple of 0.5, which floats hold exactly", () => {
+    for (const [key, value] of Object.entries(creditCosts)) {
+      expect(Number.isInteger(value * 2), key).toBe(true);
+    }
+  });
+
+  it("caps kept photos and names the sRGB profiles that may pass through", () => {
+    expect(originalFit.maxMegapixels).toBe(16);
+    expect(originalFit.srgbProfileNames).toContain("sRGB IEC61966-2.1");
+    expect(originalFit.srgbProfileNames.every((name) => name.length > 0)).toBe(true);
+    expect(canvasDefaults.width).toBeGreaterThan(0);
+  });
+
+  it("exempts kept photos from the paid judge", () => {
+    expect(qcJudgePolicy.exemptShotTypes).toEqual(["original_photo"]);
+  });
+
+  it("allows six brand colors", () => {
+    expect(MAX_BRAND_COLORS).toBe(6);
   });
 });
 

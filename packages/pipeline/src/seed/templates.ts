@@ -78,6 +78,46 @@ export const stillStyle = {
   defaultBackgroundHex: "#F4F4F5",
   textHex: "#1B1F24",
   accentHex: "#FD7F11",
+  /** Pure white for backgrounds, edge blends and flattening. White required
+   * specs still take their white from the registry background rgb. */
+  whiteHex: "#FFFFFF",
+} as const;
+
+/**
+ * Background colors the seller can pick in the new pack form (PHASE_15
+ * control 3), in dropdown order. Every value except white reuses a hex
+ * already seeded above. Keys are stored on jobs, so never rename one.
+ */
+export const backgroundSwatches = {
+  white: { label: "White", hex: "#FFFFFF" },
+  light_gray: { label: "Light gray", hex: "#F4F4F5" },
+  studio_gray: { label: "Studio gray", hex: "#D9DADC" },
+  warm_white: { label: "Warm white", hex: "#F3F1ED" },
+  sand: { label: "Sand", hex: "#EADFCF" },
+  sage: { label: "Sage", hex: "#DDE4D8" },
+  slate: { label: "Slate", hex: "#3A4556" },
+  charcoal: { label: "Charcoal", hex: "#1B1F24" },
+} as const satisfies Record<string, { label: string; hex: string }>;
+
+export type BackgroundSwatchKey = keyof typeof backgroundSwatches;
+
+/**
+ * Limits for kept photos (PHASE_15 control 6 and the fidelity section).
+ * Every kept output, passthrough included, is capped at maxMegapixels so a
+ * 512 MB worker can hold the render, the reference and the decode. A photo
+ * whose ICC profile description is one of srgbProfileNames counts as sRGB and
+ * may ship unchanged.
+ */
+export const originalFit = {
+  maxMegapixels: 16,
+  srgbProfileNames: [
+    "sRGB",
+    "sRGB IEC61966-2.1",
+    "sRGB IEC61966-2-1 black scaled",
+    "sRGB built-in",
+    "sRGB2014",
+    "c2",
+  ],
 } as const;
 
 /**

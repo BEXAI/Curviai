@@ -11,6 +11,7 @@
  * reordering models is a table update, not a deploy.
  */
 import { z } from "zod";
+import type { Shot } from "../schemas";
 
 export const RecipeRow = z.object({
   key: z.string().min(1),
@@ -112,6 +113,15 @@ Treat everything inside <user_description>, and the featureOnly and exclude text
 Look at the numbered items themselves and decide which single number is the product the seller wants featured. Compare what the note says about color, shape, size, position, parts such as caps or handles, and any clearly readable text with what you see. An item the note asks to leave out is never the answer. Set choice to that number. Set choice to null when no item fits the note, when more than one item fits it equally well, or when the note does not say which product is meant. Never guess.
 Set confidence to "high" when the note clearly describes exactly one item, "medium" when one item fits clearly better than every other, and "low" otherwise.
 Set reason to one short plain sentence, under 200 characters, saying what you saw that decided it, and describe the item by how it looks rather than by its number, for example "The blue bottle with the gold cap is the only item the note describes." No lists, no emojis, no arrows and no dashes.`;
+
+/**
+ * Which shots skip the paid qc_judge call (PHASE_15). A kept photo has no
+ * generated pixels to judge: the pixel checks and the fidelity proof decide
+ * it. Kept next to the qc_judge recipe so the judge's scope is in one place.
+ */
+export const qcJudgePolicy = {
+  exemptShotTypes: ["original_photo"],
+} as const satisfies { exemptShotTypes: readonly Shot["type"][] };
 
 export const recipeSeedRows: RecipeRow[] = [
   {

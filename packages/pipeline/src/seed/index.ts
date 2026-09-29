@@ -1,4 +1,4 @@
-export { RecipeRow, recipeSeedRows } from "./recipes";
+export { RecipeRow, qcJudgePolicy, recipeSeedRows } from "./recipes";
 export {
   CUTOUT_TASK,
   HARMONIZE_TASK,
@@ -9,11 +9,20 @@ export {
   cutoutModelSeedRows,
 } from "./models";
 export type { CutoutModelSeedRow, ImageModelSeedRow, ImageProviderFamily, LlmPriceTable } from "./models";
-export { badgeStyle, canvasDefaults, presets, sceneDefaults, stillStyle, templates } from "./templates";
-export type { PresetKey } from "./templates";
+export {
+  backgroundSwatches,
+  badgeStyle,
+  canvasDefaults,
+  originalFit,
+  presets,
+  sceneDefaults,
+  stillStyle,
+  templates,
+} from "./templates";
+export type { BackgroundSwatchKey, PresetKey } from "./templates";
 export { DEFAULT_TEMPLATE_FONT, isTemplateFontKey, templateFonts } from "./fonts";
 export type { TemplateFontEntry, TemplateFontKey } from "./fonts";
-export { AUTO_STYLE_PRESET } from "./brand";
+export { AUTO_STYLE_PRESET, MAX_BRAND_COLORS } from "./brand";
 export { retentionOffers } from "./retention";
 export type { RetentionOffers } from "./retention";
 export {
