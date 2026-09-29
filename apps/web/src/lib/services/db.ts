@@ -780,6 +780,7 @@ export class DbService implements Services {
       productTitle: titles.get(job.productId) ?? "Untitled product",
       status: job.status as JobStatus,
       creditsReserved: job.creditsReserved,
+      creditsCharged: Number(job.creditsCharged ?? 0),
       createdAt: job.createdAt.toISOString(),
     }));
   }

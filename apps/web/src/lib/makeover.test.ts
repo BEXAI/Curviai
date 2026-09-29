@@ -63,7 +63,7 @@ describe("makeoverShareLink", () => {
     expect(makeoverShareLink("https://curvi.ai", JOB, true)).toEqual({ url: `https://curvi.ai/s/${JOB}`, audience: "public" });
   });
 
-  it("defaults to the workspace link today, since /s/[slug] still shows a demo", () => {
+  it("defaults to the workspace link, since public pages live at a published slug, not the job id", () => {
     expect(makeoverShareLink("https://curvi.ai", JOB).audience).toBe("workspace");
   });
 });

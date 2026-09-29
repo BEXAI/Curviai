@@ -1,6 +1,7 @@
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { JobSummary } from "@/lib/services/types";
 
 // The dashboard's credit card: a balance a plan change took below zero is
 // explained (what happened, and that a top up or the next renewal lets packs
@@ -17,7 +18,7 @@ vi.mock("next/link", () => ({
     React.createElement("a", { href, ...rest }, children),
 }));
 
-const page = vi.hoisted(() => ({ creditBalance: 40 }));
+const page = vi.hoisted(() => ({ creditBalance: 40, jobs: [] as JobSummary[] }));
 
 vi.mock("@/lib/services", () => ({
   getServices: () => ({
@@ -29,7 +30,7 @@ vi.mock("@/lib/services", () => ({
       role: "owner",
     }),
     listProducts: async () => [],
-    listRecentJobs: async () => [],
+    listRecentJobs: async () => page.jobs,
   }),
 }));
 
@@ -92,6 +93,35 @@ describe("dashboard low balance nudge", () => {
       expect(html).toContain("/app/billing?checkout=growth&amp;cadence=monthly");
     } finally {
       vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("dashboard recent packs", () => {
+  const summary = (partial: Partial<JobSummary>): JobSummary => ({
+    id: "00000000-0000-4000-8000-000000000001",
+    productTitle: "Mug",
+    status: "done",
+    creditsReserved: 24,
+    creditsCharged: 0,
+    createdAt: new Date(0).toISOString(),
+    ...partial,
+  });
+
+  it("shows the hold while a pack runs and the charge once it settles", async () => {
+    page.jobs = [
+      summary({ id: "00000000-0000-4000-8000-000000000001", status: "generating" }),
+      summary({ id: "00000000-0000-4000-8000-000000000002", status: "done", creditsCharged: 18 }),
+      summary({ id: "00000000-0000-4000-8000-000000000003", status: "canceled" }),
+    ];
+    try {
+      const html = await renderDashboard(40);
+      expect(html).toContain("24 credits held");
+      expect(html).toContain("18 credits charged");
+      expect(html).toContain("Nothing charged");
+      expect(html).not.toContain("credits reserved");
+    } finally {
+      page.jobs = [];
     }
   });
 });

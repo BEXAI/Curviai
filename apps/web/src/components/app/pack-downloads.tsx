@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Card, CardContent, buttonVariants, cn } from "@curvi/ui";
 import { OutputPreview } from "@/components/app/output-preview";
 import { aspectRatioCss, mayBeTransparentFile, previewAspect } from "@/lib/output-preview";
+import { PACK_ZIP_REFUSAL_PARAM, packZipRefusalCopy } from "@/lib/pack-zip";
 import { track } from "@/lib/track";
 import type { JobFilesView, JobFileView } from "@/lib/services/types";
 
@@ -60,16 +61,42 @@ export function FilePreview({ file }: { file: Pick<JobFileView, "name" | "specId
   );
 }
 
+/**
+ * Whether the header offers the "all files" zip. The pack route only zips a
+ * pack whose status is done, so while a shot re-runs the link would land on
+ * a refusal; the seller gets a plain note instead (the files stay listed).
+ */
+export function downloadAllState(
+  view: Pick<JobFilesView, "files">,
+  packDone: boolean,
+): "link" | "after_rerun" | "none" {
+  const hasFiles = view.files.some((f) => f.kind === "image" && f.downloadUrl);
+  if (!hasFiles) {
+    return "none";
+  }
+  return packDone ? "link" : "after_rerun";
+}
+
 /** Channel tabs with correctly named downloads (plan 3.3.4): per channel
  * image files, the channel zip, everything in one zip and the compliance
  * report. Every download link goes through the download route, which signs
  * a fresh url that saves the file under its channel name. */
-export function PackDownloads({ jobId }: { jobId: string }) {
+export function PackDownloads({ jobId, packDone }: { jobId: string; packDone: boolean }) {
   const [view, setView] = useState<JobFilesView | null>(null);
   const [failed, setFailed] = useState(false);
   const [activeChannel, setActiveChannel] = useState<string | null>(null);
+  const [zipRefusal, setZipRefusal] = useState<string | null>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
   const baseId = useId();
+
+  // The pack route sends a refused Download all back here with a code.
+  useEffect(() => {
+    try {
+      setZipRefusal(new URLSearchParams(window.location.search).get(PACK_ZIP_REFUSAL_PARAM));
+    } catch {
+      setZipRefusal(null);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,7 +153,10 @@ export function PackDownloads({ jobId }: { jobId: string }) {
   const channelFiles = view.files.filter((f) => f.channel === active && f.kind === "image");
   const zip = view.files.find((f) => f.channel === active && f.kind === "zip");
   const report = view.files.find((f) => f.kind === "report");
-  const canDownloadAll = view.files.some((f) => f.kind === "image" && f.downloadUrl);
+  const downloadAll = downloadAllState(view, packDone);
+  // A "not finished" refusal is stale once the pack is done.
+  const zipNotice =
+    downloadAll === "after_rerun" || (packDone && zipRefusal === "not_finished") ? null : packZipRefusalCopy(zipRefusal);
   const tabId = (channel: string) => `${baseId}-tab-${channel}`;
   const panelId = (channel: string) => `${baseId}-panel-${channel}`;
 
@@ -164,7 +194,7 @@ export function PackDownloads({ jobId }: { jobId: string }) {
               Compliance report
             </a>
           ) : null}
-          {canDownloadAll ? (
+          {downloadAll === "link" ? (
             <a
               href={`/api/jobs/${jobId}/pack`}
               className={buttonVariants({ variant: "outline", size: "sm" })}
@@ -176,6 +206,16 @@ export function PackDownloads({ jobId }: { jobId: string }) {
           ) : null}
         </div>
       </div>
+      {downloadAll === "after_rerun" ? (
+        <p className="text-sm text-ink-500" data-testid="download-all-later">
+          Download all files comes back once this shot finishes. Each file below is ready now.
+        </p>
+      ) : null}
+      {zipNotice ? (
+        <p className="text-sm text-amber-700" role="status" data-testid="download-all-notice">
+          {zipNotice}
+        </p>
+      ) : null}
       {view.notice ? <p className="text-sm text-amber-700">{view.notice}</p> : null}
 
       {channels.length > 0 && active ? (

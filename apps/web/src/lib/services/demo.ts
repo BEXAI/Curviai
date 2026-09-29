@@ -543,13 +543,18 @@ export class DemoService implements Services {
 
   async listRecentJobs(_workspaceId: string, limit = 10): Promise<JobSummary[]> {
     const records = [...this.store.jobs.values()].reverse().slice(0, limit);
-    return records.map((record) => ({
-      id: record.id,
-      productTitle: this.productTitle(record.productId),
-      status: recordStatus(record),
-      creditsReserved: record.creditsReserved,
-      createdAt: record.createdAt,
-    }));
+    return records.map((record) => {
+      const status = recordStatus(record);
+      return {
+        id: record.id,
+        productTitle: this.productTitle(record.productId),
+        status,
+        creditsReserved: record.creditsReserved,
+        // As getJob reports it: a demo pack charges its hold once done.
+        creditsCharged: status === "done" ? record.creditsReserved : 0,
+        createdAt: record.createdAt,
+      };
+    });
   }
 
   async getJob(_workspaceId: string, jobId: string): Promise<JobView | null> {
