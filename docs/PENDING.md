@@ -4,6 +4,23 @@ Date: 2026-09-28. Production: main 939dc1b on Render, database at migration 0013
 
 The discovery sweep of 2026-09-28 found 205 open items (docs/phases/PHASE_10.md). Batch 1 addressed 88 of them. The 117 items below have not been started. Duplicates across the sweep are merged here. Nothing in this file is built yet.
 
+## Phase 16 founder steps (bundles, A+ modules, ads formats, questions, agents)
+
+Added 2026-09-29. The code is on `p16/integration`; the full status is in docs/phases/PHASE_16.md, "Implementation status". Production is at migration 0023. Do these in order.
+
+1. **Run pnpm eval with live keys** before anything is re-seeded, and check for no regression (rule 6). It must cover `copy_generator` version 2, `question_planner` version 1 and `brand_palette_namer` version 1, plus `pnpm eval -- --stage aplus` and `pnpm eval -- --stage questions`.
+2. **Apply migrations 0024 and 0025 in production** with pnpm db:migrate, staging first. 0024 adds `generation_jobs.seller_answers`, `asset_variants.picked`, the `api_keys` and `favorites` tables with RLS, and a unique index on `assets (id, workspace_id)` built without CONCURRENTLY, so run it at a quiet time (it locks writes to assets while it builds). 0025 adds `products.endorsements`. Both are additive, so the old worker and web keep working after them.
+3. **Deploy the Trigger.dev worker first.** An older worker refuses a non default bundle, `extras.ads`, `variations` and recipe stage `question`, and ignores endorsements and seller answers. Keep TRIGGER_SECRET_KEY unset on Render until the v4 upgrade, as docs/LAUNCH_CHECKLIST.md step 14 says.
+4. **Re-seed with pnpm db:seed, staging first, then production,** together with or right after the worker deploy. The re-seed must leave:
+   - channel_specs with the 24 registry specs: `tiktok.ad_9x16` and `meta.reels_9x16` new, `meta.story_9x16` with the wider safe zone, feed and pin text limits, and the four coming soon A+ sizes;
+   - recipes with `copy_generator` version 2 active and version 1 retired, `question_planner` version 1 (stage `question`) and `brand_palette_namer` version 1 (stage `brand`).
+   Bundles (`packBundles`), the `apiAccess` tier entitlement, A+ module copy slots, `adsFormats` and `variationOptions` live in the code seed, not in a table, so they go live with the deploys in steps 3 and 5.
+5. **Deploy the web app** second.
+6. **Before calling Phase 16 done:** the full `pnpm lint && pnpm typecheck && pnpm test && pnpm e2e` gate, a scene carousel tried against a real image provider, and a reviewer agent pass on the new tenant writes and on the API, MCP server and CLI.
+7. **Before the API goes public:** the reviewer pass in step 6, then flip `FEATURES.agentApi` to live, try the MCP server with a real client, and add pricing and llms.txt copy for API access on Growth and up.
+8. **Create the curvi-ai GitHub org and publish the skill and CLI when ready.** Move `skills/curvi/` to a public `curvi-ai/skills` repository (MIT), choose the npm package name, add a build step to JavaScript (Node does not strip types under node_modules) and publish the CLI. Then flip `FEATURES.agentSkill` to live, update the skill's Status and Install sections, and list the skill and the MCP server in the plugin directories.
+9. **Marketing copy:** once each feature is live in production, describe bundles, A+ modules, carousels, ad packs and scene versions on the home page, the pricing page and llms.txt, with no claim that is not live.
+
 ## Phase 15 founder steps (seller controls for every output)
 
 Added 2026-09-29. The code is on `p15/output-options`; the full status is in docs/phases/PHASE_15.md, "Implementation status". Migration 0023 is already applied in production (2026-09-29), so do not run db:migrate for it again.
