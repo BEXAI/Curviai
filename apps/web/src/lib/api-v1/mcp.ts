@@ -19,7 +19,7 @@
  */
 
 import { z } from "zod";
-import { authenticateApiKey, type ApiAuthResult } from "@/lib/api-keys/auth";
+import { API_AUTH_COPY, authenticateApiKey, type ApiAuthResult } from "@/lib/api-keys/auth";
 import { bearerKeyOf, prefixOf, type ApiScope } from "@/lib/api-keys/format";
 import { isSameOrigin } from "@/lib/http/same-origin";
 import { readBodyLimited } from "@/lib/http/read-body";
@@ -321,13 +321,18 @@ async function callTool(
   parsed: ParsedRequest,
   modern: boolean,
   deps: McpDeps,
+  preAuth: ApiAuthResult | null,
 ): Promise<Response> {
   const name = parsed.params.name;
   const tool = MCP_TOOLS.find((t) => t.name === name);
   if (!tool) {
     return rpcError(parsed.id, { code: JSONRPC.invalidParams, message: `Unknown tool: ${String(name)}` }, 200);
   }
-  const auth = await (deps.authenticate ?? authenticateApiKey)(request.headers, tool.scope);
+  // The key was already looked up before the body was read; reuse that
+  // answer and narrow it to this tool's scope instead of a second lookup.
+  const auth = preAuth
+    ? withScope(preAuth, tool.scope)
+    : await (deps.authenticate ?? authenticateApiKey)(request.headers, tool.scope);
   const complete = modern ? { resultType: "complete" } : {};
   if (!auth.ok) {
     if (auth.error.status === 401) {
@@ -357,19 +362,38 @@ async function callTool(
   return rpcResponse(parsed.id, { result: { ...complete, ...toolResult(result) } });
 }
 
-/** Body cap for a request without a well formed API key. Discovery
- * (initialize, server/discover, tools/list, ping) needs no key and is
- * small; only a keyed tools/call may carry base64 photos, so an anonymous
- * client cannot make the server buffer and parse a photo sized body before
- * any key is checked. */
+/** Body cap for a request without a valid API key. Discovery (initialize,
+ * server/discover, tools/list, ping) needs no key and is small; only a
+ * keyed tools/call may carry base64 photos, so a client without a real key,
+ * including one that sends a forged but well formed key, cannot make the
+ * server buffer and parse a photo sized body. */
 export const MCP_UNKEYED_BODY_MAX_BYTES = 64_000;
 
-/** The body cap for a request: the photo cap only when the Authorization
- * header holds a well formed key. The key itself is checked later, per
- * tool, with that tool's scope. */
-export function mcpBodyCap(headers: Headers): number {
+/** The body cap for a request: the photo cap only when its API key was
+ * looked up, before the body is read, and found valid. */
+export function mcpBodyCap(auth: ApiAuthResult | null): number {
+  return auth?.ok ? API_PHOTO_BODY_MAX_BYTES : MCP_UNKEYED_BODY_MAX_BYTES;
+}
+
+/** The request's key checked with no scope before its body is read (each
+ * tool's scope is checked later by withScope), or null when the
+ * Authorization header holds no well formed key, so such a request costs
+ * no lookup. */
+export async function preAuthenticate(headers: Headers, deps: McpDeps = {}): Promise<ApiAuthResult | null> {
   const key = bearerKeyOf(headers);
-  return key !== null && prefixOf(key) !== null ? API_PHOTO_BODY_MAX_BYTES : MCP_UNKEYED_BODY_MAX_BYTES;
+  if (key === null || prefixOf(key) === null) {
+    return null;
+  }
+  return (deps.authenticate ?? authenticateApiKey)(headers, null);
+}
+
+/** A scope free authentication narrowed to a tool's scope: the same check
+ * authenticateApiKey makes when it is given the scope. */
+export function withScope(auth: ApiAuthResult, scope: ApiScope | null): ApiAuthResult {
+  if (!auth.ok || !scope || auth.caller.scopes.includes(scope)) {
+    return auth;
+  }
+  return { ok: false, error: { status: 403, reason: "insufficient_scope", message: API_AUTH_COPY.insufficient_scope } };
 }
 
 /** POST /api/mcp. */
@@ -377,7 +401,10 @@ export async function handleMcpPost(request: Request, deps: McpDeps = {}): Promi
   if (!isSameOrigin(request)) {
     return rpcError(null, { code: JSONRPC.invalidRequest, message: "This request came from another site, so it was refused." }, 403);
   }
-  const body = await readBodyLimited(request, mcpBodyCap(request.headers));
+  // The key is checked before the body is read, so only a real key raises
+  // the cap to photo size.
+  const preAuth = await preAuthenticate(request.headers, deps);
+  const body = await readBodyLimited(request, mcpBodyCap(preAuth));
   if (!body.ok) {
     return rpcError(
       null,
@@ -444,7 +471,7 @@ export async function handleMcpPost(request: Request, deps: McpDeps = {}): Promi
     case "tools/list":
       return rpcResponse(parsed.id, { result: { ...complete, tools: toolList() } });
     case "tools/call":
-      return callTool(request, parsed, modern, deps);
+      return callTool(request, parsed, modern, deps, preAuth);
     default:
       return rpcError(parsed.id, { code: JSONRPC.methodNotFound, message: "Method not found" }, modern ? 404 : 200);
   }

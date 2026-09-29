@@ -7,7 +7,10 @@ import {
   MCP_UNKEYED_BODY_MAX_BYTES,
   PROTOCOL_VERSION_META,
   SUPPORTED_PROTOCOL_VERSIONS,
+  handleMcpPost,
   mcpBodyCap,
+  preAuthenticate,
+  withScope,
 } from "@/lib/api-v1/mcp";
 import { MainImageCheckResponse, PackResponse } from "@/lib/api-v1/schemas";
 import { DEMO_KEY_ID, demoApiFixture, mainImagePng, type DemoApiFixture } from "@/lib/api-v1/test-fixtures";
@@ -21,6 +24,8 @@ import { DELETE, GET, POST } from "./route";
 // tools, authenticated by the same API keys as the public API.
 
 const VERSION = "2026-07-28";
+/** Matches the key format but names no key. */
+const FORGED_KEY = `cv_live_000000000000_${"A".repeat(43)}`;
 let fixture: DemoApiFixture;
 let nextId = 1;
 
@@ -103,10 +108,85 @@ describe("transport", () => {
     const big = { name: "check_main_image", arguments: { data: "A".repeat(MCP_UNKEYED_BODY_MAX_BYTES + 1) } };
     expect((await POST(rpc("tools/call", big, { key: null }))).status).toBe(413);
     expect((await POST(rpc("tools/call", big, { key: "not-a-key" }))).status).toBe(413);
-    // A well formed key gets the photo cap; the key is then checked per tool.
+    // A forged but well formed key is looked up before the body is read, so
+    // it does not unlock the photo cap.
+    expect((await POST(rpc("tools/call", big, { key: FORGED_KEY }))).status).toBe(413);
+    // A real key gets the photo cap; its scope is then checked per tool.
     expect((await POST(rpc("tools/call", big))).status).not.toBe(413);
-    expect(mcpBodyCap(new Headers({ authorization: `Bearer ${fixture.key}` }))).toBe(API_PHOTO_BODY_MAX_BYTES);
-    expect(mcpBodyCap(new Headers())).toBe(MCP_UNKEYED_BODY_MAX_BYTES);
+    const real = await preAuthenticate(new Headers({ authorization: `Bearer ${fixture.key}` }));
+    expect(mcpBodyCap(real)).toBe(API_PHOTO_BODY_MAX_BYTES);
+    const forged = await preAuthenticate(new Headers({ authorization: `Bearer ${FORGED_KEY}` }));
+    expect(forged?.ok).toBe(false);
+    expect(mcpBodyCap(forged)).toBe(MCP_UNKEYED_BODY_MAX_BYTES);
+    expect(await preAuthenticate(new Headers())).toBeNull();
+    expect(mcpBodyCap(null)).toBe(MCP_UNKEYED_BODY_MAX_BYTES);
+  });
+
+  it("stops reading a forged key's body at the unkeyed cap instead of buffering a photo sized body", async () => {
+    const chunk = new Uint8Array(16_000).fill(0x41);
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 40_000_000) {
+          controller.close();
+          return;
+        }
+        pulled += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    });
+    const request = new Request("https://curvi.ai/api/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${FORGED_KEY}` },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+    const response = await POST(request);
+    expect(response.status).toBe(413);
+    expect(pulled).toBeLessThan(MCP_UNKEYED_BODY_MAX_BYTES + 4 * chunk.byteLength);
+
+    // A declared length over the cap is refused without reading at all.
+    let touched = false;
+    const declared = new Request("https://curvi.ai/api/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${FORGED_KEY}`,
+        "content-length": String(MCP_UNKEYED_BODY_MAX_BYTES + 1),
+      },
+      body: new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            touched = true;
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+      duplex: "half",
+    } as RequestInit);
+    expect((await POST(declared)).status).toBe(413);
+    expect(touched).toBe(false);
+  });
+
+  it("looks the key up once per call and still checks the tool's scope", async () => {
+    const real = await preAuthenticate(new Headers({ authorization: `Bearer ${fixture.key}` }));
+    if (!real?.ok) {
+      throw new Error("the fixture key should authenticate");
+    }
+    const checksOnly = { ok: true as const, caller: { ...real.caller, scopes: ["checks"] } };
+    const authenticate = vi.fn(async () => checksOnly);
+    const response = await handleMcpPost(rpc("tools/call", { name: "list_channels", arguments: {} }), { authenticate });
+    expect(response.status).toBe(200);
+    expect(authenticate).toHaveBeenCalledTimes(1);
+    expect(authenticate).toHaveBeenCalledWith(expect.any(Headers), null);
+
+    const denied = await handleMcpPost(rpc("tools/call", { name: "get_pack", arguments: { pack_id: "x" } }), { authenticate });
+    const body = (await denied.json()) as { result: { isError: boolean; structuredContent: { reason: string } } };
+    expect(body.result.isError).toBe(true);
+    expect(body.result.structuredContent.reason).toBe("insufficient_scope");
+    expect(withScope(checksOnly, "packs:write")).toMatchObject({ ok: false, error: { status: 403 } });
+    expect(withScope(checksOnly, "checks")).toBe(checksOnly);
   });
 
   it("checks the mirrored headers against the body (HeaderMismatch)", async () => {
