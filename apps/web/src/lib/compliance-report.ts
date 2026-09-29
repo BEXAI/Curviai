@@ -9,7 +9,12 @@
  */
 
 import { z } from "zod";
-import { parseTreatmentNote, TREATMENT_NOTES } from "@curvi/pipeline/treatment";
+import {
+  parseTreatmentNote,
+  treatmentNotes,
+  TREATMENT_NOTES,
+  type PackAssetTreatment,
+} from "@curvi/pipeline/treatment";
 import { dimensionBounds, getSpec, hasSpec, type ChannelSpec } from "@curvi/specs";
 import { specDisplayName } from "@/components/marketing/spec-slug";
 import { FORCED_WHITE_NOTE } from "@/lib/output-options-copy";
@@ -549,10 +554,13 @@ export function specRequirementChecks(spec: ChannelSpec): ComplianceCheckView[] 
   return checks.map((check) => describeCheck(check, spec.id));
 }
 
-/** The demo pack's report: every file with its channel's requirements. */
+/** The demo pack's report: every file with its channel's requirements, and
+ * the notes the packager would write for each file's treatment (the same
+ * treatmentNotes, so demo and real reports read alike). */
 export function demoComplianceReport(
   meta: { jobId: string; productTitle: string },
-  files: Array<{ name: string; specId: string }>,
+  files: Array<{ name: string; specId: string; treatment?: PackAssetTreatment | null }>,
+  opts: DescribeNotesOptions = {},
 ): ComplianceReportView {
   const rows = files
     .filter((file) => hasSpec(file.specId))
@@ -563,7 +571,7 @@ export function demoComplianceReport(
       specLabel: specDisplayName(file.specId),
       pass: true,
       checks: specRequirementChecks(getSpec(file.specId)),
-      notes: [],
+      notes: describeNotes(treatmentNotes(file.treatment), undefined, opts),
     }));
   const channels = groupByChannel(rows);
   return {

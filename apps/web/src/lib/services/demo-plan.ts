@@ -11,9 +11,9 @@
 import { Shot, ShotList } from "@curvi/pipeline/schemas";
 import { isShotMethodDeliverable, type TierKey } from "@curvi/pipeline/seed";
 import type { AngleRole } from "@curvi/pipeline/seller-inputs";
-import { referencePackShots } from "@/lib/pack-estimate";
+import { referencePackShots, type EstimateSellerInputs } from "@/lib/pack-estimate";
 
-const DEMO_SOURCE_MEDIA_ID = "demo_source_1";
+export const DEMO_SOURCE_MEDIA_ID = "demo_source_1";
 
 /** Concept packs leave marketplace channels out before planning, exactly as
  * the runner does (plan 2.7): synthetic renders never go to a marketplace.
@@ -28,12 +28,20 @@ export function planDemoShots(
   requestedChannels: string[],
   tier: TierKey,
   mode: "listing" | "concept" = "listing",
-  seller: { angles?: AngleRole[]; boxContents?: string[]; comparisonFacts?: string[] } = {},
+  seller: {
+    angles?: AngleRole[];
+    boxContents?: string[];
+    comparisonFacts?: string[];
+    /** The pack's output options as estimate inputs (outputEstimateInputs),
+     * the same ones the form and createJob pass, so the three agree. */
+    output?: Pick<EstimateSellerInputs, "output" | "photos" | "colorHex">;
+  } = {},
 ): Shot[] {
   const shots = referencePackShots(requestedChannels, mode, tier, DEMO_SOURCE_MEDIA_ID, {
     angles: seller.angles,
     hasBoxContents: (seller.boxContents?.length ?? 0) > 0,
     hasComparisonFacts: (seller.comparisonFacts?.length ?? 0) > 0,
+    ...(seller.output ?? {}),
   }).filter((shot) => isShotMethodDeliverable(shot.method));
   // Validate against the source of truth schema before handing the plan out.
   return ShotList.parse({ shots, skipped: [] }).shots;
