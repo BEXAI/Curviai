@@ -40,10 +40,25 @@ export function classifyOpenaiImageError(status: number, bodyText: string): Prov
   return OPENAI_MODERATION_CODES.some((c) => bodyText.includes(`"${c}"`)) ? "content_blocked" : undefined;
 }
 
+export interface OpenaiImagePriceTable {
+  /** Per image price for a size missing from perImageMicrosBySize (and for
+   * no size at all); seed it at the dearest priced size. */
+  perImageMicros: number;
+  /** Per image price keyed by the request size, e.g. "1536x1024", at the
+   * configured quality. GPT Image bills output tokens, which vary with size. */
+  perImageMicrosBySize?: Record<string, number>;
+}
+
 export interface OpenaiImageConfig extends AdapterCommonConfig {
   /** Model ID from seed data, e.g. the fallback image model row. */
   model: string;
-  priceTable: { perImageMicros: number };
+  priceTable: OpenaiImagePriceTable;
+  /**
+   * Quality sent when the request sets none (seed data). Without it the API
+   * defaults to auto, which may pick high at about four times the medium
+   * price, so the price table would under meter the call.
+   */
+  quality?: string;
 }
 
 export interface OpenaiImageInput {
@@ -72,7 +87,8 @@ export class OpenaiImageProvider implements CostAwareProvider {
   private readonly fetchFn: FetchLike;
   private readonly tasks: string[];
   private readonly model: string;
-  private readonly priceTable: { perImageMicros: number };
+  private readonly priceTable: OpenaiImagePriceTable;
+  private readonly quality: string | undefined;
   readonly minTimeoutMs: number | undefined;
 
   constructor(config: OpenaiImageConfig) {
@@ -84,6 +100,13 @@ export class OpenaiImageProvider implements CostAwareProvider {
     this.fetchFn = config.fetchFn ?? fetch;
     this.model = config.model;
     this.priceTable = config.priceTable;
+    this.quality = config.quality;
+  }
+
+  /** Per image price for the requested size at the configured quality. */
+  private perImageMicrosFor(size: string | undefined): number {
+    const bySize = size !== undefined ? this.priceTable.perImageMicrosBySize?.[size] : undefined;
+    return bySize ?? this.priceTable.perImageMicros;
   }
 
   /**
@@ -106,19 +129,21 @@ export class OpenaiImageProvider implements CostAwareProvider {
 
   /**
    * Upper bound from the request parameters: the number of requested images
-   * (input.n, default 1) times the injected per image price. Invoke meters
-   * perImageMicros times the returned image count, which never exceeds n.
+   * (input.n, default 1) times the injected per image price for the
+   * requested size. Invoke meters that price times the returned image
+   * count, which never exceeds n.
    */
   estimateCostMicros(req: ProviderRequest): number {
     const input = req.input as unknown as OpenaiImageInput;
-    return this.priceTable.perImageMicros * Math.max(1, input.n ?? 1);
+    return this.perImageMicrosFor(input.size) * Math.max(1, input.n ?? 1);
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
     const input = req.input as unknown as OpenaiImageInput;
     const body: Record<string, unknown> = { model: this.model, prompt: input.prompt };
     if (input.size !== undefined) body.size = input.size;
-    if (input.quality !== undefined) body.quality = input.quality;
+    const quality = input.quality ?? this.quality;
+    if (quality !== undefined) body.quality = quality;
     if (input.n !== undefined) body.n = input.n;
 
     const data = await requestJson<GenerationsResponse>(
@@ -145,6 +170,6 @@ export class OpenaiImageProvider implements CostAwareProvider {
     }
 
     const output: OpenaiImageOutput = { images, raw: data };
-    return { output: output as TOut, costMicros: this.priceTable.perImageMicros * images.length };
+    return { output: output as TOut, costMicros: this.perImageMicrosFor(input.size) * images.length };
   }
 }
