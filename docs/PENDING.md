@@ -4,6 +4,22 @@ Date: 2026-09-28. Production: main 939dc1b on Render, database at migration 0013
 
 The discovery sweep of 2026-09-28 found 205 open items (docs/phases/PHASE_10.md). Batch 1 addressed 88 of them. The 117 items below have not been started. Duplicates across the sweep are merged here. Nothing in this file is built yet.
 
+## Phase 15 founder steps (seller controls for every output)
+
+Added 2026-09-29. The code is on `p15/output-options`; the full status is in docs/phases/PHASE_15.md, "Implementation status". Migration 0023 is already applied in production (2026-09-29), so do not run db:migrate for it again.
+
+1. **Run pnpm eval with live keys** before anything is re-seeded. It must cover intake_normalizer version 5 (the per image `addedOverlays` flag) and show no regression against version 4 (rule 6).
+2. **Deploy the Trigger.dev worker first.** It reads the new output options, the kept photo renderer and the intake version 5 schema. Keep TRIGGER_SECRET_KEY unset on Render until the v4 upgrade, as docs/LAUNCH_CHECKLIST.md step 14 says.
+3. **Re-seed with pnpm db:seed, staging first, then production,** together with or right after the worker deploy. The re-seed must leave:
+   - channel_specs on registry version 2 (Google byte and megapixel limits, `bordersAllowed`, the eBay and Google overlay rules);
+   - the `output_options_enabled` platform setting present and true (the kill switch fails closed without the row);
+   - intake_normalizer version 5 active and version 4 retired. The worker's strict intake schema expects `addedOverlays`, so version 5 and the new worker must go live together.
+4. **Deploy the web app** second.
+5. **Set NEXT_PUBLIC_OUTPUT_OPTIONS per environment,** last: "1" in staging, check a Remove pack, a Keep pack and a mixed pack there, then "1" in production. Leave it "0" or unset anywhere the steps above have not run. Add `NEXT_PUBLIC_OUTPUT_OPTIONS=0` to .env.example by hand.
+6. **To turn the controls off without a deploy,** set `output_options_enabled` to false in platform_settings. Non default options are then refused and the form section hides.
+7. **Before calling Phase 15 done:** the golden set of Keep photos, the swatch fringe review (which decides whether slate and charcoal return), the 80 MP peak memory test and the full `pnpm lint && pnpm typecheck && pnpm test && pnpm e2e` gate.
+8. **Housekeeping:** expiry for the R2 objects under `ws/{id}/cache/preview/` and `ws/{ws}/jobs/{job}/handoff/` (these keys have the workspace first, so an R2 prefix rule alone cannot match them; a cleanup job may be needed), and removing the stale worktrees that still hold p15/p1render, p15/p1web and p15/p1overlays.
+
 ## Can build now (no account or founder decision needed)
 
 ### Conversion and activation
