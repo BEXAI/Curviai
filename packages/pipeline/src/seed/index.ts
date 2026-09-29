@@ -26,7 +26,7 @@ export {
 export type { BackgroundSwatchKey, PackBundle, PackBundleKey, PresetKey } from "./templates";
 export { DEFAULT_TEMPLATE_FONT, isTemplateFontKey, templateFonts } from "./fonts";
 export type { TemplateFontEntry, TemplateFontKey } from "./fonts";
-export { AUTO_STYLE_PRESET, MAX_BRAND_COLORS } from "./brand";
+export { AUTO_STYLE_PRESET, MAX_BRAND_COLORS, brandPalette } from "./brand";
 export { keepBackgroundPhrases } from "./phrases";
 export { retentionOffers } from "./retention";
 export type { RetentionOffers } from "./retention";

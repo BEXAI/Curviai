@@ -21,7 +21,9 @@ import { backgroundSwatches, entitlementsFor, stillStyle, tierByKey, type TierKe
 import { isAngleRole, printableSellerLines } from "@curvi/pipeline/seller-inputs";
 import type { PackAssetTreatment } from "@curvi/pipeline/treatment";
 import { filenameFor, getSpec, requiresWhiteBackground } from "@curvi/specs";
+import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import { beforeDemoImage } from "@/components/marketing/demo-images";
+import type { BrandPaletteOutcome } from "@/lib/brand/types";
 import {
   demoComplianceReport,
   REPORT_NOT_READY,
@@ -736,6 +738,11 @@ export class DemoService implements Services {
 
   async saveBrandKit(_workspaceId: string, _kit: BrandKitView): Promise<SaveResult> {
     return { ok: false, notice: READ_ONLY_NOTICE };
+  }
+
+  /** The demo stores no uploads, so there is no logo to read. */
+  async suggestBrandPalette(_workspaceId: string, _logoKey: string): Promise<BrandPaletteOutcome> {
+    return { ok: false, reason: "unavailable", notice: brandKitCopy.paletteUnavailable };
   }
 
   async listMembers(_workspaceId: string): Promise<MemberView[]> {

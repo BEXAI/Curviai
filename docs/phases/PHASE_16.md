@@ -135,6 +135,12 @@ Higgsfield's marketplace cards send the seller's photo through a generative imag
 
 **Tests.** Known logo fixtures return their palette within a delta E of 2; transparent logos work; nothing saves without confirmation.
 
+**Implementation (p16/logo).**
+- Seed: `brandPalette` in packages/pipeline/src/seed/brand.ts holds every threshold (sample size, alpha and near white cut, k, merge and share limits, ambiguity coverage, background tint, minimum contrast 4.5 per WCAG 2.2, checked in docs/verification.md). Recipe `brand_palette_namer` v1, new stage `brand`, Haiku with Sonnet fallback.
+- Pipeline: packages/pipeline/src/brand/palette.ts (`@curvi/pipeline/brand`). `readLogoPalette` bins opaque, not near white pixels, runs a deterministic weighted k means in Lab, merges clusters under CIEDE2000 8, drops clusters under 3 percent, reads each swatch from its densest bins. Ambiguous when more than 5 colors remain or the kit colors cover under 85 percent of the logo within delta E 4. `applyPaletteNaming` keeps only measured candidates. `textColorFor` picks the seeded dark or white text by WCAG ratio and reports whether it passes. Fixtures in src/brand/fixtures.
+- Runner: trigger/src/brand-palette.ts `runBrandPalette(deps, { requestId, workspaceId, logoKey })` loads the logo from the workspace prefix and calls the recipe through `llmJson` (packages/ai metering, caps, failover) only when ambiguous.
+- Web: `Services.suggestBrandPalette(workspaceId, logoKey)` (owner, admin, editor; plan with a brand kit; key in the source prefix; upload check), server action `suggestBrandPaletteAction` rate limited by `brand.palette`, and a confirm panel on /app/brand. Use these colors only fills the form; the kit saves through the existing save.
+
 ## Data model summary (migration 0024, next free number at implementation)
 
 - generation_jobs: `seller_answers jsonb` (object check).

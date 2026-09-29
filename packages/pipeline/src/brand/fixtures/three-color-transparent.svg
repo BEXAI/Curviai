@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="300" viewBox="0 0 600 300">
+  <!-- Palette fixture: red mark, navy word bar, gold dot on a transparent canvas. -->
+  <circle cx="120" cy="150" r="100" fill="#D7263D"/>
+  <rect x="250" y="80" width="300" height="80" rx="16" fill="#1B2A4A"/>
+  <rect x="250" y="190" width="170" height="50" rx="12" fill="#1B2A4A"/>
+  <circle cx="490" cy="215" r="45" fill="#F4B400"/>
+</svg>
