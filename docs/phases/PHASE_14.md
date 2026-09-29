@@ -19,10 +19,13 @@ Credits: nothing was charged. The evaluator reported 6 credits still held by the
 
 ## Workstream 1: the image service failure (P0, first)
 
+**1.1 finding (2026-09-29, read only query on production):** the four most recent failed packs, including both unbranded watch attempts, stopped with `All providers failed for task cutout: photoroom responded 402: You have exhausted the number of images in your plan`. The Photoroom account ran out of its image quota. Every shot starts from the cutout, so one exhausted provider failed every pack. Held credits were released (the evaluator's balance reads 15). Founder action: upgrade or top up the Photoroom plan. Code actions: 1.2 below.
+
+
 | # | Item | Done when |
 | --- | --- | --- |
 | 1.1 | Diagnose: read job_steps errors for the two failed watch packs (read only query, founder approved), the Render logs around them, and `/api/health/providers` with the cron secret. Confirm the 6 held credits were released by the failure path or the stale job sweep; release them if not. | The exact provider, status and message are known and written in this file; the evaluator's balance is correct. |
-| 1.2 | Fix the specific cause (key, quota, billing, model id, timeout, request shape) and add a regression test with that failure. | A pack with the same photo completes in production. |
+| 1.2 | Quota and billing failures: classify provider 402 and quota responses as provider_quota (never retried, trips the breaker at once, logged loudly, recorded as an event, shown as a /api/health warning) and wire a second cutout provider through fal.ai so an exhausted Photoroom plan fails over instead of failing every pack. Count cutouts per job so one pack never pays for the same cutout twice. | With Photoroom returning 402, packs complete through the fallback, and health shows the quota warning. |
 | 1.3 | Degrade instead of failing: when the generative provider chain is down, still deliver every deterministic shot (Amazon main, alternate angles, cutout PNG, sweeps) and mark generative shots "Paused, not charged". The pack ends done with a partial set, never a blank failure. | A test with every image provider returning 5xx delivers the deterministic files and charges only those. |
 | 1.4 | Transient errors retry automatically: one delayed re-run of failed generative shots (backoff, same run key) before giving up. | Chaos tests (timeout, 429, 5xx, 401) show retry for transient codes only. |
 | 1.5 | Preflight health: before a pack starts, check the provider breaker state and the last probe. If generation is down, the new pack form says so and offers the deterministic only pack. | The seller knows before submitting. |
