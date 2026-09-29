@@ -73,6 +73,7 @@ const twoProductsImage: IntakeImageResult = {
     { label: "red bottle", box: redBox, matchesIntent: "unclear" },
     { label: "blue bottle", box: blueBox, matchesIntent: "unclear" },
   ],
+  addedOverlays: false,
   flags,
 };
 
@@ -226,6 +227,11 @@ describe("reusablePreflightIntake", () => {
     expect(reusablePreflightIntake([broken], undefined, recipe, now)).toBeNull();
     expect(reusablePreflightIntake([fresh], "", recipe, now)).not.toBeNull();
   });
+
+  it("keeps the added text flag on a reused answer", () => {
+    const flagged = { preflight: preflightOf({ ...twoProductsImage, addedOverlays: true }) };
+    expect(reusablePreflightIntake([flagged], undefined, recipe, now)?.images[0].addedOverlays).toBe(true);
+  });
 });
 
 describe("a stored target box in the runner", () => {
@@ -260,7 +266,7 @@ describe("a stored target box in the runner", () => {
     expect(chosen.ambiguous).toEqual([]);
     expect(chosen.targets.m1.box).toEqual(blueBox);
     const bare = selectTargets(
-      { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, flags }] },
+      { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags }] },
       [{ mediaId: "m1", targetBox: blueBox }],
       "job",
     );
@@ -298,7 +304,7 @@ describe("runGeneratePack with a preflight", () => {
     sku: "SKU1",
     seoSlug: "watch",
   };
-  const single: IntakeImageResult = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, flags };
+  const single: IntakeImageResult = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags };
 
   function deps(ai: AiDeps): PipelineDeps & { store: InMemoryJobStore } {
     return { ai, store: new InMemoryJobStore(), clock: systemClock, generator: new DemoShotGenerator() };
@@ -381,6 +387,16 @@ describe("runUploadPreflight", () => {
     expect(run.thumbnails).toHaveLength(2);
     expect(run.costMicros).toBe(800 + 20_000);
     expect(run.intake).toMatchObject({ noteKey: noteKey(""), recipe: { key: intakeRecipe.key, version: intakeRecipe.version } });
+  });
+
+  it("carries intake version 5's added text flag, and reads an older answer as clean", async () => {
+    const flagged = preflightDeps({ images: [{ ...twoProductsImage, addedOverlays: true }] }, generator(twoBottles()));
+    const run = await runUploadPreflight(flagged.deps, { preflightId: "pf-ov", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(run.intake?.image.addedOverlays).toBe(true);
+    const { addedOverlays: _unused, ...older } = twoProductsImage;
+    const clean = preflightDeps({ images: [older] }, generator(twoBottles()));
+    const oldRun = await runUploadPreflight(clean.deps, { preflightId: "pf-old", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(oldRun.intake?.image.addedOverlays).toBe(false);
   });
 
   it("preselects the piece the note decides", async () => {

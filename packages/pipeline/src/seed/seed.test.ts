@@ -19,8 +19,8 @@ describe("recipe seed rows", () => {
     for (const row of recipeSeedRows) {
       expect(() => RecipeRow.parse(row)).not.toThrow();
     }
-    // Six stages plus the retired intake versions 1 to 3 and analyzer version 1.
-    expect(recipeSeedRows).toHaveLength(10);
+    // Six stages plus the retired intake versions 1 to 4 and analyzer version 1.
+    expect(recipeSeedRows).toHaveLength(11);
   });
 
   it("covers the six stages with the section 5.1 models", () => {
@@ -54,15 +54,16 @@ describe("recipe seed rows", () => {
     expect(new Set(keyVersions).size).toBe(keyVersions.length);
   });
 
-  it("runs intake version 4 and keeps versions 1 to 3 retired", () => {
+  it("runs intake version 5 and keeps versions 1 to 4 retired", () => {
     const intake = recipeSeedRows.filter((r) => r.key === "intake_normalizer");
     expect(intake.map((r) => [r.version, r.active])).toEqual([
       [1, false],
       [2, false],
       [3, false],
-      [4, true],
+      [4, false],
+      [5, true],
     ]);
-    const [v1, v2, v3, v4] = intake;
+    const [v1, v2, v3, v4, v5] = intake;
     expect(v2.body.system).toContain("Always set screenshot for every image.");
     expect(v2.body.system).toContain("A screenshot is never a sellable product photo");
     // Version 1's injection defense, verbatim, on every later version.
@@ -87,6 +88,19 @@ describe("recipe seed rows", () => {
     expect(v4.body.system).toContain("Set sellableProduct to false only when nothing in the frame is a product for sale");
     expect(v4.body.system).toContain("Brands, logos and brand names never affect any flag");
     expect([v4.model, ...(v4.fallbackModels ?? [])]).toEqual([v3.model, ...(v3.fallbackModels ?? [])]);
+    // Version 5 (PHASE_15 P1, added text on kept photos) is version 4
+    // verbatim plus the addedOverlays flag, on the same models. The
+    // product's own logo or label is never an overlay.
+    expect(v5.body.system.startsWith(`${v4.body.system}\n`)).toBe(true);
+    expect(v5.body.system.startsWith(`${guard}\n`)).toBe(true);
+    expect(v5.body.system).toContain("Always set addedOverlays for every image.");
+    expect(v5.body.system).toContain("a watermark");
+    expect(v5.body.system).toContain("a border or frame drawn around it");
+    expect(v5.body.system).toContain(
+      "Text, logos and labels printed on the product or its packaging are part of the product, never an overlay",
+    );
+    expect(v5.body.system).toContain("Brands, logos and brand names never affect any flag");
+    expect([v5.model, ...(v5.fallbackModels ?? [])]).toEqual([v4.model, ...(v4.fallbackModels ?? [])]);
   });
 
   it("runs analyzer version 2, which never judges brands, logos or authenticity", () => {

@@ -385,7 +385,7 @@ describe("moderation and no product copy (PHASE_14 workstream 2, item 3.3)", () 
   });
 
   it("gives the plain photo tips when intake saw nothing to name", () => {
-    const raw = noSellableProductMessage([{ sellableProduct: false, distinctProducts: 0, sharpEnough: true, flags }]);
+    const raw = noSellableProductMessage([{ sellableProduct: false, distinctProducts: 0, sharpEnough: true, addedOverlays: false, flags }]);
     const text = publicJobError(raw) ?? "";
     expect(text).toBe(JOB_ERROR_COPY.noProduct);
     expect(text).toContain("one product on a plain background");
@@ -400,6 +400,7 @@ describe("moderation and no product copy (PHASE_14 workstream 2, item 3.3)", () 
         sellableProduct: false,
         distinctProducts: 0,
         sharpEnough: false,
+        addedOverlays: false,
         flags,
         boundingBoxes: [{ label: "Coffee cup", x: 0, y: 0, width: 1, height: 1 }],
         products: [

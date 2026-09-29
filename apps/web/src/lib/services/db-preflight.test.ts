@@ -33,7 +33,7 @@ function runOf(overrides: Partial<UploadPreflightRun> = {}): UploadPreflightRun 
     missing: false,
     photo: { width: 3000, height: 4000 },
     intake: {
-      image: { sellableProduct: true, distinctProducts: 2, sharpEnough: true, screenshot: false, flags },
+      image: { sellableProduct: true, distinctProducts: 2, sharpEnough: true, screenshot: false, addedOverlays: false, flags },
       noteKey: "set by the test",
       recipe: { key: "intake_normalizer", version: 3 },
       at: new Date().toISOString(),
