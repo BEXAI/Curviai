@@ -205,6 +205,32 @@ describe("DbService.createJob with output options", () => {
     expect(none.outcome).toBe("conflict");
   });
 
+  it("answers a conflict when only a photo's own background differs under the same key", async () => {
+    const { ws, productId } = await workspaceWith("starter");
+    const side = { key: `ws/${ws}/src/side.jpg`, sha256: "c".repeat(64), kind: "image" as const };
+    const svc = service({
+      ingest: () => ({
+        ok: true,
+        sha256: "c".repeat(64),
+        width: 2000,
+        height: 2000,
+        bytes: 10,
+        rewritten: false,
+        ingest: { v: 1, reencoded: false, sourceFormat: "jpeg" },
+      }),
+    });
+    const input = jobInput(productId, { uploads: [{ ...side, background: "keep" }] });
+    const first = await svc.createJob(ws, input);
+    expect(first.outcome).toBe("created");
+    expect((await jobRow(first.outcome === "created" ? first.job.id : "")).outputOptions).toMatchObject({
+      background: "remove",
+      keepMediaIds: [side.key],
+    });
+    expect((await svc.createJob(ws, input)).outcome).toBe("replayed");
+    expect((await svc.createJob(ws, { ...input, uploads: [side] })).outcome).toBe("conflict");
+    expect((await svc.createJob(ws, { ...input, uploads: [{ ...side, background: "remove" }] })).outcome).toBe("conflict");
+  });
+
   it("answers invalid_options for a brand color the kit does not have", async () => {
     const { ws, productId } = await workspaceWith("starter", { kit: ["#112233"] });
     const result = await service().createJob(ws, jobInput(productId, { outputOptions: { color: { kind: "brand", index: 3 } } }));
@@ -407,10 +433,15 @@ describe("DbService.listProducts and getJob", () => {
 
 /** A delivered pack with stored options: one white angle needs review with
  * its planned shot stored, and a back angle waits for a photo. */
-async function deliveredPack(ws: string, productId: string, outputOptions: Record<string, unknown>): Promise<string> {
+async function deliveredPack(
+  ws: string,
+  productId: string,
+  outputOptions: Record<string, unknown>,
+  channels: string[] = CHANNELS,
+): Promise<string> {
   const [job] = await db
     .insert(generationJobs)
-    .values({ workspaceId: ws, productId, status: "done", mode: "listing", channels: CHANNELS, outputOptions })
+    .values({ workspaceId: ws, productId, status: "done", mode: "listing", channels, outputOptions })
     .returning();
   const shot: Shot = {
     id: "s04_sweep_brand",
@@ -508,6 +539,44 @@ describe("follow ups read the stored options", () => {
       sourceMediaId: key,
     });
     expect(payload.output?.keepMediaIds).toEqual([...keys, key]);
+  });
+
+  it("leaves an added kept photo with added text off eBay, reading the upload preflight", async () => {
+    const { ws, productId, keys } = await workspaceWith("starter");
+    const jobId = await deliveredPack(ws, productId, storedOptions("keep", keys), [...CHANNELS, "ebay.listing"]);
+    const key = `ws/${ws}/src/back.jpg`;
+    await db.insert(uploadPreflights).values({
+      workspaceId: ws,
+      r2Key: key,
+      noteKey: "",
+      status: "ready",
+      result: { status: "ready", addedOverlays: true },
+    });
+    const result = await service().addShotPhoto(ws, jobId, "skipped_01_alt_angle_white:back", { key, sha256: "b".repeat(64) });
+    expect(result.outcome).toBe("started");
+    const payload = queue.followUp.mock.calls[0][0];
+    const original = payload.shots.find((s) => s.type === "original_photo");
+    expect(original?.sourceMediaId).toBe(key);
+    expect(original?.channels).not.toContain("ebay.listing");
+    expect(original?.channels).toContain("amazon.secondary");
+  });
+
+  it("keeps an added clean photo on eBay", async () => {
+    const { ws, productId, keys } = await workspaceWith("starter");
+    const jobId = await deliveredPack(ws, productId, storedOptions("keep", keys), [...CHANNELS, "ebay.listing"]);
+    const key = `ws/${ws}/src/back.jpg`;
+    await db.insert(uploadPreflights).values({
+      workspaceId: ws,
+      r2Key: key,
+      noteKey: "",
+      status: "ready",
+      result: { status: "ready" },
+    });
+    const result = await service().addShotPhoto(ws, jobId, "skipped_01_alt_angle_white:back", { key, sha256: "b".repeat(64) });
+    expect(result.outcome).toBe("started");
+    const payload = queue.followUp.mock.calls[0][0];
+    expect(payload.shots.find((s) => s.type === "original_photo")?.channels).toContain("ebay.listing");
+    expect(payload.addedOverlays).toBeUndefined();
   });
 
   it("refuses a follow up when the stored options cannot be read, holding nothing", async () => {

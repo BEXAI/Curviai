@@ -2760,15 +2760,17 @@ export function shotFailureOutcome(
   };
 }
 
-/** Records a failed shot on the board (best effort) and returns its outcome. */
+/** Records a failed shot on the board (best effort) and returns its outcome.
+ * The reason is what the card says; provider trouble unless told. */
 export async function recordShotFailure(
   store: JobStore,
   shot: Shot,
   ctx: ShotContext,
   err: unknown,
+  reason: string = SHOT_PROVIDER_TROUBLE,
 ): Promise<ShotOutcome> {
   console.error(`[runner] shot ${shot.id} failed outside its QC loop`, err);
-  const outcome = shotFailureOutcome(shot, ctx, SHOT_PROVIDER_TROUBLE, errorDetail(err));
+  const outcome = shotFailureOutcome(shot, ctx, reason, errorDetail(err));
   try {
     await storeForRun(store, ctx.runKey).saveAsset(toStoredAsset(outcome, ctx, shot));
   } catch (saveErr) {

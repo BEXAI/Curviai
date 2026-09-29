@@ -48,13 +48,16 @@ export function preflightThumbKey(workspaceId: string, uploadKey: string, prefli
 
 /**
  * Where a preflight's cutout preview lives (PHASE_15 P1): the workspace's
- * cache prefix next to the cutout cache (ws/{id}/cache/cutout/), kept as
- * long as that cache. The form reads it through a signed url only while
- * the preflight row is fresh, like the cutout the pack reuses.
+ * cache prefix next to the cutout cache (ws/{id}/cache/cutout/). One object
+ * per upload, written over by every re-check, since the upload's single
+ * preflight row only ever points at the latest preview; so re-checks never
+ * pile up objects, and deleting the workspace's storage (ws/{id}/) deletes
+ * it. The form reads it through a signed url only while the preflight row
+ * is fresh, like the cutout the pack reuses.
  */
-export function preflightPreviewKey(workspaceId: string, uploadKey: string, preflightId: string): string {
+export function preflightPreviewKey(workspaceId: string, uploadKey: string): string {
   const upload = createHash("sha256").update(uploadKey).digest("hex").slice(0, 32);
-  return `ws/${workspaceId}/cache/preview/${upload}/${preflightId}.png`;
+  return `ws/${workspaceId}/cache/preview/${upload}.png`;
 }
 
 function isFresh(row: Pick<UploadPreflight, "updatedAt">, now: Date): boolean {
@@ -105,6 +108,20 @@ export function preflightProductBoxOf(
   return inside ? { x: bx, y: by, width: bw, height: bh } : undefined;
 }
 
+/**
+ * True when the preflight's intake saw text, borders, watermarks or stickers
+ * added on top of the upload (upload_preflights.result addedOverlays, intake
+ * version 5). Any age: the verdict describes the stored photo, which never
+ * changes. False for a row without the flag (a clean photo, or an older
+ * intake), null when there is no usable row to read.
+ */
+export function preflightAddedOverlaysOf(row: UploadPreflight | undefined): boolean | null {
+  if (!row || row.status === "unavailable") {
+    return null;
+  }
+  return (row.result as { addedOverlays?: unknown } | null | undefined)?.addedOverlays === true;
+}
+
 export async function preflightUpload(
   deps: PreflightServiceDeps,
   workspaceId: string,
@@ -136,7 +153,7 @@ export async function preflightUpload(
   }
   let previewKey: string | null = null;
   if (run.preview && deps.putObject) {
-    const key = preflightPreviewKey(workspaceId, input.key, preflightId);
+    const key = preflightPreviewKey(workspaceId, input.key);
     try {
       await deps.putObject(key, run.preview, "image/png");
       previewKey = key;
