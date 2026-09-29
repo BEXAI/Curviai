@@ -38,7 +38,31 @@ export const QC_THRESHOLDS = {
     maxMeanDeltaE: 5.0,
     minLlmFidelity: 0.85,
   },
+  /**
+   * white_or_transparent and white_preferred specs (Google main, TikTok
+   * Shop): share of outside mask pixels that are exactly 255 white or fully
+   * transparent (PHASE_15 backgroundWhiteOrClear).
+   */
+  whiteOrClearShare: 0.999,
 } as const;
+
+/**
+ * Whether pixelChecks runs backgroundWhiteOrClear by default. Off: today's
+ * white renders for google.merchant.main and tiktokshop.main pass it as
+ * rendered and as PNG, but ship as a quality 90 JPEG whose ringing leaves
+ * about 0.99 of the background exactly white outside the edge margin
+ * (qc/whiteOrClear.test.ts). Turn it on once encodeForSpec escapes these
+ * specs to PNG the way it does for solid white specs, and a golden set run
+ * passes. A caller can opt in per call with
+ * PixelCheckOptions.backgroundWhiteOrClear.
+ */
+export const BACKGROUND_WHITE_OR_CLEAR_ENABLED = false;
+
+/** True for the background rules backgroundWhiteOrClear covers. */
+export function needsWhiteOrClear(spec: ChannelSpec): boolean {
+  const type = spec.background?.type;
+  return type === "white_or_transparent" || type === "white_preferred";
+}
 
 export type QcKind = "main" | "other";
 
@@ -74,6 +98,9 @@ export interface PixelCheckOptions {
    * caught while honest anti aliased edges are not punished.
    */
   edgeMarginPx?: number;
+  /** Run backgroundWhiteOrClear on white or transparent and white preferred
+   * specs. Default BACKGROUND_WHITE_OR_CLEAR_ENABLED. */
+  backgroundWhiteOrClear?: boolean;
 }
 
 /** Main class checks apply when the spec demands a pure white solid background with no text. */
@@ -178,6 +205,25 @@ export async function pixelChecks(
     });
   }
 
+  // White or transparent background outside the (margin dilated) mask, for
+  // the specs whose rule is not a solid color. Fails closed without a mask.
+  if ((opts.backgroundWhiteOrClear ?? BACKGROUND_WHITE_OR_CLEAR_ENABLED) && needsWhiteOrClear(spec)) {
+    const required = QC_THRESHOLDS.whiteOrClearShare;
+    if (!mask) {
+      checks.push({ name: "backgroundWhiteOrClear", pass: false, measured: MASK_MISSING, limit: `>= ${required}` });
+    } else {
+      const margin = opts.edgeMarginPx ?? 0;
+      const checkMask = margin > 0 ? await dilate(mask, margin) : mask;
+      const share = whiteOrClearShare(image, checkMask);
+      checks.push({ name: "backgroundWhiteOrClear", pass: share >= required, measured: share, limit: `>= ${required}` });
+    }
+  }
+
+  // Megapixels, when the spec caps them.
+  if (spec.maxMegapixels !== undefined) {
+    checks.push(megapixelsCheck(image.width, image.height, spec.maxMegapixels));
+  }
+
   // Fill ratio: product bounding box longest side over canvas longest side.
   let fillRatio: number | null = null;
   if (mask) {
@@ -241,6 +287,78 @@ export async function pixelChecks(
     checks,
     pass: checks.every((c) => c.pass),
   };
+}
+
+/** Share of pixels outside the mask that are exactly 255 white or alpha 0; 1 when none are outside. */
+function whiteOrClearShare(image: RawImage, checkMask: RawMask): number {
+  let outside = 0;
+  let matching = 0;
+  for (let i = 0; i < checkMask.data.length; i++) {
+    if (checkMask.data[i] !== 0) {
+      continue;
+    }
+    outside++;
+    const o = i * 4;
+    if (
+      image.data[o + 3] === 0 ||
+      (image.data[o] === 255 && image.data[o + 1] === 255 && image.data[o + 2] === 255)
+    ) {
+      matching++;
+    }
+  }
+  return outside === 0 ? 1 : matching / outside;
+}
+
+function megapixelsCheck(width: number, height: number, maxMegapixels: number): CheckItem {
+  const megapixels = (width * height) / 1_000_000;
+  return { name: "megapixels", pass: megapixels <= maxMegapixels, measured: megapixels, limit: `<= ${maxMegapixels}` };
+}
+
+/**
+ * The checks a file gets from its header alone: dimensions, long side,
+ * megapixels, bytes and format. Used for a kept photo shipped unchanged,
+ * whose bytes are proven by sha256 instead of decoded (PHASE_15 fidelity
+ * section).
+ */
+export function headerChecks(
+  width: number,
+  height: number,
+  spec: ChannelSpec,
+  encoded: { bytes: number; format: string },
+): CheckItem[] {
+  const bounds = dimensionBounds(spec);
+  const longestSide = Math.max(width, height);
+  const minLong = minLongSideFor(spec);
+  const checks: CheckItem[] = [
+    {
+      name: "dimensions",
+      pass:
+        width >= bounds.minWidth && height >= bounds.minHeight && width <= bounds.maxWidth && height <= bounds.maxHeight,
+      measured: `${width}x${height}`,
+      limit: `${bounds.minWidth}x${bounds.minHeight} to ${bounds.maxWidth}x${bounds.maxHeight}`,
+    },
+    {
+      name: "longestSide",
+      pass: longestSide >= minLong && longestSide <= bounds.maxLongSide,
+      measured: longestSide,
+      limit: `${minLong} to ${bounds.maxLongSide}`,
+    },
+  ];
+  if (spec.maxMegapixels !== undefined) {
+    checks.push(megapixelsCheck(width, height, spec.maxMegapixels));
+  }
+  if (spec.maxBytes) {
+    checks.push({ name: "bytes", pass: encoded.bytes <= spec.maxBytes, measured: encoded.bytes, limit: `<= ${spec.maxBytes}` });
+  }
+  if (spec.formats) {
+    checks.push({
+      name: "format",
+      pass: (spec.formats as readonly string[]).includes(normalizeFormat(encoded.format)),
+      measured: encoded.format,
+      limit: spec.formats.join(", "),
+    });
+  }
+  return checks;
 }
 
 function normalizeFormat(format: string): string {

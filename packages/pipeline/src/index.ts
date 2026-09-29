@@ -3,6 +3,7 @@ export * from "./color";
 export * from "./raw";
 export * from "./mask";
 export * from "./deterministic/whiten";
+export * from "./deterministic/original";
 export * from "./qc/pixelChecks";
 export * from "./qc/fidelity";
 export * from "./composite/index";
