@@ -8,10 +8,10 @@ export type ButtonSize = "sm" | "md" | "lg";
 const variantClasses: Record<ButtonVariant, string> = {
   primary:
     "bg-ink-900 text-white shadow-[inset_0_1px_0_0_rgb(255_255_255/0.25)] hover:bg-ink-800 focus-visible:outline-ink-900",
-  // The call to action: the logo's teal into pink, with a soft glow that
-  // brightens on hover.
+  // The call to action: a solid deep burgundy from the brand's pink family,
+  // with a faint glow and a lighter wine on hover.
   secondary:
-    "bg-brand-gradient text-white shadow-[0_8px_24px_-8px_rgb(236_72_153/0.6),inset_0_1px_0_0_rgb(255_255_255/0.3)] hover:shadow-[0_10px_32px_-6px_rgb(236_72_153/0.75),inset_0_1px_0_0_rgb(255_255_255/0.35)] hover:brightness-110 focus-visible:outline-accent-500",
+    "bg-[#7a1f3d] text-white shadow-[0_8px_24px_-10px_rgb(122_31_61/0.7),inset_0_1px_0_0_rgb(255_255_255/0.18)] hover:bg-[#8f2749] hover:shadow-[0_10px_30px_-8px_rgb(143_39_73/0.8),inset_0_1px_0_0_rgb(255_255_255/0.22)] focus-visible:outline-[#8f2749]",
   outline:
     "border border-ink-950/15 bg-white text-ink-900 hover:border-ink-950/30 hover:bg-ink-50 focus-visible:outline-ink-900",
   ghost: "text-ink-700 hover:bg-ink-50 hover:text-ink-950 focus-visible:outline-ink-900",
