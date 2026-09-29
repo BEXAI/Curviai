@@ -11,10 +11,10 @@ import {
   CircuitBreaker,
   FAL_API_KEY_ENV,
   GEMINI_API_KEY_ENV,
-  InMemoryBreakerStore,
   OPENAI_API_KEY_ENV,
-  PHOTOROOM_API_KEY_ENV,
+  processBreakerStore,
 } from "@curvi/ai";
+import { cutoutModelSeedRows } from "@curvi/pipeline/seed";
 import { isR2Configured, isStripeConfigured, isSupabaseConfigured, optionalEnv } from "@/lib/env";
 
 export interface HealthProviderEntry {
@@ -49,7 +49,8 @@ export const DEFAULT_PROVIDER_ENTRIES: HealthProviderEntry[] = [
   { name: "bfl-flux", kind: "image", envVar: BFL_API_KEY_ENV },
   { name: "openai-image", kind: "image", envVar: OPENAI_API_KEY_ENV },
   { name: "fal-gateway", kind: "video", envVar: FAL_API_KEY_ENV },
-  { name: "photoroom", kind: "cutout", envVar: PHOTOROOM_API_KEY_ENV },
+  // Cutouts run on fal (BiRefNet); FAL_KEY is the required cutout key.
+  ...cutoutModelSeedRows.map((row) => ({ name: row.providerName, kind: "cutout", envVar: FAL_API_KEY_ENV })),
 ];
 
 export class HealthRegistry {
@@ -84,7 +85,8 @@ const globalScope = globalThis as typeof globalThis & { __curviHealthRegistry?: 
 export function getHealthRegistry(): HealthRegistry {
   globalScope.__curviHealthRegistry ??= new HealthRegistry(
     DEFAULT_PROVIDER_ENTRIES,
-    new CircuitBreaker(new InMemoryBreakerStore()),
+    // The breaker state the pack runner in this process writes.
+    new CircuitBreaker(processBreakerStore()),
   );
   return globalScope.__curviHealthRegistry;
 }

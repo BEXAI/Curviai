@@ -38,7 +38,7 @@ import { DemoLlmProvider, demoRoutingTable } from "./runtime";
 import { maskArea } from "./shot-outputs";
 
 class FakeCutoutProvider implements Provider {
-  readonly name = "photoroom";
+  readonly name = "fal-birefnet";
   readonly kind = "cutout" as const;
   calls = 0;
   constructor(private readonly png: Buffer) {}
@@ -97,7 +97,7 @@ function setup(cutoutPng: Buffer): {
     ...demoRoutingTable(),
     [SCENE_PLATE_TASK]: ["gemini-image"],
     [HARMONIZE_TASK]: ["gemini-image"],
-    [CUTOUT_TASK]: ["photoroom"],
+    [CUTOUT_TASK]: ["fal-birefnet"],
   };
   const ai: PipelineDeps["ai"] = {
     registry,
@@ -107,7 +107,7 @@ function setup(cutoutPng: Buffer): {
   };
   const generator = new LiveShotGenerator({
     ai,
-    wiring: { llmLive: false, imageProviders: ["gemini-image"], cutoutLive: true },
+    wiring: { llmLive: false, imageProviders: ["gemini-image"], cutoutProviders: ["fal-birefnet"], cutoutLive: true },
     loadMedia: async () => Buffer.from("source-photo"),
   });
   return { generator, deps: { ai, store: new InMemoryJobStore(), clock: systemClock, generator }, scene, cutout };

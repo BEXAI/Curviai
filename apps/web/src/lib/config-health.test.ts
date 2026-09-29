@@ -13,7 +13,7 @@ import {
 import { recordCronSuccess } from "./cron-health";
 
 const NOW = new Date("2026-09-28T12:00:00Z");
-const ALL_KEYS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "PHOTOROOM_API_KEY"];
+const ALL_KEYS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "FAL_KEY"];
 const GIB = 1024 ** 3;
 
 function envOf(values: Record<string, string>): (name: string) => string | undefined {

@@ -5,7 +5,7 @@
  * probe() checks that key with a free metadata call (@curvi/ai probe.ts).
  *
  * It reads the same env names and the same seed rows as the live wiring
- * (llmModelPrices, imageModelSeedRows, photoroomSeed, recipeSeedRows), and
+ * (llmModelPrices, imageModelSeedRows, cutoutModelSeedRows, recipeSeedRows), and
  * a test holds the two lists equal, so the health endpoint and the probe
  * route always describe what a pack would actually run on. Nothing here
  * makes a network call; constructing an adapter is free.
@@ -20,8 +20,8 @@ import {
   GeminiImageProvider,
   OPENAI_API_KEY_ENV,
   OpenaiImageProvider,
-  PHOTOROOM_API_KEY_ENV,
-  PhotoroomCutoutProvider,
+  FAL_API_KEY_ENV,
+  FalCutoutProvider,
   type Provider,
 } from "@curvi/ai";
 import {
@@ -30,7 +30,7 @@ import {
   SCENE_PLATE_TASK,
   imageModelSeedRows,
   llmModelPrices,
-  photoroomSeed,
+  cutoutModelSeedRows,
   recipeSeedRows,
   type ImageModelSeedRow,
 } from "@curvi/pipeline/seed";
@@ -117,23 +117,30 @@ export function liveProviderTargets(readEnv: ReadEnv = readEnvDefault, fetchFn?:
     });
   }
 
-  const photoroomKey = readEnv(PHOTOROOM_API_KEY_ENV);
-  targets.push({
-    name: photoroomSeed.providerName,
-    kind: "cutout",
-    envVar: PHOTOROOM_API_KEY_ENV,
-    stages: [CUTOUT_TASK],
-    configured: Boolean(photoroomKey),
-    provider: photoroomKey
-      ? new PhotoroomCutoutProvider({
-          name: photoroomSeed.providerName,
-          tasks: [],
-          apiKey: photoroomKey,
-          priceTable: { perCallMicros: photoroomSeed.perCallMicros },
-          fetchFn,
-        })
-      : null,
-  });
+  // Cutouts run on fal (BiRefNet). fal has no free key probe, so the
+  // provider is listed as skipped by the probe route; breaker state and
+  // quota warnings cover it (docs/phases/PHASE_14.md 1.2, 1.5).
+  const falKey = readEnv(FAL_API_KEY_ENV);
+  for (const row of cutoutModelSeedRows) {
+    targets.push({
+      name: row.providerName,
+      kind: "cutout",
+      envVar: FAL_API_KEY_ENV,
+      stages: [CUTOUT_TASK],
+      configured: Boolean(falKey),
+      provider: falKey
+        ? new FalCutoutProvider({
+            name: row.providerName,
+            tasks: [],
+            apiKey: falKey,
+            modelId: row.model,
+            modelParams: row.params,
+            priceTable: { perCallMicros: row.perCallMicros },
+            fetchFn,
+          })
+        : null,
+    });
+  }
 
   return targets;
 }

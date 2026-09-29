@@ -5,3 +5,4 @@ export * from "./bflFlux";
 export * from "./openaiImage";
 export * from "./photoroomCutout";
 export * from "./falGateway";
+export * from "./falCutout";

@@ -18,6 +18,18 @@ export const DEFAULT_BREAKER_OPTIONS: BreakerOptions = {
   openSeconds: 120,
 };
 
+/**
+ * How long a provider_quota answer keeps a provider's breaker open. An empty
+ * account is not fixed by waiting seconds (someone has to top it up), so the
+ * cooldown is long: packs fail over or degrade instead of asking the
+ * exhausted provider again on every shot. A deploy or restart clears it.
+ */
+export const QUOTA_OPEN_SECONDS = 30 * 60;
+
+/** Value the open key holds when a quota answer tripped the breaker. */
+export const BREAKER_OPEN_QUOTA = "quota";
+const BREAKER_OPEN_FAILURES = "open";
+
 function failuresKey(provider: string): string {
   return `breaker:${provider}:failures`;
 }
@@ -41,6 +53,22 @@ export class CircuitBreaker {
     return (await this.store.get(openKey(provider))) !== null;
   }
 
+  /** Why the breaker is open ("quota" or "failures"), or null when closed. */
+  async openReason(provider: string): Promise<"quota" | "failures" | null> {
+    const value = await this.store.get(openKey(provider));
+    if (value === null) return null;
+    return value === BREAKER_OPEN_QUOTA ? "quota" : "failures";
+  }
+
+  /**
+   * Opens the breaker at once, whatever the failure count: used when the
+   * provider says its account is out of quota (provider_quota), which no
+   * retry can fix. Defaults to QUOTA_OPEN_SECONDS.
+   */
+  async tripForQuota(provider: string, openSeconds: number = QUOTA_OPEN_SECONDS): Promise<void> {
+    await this.store.set(openKey(provider), BREAKER_OPEN_QUOTA, openSeconds);
+  }
+
   /**
    * Records one failure. When the count within the window reaches the
    * threshold the breaker opens for openSeconds.
@@ -48,7 +76,9 @@ export class CircuitBreaker {
   async recordFailure(provider: string): Promise<void> {
     const count = await this.store.incr(failuresKey(provider), this.options.windowSeconds);
     if (count >= this.options.failureThreshold) {
-      await this.store.set(openKey(provider), "open", this.options.openSeconds);
+      // A quota trip keeps its longer cooldown and its reason.
+      if ((await this.store.get(openKey(provider))) === BREAKER_OPEN_QUOTA) return;
+      await this.store.set(openKey(provider), BREAKER_OPEN_FAILURES, this.options.openSeconds);
     }
   }
 
@@ -102,4 +132,18 @@ export class InMemoryBreakerStore implements BreakerStore {
     entry.value = String(next);
     return next;
   }
+}
+
+const breakerScope = globalThis as typeof globalThis & { __curviBreakerStore?: BreakerStore };
+
+/**
+ * The breaker store every pack run in this process shares, so a provider
+ * that failed or ran out of quota in one pack is skipped by the next one,
+ * and the web app's health endpoint and new pack preflight read the same
+ * state the runner writes. In memory: each process (the web service's inline
+ * runner, a Trigger.dev worker) keeps its own.
+ */
+export function processBreakerStore(): BreakerStore {
+  breakerScope.__curviBreakerStore ??= new InMemoryBreakerStore();
+  return breakerScope.__curviBreakerStore;
 }

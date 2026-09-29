@@ -11,6 +11,9 @@
  * (no database) always reports ok. The response carries no secrets; see
  * lib/service-health.ts.
  *
+ * A provider whose account answered out of quota shows as the warning
+ * `provider_quota:<name>` while its breaker stays open (Phase 14 1.2).
+ *
  * Configuration drift (lib/config-health.ts) is listed under `warnings` as
  * stable codes: missing storage or provider keys per stage, recipes rows
  * unlike the seed, crons that never ran or are overdue, a bad
@@ -29,6 +32,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { CircuitBreaker, processBreakerStore } from "@curvi/ai";
 import { recipeSeedRows } from "@curvi/pipeline/seed";
 import { liveProviderTargets } from "@curvi/trigger/provider-probes";
 import { buildConfigReport, cachedConfigReport, createConfigReportCache, type ConfigReport, type ConfigReportCache } from "@/lib/config-health";
@@ -40,6 +44,7 @@ import { getDb } from "@/lib/services/db";
 import { sql } from "@curvi/db";
 import {
   createHealthCache,
+  providerQuotaWarnings,
   readLatestAppliedMigration,
   runHealthCheck,
   type HealthCache,
@@ -92,7 +97,14 @@ export async function GET(request: Request): Promise<NextResponse> {
     runnerStats: () => currentInlinePackRunner()?.stats() ?? null,
     configWarnings: async ({ database }) => {
       seen.report = await configReport(mode, database === "ok", authorized);
-      return seen.report.warnings.map((warning) => warning.code);
+      // Quota warnings read the live breaker state on every call, outside
+      // the cached config report: provider_quota:<name> while a provider's
+      // account is out of quota (docs/phases/PHASE_14.md 1.2).
+      const quota = await providerQuotaWarnings(
+        liveProviderTargets(optionalEnv).map((target) => target.name),
+        new CircuitBreaker(processBreakerStore()),
+      );
+      return [...seen.report.warnings.map((warning) => warning.code), ...quota];
     },
     commit: optionalEnv("RENDER_GIT_COMMIT") ?? null,
     cache: healthCache(),

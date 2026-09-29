@@ -5,7 +5,7 @@ import { liveProviderTargets, stageKeyReport } from "./provider-probes";
 import { demoRoutingTable } from "./runtime";
 import { DEFAULT_SHOT_CONCURRENCY, parseShotConcurrency } from "./shot-concurrency";
 
-const ALL_KEYS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "PHOTOROOM_API_KEY"];
+const ALL_KEYS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "FAL_KEY"];
 
 function envOf(names: string[]): (name: string) => string | undefined {
   return (name) => (names.includes(name) ? `value-of-${name}` : undefined);
@@ -18,7 +18,7 @@ function wiredNames(names: string[]): string[] {
 }
 
 describe("liveProviderTargets", () => {
-  it.each([[ALL_KEYS], [[]], [["ANTHROPIC_API_KEY"]], [["BFL_API_KEY", "PHOTOROOM_API_KEY"]], [["GEMINI_API_KEY", "OPENAI_API_KEY"]]])(
+  it.each([[ALL_KEYS], [[]], [["ANTHROPIC_API_KEY"]], [["BFL_API_KEY", "FAL_KEY"]], [["GEMINI_API_KEY", "OPENAI_API_KEY"]]])(
     "lists exactly the providers wireLiveProviders registers for keys %j",
     (names) => {
       const configured = liveProviderTargets(envOf(names))
@@ -29,11 +29,18 @@ describe("liveProviderTargets", () => {
     },
   );
 
-  it("gives every configured target a probeable adapter and none to the rest", () => {
-    const targets = liveProviderTargets(envOf(["ANTHROPIC_API_KEY", "PHOTOROOM_API_KEY"]));
+  it("gives every configured target an adapter, probeable except the fal cutout, and none to the rest", () => {
+    const targets = liveProviderTargets(envOf(["ANTHROPIC_API_KEY", "FAL_KEY"]));
+    expect(targets.find((target) => target.kind === "cutout")).toMatchObject({
+      name: "fal-birefnet",
+      envVar: "FAL_KEY",
+      configured: true,
+    });
     for (const target of targets) {
       if (target.configured) {
-        expect(target.provider && isProbeable(target.provider)).toBe(true);
+        expect(target.provider).not.toBeNull();
+        // fal has no free key probe; the probe route reports it as skipped.
+        expect(target.provider && isProbeable(target.provider)).toBe(target.kind !== "cutout");
       } else {
         expect(target.provider).toBeNull();
       }
@@ -49,7 +56,7 @@ describe("liveProviderTargets", () => {
       { envVar: "BFL_API_KEY", present: true },
       { envVar: "OPENAI_API_KEY", present: false },
     ]);
-    expect(byStage.cutout).toMatchObject({ ready: false, keys: [{ envVar: "PHOTOROOM_API_KEY", present: false }] });
+    expect(byStage.cutout).toMatchObject({ ready: false, keys: [{ envVar: "FAL_KEY", present: false }] });
     for (const stage of ["intake", "analyze", "plan", "copy", "qc"]) {
       expect(byStage[stage]).toMatchObject({ kind: "llm", ready: false, keys: [{ envVar: "ANTHROPIC_API_KEY", present: false }] });
     }

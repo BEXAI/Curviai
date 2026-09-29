@@ -4,8 +4,8 @@
  * revoked or out of credit key shows up before a customer pack and not
  * during one. Each configured provider gets the cheapest authenticated call
  * it offers, a free metadata read through its @curvi/ai adapter (model
- * resource for Anthropic, Gemini and OpenAI, credit balance for BFL,
- * account details for Photoroom; docs/verification.md). Nothing is
+ * resource for Anthropic, Gemini and OpenAI, credit balance for BFL; the fal
+ * cutout has no free probe and is listed as skipped; docs/verification.md). Nothing is
  * generated and nothing is spent. Each probe times out after 10 seconds and
  * a failure is reported as data, so the route itself always answers.
  *
@@ -19,7 +19,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { probeProviders, PROBE_TIMEOUT_MS, type ProbeResult } from "@curvi/ai";
+import { probeProviders, PROBE_TIMEOUT_MS, recordProbeReports, type ProbeResult } from "@curvi/ai";
 import { liveProviderTargets } from "@curvi/trigger/provider-probes";
 import { checkCronAuth } from "@/lib/cron-auth";
 import { optionalEnv } from "@/lib/env";
@@ -54,6 +54,8 @@ export async function GET(request: Request): Promise<NextResponse> {
     targets.flatMap((target) => (target.provider ? [{ name: target.name, provider: target.provider }] : [])),
     { timeoutMs: PROBE_TIMEOUT_MS },
   );
+  // The new pack preflight reads the newest probe per provider.
+  recordProbeReports(probed);
   const byName = new Map(probed.map(({ name, ...result }) => [name, result]));
   const providers: ProviderProbeEntry[] = targets.map((target) => ({
     name: target.name,

@@ -115,7 +115,7 @@ function describeError(err: unknown): string {
 const STAGE_KIND_WARNINGS: Record<StageKeyReport["kind"], HealthWarning> = {
   llm: { code: "no_llm_provider", message: "No Anthropic key is set, so the text stages have no live model." },
   image: { code: "no_image_provider", message: "No image provider key is set (Gemini, BFL or OpenAI)." },
-  cutout: { code: "no_cutout_provider", message: "No Photoroom key is set, so the cutout stage has no live provider." },
+  cutout: { code: "no_cutout_provider", message: "No fal key (FAL_KEY) is set, so the cutout stage has no live provider." },
 };
 
 export async function buildConfigReport(deps: ConfigReportDeps): Promise<ConfigReport> {

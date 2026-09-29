@@ -104,6 +104,10 @@ export function skippedCopy(reason: string | null | undefined, shotType?: string
   return { label: "Skipped", note: `This shot was left out of the pack. ${NO_CHARGE}` };
 }
 
+/** A generative shot left out while the scene image service was down
+ * (Phase 14 1.3). */
+export const SCENE_PAUSED_NOTE = "Paused, the scene service is unavailable, so this scene was left out of the pack.";
+
 /**
  * Why a shot ended in needs review, from its stored repair hint or
  * unavailable message. Always ends by saying it was not charged. The runner's
@@ -131,6 +135,9 @@ export function needsReviewNote(hint: string | null | undefined): string {
   } else if (h.includes("spending limit")) {
     // The runner's pack spend cap, reached before this shot ran.
     reason = "The pack reached its spending limit before this shot could be made.";
+  } else if (h.includes("scene service is unavailable")) {
+    // pipeline-runner.ts SHOT_SCENE_PAUSED (Phase 14 1.3).
+    reason = SCENE_PAUSED_NOTE;
   } else if (h.includes("provider had trouble")) {
     // SHOT_PROVIDER_TROUBLE: an unexpected provider or runtime error.
     reason = "The image service had trouble with this shot, so we held it back.";

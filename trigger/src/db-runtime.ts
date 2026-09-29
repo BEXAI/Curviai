@@ -56,7 +56,13 @@ export function buildDbRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps 
   // Recipes come from the recipes table (A/B variants and model failover),
   // cached per process, with the compiled seed as the fallback.
   globalScope.__curviRecipes ??= new RecipeCatalog(dbRecipeLoader(db));
-  const base = buildRuntimeDeps({ ...opts, capStore, realCredits: true, onSpendAlert: alerts.onSpendAlert });
+  const base = buildRuntimeDeps({
+    ...opts,
+    capStore,
+    realCredits: true,
+    onSpendAlert: alerts.onSpendAlert,
+    quotaEventDb: db,
+  });
   if (base.ai.caps) {
     watchGlobalSpend(base.ai.caps, alerts);
   }

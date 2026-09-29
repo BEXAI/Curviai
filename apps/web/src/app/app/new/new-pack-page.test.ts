@@ -43,6 +43,13 @@ vi.mock("@/lib/services", () => ({
   }),
 }));
 
+const preflight = vi.hoisted(() => ({ verdict: "ok" as "ok" | "scenes_paused" | "packs_paused" }));
+
+vi.mock("@/lib/provider-preflight", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/provider-preflight")>();
+  return { ...actual, providerPreflight: async () => preflight.verdict };
+});
+
 const ALL_TIERS: TierKey[] = ["free", "starter", "growth", "pro", "agency"];
 
 describe("newPackChannelOptions", () => {
@@ -214,4 +221,40 @@ describe("/app/new", () => {
     expect(html).not.toContain('data-testid="low-balance-nudge"');
     expect(html).not.toContain('data-testid="estimate-over-balance"');
   });
+
+  it("shows no preflight banner while every image service is up", async () => {
+    const html = await renderPage();
+    expect(html).not.toContain('data-testid="preflight-banner"');
+    expect(createButton(html)).not.toContain('disabled=""');
+  });
+
+  it("pauses packs and disables Create pack while the cutout service is down", async () => {
+    preflight.verdict = "packs_paused";
+    try {
+      const html = await renderPage();
+      expect(html).toContain('data-testid="preflight-banner"');
+      expect(html).toContain("Packs are paused for a few minutes while an image service recovers. Nothing will be charged.");
+      expect(createButton(html)).toContain('disabled=""');
+    } finally {
+      preflight.verdict = "ok";
+    }
+  });
+
+  it("says scenes are paused but keeps Create pack when only scenes are down", async () => {
+    preflight.verdict = "scenes_paused";
+    try {
+      const html = await renderPage();
+      expect(html).toContain("Lifestyle scenes are paused");
+      expect(html).toContain("White background and cutout files still work");
+      expect(createButton(html)).not.toContain('disabled=""');
+    } finally {
+      preflight.verdict = "ok";
+    }
+  });
 });
+
+function createButton(html: string): string {
+  const at = html.indexOf('data-testid="create-pack"');
+  const start = html.lastIndexOf("<button", at);
+  return html.slice(start, html.indexOf(">", at) + 1);
+}

@@ -6,9 +6,9 @@ export {
   costCaps,
   imageModelSeedRows,
   llmModelPrices,
-  photoroomSeed,
+  cutoutModelSeedRows,
 } from "./models";
-export type { ImageModelSeedRow, ImageProviderFamily, LlmPriceTable } from "./models";
+export type { CutoutModelSeedRow, ImageModelSeedRow, ImageProviderFamily, LlmPriceTable } from "./models";
 export { badgeStyle, canvasDefaults, presets, sceneDefaults, stillStyle, templates } from "./templates";
 export type { PresetKey } from "./templates";
 export { DEFAULT_TEMPLATE_FONT, isTemplateFontKey, templateFonts } from "./fonts";

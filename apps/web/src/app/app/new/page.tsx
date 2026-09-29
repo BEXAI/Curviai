@@ -5,6 +5,7 @@ import { canManageBilling } from "@/lib/billing/access";
 import { lowBalanceCopy, type PaywallContext } from "@/lib/billing/paywall";
 import { tierKeyOf } from "@/lib/entitlements";
 import { isStripeConfigured } from "@/lib/env";
+import { preflightCopy, providerPreflight } from "@/lib/provider-preflight";
 import { getServices } from "@/lib/services";
 import { newPackChannelOptions } from "./channel-options";
 
@@ -40,6 +41,11 @@ export default async function NewPackPage({
     canBill: canManageBilling(workspace.role),
   };
   const nudge = lowBalanceCopy(paywall);
+  // Preflight (Phase 14 1.5): say so before submit when an image service is
+  // down; with the cutout service down no pack can deliver, so Create pack
+  // is disabled.
+  const preflight = await providerPreflight();
+  const preflightNotice = preflightCopy(preflight);
 
   return (
     <div>
@@ -47,6 +53,20 @@ export default async function NewPackPage({
       <p className="mt-1 text-sm text-ink-500">
         One photo in. A compliant pack out. Pick channels and watch it render live.
       </p>
+      {preflightNotice ? (
+        <div
+          role="status"
+          data-testid="preflight-banner"
+          data-verdict={preflight}
+          className={
+            preflight === "packs_paused"
+              ? "mt-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+              : "mt-6 rounded-lg border border-ink-200 bg-ink-50 px-4 py-3 text-sm text-ink-700"
+          }
+        >
+          {preflightNotice}
+        </div>
+      ) : null}
       {nudge ? (
         <div className="mt-6">
           <LowBalanceNudge copy={nudge} moment="new_pack" />
@@ -67,6 +87,7 @@ export default async function NewPackPage({
           creditBalance={workspace.creditBalance}
           paywall={paywall}
           initialProductId={requestedProduct}
+          packsPaused={preflight === "packs_paused"}
         />
       </div>
     </div>

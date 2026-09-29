@@ -9,6 +9,13 @@
  * retryable 4xx or a content block must never open the shared breaker for
  * everyone.
  *
+ * Quota: a provider_quota answer (an exhausted account or plan, HTTP 402)
+ * is never retried on the same provider. The router opens that provider's
+ * breaker at once for QUOTA_OPEN_SECONDS, logs one structured error line
+ * (event provider_quota_exhausted), calls opts.onProviderQuota and fails
+ * over. Later calls skip the provider with a BreakerOpenError that carries
+ * the provider_quota code until the cooldown ends.
+ *
  * Timeouts: the per attempt timeout is req.timeoutMs, else opts.timeoutMs,
  * else DEFAULT_TIMEOUT_MS, raised to the provider's minTimeoutMs (an async
  * job adapter's polling window plus margin) when that is longer.
@@ -185,6 +192,15 @@ export interface CallWithFailoverOptions extends RouteOptions {
    */
   onInternalError?: (err: unknown, context: string) => void;
   /**
+   * Called each time a provider answers that its account is out of quota
+   * (provider_quota), after its breaker was opened. Awaited, and its errors
+   * go to onInternalError. Wire it to an event row with a dedupe window; the
+   * router already logs a structured warning on every one.
+   */
+  onProviderQuota?: (info: ProviderQuotaInfo) => void | Promise<void>;
+  /** How long a quota answer keeps the breaker open; QUOTA_OPEN_SECONDS by default. */
+  quotaOpenSeconds?: number;
+  /**
    * Per call failover chain that replaces routing[req.task] when it is non
    * empty. Callers that read their order from data at runtime use it, for
    * example a recipe row listing its models in failover order, so a model
@@ -207,6 +223,32 @@ function defaultSleep(ms: number): Promise<void> {
 
 function defaultInternalError(err: unknown, context: string): void {
   console.error(`[ai] ${context}:`, err);
+}
+
+/** What the router reports when a provider says its account is out of quota. */
+export interface ProviderQuotaInfo {
+  provider: string;
+  task: string;
+  message: string;
+}
+
+/**
+ * The loud structured warning for a quota answer: one JSON line at error
+ * level, so the log search and any log based alert pick it up. Carries no
+ * key and at most the start of the provider's message.
+ */
+function logProviderQuota(provider: string, req: ProviderRequest, err: ProviderError): void {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      event: "provider_quota_exhausted",
+      provider,
+      task: req.task,
+      jobId: req.jobId,
+      message: err.message.slice(0, 300),
+      action: "Top up or upgrade this provider account; its breaker stays open meanwhile.",
+    }),
+  );
 }
 
 function toProviderError(err: unknown, provider: string, task: string): ProviderError {
@@ -409,8 +451,9 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
       );
       continue;
     }
-    if (await breaker.isOpen(providerName)) {
-      errors.push(new BreakerOpenError(providerName, req.task));
+    const openReason = await breaker.openReason(providerName);
+    if (openReason !== null) {
+      errors.push(new BreakerOpenError(providerName, req.task, openReason));
       continue;
     }
 
@@ -528,7 +571,11 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
           const providerError = toProviderError(err, providerName, req.task);
           // A content block is never retried, whatever the adapter said:
           // the same prompt gets the same answer and costs another attempt.
-          const retryable = providerError.retryable && providerError.code !== "content_blocked";
+          // A quota answer is never retried either: an empty account stays
+          // empty, so the provider's breaker opens at once for a long
+          // cooldown and the chain fails over.
+          const quota = providerError.code === "provider_quota";
+          const retryable = providerError.retryable && providerError.code !== "content_blocked" && !quota;
           const latencyMs = now() - attemptStart;
           billedMicros += providerError.billedCostMicros;
           chainBilledMicros += providerError.billedCostMicros;
@@ -548,7 +595,16 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
               at: new Date(),
             }),
           );
-          if (providerError.transient) {
+          if (quota) {
+            await safely("breaker.tripForQuota", () => breaker.tripForQuota(providerName, opts.quotaOpenSeconds));
+            logProviderQuota(providerName, req, providerError);
+            const onProviderQuota = opts.onProviderQuota;
+            if (onProviderQuota) {
+              await safely("onProviderQuota", () =>
+                onProviderQuota({ provider: providerName, task: req.task, message: providerError.message }),
+              );
+            }
+          } else if (providerError.transient) {
             // Only transient failures (5xx, 429, timeout, network, a stalled
             // job) count toward opening the breaker, including a billed one
             // that is no longer retried. A non retryable 4xx or a content
