@@ -104,6 +104,7 @@ export const WORKING_SOURCE_MAX_PX = Math.ceil(
     1.25,
 );
 import { CUTOUT_CACHE_FRESH_MS, cutoutCacheKey, type CutoutCacheStore } from "./cutout-cache";
+import { restoreSourceEdges } from "./cutout-edges";
 import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
 import { ORIGINAL_NOT_PREPARED, renderOriginalShot } from "./live-original";
@@ -946,7 +947,7 @@ export class LiveShotGenerator implements ShotGenerator {
         if (cached) {
           console.info(`[live] job ${jobId} ${label} cutout read from the upload cache`);
           this.cutoutCosts.set(key, 0);
-          return { rgba: cached, costMicros: 0 };
+          return { rgba: await restoreSourceEdges(cached, upright), costMicros: 0 };
         }
         let cutout: CallResult<CutoutOutput>;
         try {
@@ -970,7 +971,9 @@ export class LiveShotGenerator implements ShotGenerator {
         }
         const costMicros = cutout.costMicros + cutout.billedFailureMicros;
         this.cutoutCosts.set(key, costMicros);
-        return { rgba: await decodeToRgba(Buffer.from(cutout.output.imageBytes)), costMicros };
+        // Product pixels keep the photo's own colors, border included.
+        const decoded = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
+        return { rgba: await restoreSourceEdges(decoded, upright), costMicros };
       })();
       this.cutouts.set(key, pending);
       pending.catch(() => this.cutouts.delete(key));
@@ -1195,7 +1198,7 @@ export class LiveShotGenerator implements ShotGenerator {
               throw billed > 0 ? new ProductLoadError(err, billed) : err;
             }
             costMicros = cutout.costMicros + cutout.billedFailureMicros;
-            cutoutRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
+            cutoutRgba = await restoreSourceEdges(await decodeToRgba(Buffer.from(cutout.output.imageBytes)), crop.bytes);
           }
           // Keep only the cutout pieces on the target; every other product
           // the cutout kept becomes fully transparent. Kept pixels are byte

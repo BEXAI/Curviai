@@ -68,8 +68,9 @@ export interface CutoutModelSeedRow {
 /**
  * Cutout chain in failover order (Phase 14, 2026-09-29). Photoroom is a
  * competitor and no longer used. The default is BiRefNet (MIT licensed) on
- * fal.ai, at its high resolution general use variant: "General Use (Light
- * 2K)", trained on 2K images, run at 2048x2048. Never the Matting or
+ * fal.ai, at its highest resolution general use variant: "General Use
+ * (Dynamic)" run at 2304x2304 (the only variant fal allows at that size),
+ * for finer product borders than "General Use (Light 2K)" at 2048x2048. Never the Matting or
  * Portrait variants, and never BRIA RMBG 2.0, whose weights are non
  * commercial. fal lists BiRefNet v2 as billed per compute second (its page
  * showed "$0 per compute second" on 2026-09-29), so the price below is a
@@ -81,8 +82,8 @@ export const cutoutModelSeedRows: CutoutModelSeedRow[] = [
     providerName: "fal-birefnet",
     model: "fal-ai/birefnet/v2",
     params: {
-      model: "General Use (Light 2K)",
-      operating_resolution: "2048x2048",
+      model: "General Use (Dynamic)",
+      operating_resolution: "2304x2304",
       output_format: "png",
       refine_foreground: true,
     },
