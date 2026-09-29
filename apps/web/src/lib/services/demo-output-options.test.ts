@@ -132,6 +132,10 @@ describe("demo packs with output options", () => {
     const kept = files.filter((f) => f.notes.includes("Background kept as you took it.") || f.notes.some((n) => n.startsWith("Resized from")));
     expect(kept.length).toBeGreaterThan(0);
     expect(kept[0].notes.some((n) => n.startsWith("Resized from 4032 by 3024 pixels."))).toBe(true);
+    // A kept photo shared by several channels is one file per channel, so the
+    // exact size channel lists its added space.
+    const meta = files.find((f) => f.specId === "meta.feed_1x1");
+    expect(meta?.notes).toContain(`Space added around your photo in ${backgroundSwatches.sand.hex} to fit this channel's shape.`);
   });
 });
 

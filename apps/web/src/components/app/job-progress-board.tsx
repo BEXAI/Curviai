@@ -157,6 +157,7 @@ export function ShotCard({
       )}
       data-testid="shot-card"
       data-shot-status={shot.status}
+      data-shot-type={shot.shotType}
     >
       <CardContent className="p-5">
         <div className="flex items-start justify-between gap-2">

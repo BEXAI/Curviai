@@ -16,7 +16,8 @@ test("new pack page shows channel groups and a credit estimate", async ({ page }
   await page.goto("/app/new");
   await expect(page.getByRole("heading", { name: "Marketplaces" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Social and video" })).toBeVisible();
-  await expect(page.getByText("Listing Mode")).toBeVisible();
+  // With "How your images look" on (PHASE_15), the Listing Mode card is one line in that section.
+  await expect(page.getByTestId("listing-mode").or(page.getByTestId("listing-mode-line")).first()).toBeVisible();
   // Concept Mode stays hidden until it really renders (features.ts).
   await expect(page.getByText("Concept Mode")).toHaveCount(0);
   // A new photo starts a new product by default.

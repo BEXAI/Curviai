@@ -438,25 +438,28 @@ export class DemoService implements Services {
     const files: JobFileView[] = [];
     const counters = new Map<string, number>();
     const channels = new Set<string>();
+    // A real pack delivers one file per channel a shot is made for, so a
+    // shot shared by several channels lists one file for each of them.
     for (const shot of record.shots) {
-      const specId = shot.channels[0];
-      const spec = tryGetSpec(specId);
-      if (!spec) {
-        continue;
-      }
-      const channel = specId.split(".")[0];
-      channels.add(channel);
-      const n = (counters.get(specId) ?? 0) + 1;
-      counters.set(specId, n);
-      files.push({
-        id: `demo_${shot.id}`,
-        name: demoFileName(specId, n),
-        channel,
-        specId,
-        kind: "image",
-        bytes: null,
-        url: demoShotImage(shot.type, specId, record.output),
-        downloadUrl: null,
+      shot.channels.forEach((specId, index) => {
+        const spec = tryGetSpec(specId);
+        if (!spec) {
+          return;
+        }
+        const channel = specId.split(".")[0];
+        channels.add(channel);
+        const n = (counters.get(specId) ?? 0) + 1;
+        counters.set(specId, n);
+        files.push({
+          id: demoFileId(shot.id, index),
+          name: demoFileName(specId, n),
+          channel,
+          specId,
+          kind: "image",
+          bytes: null,
+          url: demoShotImage(shot.type, specId, record.output),
+          downloadUrl: null,
+        });
       });
     }
     for (const channel of channels) {
@@ -503,7 +506,9 @@ export class DemoService implements Services {
       return unavailableComplianceReport(meta, REPORT_NOT_READY);
     }
     const images = view.files.filter((file) => file.kind === "image" && file.specId);
-    const shotsByFileId = new Map(record.shots.map((shot) => [`demo_${shot.id}`, shot]));
+    const shotsByFileId = new Map(
+      record.shots.flatMap((shot) => shot.channels.map((_, index) => [demoFileId(shot.id, index), shot] as const)),
+    );
     return demoComplianceReport(
       meta,
       images.map((file) => {
@@ -733,6 +738,11 @@ function tryGetSpec(specId: string): ReturnType<typeof getSpec> | null {
   } catch {
     return null;
   }
+}
+
+/** A demo file's id: the shot's first channel keeps the plain id. */
+function demoFileId(shotId: string, index: number): string {
+  return index === 0 ? `demo_${shotId}` : `demo_${shotId}_${index}`;
 }
 
 function demoFileName(specId: string, n: number): string {
