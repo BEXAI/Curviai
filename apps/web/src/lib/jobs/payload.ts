@@ -40,25 +40,12 @@ export interface PayloadMedia {
   reencoded?: boolean | null;
 }
 
-/**
- * PHASE_15 worker payload fields the web app sends: each photo's size and
- * re-encode flag, and the job's resolved output options. SEAM: the runner
- * adds the same optional fields to GeneratePackInput (images[].width,
- * height, reencoded and output) and PackFollowUpInput (output). Until then
- * these types carry them, and a runner that does not know them ignores them.
- */
-export type PayloadImage = GeneratePackInput["images"][number] & {
-  width?: number;
-  height?: number;
-  reencoded?: boolean;
-};
+/** PHASE_15 worker payload: each photo carries its stored size and re-encode
+ * flag, and the job carries its resolved output options. The runner's own
+ * GeneratePackInput defines these fields, so the payload is that type. */
+export type PayloadImage = GeneratePackInput["images"][number];
 
-export type GeneratePackPayload = Omit<GeneratePackInput, "images"> & {
-  images: PayloadImage[];
-  /** The job's output options, parsed again from the stored row. Absent
-   * only for a job stored without options (today's pack). */
-  output?: ResolvedOutputOptions;
-};
+export type GeneratePackPayload = GeneratePackInput;
 
 /** A positive whole pixel count, or undefined. */
 function pixels(value: number | null | undefined): number | undefined {

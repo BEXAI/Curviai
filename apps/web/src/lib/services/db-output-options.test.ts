@@ -478,6 +478,21 @@ describe("follow ups read the stored options", () => {
     expect(payload.output?.colorHex).toBe(backgroundSwatches.sand.hex);
     expect(payload.output?.brandSweepHex).toBe("#1F2A44");
     expect(payload.brandColors?.[0]).toBe("#1F2A44");
+    expect(payload.reencoded).toBeUndefined();
+  });
+
+  it("names the shot's photo as re-encoded when its stored copy was written again at upload", async () => {
+    const { ws, productId, keys } = await workspaceWith("starter");
+    await db
+      .update(sourceMedia)
+      .set({ ingest: { v: 1, reencoded: true, sourceFormat: "tiff" } })
+      .where(eq(sourceMedia.r2Key, keys[0]));
+    const jobId = await deliveredPack(ws, productId, storedOptions("keep", keys));
+
+    const result = await service().retryShot(ws, jobId, "s04_sweep_brand");
+    expect(result.outcome).toBe("started");
+    const payload = queue.followUp.mock.calls[0][0] as PackFollowUpInput;
+    expect(payload.reencoded).toEqual([keys[0]]);
   });
 
   it("plans an added angle on a Keep pack as the seller's own photo and keeps it", async () => {

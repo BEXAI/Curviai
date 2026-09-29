@@ -249,9 +249,9 @@ function sameOutputOptions(stored: unknown, input: Pick<CreateJobInput, "mode" |
   }
 }
 
-/** A follow up's worker payload with the job's stored output options.
- * SEAM: the runner adds `output` to PackFollowUpInput itself. */
-export type FollowUpPayload = PackFollowUpInput & { output?: ResolvedOutputOptions };
+/** A follow up's worker payload: the runner's PackFollowUpInput, which
+ * carries the job's stored output options and re-encoded photos. */
+export type FollowUpPayload = PackFollowUpInput;
 
 /** The view of a product row, seller inputs included. */
 function productSummaryOf(row: ProductRow): ProductSummary {
@@ -1386,7 +1386,24 @@ export class DbService implements Services {
       existingFilesBySpec: await this.filesBySpec(workspaceId, job.id),
       baseCostMicros: run.baseCostMicros,
       ...(run.output ? { output: run.output } : {}),
+      ...(await this.reencodedSources(workspaceId, run.shots)),
     };
+  }
+
+  /** The follow up shots' source photos whose stored copy was written again
+   * at upload (source_media.ingest), so the runner checks a kept photo
+   * against that copy (PHASE_15). */
+  private async reencodedSources(workspaceId: string, shots: Shot[]): Promise<{ reencoded?: string[] }> {
+    const keys = [...new Set(shots.map((s) => s.sourceMediaId).filter((k): k is string => typeof k === "string" && k.length > 0))];
+    if (keys.length === 0) {
+      return {};
+    }
+    const rows = await this.db.query.sourceMedia.findMany({
+      where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.r2Key, keys)),
+      columns: { r2Key: true, ingest: true },
+    });
+    const reencoded = rows.filter((r) => ingestRecordOf(r.ingest)?.reencoded === true).map((r) => r.r2Key);
+    return reencoded.length > 0 ? { reencoded } : {};
   }
 
   /** Undoes a follow up that could not be queued: returns its hold (the
