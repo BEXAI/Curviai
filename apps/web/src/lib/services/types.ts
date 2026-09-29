@@ -138,6 +138,21 @@ export interface JobView {
   /** True while shots run again on a pack that was already delivered: its
    * files stay available and only the new shots are held. */
   followUpRunning?: boolean;
+  /** What the product inventory found in each photo, in photo order, and
+   * which product the pack featured. Null or absent when none ran. */
+  inventory?: InventoryPhotoView[] | null;
+}
+
+/** One product the inventory found in a photo, as the pack page lists it. */
+export interface InventoryItemView {
+  label: string;
+  color: string;
+  shape: string;
+  status: "featured" | "removed" | "kept";
+}
+
+export interface InventoryPhotoView {
+  items: InventoryItemView[];
 }
 
 export interface JobSummary {

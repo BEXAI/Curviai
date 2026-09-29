@@ -29,7 +29,7 @@ import {
   type Db,
   type JobRecipeVariant,
 } from "@curvi/db";
-import type { PackFileReport } from "@curvi/pipeline";
+import type { JobInventory, PackFileReport } from "@curvi/pipeline";
 import type { SellerIntent, Shot } from "@curvi/pipeline/schemas";
 import {
   JobAbandonedError,
@@ -176,6 +176,15 @@ export class DbJobStore implements JobStore {
     await this.db
       .update(generationJobs)
       .set({ sellerIntent: intent, updatedAt: new Date() })
+      .where(this.liveJob(jobId));
+  }
+
+  /** Records what the product inventory found in each photo, with the same
+   * liveness rule as saveSellerIntent (liveJob). */
+  async saveInventory(jobId: string, inventory: JobInventory): Promise<void> {
+    await this.db
+      .update(generationJobs)
+      .set({ inventory, updatedAt: new Date() })
       .where(this.liveJob(jobId));
   }
 

@@ -10,6 +10,7 @@ import {
   type PackActionResult,
 } from "@/components/app/pack-actions";
 import { ComplianceReportPanel } from "@/components/app/compliance-report-panel";
+import { InventoryCard } from "@/components/app/inventory-card";
 import { PackDownloads } from "@/components/app/pack-downloads";
 import { PackReveal } from "@/components/app/pack-reveal";
 import { StatusChip } from "@/components/app/status-chip";
@@ -406,6 +407,8 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
       {canReveal(job) && job.sourceImageUrl ? (
         <PackReveal jobId={job.id} sourceImageUrl={job.sourceImageUrl} shots={revealShots(job.shots)} />
       ) : null}
+
+      <InventoryCard inventory={job.inventory} />
 
       {planning ? (
         <Card data-testid="plan-pending">

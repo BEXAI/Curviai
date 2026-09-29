@@ -79,6 +79,42 @@ export interface JobSellerIntent {
   styleNotes: string | null;
 }
 
+/**
+ * What the product inventory found in each photo of a job (0021,
+ * docs/phases/PHASE_13.md): the significant pieces of the photo's cutout
+ * with deterministic facts (box normalized to 0..1 of the upright working
+ * photo, area share, shape, dominant color), the label intake gave the piece
+ * when one matched, and whether the pack featured, removed or kept it.
+ * Same shape as JobInventory in @curvi/pipeline.
+ */
+export interface JobInventoryItem {
+  label: string;
+  labelSource: "intake" | "deterministic";
+  box: { x: number; y: number; width: number; height: number };
+  areaShare: number;
+  aspectRatio: number;
+  shape: "tall" | "wide" | "square";
+  colorHex: string;
+  colorName: string;
+  status: "featured" | "removed" | "kept";
+}
+
+export interface JobInventoryPhoto {
+  mediaId: string;
+  items: JobInventoryItem[];
+  intakeCount: number | null;
+  countMatch: boolean | null;
+  unmatchedItems: number[];
+  unmatchedProducts: string[];
+  rule: string;
+  touching: boolean;
+}
+
+export interface JobInventory {
+  version: 1;
+  photos: JobInventoryPhoto[];
+}
+
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -250,6 +286,10 @@ export const generationJobs = pgTable(
     // asked for. Both null on jobs without a note or from before 0020.
     sellerNote: text("seller_note"),
     sellerIntent: jsonb("seller_intent").$type<JobSellerIntent>(),
+    // What the product inventory found in each photo and which piece the
+    // pack featured (0021). Null on jobs that ran no inventory (demo mode,
+    // or from before 0021).
+    inventory: jsonb("inventory").$type<JobInventory>(),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

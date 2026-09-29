@@ -93,3 +93,23 @@ SellerIntent {
 ## For the pack that went wrong
 
 The seller was charged 6 credits for files that show the wrong products. Once item 3 ships, the pack can be retried from the same photo at no charge, or the 6 credits can be returned now with a ledger credit (a production write; founder approval needed).
+
+## Product inventory (added 2026-09-29)
+
+Trigger: two more packs with a blue and a red Gatorade bottle and the note "Blue Gatorade only, delete the red gatorade fully" shipped both bottles. Once intake ignored the note; once it left out the (then optional) products and sellerIntent fields. Everything hinged on one model answer, so a deterministic stage now runs first on every camera photo.
+
+### How it works
+
+1. **Cutout once, then count.** The live generator cuts out the whole upright working photo once per job and photo (`LiveShotGenerator.inventoryCutout`, sharing the cache every shot of the photo uses, so the Photoroom call is paid once and booked on the job). `analyzeInventory` (packages/pipeline/src/inventory.ts) splits the alpha into 8 connected pieces with the isolation rules (alpha above 8, noise under 0.5% of the image) and gives each piece a box normalized like NormalizedBox, its area share, height over width, a shape class (tall at 1.25 or more, wide at 0.8 or less, square otherwise) and its dominant color: every opaque pixel (alpha 128 or more) is named from a fixed HSV table (black under value 0.2; white or gray under saturation 0.15; hue bands for red, orange, yellow, green, teal, blue, purple, pink; dark orange is brown, pale red is pink) and the hex is the mean of the winning name's pixels.
+2. **Reconcile with intake.** An intake product and a piece match when half of either box lies inside the other (containment either way, `MATCH_CONTAINMENT`). IoU was not used: model boxes are loose, and a piece holding two touching products must still match both. Each piece takes the matched product's label, else a deterministic one ("blue tall object"). The record keeps intake's count, count_match, and unmatched items and products on either side.
+3. **Pick the product, in this order** (`chooseInventoryTarget`): in the box photos keep every piece; exactly one intake product marked yes that maps to pieces, but when the note names a color only if those pieces pass the note's color filter (otherwise ambiguous, rule `conflict`); the note alone when exactly one piece passes it (wanted colors and product words from featureOnly and the note's clauses before an exclusion word, excluded ones after it and from exclude; words on both sides are dropped); exactly one piece; exactly one intake product (its pieces, props removed, so a product in two parts still ships); otherwise ambiguous, which fails with MULTIPLE_PRODUCTS_MESSAGE before any paid generation. A piece holding two intake products, or 25% or more of a color the note excludes, is marked touching and every shot of the photo is refused at no charge (PRODUCT_TOUCHING).
+4. **Isolation on the same cutout.** The target carries the featured pieces' boxes (`keep`) and the removed ones (`others`); `isolateComponents` keeps exactly the matching pieces byte identical and zeroes the rest (rule 3). The crop before the cutout is kept only for intake only targets (no inventory, for example a failed inventory cutout): with the whole photo already cut out, a second crop cutout would cost a second Photoroom call and add nothing.
+5. **Stored and shown.** `generation_jobs.inventory` (migration 0021) holds the record, written through the job store with the run_key liveness rule. The compliance report lists each photo's items (label, color, shape, featured, removed or kept), and the pack page shows "Found 2 products: ... (featured), ... (removed)" in a card under the before and after.
+
+Demo mode has no cutout: the inventory is skipped and packs run exactly as before. A photo whose inventory decides nothing needs removing (one piece, one product) keeps the intake only target, so single product packs are unchanged.
+
+### Known limits
+
+- Two touching products of one color form one piece; with no model boxes the inventory cannot split them and the pack ships the piece (as before). The excluded color guard catches touching products of different colors.
+- Every camera photo is cut out for the inventory, including a photo no planned shot uses (one Photoroom call per such photo). An ambiguous pack fails after its inventory cutouts, so it carries their cost with no credits charged.
+- Shot subtasks in Trigger.dev fan out mode run in other processes and cut the photo out again; isolation matches pieces by box IoU 0.5 so a slightly different cutout still isolates.

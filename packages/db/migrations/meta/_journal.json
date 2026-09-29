@@ -148,6 +148,13 @@
       "when": 1790701000000,
       "tag": "0020_seller_intent",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1790701100000,
+      "tag": "0021_inventory",
+      "breakpoints": true
     }
   ]
 }

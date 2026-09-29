@@ -167,4 +167,42 @@ describe("DbJobStore bound to a run that lost the job", () => {
     await store().forRun("run-b").saveSellerIntent(jobId, { ...intent, featureOnly: "red bottle" });
     expect((await row(jobId)).sellerIntent).toEqual(intent);
   });
+
+  it("saves the inventory only for the run that owns a live job (0021)", async () => {
+    const inventory = {
+      version: 1 as const,
+      photos: [
+        {
+          mediaId: "ws/a/src/p1",
+          items: [
+            {
+              label: "blue tall object",
+              labelSource: "deterministic" as const,
+              box: { x: 0.5, y: 0.1, width: 0.3, height: 0.6 },
+              areaShare: 0.18,
+              aspectRatio: 2,
+              shape: "tall" as const,
+              colorHex: "#1e28c8",
+              colorName: "blue" as const,
+              status: "featured" as const,
+            },
+          ],
+          intakeCount: 1,
+          countMatch: true,
+          unmatchedItems: [],
+          unmatchedProducts: [],
+          rule: "single_object" as const,
+          touching: false,
+        },
+      ],
+    };
+    const jobId = await newJob("analyzing", "run-b", 0);
+    await store().forRun("run-a").saveInventory(jobId, inventory);
+    expect((await row(jobId)).inventory).toBeNull();
+    await store().forRun("run-b").saveInventory(jobId, inventory);
+    expect((await row(jobId)).inventory).toEqual(inventory);
+    await db.update(generationJobs).set({ status: "failed" }).where(eq(generationJobs.id, jobId));
+    await store().forRun("run-b").saveInventory(jobId, { version: 1, photos: [] });
+    expect((await row(jobId)).inventory).toEqual(inventory);
+  });
 });

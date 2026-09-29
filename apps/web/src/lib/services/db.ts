@@ -38,6 +38,7 @@ import {
 import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
+import { inventoryView } from "@/lib/inventory-copy";
 import { publicJobError } from "@/lib/job-copy";
 import { enqueueGeneratePack, enqueuePackFollowUp, settleJob } from "@/lib/jobs/enqueue";
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
@@ -725,6 +726,7 @@ export class DbService implements Services {
       sourceImageUrl,
       canManage: role !== null && role !== "client",
       followUpRunning: Boolean(report) && !["done", "failed", "canceled"].includes(current.status),
+      inventory: inventoryView(current.inventory),
     };
   }
 

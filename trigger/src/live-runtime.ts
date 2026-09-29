@@ -48,6 +48,8 @@ import {
   encodePng,
   HarmonizeAspectError,
   isolateTarget,
+  isolateComponents,
+  boxToPixels,
   prepareWorkingSource,
   rawToSharp,
   renderTemplateStill,
@@ -104,6 +106,7 @@ import {
   routedCallHooks,
   SHOT_CONTENT_BLOCKED,
   type PipelineDeps,
+  type InventoryCutout,
   type ProductTarget,
   type ShotGenerateArgs,
   type ShotGeneration,
@@ -608,6 +611,31 @@ export function isolateCutout(
   return { image: result.image };
 }
 
+/**
+ * Keeps exactly the cutout pieces the product inventory featured (at their
+ * boxes, normalized to the whole cutout) and zeroes every other piece, or a
+ * refusal: the featured piece holds another product too (touching), or no
+ * piece of this cutout sits at a featured box.
+ */
+export function isolateInventoryTarget(
+  cutout: RawImage,
+  target: ProductTarget,
+): { image: RawImage; refusal?: undefined } | { image?: undefined; refusal: string } {
+  if (target.touching) {
+    return { refusal: PRODUCT_TOUCHING };
+  }
+  const toPixels = (box: NormalizedBox) => boxToPixels(box, cutout.width, cutout.height);
+  const result = isolateComponents(
+    cutout,
+    (target.keep ?? []).map(toPixels),
+    target.others.map((other) => toPixels(other.box)),
+  );
+  if (result.missing || result.kept === 0) {
+    return { refusal: ISOLATION_FAILED };
+  }
+  return { image: result.image };
+}
+
 const COMPOSITE_METHODS: ReadonlySet<string> = new Set(["composite_generate", "edit_generate"]);
 
 export interface LiveShotGeneratorOptions {
@@ -625,6 +653,13 @@ export interface LiveShotGeneratorOptions {
 interface ProductLoad {
   product: LiveProduct | null;
   refusal?: string;
+  costMicros: number;
+}
+
+/** A whole working photo cut out, cached per job and photo and shared by
+ * the product inventory and every shot of the photo. */
+interface CutoutLoad {
+  rgba: RawImage;
   costMicros: number;
 }
 
@@ -679,6 +714,9 @@ type CapsHooks = CapsHook[] | undefined;
 export class LiveShotGenerator implements ShotGenerator {
   private readonly products = new Map<string, Promise<ProductLoad>>();
   private readonly productCostClaimed = new Set<string>();
+  private readonly cutouts = new Map<string, Promise<CutoutLoad>>();
+  private readonly cutoutCosts = new Map<string, number>();
+  private readonly cutoutCostClaimed = new Set<string>();
   private readonly logos = new Map<string, Promise<Buffer | null>>();
 
   constructor(private readonly opts: LiveShotGeneratorOptions) {}
@@ -815,12 +853,128 @@ export class LiveShotGenerator implements ShotGenerator {
   }
 
   /**
+   * The whole upright working photo of a job cut out, once per job and
+   * photo: the product inventory and every shot and attempt of the photo
+   * share it. A failed call is not cached, so the next caller tries again;
+   * a billed failure is booked once (ProductLoadError).
+   */
+  private fullCutout(
+    jobId: string,
+    workspaceId: string,
+    mediaId: string,
+    caps: CapsHooks,
+    stepId: string,
+    label: string,
+  ): Promise<CutoutLoad> {
+    const { ai, loadMedia } = this.opts;
+    const key = `${jobId}:${mediaId}`;
+    let pending = this.cutouts.get(key);
+    if (!pending) {
+      pending = (async (): Promise<CutoutLoad> => {
+        const source = loadMedia ? await loadMedia(mediaId) : null;
+        if (!source || source.length === 0) {
+          throw new ShotUnavailableError(`The source photo for the ${label} could not be loaded.`);
+        }
+        // Phone photos often carry their rotation only as an EXIF tag, which
+        // the cutout service ignores: send the pixels upright (Update.md
+        // 7.8), downscaled to working size so the cutout and every raw copy
+        // after it stay bounded. Bytes sharp cannot read go as they are; the
+        // service may.
+        const upright = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
+        let cutout: CallResult<PhotoroomCutoutOutput>;
+        try {
+          cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
+            ai.registry,
+            ai.routing,
+            ai.meter,
+            ai.breakerStore,
+            {
+              task: CUTOUT_TASK,
+              input: { imageBytes: upright, format: "png" },
+              workspaceId,
+              jobId,
+              stepId,
+            },
+            { caps, ...routedCallHooks(ai) },
+          );
+        } catch (err) {
+          const billed = failureSpendMicros(err);
+          throw billed > 0 ? new ProductLoadError(err, billed) : err;
+        }
+        const costMicros = cutout.costMicros + cutout.billedFailureMicros;
+        this.cutoutCosts.set(key, costMicros);
+        return { rgba: await decodeToRgba(Buffer.from(cutout.output.imageBytes)), costMicros };
+      })();
+      this.cutouts.set(key, pending);
+      pending.catch(() => this.cutouts.delete(key));
+    }
+    return pending;
+  }
+
+  /** The whole photo cutout's cost the first time it is claimed, else 0. */
+  private claimCutoutCost(key: string): number {
+    const cost = this.cutoutCosts.get(key);
+    if (cost === undefined || this.cutoutCostClaimed.has(key)) {
+      return 0;
+    }
+    this.cutoutCostClaimed.add(key);
+    return cost;
+  }
+
+  /**
+   * The whole photo cut out for the product inventory (docs/phases/
+   * PHASE_13.md), reserved against the pack and day caps. The shots of the
+   * photo reuse it, so the pack pays for one cutout per photo. Never throws:
+   * a photo it cannot cut out (not configured, not this workspace's, a
+   * provider failure, a spend cap, an unusable mask) comes back with no
+   * cutout and keeps the intake only path.
+   */
+  async inventoryCutout(args: { jobId: string; workspaceId: string; mediaId: string }): Promise<InventoryCutout> {
+    const { wiring, loadMedia, ai } = this.opts;
+    if (!wiring.cutoutLive || !loadMedia || !isWorkspaceObjectKey(args.workspaceId, args.mediaId)) {
+      return { cutout: null, costMicros: 0 };
+    }
+    const caps: CapsHooks = ai.caps
+      ? [
+          { spendCaps: ai.caps, capKind: "pack", jobId: args.jobId },
+          { spendCaps: ai.caps, capKind: "global_day" },
+        ]
+      : undefined;
+    const key = `${args.jobId}:${args.mediaId}`;
+    try {
+      const load = await this.fullCutout(
+        args.jobId,
+        args.workspaceId,
+        args.mediaId,
+        caps,
+        `inventory:${CUTOUT_TASK}`,
+        "product inventory",
+      );
+      const costMicros = this.claimCutoutCost(key);
+      return { cutout: segmentationRefusal(alphaMask(load.rgba)) ? null : load.rgba, costMicros };
+    } catch (err) {
+      if (err instanceof ProductLoadError && !err.claimed) {
+        err.claimed = true;
+        return { cutout: null, costMicros: err.billedMicros };
+      }
+      console.warn(`[live] job ${args.jobId} inventory cutout failed`, err);
+      return { cutout: null, costMicros: 0 };
+    }
+  }
+
+  /**
    * The cut out product for this shot's source photo. The Photoroom call runs
-   * once per job and photo; the first shot to use it books its cost into its
-   * spend, every later shot and retry reuses it for free. A failed load is
-   * not cached, so the next attempt tries again (its billed spend is booked
-   * once); an unusable cutout is cached as a refusal, so the photo is never
-   * cut out twice only to be refused again.
+   * once per job and photo; the first caller to use it (the product
+   * inventory, or the first shot) books its cost, every later shot and retry
+   * reuses it for free. A failed load is not cached, so the next attempt
+   * tries again (its billed spend is booked once); an unusable cutout is
+   * cached as a refusal, so the photo is never cut out twice only to be
+   * refused again.
+   *
+   * A target the inventory chose (keep) is isolated on the whole photo's
+   * cutout: exactly its pieces are kept, byte identical, the rest zeroed.
+   * An intake only target (a box, no inventory) still crops the photo to the
+   * box before its own cutout, as before the inventory.
    */
   private async productFor(args: ShotGenerateArgs, caps: CapsHooks, spend: AttemptSpend): Promise<LiveProduct> {
     const { ai, loadMedia } = this.opts;
@@ -832,59 +986,77 @@ export class LiveShotGenerator implements ShotGenerator {
       throw new ShotUnavailableError(`The ${label} shot does not point at one of this product's photos.`);
     }
     const key = `${args.jobId}:${args.shot.sourceMediaId}`;
+    const cropTarget = args.target?.box && !args.target.keep ? args.target : null;
+    const inventoryTarget = args.target?.keep ? args.target : null;
     let pending = this.products.get(key);
     if (!pending) {
       pending = (async (): Promise<ProductLoad> => {
-        const source = loadMedia ? await loadMedia(args.shot.sourceMediaId) : null;
-        if (!source || source.length === 0) {
-          throw new ShotUnavailableError(`The source photo for the ${label} shot could not be loaded.`);
-        }
-        // Phone photos often carry their rotation only as an EXIF tag, which
-        // the cutout service ignores: send the pixels upright (Update.md
-        // 7.8), downscaled to working size so the cutout and every raw copy
-        // after it stay bounded. Bytes sharp cannot read go as they are; the
-        // service may.
-        const upright = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
-        // When the photo shows other products too, the cutout only sees the
-        // target plus a margin (docs/phases/PHASE_13.md item 3). Cropping
-        // resamples nothing and regenerates nothing (rule 3).
-        const target = args.target?.box ? args.target : null;
-        const crop = target ? await cropToTarget(upright, target.box as NormalizedBox) : null;
-        if (target && !crop) {
-          throw new ShotUnavailableError(ISOLATION_FAILED);
-        }
-        let cutout: CallResult<PhotoroomCutoutOutput>;
-        try {
-          cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
-            ai.registry,
-            ai.routing,
-            ai.meter,
-            ai.breakerStore,
-            {
-              task: CUTOUT_TASK,
-              input: { imageBytes: crop ? crop.bytes : upright, format: "png" },
-              workspaceId: args.workspaceId,
-              jobId: args.jobId,
-              stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
-            },
-            { caps, ...routedCallHooks(ai) },
-          );
-        } catch (err) {
-          const billed = failureSpendMicros(err);
-          throw billed > 0 ? new ProductLoadError(err, billed) : err;
-        }
-        const costMicros = cutout.costMicros + cutout.billedFailureMicros;
-        let productRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
-        if (target && crop) {
+        let productRgba: RawImage;
+        let costMicros = 0;
+        if (cropTarget) {
+          const source = loadMedia ? await loadMedia(args.shot.sourceMediaId) : null;
+          if (!source || source.length === 0) {
+            throw new ShotUnavailableError(`The source photo for the ${label} shot could not be loaded.`);
+          }
+          const upright = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
+          // Without an inventory, the cutout only sees the target plus a
+          // margin (docs/phases/PHASE_13.md item 3). Cropping resamples
+          // nothing and regenerates nothing (rule 3).
+          const crop = await cropToTarget(upright, cropTarget.box as NormalizedBox);
+          if (!crop) {
+            throw new ShotUnavailableError(ISOLATION_FAILED);
+          }
+          let cutout: CallResult<PhotoroomCutoutOutput>;
+          try {
+            cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
+              ai.registry,
+              ai.routing,
+              ai.meter,
+              ai.breakerStore,
+              {
+                task: CUTOUT_TASK,
+                input: { imageBytes: crop.bytes, format: "png" },
+                workspaceId: args.workspaceId,
+                jobId: args.jobId,
+                stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
+              },
+              { caps, ...routedCallHooks(ai) },
+            );
+          } catch (err) {
+            const billed = failureSpendMicros(err);
+            throw billed > 0 ? new ProductLoadError(err, billed) : err;
+          }
+          costMicros = cutout.costMicros + cutout.billedFailureMicros;
           // Keep only the cutout pieces on the target; every other product
           // the cutout kept becomes fully transparent. Kept pixels are byte
           // identical, so the fidelity check still proves rule 3.
-          const isolated = isolateCutout(productRgba, target, crop);
+          const isolated = isolateCutout(await decodeToRgba(Buffer.from(cutout.output.imageBytes)), cropTarget, crop);
           if (isolated.refusal !== undefined) {
             console.warn(`[live] job ${args.jobId} photo ${args.shot.sourceMediaId} isolation refused: ${isolated.refusal}`);
             return { product: null, refusal: isolated.refusal, costMicros };
           }
           productRgba = isolated.image;
+        } else {
+          const load = await this.fullCutout(
+            args.jobId,
+            args.workspaceId,
+            args.shot.sourceMediaId,
+            caps,
+            `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
+            `${label} shot`,
+          );
+          productRgba = load.rgba;
+          if (inventoryTarget) {
+            // Keep exactly the pieces the inventory featured; every other
+            // product becomes fully transparent. Kept pixels are byte
+            // identical, so the fidelity check still proves rule 3.
+            const isolated = isolateInventoryTarget(load.rgba, inventoryTarget);
+            if (isolated.refusal !== undefined) {
+              console.warn(`[live] job ${args.jobId} photo ${args.shot.sourceMediaId} isolation refused: ${isolated.refusal}`);
+              return { product: null, refusal: isolated.refusal, costMicros };
+            }
+            productRgba = isolated.image;
+          }
         }
         const mask = alphaMask(productRgba);
         const refusal = segmentationRefusal(mask);
@@ -920,6 +1092,7 @@ export class LiveShotGenerator implements ShotGenerator {
       this.productCostClaimed.add(key);
       spend.micros += loaded.costMicros;
     }
+    spend.micros += this.claimCutoutCost(key);
     if (!loaded.product) {
       throw new ShotUnavailableError(loaded.refusal ?? SEGMENTATION_FAILED);
     }
