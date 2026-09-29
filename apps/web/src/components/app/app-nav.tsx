@@ -11,6 +11,9 @@ const LINKS = [
   { href: "/app/brand", label: "Brand kit" },
   { href: "/app/billing", label: "Billing" },
   { href: "/app/settings", label: "Settings" },
+  // Public pages, so a seller can reach them without leaving through the home page.
+  { href: "/gallery", label: "Gallery" },
+  { href: "/tools/main-image-checker", label: "Free tools" },
 ];
 
 export function AppNav() {
@@ -18,7 +21,12 @@ export function AppNav() {
   return (
     <nav aria-label="App" className="flex flex-wrap items-center gap-1">
       {LINKS.map((link) => {
-        const active = link.href === "/app" ? pathname === "/app" : pathname.startsWith(link.href);
+        const active =
+          link.href === "/app"
+            ? pathname === "/app"
+            : link.href.startsWith("/tools")
+              ? pathname.startsWith("/tools")
+              : pathname.startsWith(link.href);
         return (
           <Link
             key={link.href}

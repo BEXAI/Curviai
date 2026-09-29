@@ -49,7 +49,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     <div className="theme-dark min-h-screen bg-night text-ink-900">
       <header className="border-b border-ink-100 bg-white">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-3">
-          <Link href="/app" aria-label="Curvi app home">
+          <Link href="/" aria-label="Curvi home page">
             <Wordmark />
           </Link>
           <div className="flex flex-wrap items-center gap-4">
