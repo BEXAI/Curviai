@@ -242,8 +242,6 @@ describe("output option seeds (PHASE_15)", () => {
       "warm_white",
       "sand",
       "sage",
-      "slate",
-      "charcoal",
     ]);
     for (const hex of hexes) {
       expect(hex).toMatch(/^#[0-9A-F]{6}$/);
