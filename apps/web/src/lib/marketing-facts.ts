@@ -1,6 +1,6 @@
 import { getSpec, listSpecs } from "@curvi/specs";
 import { tierByKey, tiers, topUps, type TierKey } from "@curvi/pipeline/seed";
-import { estimatePackCredits } from "@/lib/pack-estimate";
+import { estimatePackCredits, type EstimateLine } from "@/lib/pack-estimate";
 
 /**
  * The facts marketing, help and dashboard copy is allowed to state. Numbers
@@ -37,6 +37,16 @@ const STILLS_ESTIMATE_TIER: TierKey = "free";
 /** Credits a default Listing Mode pack of still images uses. */
 export function typicalPackCredits(): number {
   return estimatePackCredits([...TYPICAL_PACK_CHANNELS], "listing", STILLS_ESTIMATE_TIER).total;
+}
+
+/** The files a typical pack holds, line by line: the same estimate as typicalPackCredits. */
+export function typicalPackLines(): EstimateLine[] {
+  return estimatePackCredits([...TYPICAL_PACK_CHANNELS], "listing", STILLS_ESTIMATE_TIER).lines;
+}
+
+/** "Amazon, Shopify and Meta": the channels the typical pack is picked for. */
+export function typicalPackChannelNames(): string {
+  return joinList([...new Set(TYPICAL_PACK_CHANNELS.map((specId) => channelName(familyOf(specId))))]);
 }
 
 /** How many typical packs a credit amount covers, rounded down. */
@@ -335,6 +345,23 @@ export const CHANNEL_FAMILIES: readonly ChannelFamily[] = CHANNEL_NAMES.map(({ f
 
 export function liveChannelNames(): string[] {
   return CHANNEL_FAMILIES.filter((channel) => channel.status === "live").map((channel) => channel.name);
+}
+
+export interface LiveChannel {
+  name: string;
+  /** Live file names in registry order, for example ["main images", "secondary images"]. */
+  files: string[];
+  /** The first live spec, whose requirements page the channel links to. */
+  firstSpecId: string;
+}
+
+/** Channels a pack makes files for today, each with its live files. */
+export function liveChannels(): LiveChannel[] {
+  return CHANNEL_NAMES.flatMap(({ family, name }) => {
+    const specs = CHANNEL_SPECS.filter((spec) => familyOf(spec.specId) === family && spec.status === "live");
+    const first = specs[0];
+    return first ? [{ name, files: specs.map((spec) => spec.files), firstSpecId: first.specId }] : [];
+  });
 }
 
 export function comingSoonChannelNames(): string[] {

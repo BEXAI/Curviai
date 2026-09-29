@@ -23,6 +23,7 @@
     "@expo-google-fonts/montserrat": "0.4.2",
     "@expo-google-fonts/playfair-display": "0.4.2",
     "@expo-google-fonts/roboto-slab": "0.4.2",
+    "@paper-design/shaders-react": "0.0.81",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.47.0",
     "@trigger.dev/sdk": "^3.3.0",

@@ -7,8 +7,11 @@ import {
   joinList,
   liveChannelNames,
   liveChannelShortList,
+  liveChannels,
   liveFilesPhrase,
+  typicalPackChannelNames,
   typicalPackCredits,
+  UNUSED_CREDITS_SENTENCE,
   type Availability,
 } from "@/lib/marketing-facts";
 import { answerFaqs } from "./pillar-copy";
@@ -27,6 +30,114 @@ export const homeHero = {
     "Every file is measured against the channel rules before you download it. We keep your real product pixels and generate only the light, shadow and setting around them, so labels never warp.",
   sliderCaption: "Illustration, not a customer photo. Drag the divider: the product stays, the background changes.",
 };
+
+/**
+ * The hero's calls to action. Kept apart from homeHero, whose values the
+ * claims test reads as plain strings.
+ */
+export const homeHeroCtas = {
+  primary: { label: "Start free", href: "/signup" },
+  secondary: { label: "Test your main image free", href: "/tools/main-image-checker" },
+};
+
+export const homeHeroNote = `No card needed. Start with ${freeCredits()} free credits.`;
+
+/** The three live promises on the hero's glass card, keyed to the matching home feature icon. */
+export const homeHeroFeatures: { key: HomeFeatureKey; label: string }[] = [
+  { key: "fidelity", label: "Your product, never redrawn" },
+  { key: "compliance", label: "Measured against channel rules" },
+  { key: "channels", label: `Files sized for ${liveChannelNames().length} channels` },
+];
+
+/** The section under the hero, around the before and after slider. */
+export const homeProof = {
+  eyebrow: "Before and after",
+  title: "Your product stays.",
+  titleMuted: "The scene changes.",
+  galleryLink: "See more before and after examples",
+};
+
+export const homeHowItWorks = {
+  eyebrow: "Three steps",
+  title: "How it works",
+};
+
+/** What a typical pack holds. The files and credits come from the new pack form's own estimate. */
+export const homePack = {
+  eyebrow: "What a pack contains",
+  title: "Everything a listing needs,",
+  titleMuted: "nothing you have to prompt",
+  intro: `A typical pack for ${typicalPackChannelNames()} holds these files and uses about ${typicalPackCredits()} credits. You pick the channels for each pack, and every file is sized for its channel.`,
+  summary: `About ${typicalPackCredits()} credits for this pack. You are only charged for files that pass their checks.`,
+  lifestyleCaption: "Scenes built around your real product photo.",
+  sweepCaption: "Gray, and your first brand kit color.",
+  onTheWay: "On the way",
+};
+
+export const homeReport = {
+  eyebrow: "Compliance report",
+  title: "Proof on every file,",
+  titleMuted: "not promises",
+  lead: "When the badge turns green it is because the pixels were measured. Here is an example of the report a main image ships with.",
+  note: "A file that still fails is marked for review instead of shipping, and you are not charged for it.",
+};
+
+export const homeChannels = {
+  eyebrow: "Channels",
+  title: "One photo.",
+  titleMuted: `${liveChannelNames().length} channels.`,
+  linkLabel: "Read the rules",
+};
+
+/** One tile per channel a pack makes files for, linking to its requirements page. */
+export const homeChannelTiles = liveChannels().map((channel) => ({
+  name: channel.name,
+  files: joinList(channel.files),
+  specId: channel.firstSpecId,
+}));
+
+export const homePricing = {
+  eyebrow: "Pricing",
+  title: "Simple credit pricing",
+  freeTitle: "Free",
+  freeBody: `${freeCredits()} credits once, ${freeCreditsReach()}.`,
+  noCard: "No card needed.",
+  unusedCredits: UNUSED_CREDITS_SENTENCE,
+  fullPricing: "See full pricing",
+};
+
+export const homeFaqAside = {
+  eyebrow: "FAQ",
+  title: "Questions, answered",
+  body: "Something else? The help center has more answers.",
+  link: "Visit the help center",
+};
+
+export const homeGuides = {
+  eyebrow: "Learn the rules",
+  title: "Guides and free tools",
+  readGuide: "Read the guide",
+  toolsTitle: "Free tools",
+};
+
+/** The free browser tools. They need no account. */
+export const homeTools = [
+  {
+    href: "/tools/main-image-checker",
+    name: "Amazon Main Image Checker",
+    body: "Measure your main image against the Amazon rules in your browser.",
+  },
+  {
+    href: "/tools/white-background-fixer",
+    name: "White Background Fixer",
+    body: "Turn a light gray background pure white and see the difference.",
+  },
+  {
+    href: "/tools/marketplace-resizer",
+    name: "Marketplace Resizer",
+    body: "Resize one photo for each channel, with white padding, in your browser.",
+  },
+];
 
 export const homeSteps = [
   {
@@ -140,4 +251,11 @@ export const homeFaqs: HomeFaq[] = [
 export const homeClosing = {
   title: "Your next pack is one photo away",
   body: `Start free with ${freeCredits()} credits, ${freeCreditsReach()} for your first product.`,
+};
+
+/** The line under the closing email form; the link text is the middle part. */
+export const homeClosingAlt = {
+  before: "Or",
+  link: "test your main image free",
+  after: ", no account needed.",
 };
