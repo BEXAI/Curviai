@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { normalizeOutputOptions, type OutputOptionsInput, type OutputPlanFlags } from "@curvi/pipeline/output-options";
 import {
+  backgroundSwatches,
   creditCosts,
   isShotMethodDeliverable,
   undeliverableShotMethods,
@@ -7,7 +9,13 @@ import {
 } from "@curvi/pipeline/seed";
 import { isSpecSelected } from "@curvi/specs";
 import { deterministicPlan } from "@curvi/trigger/runner";
-import { ESTIMATE_REFERENCE_PRODUCT, estimatePackCredits, referencePackShots } from "./pack-estimate";
+import {
+  ESTIMATE_REFERENCE_PRODUCT,
+  estimatePackCredits,
+  referencePackShots,
+  referencePhotoId,
+  type EstimateSellerInputs,
+} from "./pack-estimate";
 
 const STILLS_ONLY: TierKey = "starter";
 /** The new pack form's preselected channels. */
@@ -161,5 +169,164 @@ describe("estimatePackCredits holds nothing for output production cannot deliver
     // Before video was held at 0 the same pack held 6 + 15 + 30 more credits.
     const heldVideoBefore = 6 * creditCosts.generativeVideoPerSecondLite + 15 * creditCosts.generativeVideoPerSecondLite + creditCosts.ugcAvatarAd;
     expect(pro.total + heldVideoBefore).toBeGreaterThan(20);
+  });
+});
+
+describe("estimatePackCredits follows the output options (PHASE_15 pricing fixtures)", () => {
+  /** The flags the form sends before it knows any media id. */
+  function output(input: OutputOptionsInput): OutputPlanFlags {
+    const normalized = normalizeOutputOptions(input);
+    return { background: normalized.background, keepMediaIds: [], extras: normalized.extras, fit: normalized.fit, photos: [] };
+  }
+  const threePhotos = [{}, {}, {}];
+  const sum = (lines: ReadonlyArray<{ credits: number }>) => lines.reduce((total, line) => total + line.credits, 0);
+  const estimate = (channels: string[], input?: OutputOptionsInput, extra: Partial<EstimateSellerInputs> = {}) =>
+    estimatePackCredits(channels, "listing", STILLS_ONLY, {
+      ...(input ? { output: output(input) } : {}),
+      photos: threePhotos,
+      ...extra,
+    });
+  const shotCount = (channels: string[], input?: OutputOptionsInput) =>
+    referencePackShots(channels, "listing", STILLS_ONLY, undefined, {
+      ...(input ? { output: output(input) } : {}),
+      photos: threePhotos,
+    }).length;
+
+  // The price is creditCosts.deterministic (0.5) per the founder decision.
+  it("uses the price the fixtures assume", () => {
+    expect(creditCosts.deterministic).toBe(0.5);
+  });
+
+  const KEEP_WIDE = ["amazon.main", "walmart.main", "tiktokshop.main", "google.merchant.main", "etsy.listing", "ebay.listing"];
+  const fixtures: Array<{ name: string; channels: string[]; input?: OutputOptionsInput; shots: number; charged: number; hold: number }> = [
+    { name: "Marketplace ready (today)", channels: DEFAULT_FORM, shots: 11, charged: 6.5, hold: 7 },
+    { name: "Marketplace ready, scenes off", channels: DEFAULT_FORM, input: { extras: { scenes: false } }, shots: 9, charged: 4.5, hold: 5 },
+    { name: "Keep my photo (Amazon main made white)", channels: DEFAULT_FORM, input: { background: "keep" }, shots: 4, charged: 2, hold: 2 },
+    {
+      name: "Keep my photo, Amazon main left out",
+      channels: DEFAULT_FORM.filter((c) => c !== "amazon.main"),
+      input: { background: "keep" },
+      shots: 3,
+      charged: 1.5,
+      hold: 2,
+    },
+    { name: "Keep my photo plus 2 scenes", channels: DEFAULT_FORM, input: { background: "keep", extras: { scenes: true } }, shots: 6, charged: 4, hold: 4 },
+    { name: "Keep my photo for six marketplaces", channels: KEEP_WIDE, input: { background: "keep" }, shots: 6, charged: 3, hold: 3 },
+  ];
+  for (const fixture of fixtures) {
+    it(`prices ${fixture.name}`, () => {
+      const result = estimate(fixture.channels, fixture.input);
+      expect(shotCount(fixture.channels, fixture.input)).toBe(fixture.shots);
+      expect(sum(result.lines)).toBe(fixture.charged);
+      expect(result.total).toBe(fixture.hold);
+    });
+  }
+
+  it("prices today's pack the same with no options, the default options or three photos", () => {
+    const today = estimatePackCredits(DEFAULT_FORM, "listing", STILLS_ONLY);
+    expect(estimate(DEFAULT_FORM, {})).toEqual(today);
+    expect(estimatePackCredits(DEFAULT_FORM, "listing", STILLS_ONLY, { output: output({}) })).toEqual(today);
+  });
+
+  it("labels the kept photos and the made white files", () => {
+    expect(estimate(DEFAULT_FORM, { background: "keep" }).lines).toEqual([
+      { label: "Made white for channels that require it", credits: creditCosts.deterministic },
+      { label: "Your photos, resized for each channel, 3", credits: 3 * creditCosts.deterministic },
+    ]);
+    const one = estimate(["etsy.listing"], { background: "keep" }, { photos: [{ angle: "front" }] });
+    expect(one.lines).toEqual([{ label: "Your photo, resized for each channel", credits: creditCosts.deterministic }]);
+    const wide = estimate(KEEP_WIDE, { background: "keep" }).lines.map((line) => line.label);
+    expect(wide).toEqual(["Made white for channels that require it, 3", "Your photos, resized for each channel, 3"]);
+  });
+
+  it("reads other angles on your background when the color is not white", () => {
+    const sand = backgroundSwatches.sand.hex;
+    const labels = estimate(["etsy.listing"], {}, { colorHex: sand }).lines.map((line) => line.label);
+    expect(labels).toContain("Front image on your background");
+    expect(labels).toContain("Other angles on your background, 2");
+    const white = estimate(["etsy.listing"], {}).lines.map((line) => line.label);
+    expect(white).toContain("White front image");
+    expect(white).toContain("Alternate angles on white, 2");
+  });
+
+  it("plans the real photo count, with the front photo on the primary media id", () => {
+    const shots = referencePackShots(["etsy.listing"], "listing", STILLS_ONLY, "front_media", {
+      output: output({ background: "keep" }),
+      photos: [{ angle: "back" }, { angle: "front" }, {}, {}, {}],
+    });
+    expect(shots.map((shot) => shot.sourceMediaId)).toEqual([
+      "reference_photo_1",
+      "front_media",
+      referencePhotoId(3),
+      referencePhotoId(4),
+      referencePhotoId(5),
+    ]);
+    expect(shots.find((shot) => shot.priority === 1)!.sourceMediaId).toBe("front_media");
+  });
+
+  it("holds nothing for a kept photo too small for every picked spec", () => {
+    const small = estimate(["amazon.secondary"], { background: "keep" }, { photos: [{ angle: "front", width: 600, height: 600 }] });
+    expect(small).toEqual({ total: 0, lines: [] });
+    // Unknown sizes fit, so the form's figure is an upper bound.
+    expect(estimate(["amazon.secondary"], { background: "keep" }, { photos: [{ angle: "front" }] }).total).toBe(1);
+  });
+
+  it("holds what the runner's deterministic plan makes, for random option sets", () => {
+    // A small seeded generator, so a failure replays.
+    let seed = 15;
+    const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const pick = <T,>(values: readonly T[]): T => values[Math.floor(random() * values.length)];
+    const channelSets = [DEFAULT_FORM, KEEP_WIDE, ["amazon", "shopify", "google", "meta", "pinterest"], ["meta.feed_4x5", "etsy.listing"]];
+    const sizes = [undefined, 600, 1200, 3000];
+    for (let run = 0; run < 60; run++) {
+      const input: OutputOptionsInput = {
+        background: pick(["remove", "keep"] as const),
+        fit: pick(["auto", "pad"] as const),
+        extras: { scenes: random() < 0.5, backdrops: random() < 0.5, transparentPng: random() < 0.5, graphics: random() < 0.5, cards: random() < 0.5 },
+      };
+      const count = 1 + Math.floor(random() * 6);
+      const angles = ["front", "45", "back", "top", "side", "detail"].slice(0, count);
+      const photos = angles.map((angle, i) => {
+        const size = pick(sizes);
+        return { id: `r2/${i}`, angle, ...(size ? { width: size, height: size } : {}) };
+      });
+      const flags: OutputPlanFlags = {
+        ...output(input),
+        keepMediaIds: input.background === "keep" ? photos.map((p) => p.id) : [],
+        photos,
+      };
+      const channels = pick(channelSets);
+      const held = estimatePackCredits(channels, "listing", STILLS_ONLY, { output: flags }).total;
+      const excludeMethods = [...undeliverableShotMethods];
+      const plan = deterministicPlan(
+        ESTIMATE_REFERENCE_PRODUCT,
+        {
+          channels,
+          tier: STILLS_ONLY,
+          creditBudget: held,
+          primaryMediaId: "r2/0",
+          mediaIdsByAngle: Object.fromEntries(photos.map((p) => [p.angle, p.id])),
+          undeliverableMethods: excludeMethods,
+          output: flags,
+        },
+        { channels, mode: "listing", budget: held, profile: ESTIMATE_REFERENCE_PRODUCT, primaryMediaId: "r2/0", excludeMethods },
+      );
+      const label = `${JSON.stringify(input)} ${count} ${channels.join(",")}`;
+      expect(Math.ceil(plan.shots.reduce((total, s) => total + s.credits, 0)), label).toBe(held);
+      expect(plan.skipped.some((s) => s.reason === "credit budget"), label).toBe(false);
+    }
+  });
+
+  it("maps createJob's kept media to the estimate's photos by position", () => {
+    const flags: OutputPlanFlags = {
+      ...output({ background: "keep" }),
+      keepMediaIds: ["r2/a", "r2/b"],
+      photos: [
+        { id: "r2/a", angle: "front", width: 3000, height: 3000 },
+        { id: "r2/b", width: 3000, height: 3000 },
+      ],
+    };
+    const lines = estimatePackCredits(["etsy.listing"], "listing", STILLS_ONLY, { output: flags }).lines;
+    expect(lines).toEqual([{ label: "Your photos, resized for each channel, 2", credits: 2 * creditCosts.deterministic }]);
   });
 });
