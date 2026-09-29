@@ -12,7 +12,7 @@ import { stillStyle } from "@curvi/pipeline/seed";
 import { getSpec, listSpecs } from "@curvi/specs";
 import { JobOptionsCard, lookTitle } from "@/components/app/job-options-card";
 import { ShotCard } from "@/components/app/job-progress-board";
-import { FilePreview } from "@/components/app/pack-downloads";
+import { downloadAllState, FilePreview } from "@/components/app/pack-downloads";
 import { PackReveal } from "@/components/app/pack-reveal";
 import { demoComplianceReport, specRequirementChecks } from "@/lib/compliance-report";
 import { outputOptionsSummary, skippedCopy } from "@/lib/job-copy";
@@ -166,6 +166,30 @@ describe("reveal", () => {
     expect(html).toContain('data-reveal-kind="before_after"');
     expect(html).toContain("download-makeover");
     expect(html).not.toContain(SIZED_FOR_EACH_CHANNEL_TITLE);
+  });
+
+  it("never says public share pages are coming soon, and points at the Share this makeover panel", () => {
+    for (const shotType of ["amazon_main", "original_photo"]) {
+      const shots = revealShots([
+        shot({ shotId: "s01", shotType, channels: ["amazon.main"], imageUrl: "https://r2/a.jpg" }),
+      ]);
+      const html = renderToStaticMarkup(React.createElement(PackReveal, { jobId: JOB.id, sourceImageUrl: source, shots }));
+      const text = visibleText(html);
+      expect(text, shotType).not.toMatch(/coming soon/i);
+      expect(text, shotType).toContain("publish a share page in Share this makeover below");
+      expectPlainCopy(text);
+    }
+  });
+});
+
+describe("Download all files", () => {
+  const image = { kind: "image" as const, downloadUrl: "/api/jobs/x/files/1" };
+
+  it("offers the zip only once the pack is done, since the pack route zips only done packs", () => {
+    expect(downloadAllState({ files: [image] as never }, true)).toBe("link");
+    expect(downloadAllState({ files: [image] as never }, false)).toBe("after_rerun");
+    expect(downloadAllState({ files: [] }, true)).toBe("none");
+    expect(downloadAllState({ files: [{ kind: "image", downloadUrl: null }] as never }, true)).toBe("none");
   });
 });
 

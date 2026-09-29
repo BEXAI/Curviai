@@ -128,6 +128,9 @@ export interface RouteOptions {
  *   provider's health.
  * - empty_output: the provider answered without usable output (no image,
  *   no text or tool block). Not retried on the same provider.
+ * - output_truncated: an LLM reply stopped at its max_tokens budget before
+ *   the answer was complete (thinking counts toward that budget). Billed,
+ *   not retried on the same provider, not transient.
  * - timeout: the router's per attempt timeout elapsed.
  * - estimate_failed: the provider could not estimate its cost, so a cost
  *   capped call refused it before invoking.
@@ -146,6 +149,7 @@ export type ProviderErrorCode =
   | "content_blocked"
   | "provider_quota"
   | "empty_output"
+  | "output_truncated"
   | "timeout"
   | "estimate_failed"
   | "cap_blocked"

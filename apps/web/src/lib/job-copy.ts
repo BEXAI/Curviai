@@ -195,6 +195,11 @@ export function skippedCopy(
  * (Phase 14 1.3). */
 export const SCENE_PAUSED_NOTE = "Paused, the scene service is unavailable, so this scene was left out of the pack.";
 
+/** A shot left out while background removal was down. Keeping the photos
+ * skips background removal, so a new pack with them still works. */
+export const CUTOUT_PAUSED_NOTE =
+  "Paused, background removal is unavailable right now, so this shot was left out of the pack. A new pack with Keep my photos on works while it is down.";
+
 /**
  * Why a shot ended in needs review, from its stored repair hint or
  * unavailable message. Always ends by saying it was not charged. The runner's
@@ -225,12 +230,19 @@ export function needsReviewNote(hint: string | null | undefined, context: ShotCo
     // so the real product could not be placed back exactly.
     reason =
       "The image service returned this scene in the wrong shape, so your product could not be placed back exactly and we held it back.";
+  } else if (h.includes("ran out of time")) {
+    // pipeline-runner.ts SHOT_OUT_OF_TIME: the run's time limit stopped
+    // new shots so the pack could still deliver what passed.
+    reason = "The pack ran out of time before this image could be made.";
   } else if (h.includes("spending limit")) {
     // The runner's pack spend cap, reached before this shot ran.
     reason = "The pack reached its spending limit before this shot could be made.";
   } else if (h.includes("scene service is unavailable")) {
     // pipeline-runner.ts SHOT_SCENE_PAUSED (Phase 14 1.3).
     reason = SCENE_PAUSED_NOTE;
+  } else if (h.includes("background removal is unavailable")) {
+    // pipeline-runner.ts SHOT_CUTOUT_PAUSED.
+    reason = CUTOUT_PAUSED_NOTE;
   } else if (h.includes("provider had trouble")) {
     // SHOT_PROVIDER_TROUBLE: an unexpected provider or runtime error.
     reason = "The image service had trouble with this shot, so we held it back.";

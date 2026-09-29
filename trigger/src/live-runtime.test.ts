@@ -42,6 +42,7 @@ import {
   HARMONIZE_TASK,
   SCENE_PLATE_TASK,
   canvasDefaults,
+  imageModelSeedRows,
   llmModelPrices,
   recipeSeedRows,
   sceneDefaults,
@@ -122,6 +123,24 @@ describe("wireLiveProviders", () => {
     expect(wiring.imageProviders).toEqual(["gemini-image", "openai-image"]);
     expect(routing[SCENE_PLATE_TASK]).toEqual(["gemini-image", "openai-image"]);
     expect(registry.get("gemini-image")?.supports(SCENE_PLATE_TASK)).toBe(true);
+  });
+
+  it("sends the seeded OpenAI quality and meters the plate at its size price", async () => {
+    const { registry, routing } = freshBase();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchFn = (async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ data: [{ b64_json: "AAAA" }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    wireLiveProviders(registry, routing, (name) => (name === "OPENAI_API_KEY" ? "key" : undefined), fetchFn);
+    const openai = registry.get("openai-image") as CostAwareProvider;
+    const landscape = { task: SCENE_PLATE_TASK, input: { prompt: "p", width: 1600, height: 1000 } };
+    const square = { task: SCENE_PLATE_TASK, input: { prompt: "p", width: 1000, height: 1000 } };
+    expect(await openai.estimateCostMicros?.(landscape)).toBe(41_000);
+    expect(await openai.estimateCostMicros?.(square)).toBe(53_000);
+    const res = await openai.invoke(landscape);
+    expect(bodies[0]).toMatchObject({ quality: "medium", size: "1536x1024" });
+    expect(res.costMicros).toBe(41_000);
   });
 
   it("registers the fal BiRefNet cutout when its key is set", () => {
@@ -946,7 +965,10 @@ describe("harmonize shape guard in the provider chain (2.14)", () => {
     const registered = registry.get("gemini-image") as CostAwareProvider;
     expect(registered).toBeDefined();
     expect(registered).not.toBeInstanceOf(ScenePlateBridge);
-    expect(registered.minTimeoutMs).toBe(ASYNC_JOB_TIMEOUT_MARGIN_MS);
+    // The seeded sync floor (Gemini 90 s) plus the download margin.
+    const seeded = imageModelSeedRows.find((row) => row.family === "gemini")!.minTimeoutMs ?? 0;
+    expect(seeded).toBeGreaterThan(60_000);
+    expect(registered.minTimeoutMs).toBe(seeded + ASYNC_JOB_TIMEOUT_MARGIN_MS);
   });
 });
 

@@ -59,3 +59,41 @@ export function packZipEntries(variants: ZipVariant[], report: ZipReport | null)
   }
   return entries;
 }
+
+/**
+ * Why the "all files" zip could not be served. The Download all link is a
+ * top level navigation, so the pack route sends a browser back to the job
+ * page with one of these codes instead of a raw JSON error page, and the
+ * files panel shows the plain copy for it.
+ */
+export type PackZipRefusal = "not_finished" | "no_files" | "missing_files";
+
+export const PACK_ZIP_REFUSAL_PARAM = "pack_zip";
+
+const PACK_ZIP_REFUSAL_COPY: Record<PackZipRefusal, string> = {
+  not_finished: "The full zip is ready once this pack is done. You can still download each file below.",
+  no_files: "This pack has no files to download yet.",
+  missing_files:
+    "Some files in this pack are missing, so the full zip is not available. Download each channel on this page, or contact us and we will sort it out.",
+};
+
+export function packZipRefusalCopy(code: string | null | undefined): string | null {
+  if (!code || !Object.prototype.hasOwnProperty.call(PACK_ZIP_REFUSAL_COPY, code)) {
+    return null;
+  }
+  return PACK_ZIP_REFUSAL_COPY[code as PackZipRefusal];
+}
+
+/** True when the request is a browser page navigation rather than a fetch. */
+export function isPageNavigation(request: Request): boolean {
+  const mode = request.headers.get("sec-fetch-mode");
+  if (mode) {
+    return mode === "navigate";
+  }
+  return (request.headers.get("accept") ?? "").includes("text/html");
+}
+
+/** Where a refused navigation lands: the job page, scrolled to its files. */
+export function packZipRefusalPath(jobId: string, code: PackZipRefusal): string {
+  return `/app/jobs/${jobId}?${PACK_ZIP_REFUSAL_PARAM}=${code}#your-files`;
+}

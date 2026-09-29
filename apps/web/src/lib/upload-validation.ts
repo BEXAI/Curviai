@@ -35,24 +35,78 @@ export interface UploadSignInput {
 
 export type UploadValidation = { ok: true } | { ok: false; reason: string };
 
+/** Seller copy for a file whose type a pack cannot use (CLAUDE.md rule 9). */
+export const UNSUPPORTED_PHOTO_COPY = "This file type is not supported. Use a JPEG, PNG, WEBP, GIF or TIFF photo.";
+export const UNSUPPORTED_VIDEO_COPY = "This video type is not supported. Use an MP4 or MOV video.";
+export const UNSUPPORTED_FILE_COPY =
+  "This file type is not supported. Use a JPEG, PNG, WEBP, GIF or TIFF photo, or an MP4 or MOV video.";
+export const EMPTY_FILE_COPY = "This file is empty. Pick the photo again.";
+
 export function validateUploadRequest(input: UploadSignInput): UploadValidation {
   const allowed: readonly string[] =
     input.kind === "image" ? ALLOWED_IMAGE_CONTENT_TYPES : ALLOWED_VIDEO_CONTENT_TYPES;
   if (!allowed.includes(input.contentType)) {
-    return {
-      ok: false,
-      reason: `Content type ${input.contentType} is not allowed for ${input.kind} uploads. Allowed: ${allowed.join(", ")}.`,
-    };
+    return { ok: false, reason: input.kind === "image" ? UNSUPPORTED_PHOTO_COPY : UNSUPPORTED_VIDEO_COPY };
   }
   const maxBytes = input.kind === "image" ? IMAGE_MAX_BYTES : VIDEO_MAX_BYTES;
   if (!Number.isFinite(input.bytes) || input.bytes <= 0) {
-    return { ok: false, reason: "Upload size must be a positive number of bytes." };
+    return { ok: false, reason: EMPTY_FILE_COPY };
   }
   if (input.bytes > maxBytes) {
     const cap = input.kind === "image" ? "25 MB" : "200 MB";
     return { ok: false, reason: `File is too large. The ${input.kind} limit is ${cap}.` };
   }
   return { ok: true };
+}
+
+/** File extensions browsers sometimes send with an empty type (drag and
+ * drop from some apps, some platforms), mapped to the type storage expects. */
+const EXTENSION_CONTENT_TYPES: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  jfif: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
+  qt: "video/quicktime",
+};
+
+export type UploadTypeResult = { ok: true; kind: UploadKind; contentType: string } | { ok: false; message: string };
+
+/**
+ * The kind and content type to sign for a file picked or dropped in the
+ * browser, before any request. Drag and drop skips the input's accept list,
+ * so the type is checked here: an empty type is read from the extension, and
+ * a type a pack cannot use (HEIC, PDF) gets plain copy instead of a round
+ * trip. `allowVideo` is false where only photos fit (logo, add a photo).
+ */
+export function uploadTypeForFile(
+  file: { name: string; type: string },
+  options: { allowVideo?: boolean; allowedImageTypes?: readonly string[] } = {},
+): UploadTypeResult {
+  const allowVideo = options.allowVideo ?? true;
+  const images: readonly string[] = options.allowedImageTypes ?? ALLOWED_IMAGE_CONTENT_TYPES;
+  const videos: readonly string[] = allowVideo ? ALLOWED_VIDEO_CONTENT_TYPES : [];
+  let type = file.type.trim().toLowerCase();
+  if (type === "image/jpg" || type === "image/pjpeg") {
+    type = "image/jpeg";
+  }
+  if (type === "") {
+    const dot = file.name.lastIndexOf(".");
+    type = dot >= 0 ? (EXTENSION_CONTENT_TYPES[file.name.slice(dot + 1).toLowerCase()] ?? "") : "";
+  }
+  if (images.includes(type)) {
+    return { ok: true, kind: "image", contentType: type };
+  }
+  if (videos.includes(type)) {
+    return { ok: true, kind: "video", contentType: type };
+  }
+  return { ok: false, message: allowVideo ? UNSUPPORTED_FILE_COPY : UNSUPPORTED_PHOTO_COPY };
 }
 
 /** True when width times height stays at or under the 80 megapixel cap. */

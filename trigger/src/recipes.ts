@@ -23,7 +23,7 @@
 
 import { createHash } from "node:crypto";
 import { eq, recipes, type Db, type JobRecipeVariant } from "@curvi/db";
-import { RecipeRow, recipeSeedRows } from "@curvi/pipeline/seed";
+import { RecipeRow, recipeSeedRows, type RecipeModelOptions } from "@curvi/pipeline/seed";
 
 export type RecipeStage = RecipeRow["stage"];
 
@@ -40,6 +40,10 @@ export interface ResolvedRecipe {
   system: string;
   /** Output token budget from the recipe body, when it sets one. */
   maxTokens?: number;
+  /** Thinking and effort per model id, from the recipe body. */
+  modelOptions?: Record<string, RecipeModelOptions>;
+  /** Per attempt provider timeout from the recipe body. */
+  timeoutMs?: number;
   /** A/B weight among the active versions of the key. */
   trafficPct: number;
 }
@@ -76,6 +80,8 @@ function fromSeed(row: RecipeRow): ResolvedRecipe {
     models: uniqueModels([row.model, ...(row.fallbackModels ?? [])]),
     system: row.body.system,
     ...(typeof row.body.maxTokens === "number" ? { maxTokens: row.body.maxTokens } : {}),
+    ...(row.body.modelOptions ? { modelOptions: row.body.modelOptions } : {}),
+    ...(typeof row.body.timeoutMs === "number" ? { timeoutMs: row.body.timeoutMs } : {}),
     trafficPct: row.trafficPct ?? 100,
   };
 }

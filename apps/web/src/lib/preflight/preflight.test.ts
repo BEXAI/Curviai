@@ -112,6 +112,18 @@ describe("storedPreflightOf", () => {
     expect(down).toMatchObject({ status: "unavailable", notice: PREFLIGHT_UNAVAILABLE_NOTICE });
     expect(storedPreflightOf(run({ missing: true })).status).toBe("unavailable");
   });
+
+  it("claims nothing was found when the check could not run", () => {
+    const down = view(storedPreflightOf(run({ intake: null })));
+    expect(readyLine(down, ["amazon.main", "shopify.product"])).toBeNull();
+    expect(readyLine(view(storedPreflightOf(run({ missing: true }))), ["amazon.main"])).toBeNull();
+  });
+
+  it("marks a photo whose cutout was made, so a paused pack may still use it", () => {
+    expect(storedPreflightOf(run({})).cutoutCached).toBe(true);
+    expect(storedPreflightOf(run({ cutout: "unavailable" })).cutoutCached).toBeUndefined();
+    expect(storedPreflightOf(run({ intake: null })).cutoutCached).toBeUndefined();
+  });
 });
 
 describe("the form's copy", () => {

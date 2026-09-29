@@ -139,7 +139,8 @@ export function sizeShortfallLine(shortfall: SizeShortfall, photo: { width: numb
 /** "Found: silver watch. Ready for Amazon, Shopify and Meta." or null when
  * nothing is ready yet. */
 export function readyLine(view: PreflightView, selected: readonly string[], chosen?: number | null): string | null {
-  if (view.status === "blocked") return null;
+  // Nothing was checked for an unavailable preflight: only its notice shows.
+  if (view.status === "blocked" || view.status === "unavailable") return null;
   const label = chosenItem(view, chosen)?.label ?? view.found;
   if (view.status === "choose" && !chosenItem(view, chosen)) return null;
   const short = new Set(sizeShortfalls(view, selected, chosen).map((s) => s.specId));

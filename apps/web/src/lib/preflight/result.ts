@@ -112,6 +112,7 @@ export function storedPreflightOf(
     // The preview shows one product, so a photo that needs the chooser has none.
     ...(previewKey && status === "ready" ? { previewKey } : {}),
     ...(image.addedOverlays === true ? { addedOverlays: true } : {}),
+    ...(run.cutout === "done" ? { cutoutCached: true } : {}),
   };
 }
 

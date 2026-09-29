@@ -47,6 +47,16 @@ describe("liveProviderTargets", () => {
     }
   });
 
+  it("counts the cutout stage ready on the backup fal account alone", () => {
+    const report = stageKeyReport(liveProviderTargets(envOf(["FAL_KEY_BACKUP"])));
+    const cutout = report.find((entry) => entry.stage === "cutout");
+    expect(cutout).toMatchObject({ ready: true });
+    expect(cutout?.keys).toEqual([
+      { envVar: "FAL_KEY", present: false },
+      { envVar: "FAL_KEY_BACKUP", present: true },
+    ]);
+  });
+
   it("reports key presence per stage by env name only", () => {
     const report = stageKeyReport(liveProviderTargets(envOf(["BFL_API_KEY"])));
     const byStage = Object.fromEntries(report.map((entry) => [entry.stage, entry]));
@@ -56,7 +66,13 @@ describe("liveProviderTargets", () => {
       { envVar: "BFL_API_KEY", present: true },
       { envVar: "OPENAI_API_KEY", present: false },
     ]);
-    expect(byStage.cutout).toMatchObject({ ready: false, keys: [{ envVar: "FAL_KEY", present: false }] });
+    expect(byStage.cutout).toMatchObject({
+      ready: false,
+      keys: [
+        { envVar: "FAL_KEY", present: false },
+        { envVar: "FAL_KEY_BACKUP", present: false },
+      ],
+    });
     for (const stage of ["intake", "analyze", "plan", "copy", "qc"]) {
       expect(byStage[stage]).toMatchObject({ kind: "llm", ready: false, keys: [{ envVar: "ANTHROPIC_API_KEY", present: false }] });
     }

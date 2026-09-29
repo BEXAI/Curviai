@@ -82,8 +82,10 @@ export interface InlineRunnerDeps<P extends InlinePackJob> {
   /** Marks a job this runner will not finish as failed (never touching a job
    * that already finished) and releases its credit hold. */
   settle: (payload: P, reason: SettleReason) => Promise<void>;
-  /** Bumps updated_at on jobs still waiting for a slot. */
-  heartbeat?: (jobIds: string[]) => Promise<void>;
+  /** Bumps updated_at on jobs still waiting for a slot. `runKeys` holds the
+   * run key of every waiting entry that carries one, so a follow up (whose
+   * job is already back in generating) is heartbeated too. */
+  heartbeat?: (jobIds: string[], runKeys: string[]) => Promise<void>;
   logger?: InlineRunnerLogger;
 }
 
@@ -436,9 +438,13 @@ export class InlinePackRunner<P extends InlinePackJob> {
   private async beat(): Promise<void> {
     const now = Date.now();
     const ids: string[] = [];
+    const runKeys: string[] = [];
     for (const entry of this.waiting) {
       if (now - entry.queuedAt < this.maxQueueWaitMs) {
         ids.push(entry.payload.jobId);
+        if (entry.payload.runKey) {
+          runKeys.push(entry.payload.runKey);
+        }
       } else if (!entry.waitExpired) {
         // Past the wait limit the job stops heartbeating, so the stale run
         // reconciler can fail it and release its credits if the queue never
@@ -453,7 +459,7 @@ export class InlinePackRunner<P extends InlinePackJob> {
       return;
     }
     try {
-      await this.deps.heartbeat(ids);
+      await this.deps.heartbeat(ids, runKeys);
     } catch (err) {
       this.logger.warn(`[jobs] heartbeat for ${ids.length} waiting jobs failed`, err);
     }

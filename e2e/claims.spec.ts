@@ -9,7 +9,9 @@ test("home labels features on the way and drawings as illustrations", async ({ p
   await expect(page.getByTestId("feature-freshCreativeDrop").getByTestId("coming-soon")).toBeVisible();
   await expect(page.getByTestId("feature-directPublishing").getByTestId("coming-soon")).toBeVisible();
   await expect(page.getByTestId("feature-fidelity").getByTestId("coming-soon")).toHaveCount(0);
-  await expect(page.getByTestId("illustration-label").first()).toBeVisible();
+  // The home slider shows a real Curvi result, so it carries no Illustration label.
+  await expect(page.locator('img[src="/home/before-car.jpg"]')).toBeVisible();
+  await expect(page.getByTestId("illustration-label")).toHaveCount(0);
   const body = page.locator("body");
   await expect(body).not.toContainText("Curvi output");
   await expect(body).not.toContainText("40 to 60");

@@ -26,7 +26,7 @@ import { and, eq, loadChannelSpecs, type Db } from "@curvi/db";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { creditCosts } from "@curvi/pipeline/seed";
 import type { IngestOutcome } from "@/lib/trust/ingest";
-import { DbService } from "./db";
+import { DbService, followUpCutoutSources } from "./db";
 import { RERUN_STEP_STATUS } from "./shot-ops";
 
 const followUps = vi.hoisted(() => ({
@@ -371,6 +371,61 @@ describe("DbService.retryShot", () => {
       })),
     );
     expect(await service().retryShot(ws, jobId, "s04_alt_angle_white")).toMatchObject({ reason: "channel_full" });
+  });
+
+  it("refuses a shot that needs a cutout while cutouts are paused, before any hold", async () => {
+    const { ws, productId } = await workspaceWith(20);
+    const jobId = await deliveredPack(ws, productId);
+    const before = await balance(ws);
+    const asked: string[] = [];
+    const paused = new DbService({
+      db: db as unknown as Db,
+      getUserId: async () => OWNER,
+      getSupabase: async () => null,
+      providerVerdict: async () => "packs_paused",
+      cutoutCached: async (_ws, key) => {
+        asked.push(key);
+        return false;
+      },
+    });
+
+    const result = await paused.retryShot(ws, jobId, "s04_alt_angle_white");
+
+    expect(result).toMatchObject({ outcome: "rejected", reason: "unavailable" });
+    expect(result.outcome === "rejected" && result.message).toContain("paused");
+    expect(asked).toEqual([`ws/${ws}/src/mug.jpg`]);
+    expect(await balance(ws)).toBe(before);
+    expect((await jobRow(jobId)).status).toBe("done");
+    expect(followUps.fn).not.toHaveBeenCalled();
+  });
+
+  it("runs the shot while cutouts are paused when its photo's cutout is in the upload cache", async () => {
+    const { ws, productId } = await workspaceWith(20);
+    const jobId = await deliveredPack(ws, productId);
+    const cached = new DbService({
+      db: db as unknown as Db,
+      getUserId: async () => OWNER,
+      getSupabase: async () => null,
+      providerVerdict: async () => "packs_paused",
+      cutoutCached: async () => true,
+    });
+
+    expect(await cached.retryShot(ws, jobId, "s04_alt_angle_white")).toMatchObject({ outcome: "started" });
+    expect(followUps.fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("followUpCutoutSources", () => {
+  it("lists each photo a follow up cuts out, leaving out kept photo copies", () => {
+    const shot = (type: Shot["type"], method: Shot["method"], sourceMediaId: string) => ({ type, method, sourceMediaId });
+    expect(
+      followUpCutoutSources([
+        shot("alt_angle_white", "deterministic", "a"),
+        shot("original_photo", "deterministic", "b"),
+        shot("lifestyle", "composite_generate", "a"),
+        shot("infographic", "template", "c"),
+      ]),
+    ).toEqual(["a", "c"]);
   });
 });
 

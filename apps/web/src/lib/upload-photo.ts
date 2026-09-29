@@ -5,6 +5,8 @@
  * takes, returned as one result the caller renders.
  */
 
+import { ALLOWED_IMAGE_CONTENT_TYPES, UNSUPPORTED_PHOTO_COPY, uploadTypeForFile } from "@/lib/upload-validation";
+
 export type PhotoUploadResult =
   | { ok: true; key: string; sha256: string }
   | { ok: false; message: string };
@@ -14,15 +16,24 @@ export async function sha256Hex(file: Blob): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** The file picker's accept list: exactly the image types the sign route
+ * takes, so a HEIC or AVIF file is not offered and then refused. */
+export const PHOTO_ACCEPT = ALLOWED_IMAGE_CONTENT_TYPES.join(",");
+
+/** Plain copy for a file the sign route would refuse. */
+export const PHOTO_TYPE_REFUSED = UNSUPPORTED_PHOTO_COPY;
+
 export async function uploadSourcePhoto(file: File): Promise<PhotoUploadResult> {
-  if (!file.type.startsWith("image/")) {
-    return { ok: false, message: "Pick a photo file, such as a JPG or PNG." };
+  // An empty type is read from the file name; HEIC and friends get plain copy.
+  const type = uploadTypeForFile(file, { allowVideo: false });
+  if (!type.ok) {
+    return { ok: false, message: PHOTO_TYPE_REFUSED };
   }
   try {
     const response = await fetch("/api/uploads/sign", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "image", contentType: file.type, bytes: file.size }),
+      body: JSON.stringify({ kind: "image", contentType: type.contentType, bytes: file.size }),
     });
     const data = (await response.json().catch(() => ({}))) as { url?: string; key?: string; error?: string };
     if (response.status === 503) {
@@ -31,7 +42,7 @@ export async function uploadSourcePhoto(file: File): Promise<PhotoUploadResult> 
     if (!response.ok || !data.url || !data.key) {
       return { ok: false, message: data.error ?? "The upload could not be signed. Try again." };
     }
-    const put = await fetch(data.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+    const put = await fetch(data.url, { method: "PUT", headers: { "Content-Type": type.contentType }, body: file });
     if (!put.ok) {
       return { ok: false, message: "The upload failed. Try again." };
     }

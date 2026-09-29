@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { creditLedger, generationJobs, products, workspaces, type JobStatus } from "@curvi/db/schema";
+import { creditLedger, generationJobs, packFiles, products, workspaces, type JobStatus } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, type Db } from "@curvi/db";
-import { RECONCILED_JOB_ERROR, sweepStaleJobs } from "./reconcile";
+import { RECONCILED_JOB_ERROR, reconcileStaleJobs, sweepStaleJobs } from "./reconcile";
 
 // The scheduled stale job sweep against the real migrations in PGlite: it
 // settles stale jobs in every workspace, returns each one's hold exactly once
@@ -117,6 +117,52 @@ describe("sweepStaleJobs", () => {
     const ids = results.flatMap((r) => r.reconciled.map((job) => job.id));
     expect(ids).toEqual([id]);
     expect(await balanceOf(workspaceIds[1])).toBe(before + 9);
+  });
+
+  it("returns an orphaned follow up on a delivered pack to done and keeps its files", async () => {
+    const id = await jobWith(0, "generating", STALE, 5);
+    await db.insert(packFiles).values({
+      workspaceId: workspaceIds[0],
+      jobId: id,
+      kind: "report",
+      filename: "report.pdf",
+      r2Key: `ws/${workspaceIds[0]}/${id}/report.pdf`,
+    });
+    const [beforeRow] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+    const before = await balanceOf(workspaceIds[0]);
+
+    const result = await sweepStaleJobs(db as unknown as Db);
+
+    expect(result.reconciled.map((r) => r.id)).toContain(id);
+    const [row] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+    expect(row.status).toBe("done");
+    expect(row.error).toBeNull();
+    expect(row.runKey).not.toBe(beforeRow.runKey);
+    expect(await balanceOf(workspaceIds[0])).toBe(before + 5);
+  });
+
+  it("the workspace reconciler uses the same delivered rule", async () => {
+    const delivered = await jobWith(1, "generating", STALE, 3);
+    await db.insert(packFiles).values({
+      workspaceId: workspaceIds[1],
+      jobId: delivered,
+      kind: "report",
+      filename: "report.pdf",
+      r2Key: `ws/${workspaceIds[1]}/${delivered}/report.pdf`,
+    });
+    const undelivered = await jobWith(1, "generating", STALE, 4);
+    const live = await jobWith(1, "generating", new Date(), 2);
+    const before = await balanceOf(workspaceIds[1]);
+
+    const ids = await reconcileStaleJobs(db as unknown as Db, { workspaceId: workspaceIds[1] });
+
+    expect(ids.sort()).toEqual([delivered, undelivered].sort());
+    expect((await statusOf(delivered)).status).toBe("done");
+    expect(await statusOf(undelivered)).toEqual({ status: "failed", error: RECONCILED_JOB_ERROR });
+    expect((await statusOf(live)).status).toBe("generating");
+    expect(await balanceOf(workspaceIds[1])).toBe(before + 7);
+    // Settle the live job so later cases start clean.
+    await db.update(generationJobs).set({ status: "done" }).where(eq(generationJobs.id, live));
   });
 
   it("returns nothing when no job is stale", async () => {

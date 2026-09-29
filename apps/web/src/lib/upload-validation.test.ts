@@ -3,7 +3,10 @@ import {
   IMAGE_MAX_BYTES,
   VIDEO_MAX_BYTES,
   VIDEO_MAX_SECONDS,
+  UNSUPPORTED_FILE_COPY,
+  UNSUPPORTED_PHOTO_COPY,
   magicByteCheck,
+  uploadTypeForFile,
   validateUploadRequest,
   withinPixelCap,
   withinVideoDurationCap,
@@ -108,5 +111,48 @@ describe("pixel and duration caps", () => {
     expect(withinVideoDurationCap(VIDEO_MAX_SECONDS + 0.5)).toBe(false);
     expect(withinVideoDurationCap(0)).toBe(false);
     expect(withinVideoDurationCap(Number.NaN)).toBe(false);
+  });
+});
+
+describe("upload copy is plain spoken (CLAUDE.md rule 9)", () => {
+  it("names the types a seller can use instead of MIME strings", () => {
+    const result = validateUploadRequest({ kind: "image", contentType: "image/heic", bytes: 100 });
+    expect(result).toEqual({ ok: false, reason: UNSUPPORTED_PHOTO_COPY });
+    const empty = validateUploadRequest({ kind: "image", contentType: "", bytes: 100 });
+    expect(empty).toEqual({ ok: false, reason: UNSUPPORTED_PHOTO_COPY });
+    for (const copy of [UNSUPPORTED_PHOTO_COPY, UNSUPPORTED_FILE_COPY]) {
+      expect(copy).not.toMatch(/image\/|video\/|Content type/);
+    }
+  });
+});
+
+describe("uploadTypeForFile", () => {
+  it("keeps a supported type as it is", () => {
+    expect(uploadTypeForFile({ name: "a.png", type: "image/png" })).toEqual({ ok: true, kind: "image", contentType: "image/png" });
+    expect(uploadTypeForFile({ name: "a.mov", type: "video/quicktime" })).toEqual({
+      ok: true,
+      kind: "video",
+      contentType: "video/quicktime",
+    });
+  });
+
+  it("reads an empty type from the file name", () => {
+    expect(uploadTypeForFile({ name: "IMG_1.JPG", type: "" })).toEqual({ ok: true, kind: "image", contentType: "image/jpeg" });
+    expect(uploadTypeForFile({ name: "clip.mp4", type: "" })).toEqual({ ok: true, kind: "video", contentType: "video/mp4" });
+  });
+
+  it("refuses HEIC, PDF and unknown files with plain copy before any request", () => {
+    expect(uploadTypeForFile({ name: "IMG_1.HEIC", type: "image/heic" })).toEqual({ ok: false, message: UNSUPPORTED_FILE_COPY });
+    expect(uploadTypeForFile({ name: "IMG_1.heic", type: "" })).toEqual({ ok: false, message: UNSUPPORTED_FILE_COPY });
+    expect(uploadTypeForFile({ name: "spec.pdf", type: "application/pdf" }).ok).toBe(false);
+    expect(uploadTypeForFile({ name: "noext", type: "" }).ok).toBe(false);
+  });
+
+  it("refuses video where only photos fit, and honors a narrower photo list", () => {
+    expect(uploadTypeForFile({ name: "clip.mp4", type: "video/mp4" }, { allowVideo: false })).toEqual({
+      ok: false,
+      message: UNSUPPORTED_PHOTO_COPY,
+    });
+    expect(uploadTypeForFile({ name: "a.gif", type: "image/gif" }, { allowedImageTypes: ["image/png"] }).ok).toBe(false);
   });
 });

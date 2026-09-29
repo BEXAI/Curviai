@@ -69,10 +69,12 @@ class FailingImageProvider implements Provider {
 }
 
 class GoodCutout implements Provider {
-  readonly name = CUTOUT;
   readonly kind = "cutout" as const;
   calls = 0;
-  constructor(private readonly png: Buffer) {}
+  constructor(
+    private readonly png: Buffer,
+    readonly name: string = CUTOUT,
+  ) {}
   supports(task: string): boolean {
     return task === CUTOUT_TASK;
   }
@@ -273,6 +275,21 @@ describe("chaos: the cutout chain (1.2)", () => {
     expect(run.sleeps).toEqual([]);
   }, 120_000);
 
+  it("an exhausted fal balance fails over to the backup fal account and the pack is delivered (audit 2026-09-29)", async () => {
+    const fal = falFetch(403, '{"detail":"Exhausted balance. Top up your balance at fal.ai/dashboard/billing."}');
+    const run = await chaosDeps(null, falCutout(fal.fetchFn));
+    const backupName = cutoutModelSeedRows[1].providerName;
+    const backup = new GoodCutout(await cutoutPng(), backupName);
+    run.deps.ai.registry.register(backup);
+    run.deps.ai.routing[CUTOUT_TASK] = [CUTOUT, backupName];
+    const summary = await runGeneratePack(packInput, run.deps);
+    expect(summary.state).toBe("done");
+    expect(summary.chargedCredits).toBeGreaterThan(0);
+    expect(fal.calls).toHaveLength(1);
+    expect(backup.calls).toBeGreaterThan(0);
+    expect(await new CircuitBreaker(run.breakerStore).openReason(CUTOUT)).toBe("quota");
+  }, 120_000);
+
   it("a fal 5xx is transient: the pack retries once after the delay, then fails with nothing charged", async () => {
     const fal = falFetch(503, '{"detail":"service unavailable"}');
     const run = await chaosDeps(null, falCutout(fal.fetchFn));
@@ -297,8 +314,30 @@ describe("chaos: the cutout chain (1.2)", () => {
     const registry = new ProviderRegistry();
     const routing = demoRoutingTable();
     const wiring = wireLiveProviders(registry, routing, (name) => (name === "FAL_KEY" ? "fal-key" : undefined));
-    expect(wiring.cutoutProviders).toEqual(cutoutModelSeedRows.map((row) => row.providerName));
+    expect(wiring.cutoutProviders).toEqual(["fal-birefnet"]);
     expect(routing[CUTOUT_TASK]).toEqual(["fal-birefnet"]);
     expect(registry.get("fal-birefnet")?.kind).toBe("cutout");
+    expect(registry.get("fal-birefnet-backup")).toBeUndefined();
+  });
+
+  it("with a second fal account key the chain fails over to the backup row, in seed order", () => {
+    const registry = new ProviderRegistry();
+    const routing = demoRoutingTable();
+    const keys: Record<string, string> = { FAL_KEY: "fal-key", FAL_KEY_BACKUP: "fal-backup-key" };
+    const wiring = wireLiveProviders(registry, routing, (name) => keys[name]);
+    expect(cutoutModelSeedRows.map((row) => row.keyEnv)).toEqual(["FAL_KEY", "FAL_KEY_BACKUP"]);
+    expect(wiring.cutoutProviders).toEqual(cutoutModelSeedRows.map((row) => row.providerName));
+    expect(routing[CUTOUT_TASK]).toEqual(["fal-birefnet", "fal-birefnet-backup"]);
+    // Same MIT BiRefNet model and parameters on both accounts.
+    expect(cutoutModelSeedRows[1].model).toBe(cutoutModelSeedRows[0].model);
+    expect(cutoutModelSeedRows[1].params).toEqual(cutoutModelSeedRows[0].params);
+  });
+
+  it("with only the backup fal key the cutout stage still runs", () => {
+    const registry = new ProviderRegistry();
+    const routing = demoRoutingTable();
+    const wiring = wireLiveProviders(registry, routing, (name) => (name === "FAL_KEY_BACKUP" ? "k" : undefined));
+    expect(wiring.cutoutLive).toBe(true);
+    expect(routing[CUTOUT_TASK]).toEqual(["fal-birefnet-backup"]);
   });
 });

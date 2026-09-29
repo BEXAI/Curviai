@@ -9,6 +9,15 @@
  * memory together, and the route is rate limited by IP and by user
  * (jobs.pack). Workspace scoped through the caller's membership, db mode
  * only, since demo jobs keep no durable files.
+ *
+ * The zip is served whenever the file list is (servesFiles): a finished
+ * pack, and a delivered pack while a retried shot or an added photo runs
+ * again. "Download all files" is a plain link, so a refusal answered to a
+ * browser navigation is a short page with the message and a way back to the
+ * pack instead of raw JSON: a refusal with a code (not finished, no files,
+ * missing files) redirects to the job page, which shows plain copy for it,
+ * and any other refusal is a short page with a link back. API callers still
+ * get JSON.
  */
 
 import { Readable } from "node:stream";
@@ -17,11 +26,11 @@ import { NextResponse } from "next/server";
 import { isR2Configured } from "@/lib/env";
 import { resolveSignedIn } from "@/lib/http/services";
 import { zipStream } from "@/lib/http/zip-stream";
-import { packZipEntries } from "@/lib/pack-zip";
+import { isPageNavigation, packZipEntries, packZipRefusalPath, type PackZipRefusal } from "@/lib/pack-zip";
 import { isWorkspaceKey, objectExists, privateBucket, r2Client } from "@/lib/r2";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
 import { isDbMode } from "@/lib/services";
-import { getDb } from "@/lib/services/db";
+import { getDb, servesFiles } from "@/lib/services/db";
 import { isUuid } from "@/lib/validation/ids";
 
 export const dynamic = "force-dynamic";
@@ -39,10 +48,61 @@ async function openObject(key: string): Promise<Readable | null> {
   }
 }
 
+/** A refusal after the job is found. The Download all link is a top level
+ * navigation, so a browser goes back to the job page, which shows plain copy
+ * for the code; a fetch still gets the JSON answer. */
+function refuse(request: Request, jobId: string, code: PackZipRefusal, error: string, status: number): Response {
+  if (isPageNavigation(request)) {
+    return NextResponse.redirect(new URL(packZipRefusalPath(jobId, code), request.url), 303);
+  }
+  return NextResponse.json({ error }, { status });
+}
+
 export async function GET(
   request: Request,
-  { params }: { params: Promise<{ id: string }> },
+  context: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  const response = await packZip(request, context);
+  // A refusal with a code already sends the browser back to the job page.
+  if (response.ok || response.status === 303 || !wantsHtml(request)) {
+    return response;
+  }
+  const { id } = await context.params;
+  return refusalPage(response, isUuid(id) ? id : null);
+}
+
+/** True for a browser navigation (the Download all link), not a fetch. */
+function wantsHtml(request: Request): boolean {
+  return (request.headers.get("accept") ?? "").includes("text/html");
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/** The refusal's message as a small page with a link back to the pack. The
+ * status and a Retry-After header are kept. */
+async function refusalPage(response: Response, jobId: string | null): Promise<Response> {
+  let message = "We could not prepare this download right now. Try again in a moment.";
+  try {
+    const body = (await response.clone().json()) as { error?: unknown };
+    if (typeof body.error === "string" && body.error.length > 0) {
+      message = body.error;
+    }
+  } catch {
+    // Not JSON: keep the default message.
+  }
+  const back = jobId ? `/app/jobs/${jobId}` : "/app";
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Download not available</title><style>body{font-family:system-ui,sans-serif;background:#fafaf9;color:#1c1917;margin:0;padding:48px 16px}main{max-width:32rem;margin:0 auto}a{color:inherit}</style></head><body><main><h1>Download not available</h1><p>${escapeHtml(message)}</p><p><a href="${back}">Back to your pack</a></p></main></body></html>`;
+  const headers = new Headers({ "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    headers.set("retry-after", retryAfter);
+  }
+  return new Response(html, { status: response.status, headers });
+}
+
+async function packZip(request: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
   const ipLimited = await limitByIp(request, "jobs.pack");
   if (ipLimited) {
     return ipLimited;
@@ -71,11 +131,8 @@ export async function GET(
   if (!job) {
     return NextResponse.json({ error: NOT_FOUND }, { status: 404 });
   }
-  if (job.status !== "done") {
-    return NextResponse.json(
-      { error: "This pack is not finished yet. Download it once it is done." },
-      { status: 409 },
-    );
+  if (!servesFiles(job)) {
+    return refuse(request, job.id, "not_finished", "This pack is not finished yet. Download it once it is done.", 409);
   }
 
   const assetRows = await db.query.assets.findMany({
@@ -100,7 +157,7 @@ export async function GET(
   ]);
   const ownVariants = variants.filter((v) => isWorkspaceKey(workspaceId, v.r2Key));
   if (ownVariants.length === 0) {
-    return NextResponse.json({ error: "This pack has no files to download." }, { status: 404 });
+    return refuse(request, job.id, "no_files", "This pack has no files to download.", 404);
   }
   const report = reports.find((r) => isWorkspaceKey(workspaceId, r.r2Key)) ?? null;
   const entries = packZipEntries(ownVariants, report);
@@ -111,12 +168,12 @@ export async function GET(
     console.error(
       `[pack] job ${job.id} is missing ${missing.length} stored files: ${missing.map((m) => m.r2Key).join(", ")}`,
     );
-    return NextResponse.json(
-      {
-        error:
-          "Some files in this pack are missing, so the full zip is not available. Download each channel on this page, or contact us and we will sort it out.",
-      },
-      { status: 409 },
+    return refuse(
+      request,
+      job.id,
+      "missing_files",
+      "Some files in this pack are missing, so the full zip is not available. Download each channel on this page, or contact us and we will sort it out.",
+      409,
     );
   }
 

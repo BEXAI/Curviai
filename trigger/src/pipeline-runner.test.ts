@@ -59,6 +59,9 @@ import {
   SHOT_CONTENT_BLOCKED,
   SHOT_PROVIDER_TROUBLE,
   SHOT_SCENE_PAUSED,
+  SHOT_CUTOUT_PAUSED,
+  SHOT_TYPE_RULES,
+  isCutoutChainFailure,
   systemClock,
   validateLlmShotList,
   visionBlocks,
@@ -94,6 +97,9 @@ import {
   type ShotOutcome,
   type StoredAsset,
   type StoredPack,
+  runOutOfTime,
+  SHOT_OUT_OF_TIME,
+  withRunDeadline,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
 
@@ -343,8 +349,12 @@ describe("validateLlmShotList (1.7)", () => {
 
   it("allows at most one amazon.main, and only the deterministic amazon_main", () => {
     expect(rejected(check([validShot, { ...validShot, id: "s9" }]))).toContain("more than one");
+    // A scene never goes to the white only amazon.main: it keeps the specs
+    // that take a scene, and with none left the plan has nothing to make.
     const lifestyleMain = { ...validShot, type: "lifestyle", method: "composite_generate" };
-    expect(rejected(check([lifestyleMain]))).toContain("amazon_main");
+    expect(rejected(check([lifestyleMain]))).toContain("no shot for the selected channels");
+    const whiteMain = { ...validShot, type: "alt_angle_white" };
+    expect(rejected(check([whiteMain]))).toContain("amazon_main");
   });
 
   it("requires amazon_main when Amazon is selected and a usable front photo exists", () => {
@@ -893,6 +903,44 @@ describe("per shot failure isolation (3.3)", () => {
     const partial = summary.pack ? summary.pack.files < outputCount(fittedPlan().shots) : false;
     expect(stopped.length > 0 || partial).toBe(true);
     expect(summary.chargedCredits + summary.releasedCredits).toBe(summary.reservedCredits);
+  });
+
+  it("stops starting shots at the run's time limit and still delivers and charges what passed", async () => {
+    const demo = new DemoShotGenerator();
+    let calls = 0;
+    const controller = new AbortController();
+    const generator: ShotGenerator = {
+      generate: async (args) => {
+        calls += 1;
+        const generation = await demo.generate(args);
+        // The limit arrives once the first output is made.
+        controller.abort();
+        return generation;
+      },
+    };
+    const deps = makeDeps({
+      generator,
+      shotConcurrency: 1,
+      runDeadline: { stopStartingAt: Number.MAX_SAFE_INTEGER, signal: controller.signal },
+    });
+    const summary = await runGeneratePack(baseInput, deps);
+    expect(calls).toBe(1);
+    expect(summary.state).toBe("done");
+    expect(summary.passed).toBeGreaterThan(0);
+    expect(summary.chargedCredits).toBeGreaterThan(0);
+    const stopped = deps.store.assets.filter((a) => a.verdict.repairHint === SHOT_OUT_OF_TIME);
+    expect(stopped.length).toBeGreaterThan(0);
+    expect(summary.chargedCredits + summary.releasedCredits).toBe(summary.reservedCredits);
+  });
+
+  it("gates no attempt without a time limit, and every attempt past it", async () => {
+    const clock = { now: () => new Date(1_000) };
+    expect(runOutOfTime({ clock })).toBe(false);
+    expect(runOutOfTime({ clock, runDeadline: { stopStartingAt: 2_000 } })).toBe(false);
+    expect(runOutOfTime({ clock, runDeadline: { stopStartingAt: 1_000 } })).toBe(true);
+    expect(runOutOfTime({ clock, runDeadline: { stopStartingAt: 2_000 } }, 2_500)).toBe(true);
+    const base = makeDeps({});
+    expect(withRunDeadline(base)).toBe(base);
   });
 });
 
@@ -2704,7 +2752,10 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
       expect(call.target).toEqual({ label: "blue bottle", box: blueBox, others: [{ label: "red bottle", box: redBox }] });
     }
     // The judge gets the target and the exclude list as data.
-    const payload = JSON.parse((qc.calls[0].input as LlmTaskInput).messages[0].content as string) as {
+    // The judge now sees the image blocks first, then the JSON as text.
+    const blocks = (qc.calls[0].input as LlmTaskInput).messages[0].content as Array<{ type: string; text?: string }>;
+    expect(blocks[0].type).toBe("image");
+    const payload = JSON.parse(blocks.find((b) => b.type === "text")!.text!) as {
       sellerIntent?: unknown;
     };
     expect(payload.sellerIntent).toEqual({ featured: "blue bottle", exclude: ["red bottle"] });
@@ -3643,5 +3694,181 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
       const changed = await deserializeShotOutcome(serialized, ctx, { handoff });
       expect(changed.packAssets?.map((a) => a.specId)).toEqual(["shopify.product"]);
     });
+  });
+});
+
+describe("audit trigger fixes: LLM calls", () => {
+  it("asks for emit_result with tool_choice auto, which every seeded model accepts", async () => {
+    const intake = new MockProvider({ name: "mock-intake", tasks: [intakeKey], output: intakeFixture });
+    await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
+    const sent = intake.calls[0].input as LlmTaskInput;
+    expect(sent.toolChoice).toEqual({ type: "auto" });
+    const tool = (sent.tools ?? [])[0] as { name: string; description: string };
+    expect(tool.name).toBe("emit_result");
+    expect(tool.description).toMatch(/Always call this tool/);
+  });
+
+  it("asks once more when the model answers in text without the tool call", async () => {
+    class OnceWithoutTool extends MockProvider {
+      private answered = 0;
+      override async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
+        const res = await super.invoke<TIn, TOut>(req);
+        this.answered += 1;
+        const output =
+          this.answered === 1
+            ? { toolUse: null, text: "Here is my view of the photos.", stopReason: "end_turn" }
+            : { toolUse: { name: "emit_result", input: intakeFixture }, text: null, stopReason: "tool_use" };
+        return { ...res, output: output as TOut };
+      }
+    }
+    const intake = new OnceWithoutTool({ name: "mock-intake", tasks: [intakeKey], output: intakeFixture, costMicros: 500 });
+    const summary = await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
+    expect(intake.calls).toHaveLength(2);
+    expect(summary.state).toBe("done");
+  });
+
+  it("falls back to the deterministic plan when the shot planner call throws", async () => {
+    const plan = new MockProvider({
+      name: "mock-plan",
+      tasks: [planKey],
+      failTimes: Infinity,
+      failWith: () => new ProviderError("mock-plan responded 529: overloaded", "mock-plan", planKey, true),
+    });
+    const summary = await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ plan }) }));
+    expect(plan.calls.length).toBeGreaterThan(0);
+    expect(summary.state).toBe("done");
+    expect(summary.plannerSource).toBe("deterministic");
+    expect(summary.planRejection ?? "").toContain("planner unavailable");
+  });
+});
+
+describe("audit trigger fixes: LLM plans get one method per type and only specs that take them", () => {
+  const rules = {
+    budget: 100,
+    mediaIds: ["m1"],
+    channels: ["amazon", "shopify", "ebay", "walmart", "meta"],
+    mode: "listing" as const,
+    requireAmazonMain: false,
+  };
+  const shot = (over: Partial<Shot>): Shot => ({
+    id: over.id ?? "x",
+    type: "lifestyle",
+    sourceMediaId: "m1",
+    method: "composite_generate",
+    channels: ["amazon.secondary"],
+    stylePreset: "none",
+    credits: 1,
+    priority: 1,
+    ...over,
+  });
+
+  it("overrules a mismatched method for every type", () => {
+    const check = validateLlmShotList(
+      {
+        shots: [
+          shot({ id: "a", type: "collection_thumb", method: "template", channels: ["shopify.product"] }),
+          shot({ id: "b", type: "shopify_hero", method: "template", channels: ["shopify.hero_banner"] }),
+          shot({ id: "c", type: "infographic", method: "deterministic", channels: ["amazon.secondary"] }),
+          shot({ id: "d", type: "lifestyle", method: "template", channels: ["amazon.secondary"] }),
+        ],
+        skipped: [],
+      },
+      rules,
+    );
+    expect(check.ok).toBe(true);
+    if (!check.ok) return;
+    const methods = Object.fromEntries(check.shotList.shots.map((s) => [s.id, s.method]));
+    expect(methods).toEqual({ a: "deterministic", b: "composite_generate", c: "template", d: "composite_generate" });
+    // Repriced from the normalized method: the crop is not charged as a scene.
+    const thumb = check.shotList.shots.find((s) => s.id === "a")!;
+    expect(thumb.credits).toBe(creditsForShot({ type: "collection_thumb", method: "deterministic" }));
+  });
+
+  it("drops specs whose rules refuse the kind of image", () => {
+    const check = validateLlmShotList(
+      {
+        shots: [
+          shot({ id: "i", type: "infographic", method: "template", channels: ["amazon.secondary", "ebay.listing"] }),
+          shot({ id: "s", type: "sweep_gray", method: "deterministic", channels: ["walmart.main", "amazon.secondary"] }),
+          shot({ id: "w", type: "lifestyle", channels: ["walmart.main"] }),
+        ],
+        skipped: [],
+      },
+      rules,
+    );
+    expect(check.ok).toBe(true);
+    if (!check.ok) return;
+    const channels = Object.fromEntries(check.shotList.shots.map((s) => [s.id, s.channels]));
+    expect(channels.i).toEqual(["amazon.secondary"]);
+    expect(channels.s).toEqual(["amazon.secondary"]);
+    expect(channels.w).toBeUndefined();
+    expect(check.shotList.skipped.some((s) => s.type === "lifestyle" && /takes this kind of image/.test(s.reason))).toBe(true);
+  });
+
+  it("matches the deterministic planner's method for every type it plans", () => {
+    const plan = planShots(demoProfile, {
+      ...basePlanOptions,
+      channels: ["amazon", "shopify", "meta", "tiktok", "pinterest", "etsy", "ebay", "walmart", "google"],
+      tier: "agency",
+      creditBudget: 500,
+      hasBoxContents: true,
+      hasComparisonFacts: true,
+      hasVideoSource: true,
+    });
+    const planned = plan.shots.filter((s) => s.type !== "original_photo");
+    expect(planned.length).toBeGreaterThan(5);
+    for (const s of planned) {
+      expect(SHOT_TYPE_RULES[s.type as keyof typeof SHOT_TYPE_RULES].method, s.type).toBe(s.method);
+    }
+  });
+});
+
+describe("audit trigger fixes: QC judge and outages", () => {
+  const ctx = { jobId: "job1", workspaceId: "ws1", sku: "SKU1", seoSlug: "demo-mug" };
+  const mainShot = planShots(demoProfile, basePlanOptions).shots.find((s) => s.type === "amazon_main") as Shot;
+
+  it("shows the judge the shipped image", async () => {
+    const qc = new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict });
+    await runShot(mainShot, ctx, makeDeps({ ai: makeAi({ qc }) }));
+    const content = (qc.calls[0].input as LlmTaskInput).messages[0].content as Array<{ type: string }>;
+    expect(Array.isArray(content)).toBe(true);
+    expect(content[0].type).toBe("image");
+    expect(content.at(-1)?.type).toBe("text");
+  });
+
+  it("never reruns a deterministic render on a judge only failure", async () => {
+    const qc = new MockProvider({
+      name: "mock-qc",
+      tasks: [qcKey],
+      output: { pass: false, fidelity: 0.5, issues: ["other"], repairHint: "cannot confirm the label" },
+    });
+    let generated = 0;
+    const demo = new DemoShotGenerator();
+    const generator: ShotGenerator = {
+      generate: async (args) => {
+        generated += 1;
+        return demo.generate(args);
+      },
+    };
+    const outcome = await runShot(mainShot, ctx, makeDeps({ ai: makeAi({ qc }), generator }));
+    expect(outcome.status).toBe("needs_review");
+    expect(outcome.attempts).toBe(1);
+    expect(generated).toBe(1);
+  });
+
+  it("pauses a shot with the cutout copy when background removal is down", async () => {
+    const generator: ShotGenerator = {
+      generate: async () => {
+        throw new AllProvidersFailedError(CUTOUT_TASK, [
+          new ProviderError("fal responded 403: Exhausted balance", "fal-birefnet", CUTOUT_TASK, false, undefined, {
+            code: "provider_quota",
+          }),
+        ]);
+      },
+    };
+    const outcome = await runShot(mainShot, ctx, makeDeps({ generator }));
+    expect(outcome.status).toBe("needs_review");
+    expect(outcome.verdict.repairHint).toBe(SHOT_CUTOUT_PAUSED);
+    expect(isCutoutChainFailure(new AllProvidersFailedError(CUTOUT_TASK, []))).toBe(false);
   });
 });
