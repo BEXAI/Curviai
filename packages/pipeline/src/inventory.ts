@@ -6,6 +6,9 @@
  * the pieces by box overlap, and the product the pack features is picked by
  * a fixed order of rules that never rests on one model answer alone:
  *
+ * 0. the product the seller tapped in the chooser at upload (a stored
+ *    target box, docs/phases/PHASE_14.md 3.2): the pieces inside that box,
+ *    above the model and the note;
  * 1. in the box photos keep every piece;
  * 2. exactly one intake product the model says matches the note, when it
  *    maps to pieces, and, if the note names a color, only when those pieces
@@ -597,6 +600,7 @@ export function matchProducts(objects: readonly InventoryObject[], products: rea
 // Picking the product.
 
 export type InventoryRule =
+  | "seller"
   | "in_the_box"
   | "model"
   | "note"
@@ -626,6 +630,20 @@ export interface InventoryChoiceInput {
   signals: NoteSignals;
   /** The photo shows several items on purpose (the in the box role). */
   multiItem?: boolean;
+  /** The product the seller tapped in the chooser at upload, stored on
+   * source_media.target_box. Wins over every other rule when it holds a
+   * piece; a box that holds none (a cutout that came out different) leaves
+   * the photo to the other rules. */
+  chosenBox?: NormalizedBox | null;
+}
+
+/** The pieces a box the seller chose holds: those at least
+ * MATCH_CONTAINMENT inside it, or holding it (containment either way, as
+ * intake's boxes are matched). */
+export function piecesInBox(objects: readonly InventoryObject[], box: NormalizedBox): number[] {
+  return objects
+    .filter((o) => containment(o.box, box) >= MATCH_CONTAINMENT || containment(box, o.box) >= MATCH_CONTAINMENT)
+    .map((o) => o.index);
 }
 
 function passesNote(object: InventoryObject, label: string | null, signals: NoteSignals): boolean {
@@ -666,7 +684,6 @@ export function chooseInventoryTarget(input: InventoryChoiceInput): InventoryDec
   });
   const undecided = (rule: InventoryRule): InventoryDecision => ({ rule, featured: [], removed: [], touching: false });
   if (objects.length === 0) return undecided("none");
-  if (input.multiItem) return decide("in_the_box", all);
 
   const match = matchProducts(objects, products);
   const labelOf = (i: number): string | null => {
@@ -679,6 +696,16 @@ export function chooseInventoryTarget(input: InventoryChoiceInput): InventoryDec
   const merged = (picked: number[]) => picked.some((i) => match.productsInside[i] >= 2);
   const touchingOf = (picked: number[]) =>
     merged(picked) || picked.some((i) => holdsExcludedColor(objects[i], signals));
+
+  // 0. The seller's own tap in the chooser.
+  if (input.chosenBox) {
+    const chosen = piecesInBox(objects, input.chosenBox);
+    if (chosen.length > 0) {
+      return decide("seller", chosen, touchingOf(chosen));
+    }
+  }
+  // 1. In the box photos keep every piece.
+  if (input.multiItem) return decide("in_the_box", all);
 
   // 2. The model's single yes, checked against the note's colors.
   const yes = products

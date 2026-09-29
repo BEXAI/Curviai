@@ -70,6 +70,8 @@ import {
   type SellerIntent,
   analyzeInventory,
   chooseInventoryTarget,
+  containment,
+  MATCH_CONTAINMENT,
   inventoryRecord,
   matchProducts,
   itemLabel,
@@ -128,6 +130,7 @@ import {
 } from "./shot-outputs";
 import { isTerminal, JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 import { DEFAULT_SHOT_CONCURRENCY } from "./shot-concurrency";
+import { reusablePreflightIntake, type PreflightIntake } from "./preflight-intake";
 
 export type { JobState } from "./state";
 export { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
@@ -814,7 +817,19 @@ export interface GeneratePackInput {
   creditBudget: number;
   /** The pack's photos. angle is the role the seller picked for the photo
    * (front, back, side, detail, in_the_box, scale), when they picked one. */
-  images: Array<{ mediaId: string; url?: string; angle?: AngleRole }>;
+  images: Array<{
+    mediaId: string;
+    url?: string;
+    angle?: AngleRole;
+    /** The product the seller tapped in the chooser at upload
+     * (source_media.target_box): the photo's target above the model and
+     * the note (docs/phases/PHASE_14.md 3.2). */
+    targetBox?: NormalizedBox;
+    /** The preflight's intake answer for this photo, reused instead of a
+     * second intake call when it is fresh and was given for the same note
+     * and recipe version (docs/phases/PHASE_14.md workstream 4). */
+    preflight?: PreflightIntake;
+  }>;
   userDescription?: string;
   sku?: string;
   seoSlug?: string;
@@ -1029,6 +1044,49 @@ export interface TargetSelection {
  */
 export function selectTargets(
   intake: IntakeResult,
+  judged: ReadonlyArray<{ mediaId: string; angle?: AngleRole; targetBox?: NormalizedBox }>,
+  jobId: string,
+): TargetSelection {
+  const selection = selectTargetsFromIntake(intake, judged, jobId);
+  // The seller's own tap in the chooser wins over intake's answer: that box
+  // is the target, and intake's other products are what is left out.
+  const mapped = intake.images.length === judged.length;
+  judged.forEach((photo, i) => {
+    const image = mapped ? intake.images[i] : undefined;
+    const box = photo.targetBox;
+    if (!box || image?.screenshot === true) {
+      return;
+    }
+    const products = image?.products ?? [];
+    const chosen = products.find(
+      (p) => containment(p.box, box) >= MATCH_CONTAINMENT || containment(box, p.box) >= MATCH_CONTAINMENT,
+    );
+    selection.targets[photo.mediaId] = {
+      label: chosen?.label ?? SELLER_PICKED_LABEL,
+      box,
+      others: products.filter((p) => p !== chosen).map((p) => ({ label: p.label, box: p.box })),
+    };
+    selection.ambiguous = selection.ambiguous.filter((id) => id !== photo.mediaId);
+  });
+  return selection;
+}
+
+/** The target's label when the product the seller tapped matches none of
+ * intake's products. */
+export const SELLER_PICKED_LABEL = "the product the seller picked";
+
+/** Only the fields of a pack photo a prompt may carry: never the stored
+ * target box or the preflight answer. */
+export function promptImages(images: GeneratePackInput["images"]): Array<{ mediaId: string; url?: string; angle?: AngleRole }> {
+  return images.map(({ mediaId, url, angle }) => ({
+    mediaId,
+    ...(url !== undefined ? { url } : {}),
+    ...(angle !== undefined ? { angle } : {}),
+  }));
+}
+
+function selectTargetsFromIntake(
+  intake: IntakeResult,
   judged: ReadonlyArray<{ mediaId: string; angle?: AngleRole }>,
   jobId: string,
 ): TargetSelection {
@@ -1112,7 +1170,7 @@ export function sellerWroteNote(note: string | null | undefined, intent: SellerI
  */
 export function inventorySelection(
   intake: IntakeResult,
-  judged: ReadonlyArray<{ mediaId: string; angle?: AngleRole }>,
+  judged: ReadonlyArray<{ mediaId: string; angle?: AngleRole; targetBox?: NormalizedBox }>,
   cutouts: ReadonlyMap<string, CutoutInventory>,
   note: string | undefined,
   jobId: string,
@@ -1136,6 +1194,7 @@ export function inventorySelection(
       products,
       signals,
       multiItem: !!photo.angle && MULTI_ITEM_ANGLES.has(photo.angle),
+      chosenBox: photo.targetBox ?? null,
     };
     let decision = chooseInventoryTarget(choiceInput);
     // The vision tie breaker, when the rules could not decide and the
@@ -1369,7 +1428,7 @@ export function enforcedIntent(
   return { featured: [...featured], removed: [...removed] };
 }
 
-interface LlmCall<T> {
+export interface LlmCall<T> {
   value: T | null;
   raw: unknown;
   /** The delivering call plus any billed failed attempts before it. */
@@ -1417,7 +1476,10 @@ export function recipeChain(ai: Pick<AiDeps, "registry">, recipe: ResolvedRecipe
   return recipe.models.map(llmModelProviderName).filter((name) => ai.registry.get(name) !== undefined);
 }
 
-async function llmJson<T>(
+/** One recipe call through @curvi/ai with the answer parsed against the
+ * schema; exported so the preflight at upload runs intake exactly as a pack
+ * does (trigger/src/preflight.ts). */
+export async function llmJson<T>(
   ai: AiDeps,
   recipe: ResolvedRecipe,
   schema: { safeParse: (data: unknown) => { success: boolean; data?: T } },
@@ -2812,17 +2874,27 @@ export async function runGeneratePack(
     const shown = await visionPhotos(deps, input.images, input.workspaceId, INTAKE_PHOTO_LIMIT);
     const photos = shown.map((photo) => photo.block);
     const judgedImages = intakeImages(input.images, shown);
-    const intake = await bookedLlm(
-      llmJson<IntakeResult>(
-        deps.ai,
-        recipeFor(recipes, "intake"),
-        IntakeResult,
-        { images: judgedImages, userDescription: wrapUserDescription(input.userDescription) },
-        { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
-        photos,
-        IntakeToolResult,
-      ),
-    );
+    // The preflight at upload already asked intake about these photos with
+    // this note and this recipe version: its answer is reused, so the
+    // seller's photo is never judged (or paid for) twice.
+    const intakeRecipe = recipeFor(recipes, "intake");
+    const preflightIntake = reusablePreflightIntake(judgedImages, input.userDescription, intakeRecipe, clock.now());
+    if (preflightIntake) {
+      console.info(`[runner] job ${input.jobId} reused the preflight intake answer`);
+    }
+    const intake: LlmCall<IntakeResult> = preflightIntake
+      ? { value: preflightIntake, raw: preflightIntake, costMicros: 0 }
+      : await bookedLlm(
+          llmJson<IntakeResult>(
+            deps.ai,
+            intakeRecipe,
+            IntakeResult,
+            { images: promptImages(judgedImages), userDescription: wrapUserDescription(input.userDescription) },
+            { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
+            photos,
+            IntakeToolResult,
+          ),
+        );
     if (!intake.value) {
       throw new Error("Intake response failed schema validation");
     }
@@ -2951,7 +3023,7 @@ export async function runGeneratePack(
         deps.ai,
         recipeFor(recipes, "analyze"),
         ProductProfile,
-        { images, userDescription: wrapUserDescription(input.userDescription) },
+        { images: promptImages(images), userDescription: wrapUserDescription(input.userDescription) },
         { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
         cameraPhotos,
         ProductProfile,

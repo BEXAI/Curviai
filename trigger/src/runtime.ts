@@ -24,6 +24,7 @@ import {
 import { recipeSeedRows } from "@curvi/pipeline/seed";
 import { getSpec } from "@curvi/specs";
 import type { ChurnSignals } from "./churn";
+import { installCutoutCache } from "./cutout-cache";
 import { LiveShotGenerator, makeR2MediaLoader, wireLiveProviders } from "./live-runtime";
 import { canvasSizeFor } from "./shot-outputs";
 import { parseShotConcurrency } from "./shot-concurrency";
@@ -282,6 +283,9 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     onInternalError: reportAiInternalError,
   };
   const wiring = wireLiveProviders(registry, routing);
+  // Cutouts are cached in R2 per workspace and exact input bytes, so the pack
+  // reuses the cutout its preflight at upload paid for (PHASE_14.md W4).
+  installCutoutCache(registry);
   const loadMedia = makeR2MediaLoader();
   // Any live provider key means real customers and real spend, so the demo
   // generator (synthetic placeholder images built to pass QC) must never run.

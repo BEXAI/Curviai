@@ -7,6 +7,7 @@
  */
 
 import type { ComplianceReportView } from "@/lib/compliance-report";
+import type { PreflightBox, PreflightOutcome } from "@/lib/preflight/types";
 
 export type {
   ComplianceCheckView,
@@ -198,7 +199,15 @@ export interface CreateJobInput {
   idempotencyKey: string;
   /** R2 objects uploaded for this pack; registered as source media in db
    * mode. angle is the role the seller picked for a photo. */
-  uploads?: Array<{ key: string; sha256: string; kind: "image" | "video"; angle?: PhotoAngle }>;
+  uploads?: Array<{
+    key: string;
+    sha256: string;
+    kind: "image" | "video";
+    angle?: PhotoAngle;
+    /** The product the seller tapped in the chooser, saved as
+     * source_media.target_box and sent to the runner as the photo's target. */
+    targetBox?: PreflightBox;
+  }>;
   /** Title for the product created when productId is "new". */
   newProductTitle?: string;
   /** Seller notes passed to the analyzer as untrusted description text. */
@@ -287,6 +296,12 @@ export interface RegisterSourceMediaInput {
   sha256: string;
   width?: number;
   height?: number;
+}
+
+/** The photo the preflight at upload checks, and the note it reads. */
+export interface PreflightUploadInput {
+  key: string;
+  note?: string;
 }
 
 export interface JobFileView {
@@ -379,6 +394,10 @@ export interface Services {
   createProduct(workspaceId: string, input: CreateProductInput): Promise<ProductSummary | null>;
   /** Records an uploaded source file against a product after the R2 PUT. */
   registerSourceMedia(workspaceId: string, input: RegisterSourceMediaInput): Promise<SaveResult>;
+  /** Checks an uploaded photo before any pack or credit hold
+   * (docs/phases/PHASE_14.md workstream 4): intake, moderation, the product
+   * inventory with the chooser, and the size gate. Demo mode simulates it. */
+  preflightUpload(workspaceId: string, input: PreflightUploadInput): Promise<PreflightOutcome>;
   getBrandKit(workspaceId: string): Promise<BrandKitView>;
   saveBrandKit(workspaceId: string, kit: BrandKitView): Promise<SaveResult>;
   listMembers(workspaceId: string): Promise<MemberView[]>;

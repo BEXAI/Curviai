@@ -23,6 +23,9 @@ import { intentFor, type SubmitIntent } from "@/lib/submit-intent";
 import { track } from "@/lib/track";
 import { requestPhotoImport } from "@/lib/url-import/client";
 import { IMPORT_TITLE_MAX, sellerNotesFrom, type ImportedImage, type ImportedProduct } from "@/lib/url-import/types";
+import { chosenItem, PREFLIGHT_UNAVAILABLE_NOTICE, preflightBlockReason } from "@/lib/preflight/copy";
+import type { PreflightBox, PreflightView } from "@/lib/preflight/types";
+import { PreflightResult } from "./preflight-result";
 import { ProductLinkImport } from "./product-link-import";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 
@@ -159,7 +162,7 @@ export function sellerDetailsProblem(sku: string, boxContents: string[], compari
   return null;
 }
 
-interface PhotoItem {
+export interface PhotoItem {
   /** Local id, stable while the photo is in the form. */
   id: number;
   name: string;
@@ -169,6 +172,33 @@ interface PhotoItem {
   key?: string;
   sha256?: string;
   message?: string;
+  /** The preflight at upload (docs/phases/PHASE_14.md workstream 4). */
+  preflightPhase?: "checking" | "done" | "failed";
+  preflight?: PreflightView | null;
+  /** The note the preflight read, so a changed note asks again. */
+  preflightNote?: string;
+  preflightFailure?: string;
+  /** The product the seller tapped in the chooser. */
+  chosen?: number | null;
+}
+
+/** Why this photo cannot start a pack right now, or null (a photo whose
+ * check could not run never blocks: the pack checks it again). */
+export function photoBlockReason(photo: PhotoItem, selected: readonly string[]): string | null {
+  if (photo.kind !== "image" || photo.phase !== "uploaded" || !photo.preflight) {
+    return null;
+  }
+  return preflightBlockReason(photo.preflight, selected, photo.chosen, { multiItem: photo.angle === "in_the_box" });
+}
+
+/** The product box the pack is for, from the chooser: the seller's tap or
+ * the note's preselected pick. None for a photo that shows several items on
+ * purpose (in the box) or had nothing to choose. */
+export function photoTargetBox(photo: PhotoItem): PreflightBox | undefined {
+  if (photo.kind !== "image" || photo.angle === "in_the_box" || photo.preflight?.status !== "choose") {
+    return undefined;
+  }
+  return chosenItem(photo.preflight, photo.chosen)?.box;
 }
 
 async function sha256Hex(file: File): Promise<string> {
@@ -196,6 +226,9 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
   const [confirmedAttach, setConfirmedAttach] = useState<string | null>(null);
   const [newProductTitle, setNewProductTitle] = useState("");
   const [description, setDescription] = useState("");
+  // The note as typed right now, for checks that finish after a keystroke.
+  const descriptionRef = useRef("");
+  descriptionRef.current = description;
   // Seller inputs, prefilled from the picked product and saved on it.
   const initialProduct = products.find((p) => p.id === productId) ?? null;
   const [sku, setSku] = useState(initialProduct?.sku ?? "");
@@ -230,6 +263,8 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
   const detailsProblem = sellerDetailsProblem(sku, boxContents, comparisonFacts);
   const selectedProduct = products.find((p) => p.id === productId) ?? null;
   const uploading = photos.some((p) => p.phase === "uploading");
+  const checking = photos.some((p) => p.phase === "uploaded" && p.preflightPhase === "checking");
+  const blockReason = photos.map((p) => photoBlockReason(p, selected)).find((reason) => reason !== null) ?? null;
   const uploaded = photos.filter((p) => p.phase === "uploaded" && p.key && p.sha256);
   const attachKey =
     uploaded.length > 0 && selectedProduct ? `${uploaded.map((p) => p.key).join("|")}:${selectedProduct.id}` : null;
@@ -365,8 +400,54 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
         return;
       }
       update({ phase: "uploaded", key: data.key, sha256: await sha256Hex(file) });
+      if (!file.type.startsWith("video/")) {
+        void runPreflight(id, data.key);
+      }
     } catch {
       update({ phase: "error", message: "The upload failed. Check your connection and try again." });
+    }
+  }
+
+  // The preflight at upload: intake, moderation, the products in the photo
+  // and the size gate, before any pack or credit hold. A check that cannot
+  // run never blocks the pack; the pack checks the photo again.
+  async function runPreflight(id: number, key: string) {
+    const note = descriptionRef.current.trim();
+    updatePhoto(id, { preflightPhase: "checking", preflightFailure: undefined });
+    try {
+      const response = await fetch("/api/uploads/preflight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, ...(note ? { note } : {}) }),
+      });
+      const data = (await response.json().catch(() => ({}))) as { preflight?: PreflightView; error?: string };
+      if (!response.ok || !data.preflight) {
+        updatePhoto(id, { preflightPhase: "failed", preflight: null, preflightFailure: data.error ?? PREFLIGHT_UNAVAILABLE_NOTICE });
+        return;
+      }
+      const view = data.preflight;
+      setPhotos((current) =>
+        current.map((p) => {
+          if (p.id !== id || p.key !== key) return p;
+          // A tap survives a second check when that product is still there.
+          const keep = p.chosen != null && view.items.some((item) => item.number === p.chosen) ? p.chosen : null;
+          return { ...p, preflightPhase: "done", preflight: view, preflightNote: note, chosen: keep };
+        }),
+      );
+    } catch {
+      updatePhoto(id, { preflightPhase: "failed", preflight: null, preflightFailure: PREFLIGHT_UNAVAILABLE_NOTICE });
+    }
+  }
+
+  // A changed note can change which product it names, so every checked
+  // photo is asked again (the cutout is cached, so only the cheap intake
+  // call runs again).
+  function recheckForNote() {
+    const note = description.trim();
+    for (const photo of photos) {
+      if (photo.kind === "image" && photo.key && photo.preflightPhase === "done" && photo.preflightNote !== note) {
+        void runPreflight(photo.id, photo.key);
+      }
     }
   }
 
@@ -399,6 +480,7 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
     const outcome = await requestPhotoImport(image.url, name);
     if (outcome.phase === "uploaded") {
       updatePhoto(id, { phase: "uploaded", key: outcome.key, sha256: outcome.sha256 });
+      void runPreflight(id, outcome.key);
     } else if (outcome.phase === "notice") {
       // Imports are off on this server (demo mode), like uploads.
       removePhoto(id);
@@ -410,7 +492,11 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
 
   async function submit() {
     setSubmitError(null);
-    if (uploading || submitting) {
+    if (uploading || submitting || checking) {
+      return;
+    }
+    if (blockReason) {
+      setSubmitError(blockReason);
       return;
     }
     if (selected.length === 0) {
@@ -425,12 +511,16 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
       setSubmitError(detailsProblem);
       return;
     }
-    const uploads = uploaded.map((p) => ({
-      key: p.key!,
-      sha256: p.sha256!,
-      kind: p.kind,
-      ...(p.kind === "image" ? { angle: p.angle } : {}),
-    }));
+    const uploads = uploaded.map((p) => {
+      const targetBox = photoTargetBox(p);
+      return {
+        key: p.key!,
+        sha256: p.sha256!,
+        kind: p.kind,
+        ...(p.kind === "image" ? { angle: p.angle } : {}),
+        ...(targetBox ? { targetBox } : {}),
+      };
+    });
     const details = { sku: sku.trim(), boxContents, comparisonFacts };
     const intent = intentFor(
       intentRef.current,
@@ -441,7 +531,11 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
         uploadKey: uploads.length > 0 ? uploads.map((u) => u.key).join("|") : null,
         newProductTitle,
         description,
-        details: JSON.stringify({ angles: uploads.map((u) => u.angle ?? ""), ...details }),
+        details: JSON.stringify({
+          angles: uploads.map((u) => u.angle ?? ""),
+          targets: uploads.map((u) => u.targetBox ?? null),
+          ...details,
+        }),
       },
       () => crypto.randomUUID(),
     );
@@ -506,7 +600,13 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
   }
 
   const overBalance = estimateOverBalanceLine(estimate.total, creditBalance);
-  const buttonLabel = uploading ? "Uploading photo" : submitting ? "Starting" : "Create pack";
+  const buttonLabel = uploading
+    ? "Uploading photo"
+    : checking
+      ? "Checking photo"
+      : submitting
+        ? "Starting"
+        : "Create pack";
 
   return (
     <div className="grid gap-8 lg:grid-cols-[1fr_20rem]">
@@ -592,6 +692,21 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
                         <p className="text-xs text-emerald-700" data-testid="upload-done">
                           Uploaded {photo.name}
                         </p>
+                      ) : null}
+                      {photo.phase === "uploaded" && photo.kind === "image" && photo.preflightPhase ? (
+                        <PreflightResult
+                          view={photo.preflight ?? null}
+                          checking={photo.preflightPhase === "checking"}
+                          failure={photo.preflightFailure ?? null}
+                          selected={selected}
+                          chosen={photo.chosen ?? null}
+                          onChoose={(number) => {
+                            updatePhoto(photo.id, { chosen: number });
+                            setSubmitError(null);
+                          }}
+                          multiItem={photo.angle === "in_the_box"}
+                          photoLabel={`photo ${index + 1}`}
+                        />
                       ) : null}
                       {photo.phase === "error" ? (
                         <p className="text-xs text-red-600" role="alert">
@@ -692,6 +807,7 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
                 value={description}
                 maxLength={2000}
                 onChange={(event) => setDescription(event.target.value)}
+                onBlur={recheckForNote}
                 placeholder="Materials, sizes, claims you can back up."
                 className="mt-1"
               />
@@ -847,13 +963,18 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
               variant="secondary"
               size="lg"
               className="mt-5 w-full"
-              disabled={submitting || uploading}
-              aria-disabled={submitting || uploading}
+              disabled={submitting || uploading || checking || blockReason !== null}
+              aria-disabled={submitting || uploading || checking || blockReason !== null}
               onClick={() => void submit()}
               data-testid="create-pack"
             >
               {buttonLabel}
             </Button>
+            {blockReason && !submitError ? (
+              <p className="mt-3 text-sm text-amber-700" data-testid="preflight-block">
+                {blockReason}
+              </p>
+            ) : null}
             {submitError ? (
               <p className="mt-3 text-sm text-red-600" role="alert">
                 {submitError}

@@ -22,6 +22,7 @@ import {
   sql,
   eq,
   and,
+  type SourceMediaTargetBox,
 } from "@curvi/db";
 import type { Shot } from "@curvi/pipeline/schemas";
 import type { PackFollowUpInput, PackFollowUpReason } from "@curvi/trigger/follow-up";
@@ -45,7 +46,22 @@ import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inl
 import { brandStyleFor, buildGeneratePackInput, seoSlugFor, type PayloadBrandKit } from "@/lib/jobs/payload";
 import { pickSourcePhoto } from "@/lib/makeover";
 import { estimatePackCredits } from "@/lib/pack-estimate";
-import { getObjectBytes, isWorkspaceKey, isWorkspaceSourceKey, presignDownload, presignObjectGet } from "@/lib/r2";
+import {
+  getObjectBytes,
+  isWorkspaceKey,
+  isWorkspaceSourceKey,
+  presignDownload,
+  presignObjectGet,
+  putGeneratedObject,
+} from "@/lib/r2";
+import {
+  preflightRowsFor,
+  preflightUpload as runPreflightUpload,
+  reusableIntakeOf,
+  type PreflightServiceDeps,
+} from "@/lib/preflight/service";
+import type { PreflightOutcome } from "@/lib/preflight/types";
+import type { UploadPreflight } from "@curvi/db";
 import { brandKitInputSchema, brandKitIssueNotice, normalizeFontChoice } from "@/lib/validation/brand-kit";
 import { isUuid } from "@/lib/validation/ids";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
@@ -80,6 +96,7 @@ import type {
   JobSummary,
   JobView,
   MemberView,
+  PreflightUploadInput,
   ProductLibraryEntry,
   ProductSummary,
   RegisterSourceMediaInput,
@@ -121,6 +138,9 @@ export interface DbServiceDeps {
   /** Server side ingest of an uploaded object (lib/trust/ingest.ts). Left
    * out, it reads R2 whenever R2 is configured; null skips the check. */
   ingestUpload?: ((key: string, kind: "image" | "video") => Promise<IngestOutcome>) | null;
+  /** Overrides for the preflight at upload (tests): the runner side run,
+   * thumbnail storage and signing. Left out, the worker runtime and R2 run. */
+  preflight?: Partial<Omit<PreflightServiceDeps, "db">>;
 }
 
 /** Most photos a pack sends to the worker (MAX_PACK_PHOTOS). */
@@ -232,6 +252,8 @@ export interface PackMedia {
   r2Key: string;
   kind: "image" | "video" | "frame" | null;
   angle: AngleRole | null;
+  /** The product the seller tapped in the chooser (source_media.target_box). */
+  targetBox?: SourceMediaTargetBox | null;
 }
 
 /** The photos a pack runs on: this request's uploads when it sent any,
@@ -1262,7 +1284,12 @@ export class DbService implements Services {
         });
       }
     }
-    const uploads: PackMedia[] = uploadRows.map((u) => ({ r2Key: u.key, kind: u.kind, angle: u.angle ?? null }));
+    const uploads: PackMedia[] = uploadRows.map((u) => ({
+      r2Key: u.key,
+      kind: u.kind,
+      angle: u.angle ?? null,
+      targetBox: u.targetBox ?? null,
+    }));
     const storedMedia = existingProduct
       ? (
           await this.db.query.sourceMedia.findMany({
@@ -1277,9 +1304,45 @@ export class DbService implements Services {
           })
         )
           .filter((m) => isWorkspaceSourceKey(workspaceId, m.r2Key))
-          .map((m): PackMedia => ({ r2Key: m.r2Key, kind: m.kind, angle: isAngleRole(m.angle) ? m.angle : null }))
+          .map(
+            (m): PackMedia => ({
+              r2Key: m.r2Key,
+              kind: m.kind,
+              angle: isAngleRole(m.angle) ? m.angle : null,
+              targetBox: m.targetBox ?? null,
+            }),
+          )
       : [];
     const media = mergePackMedia(uploads, storedMedia);
+
+    // The preflight at upload (PHASE_14.md workstream 4): a photo it found a
+    // blocking problem in never starts a pack, so nothing is held for it,
+    // and each photo's intake answer rides the payload for the runner to
+    // reuse. A lookup that fails (for example before migration 0022 is
+    // applied) changes nothing: the runner checks every photo itself.
+    const preflights = await preflightRowsFor(
+      this.db,
+      workspaceId,
+      media.map((m) => m.r2Key),
+    ).catch((err: unknown): Map<string, UploadPreflight> => {
+      console.warn(`[jobs] could not read the preflights of workspace ${workspaceId}`, err);
+      return new Map();
+    });
+    const blocked = uploadRows
+      .filter((u) => u.kind === "image")
+      .map((u) => preflights.get(u.key))
+      .find((row) => row?.status === "blocked");
+    if (blocked) {
+      const problem = (blocked.result as { problem?: { title?: string; fix?: string } }).problem;
+      return {
+        outcome: "rejected",
+        reason: "invalid_upload",
+        message:
+          problem?.title && problem.fix
+            ? `${problem.title} ${problem.fix}`
+            : "One of these photos cannot be used for a pack. Remove it and upload another.",
+      };
+    }
 
     // Seller inputs this request saves on the product, and what the product
     // then holds. The hold covers the shots they unlock (the photo angles,
@@ -1390,6 +1453,16 @@ export class DbService implements Services {
                 .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
                 .returning({ id: sourceMedia.id })
             : [];
+        // The product the seller tapped in the chooser, saved on the photo
+        // (0020) so follow ups and later packs keep it.
+        for (const upload of uploadRows) {
+          if (upload.targetBox) {
+            await tx
+              .update(sourceMedia)
+              .set({ targetBox: upload.targetBox })
+              .where(and(eq(sourceMedia.workspaceId, workspaceId), eq(sourceMedia.r2Key, upload.key)));
+          }
+        }
         const [inserted] = await tx
           .insert(generationJobs)
           .values({
@@ -1470,7 +1543,10 @@ export class DbService implements Services {
             boxContents: product.boxContents,
             comparisonFacts: product.comparisonFacts,
           },
-          media,
+          media: media.map((m) => ({
+            ...m,
+            preflight: reusableIntakeOf(preflights.get(m.r2Key), new Date()),
+          })),
           userDescription: input.userDescription,
           brandColors,
           brandKit,
@@ -1618,6 +1694,47 @@ export class DbService implements Services {
       }
     }
     return { ok: true, notice: "Photo saved to this product." };
+  }
+
+  async preflightUpload(workspaceId: string, input: PreflightUploadInput): Promise<PreflightOutcome> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return { ok: false, reason: "forbidden", message: "Client seats cannot upload product photos." };
+    }
+    if (!isWorkspaceSourceKey(workspaceId, input.key)) {
+      return { ok: false, reason: "foreign_key", message: "That upload does not belong to this workspace." };
+    }
+    // The same server side check a pack runs on the file, before any model
+    // sees it.
+    const checked = await this.ingest(input.key, "image");
+    if (checked && !checked.ok) {
+      return checked.retryable
+        ? { ok: false, reason: "unavailable", message: checked.notice }
+        : { ok: false, reason: "invalid_upload", message: checked.notice };
+    }
+    const overrides = this.deps.preflight ?? {};
+    const storage = isR2Configured();
+    try {
+      const preflight = await runPreflightUpload(
+        {
+          db: this.db,
+          ...(overrides.run ? { run: overrides.run } : {}),
+          putObject: overrides.putObject !== undefined ? overrides.putObject : storage ? putGeneratedObject : null,
+          sign: overrides.sign ?? (storage ? (key: string) => presignObjectGet(key) : undefined),
+          ...(overrides.now ? { now: overrides.now } : {}),
+        },
+        workspaceId,
+        input,
+      );
+      return { ok: true, preflight };
+    } catch (err) {
+      console.error(`[preflight] could not check a photo in workspace ${workspaceId}`, err);
+      return {
+        ok: false,
+        reason: "unavailable",
+        message: "We could not check this photo right now. You can still start the pack, and it will check the photo when it runs.",
+      };
+    }
   }
 
   async listJobFiles(workspaceId: string, jobId: string): Promise<JobFilesView | null> {

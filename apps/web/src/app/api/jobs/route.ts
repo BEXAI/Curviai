@@ -26,7 +26,7 @@ import { RESTARTING_MESSAGE } from "@/lib/services/errors";
 import type { CreateJobResult } from "@/lib/services/types";
 import { RETRY_AFTER_SECONDS } from "@/lib/services/workspace-response";
 import { productIdSchema } from "@/lib/validation/ids";
-import { angleRoleSchema, sellerLinesSchema, skuSchema } from "@/lib/validation/seller-inputs";
+import { angleRoleSchema, sellerLinesSchema, skuSchema, targetBoxSchema } from "@/lib/validation/seller-inputs";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +41,8 @@ const JobRequest = z.object({
         sha256: z.string().regex(/^[0-9a-f]{64}$/),
         kind: z.enum(["image", "video"]),
         angle: angleRoleSchema.optional(),
+        // The product the seller tapped in the chooser at upload.
+        targetBox: targetBoxSchema.optional(),
       }),
     )
     .max(8)

@@ -40,6 +40,8 @@ const HOUR = 3600;
 export const RATE_LIMIT_POLICIES = {
   "uploads.sign": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },
   "uploads.complete": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },
+  // The preflight at upload: one per photo, again when the note changes.
+  "uploads.preflight": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },
   "jobs.create": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
   "products.create": { user: { limit: 120, windowSeconds: HOUR }, ip: { limit: 240, windowSeconds: HOUR } },
   // Each side by side image fetches two pictures and renders a new one.

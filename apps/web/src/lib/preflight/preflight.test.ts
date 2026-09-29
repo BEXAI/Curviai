@@ -1,0 +1,199 @@
+import { describe, expect, it } from "vitest";
+import type { UploadPreflightRun } from "@curvi/trigger/preflight";
+import { photoBlockReason, photoTargetBox, type PhotoItem } from "@/components/app/new-pack-form";
+import {
+  CUTOUT_UNAVAILABLE_NOTICE,
+  joinNames,
+  PREFLIGHT_UNAVAILABLE_NOTICE,
+  preflightBlockReason,
+  readyLine,
+  sizeShortfallLine,
+  sizeShortfalls,
+} from "./copy";
+import { demoPreflight } from "./demo";
+import { sizeNeeds, storedPreflightOf } from "./result";
+import type { PreflightView } from "./types";
+
+// docs/phases/PHASE_14.md workstream 4 and item 3.2: what the form says
+// about a checked photo, and when it lets a pack start.
+
+const flags = { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false };
+const watchBox = { x: 0.1, y: 0.2, width: 0.3, height: 0.25 };
+const shoeBox = { x: 0.5, y: 0.5, width: 0.4, height: 0.3 };
+
+function run(overrides: Partial<UploadPreflightRun> = {}, image: Record<string, unknown> = {}): UploadPreflightRun {
+  return {
+    missing: false,
+    photo: { width: 3000, height: 4000 },
+    intake: {
+      image: { sellableProduct: true, distinctProducts: 1, sharpEnough: true, screenshot: false, flags, ...image },
+      noteKey: "n",
+      recipe: { key: "intake_normalizer", version: 3 },
+      at: new Date().toISOString(),
+    },
+    moderation: [],
+    cutout: "done",
+    items: [],
+    rule: null,
+    thumbnails: [],
+    costMicros: 1000,
+    ...overrides,
+  } as UploadPreflightRun;
+}
+
+const twoItems: UploadPreflightRun["items"] = [
+  { number: 1, label: "silver watch", box: watchBox, areaShare: 0.1, colorName: "gray", featured: false },
+  { number: 2, label: "white sneakers", box: shoeBox, areaShare: 0.12, colorName: "white", featured: false },
+];
+
+function view(stored: ReturnType<typeof storedPreflightOf>): PreflightView {
+  return { ...stored, key: "k", items: stored.items.map(({ thumbKey, ...item }) => ({ ...item, thumbUrl: thumbKey })) };
+}
+
+describe("storedPreflightOf", () => {
+  it("reads a single product as ready, with its size", () => {
+    const stored = storedPreflightOf(
+      run({}, { products: [{ label: "silver watch", box: watchBox, matchesIntent: "yes" }] }),
+    );
+    expect(stored).toMatchObject({ status: "ready", found: "silver watch", problem: null, productLongSide: 1000 });
+    expect(stored.sizes.find((s) => s.specId === "amazon.main")).toMatchObject({ measure: "product" });
+  });
+
+  it("blocks prohibited goods, screenshots and photos with no product, each with its own fix", () => {
+    const prohibited = storedPreflightOf(run({ moderation: ["weapons"] }));
+    expect(prohibited.status).toBe("blocked");
+    expect(prohibited.problem?.title).toContain("weapons");
+    const screenshot = storedPreflightOf(run({}, { screenshot: true }));
+    expect(screenshot.problem?.code).toBe("screenshot");
+    const none = storedPreflightOf(run({}, { sellableProduct: false }));
+    expect(none.problem?.code).toBe("no_product");
+    expect(none.problem?.tips?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("asks which product when the photo holds several, preselecting the note's pick", () => {
+    const ask = storedPreflightOf(run({ items: twoItems, rule: "ambiguous" }), ["k1", "k2"]);
+    expect(ask.status).toBe("choose");
+    expect(ask.preselect).toBeNull();
+    expect(ask.items.map((i) => i.thumbKey)).toEqual(["k1", "k2"]);
+    expect(ask.items[0].longSide).toBe(1000);
+    const picked = storedPreflightOf(
+      run({ items: twoItems.map((i) => ({ ...i, featured: i.number === 2 })), rule: "note" }),
+    );
+    expect(picked).toMatchObject({ status: "choose", preselect: 2, found: "white sneakers", productLongSide: 1200 });
+  });
+
+  it("never offers a tap that would split a product in two parts", () => {
+    const parts = storedPreflightOf(run({ items: twoItems.map((i) => ({ ...i, featured: true })), rule: "single_product" }));
+    expect(parts.status).toBe("ready");
+    expect(parts.items).toEqual([]);
+  });
+
+  it("says when the cutout or the whole check could not run, without blocking", () => {
+    expect(storedPreflightOf(run({ cutout: "unavailable" })).notice).toBe(CUTOUT_UNAVAILABLE_NOTICE);
+    const down = storedPreflightOf(run({ intake: null }));
+    expect(down).toMatchObject({ status: "unavailable", notice: PREFLIGHT_UNAVAILABLE_NOTICE });
+    expect(storedPreflightOf(run({ missing: true })).status).toBe("unavailable");
+  });
+});
+
+describe("the form's copy", () => {
+  const ready = view(
+    storedPreflightOf(run({}, { products: [{ label: "silver watch", box: watchBox, matchesIntent: "yes" }] })),
+  );
+
+  it("names what was found and the channels it is ready for", () => {
+    expect(readyLine(ready, ["amazon.main", "shopify.product", "meta.feed_1x1"])).toBe(
+      "Found: silver watch. Ready for Amazon, Shopify and Meta.",
+    );
+    expect(joinNames(["Amazon"])).toBe("Amazon");
+    expect(preflightBlockReason(ready, ["amazon.main"], null)).toBeNull();
+  });
+
+  it("gives the size numbers for a photo too small for a channel", () => {
+    const small: PreflightView = { ...ready, photo: { width: 413, height: 486 }, productLongSide: 400 };
+    const short = sizeShortfalls(small, ["amazon.main", "meta.feed_1x1"]);
+    expect(short.map((s) => s.specId)).toContain("amazon.main");
+    const line = sizeShortfallLine(short[0], small.photo!);
+    expect(line).toContain("413 by 486 pixels");
+    expect(line).toContain("about 400 pixels");
+    expect(line).toMatch(/Amazon main needs about \d+/);
+    expect(preflightBlockReason(small, ["amazon.main"], null)).toContain("too small for Amazon main");
+    // Unticking the channel lets the pack start.
+    expect(preflightBlockReason(small, [], null)).toBeNull();
+  });
+
+  it("copy is plain: no arrows, no dashes as punctuation", () => {
+    const lines = [
+      readyLine(ready, ["amazon.main"]),
+      ...["prohibited", "screenshot", "no_product"].map((code) => {
+        const stored = storedPreflightOf(
+          code === "prohibited" ? run({ moderation: ["drugs"] }) : run({}, code === "screenshot" ? { screenshot: true } : { sellableProduct: false }),
+        );
+        return `${stored.problem?.title} ${stored.problem?.fix} ${(stored.problem?.tips ?? []).join(" ")}`;
+      }),
+      CUTOUT_UNAVAILABLE_NOTICE,
+      PREFLIGHT_UNAVAILABLE_NOTICE,
+    ];
+    for (const line of lines) {
+      expect(line).not.toMatch(/->|→|—|–| - /);
+    }
+  });
+});
+
+describe("the form's gate", () => {
+  const choose = view(storedPreflightOf(run({ items: twoItems, rule: "ambiguous" })));
+  const photo = (overrides: Partial<PhotoItem> = {}): PhotoItem => ({
+    id: 1,
+    name: "cafe.jpg",
+    phase: "uploaded",
+    kind: "image",
+    angle: "front",
+    key: "k",
+    preflightPhase: "done",
+    preflight: choose,
+    ...overrides,
+  });
+
+  it("holds the pack until the seller taps a product, then sends that box", () => {
+    expect(photoBlockReason(photo(), ["amazon.main"])).toBe("Tap the product this pack is for.");
+    expect(photoTargetBox(photo())).toBeUndefined();
+    expect(photoBlockReason(photo({ chosen: 2 }), ["amazon.main"])).toBeNull();
+    expect(photoTargetBox(photo({ chosen: 2 }))).toEqual(shoeBox);
+  });
+
+  it("takes the note's preselected pick without a tap", () => {
+    const preselected = { ...choose, preselect: 1 };
+    expect(photoBlockReason(photo({ preflight: preselected }), ["amazon.main"])).toBeNull();
+    expect(photoTargetBox(photo({ preflight: preselected }))).toEqual(watchBox);
+  });
+
+  it("never asks about an in the box photo", () => {
+    expect(photoBlockReason(photo({ angle: "in_the_box" }), ["amazon.main"])).toBeNull();
+    expect(photoTargetBox(photo({ angle: "in_the_box", chosen: 1 }))).toBeUndefined();
+  });
+
+  it("blocks Create pack for a blocking problem, and never for a check that could not run", () => {
+    const blocked = view(storedPreflightOf(run({ moderation: ["weapons"] })));
+    expect(photoBlockReason(photo({ preflight: blocked }), ["amazon.main"])).toContain("weapons");
+    expect(photoBlockReason(photo({ preflightPhase: "failed", preflight: null }), ["amazon.main"])).toBeNull();
+    expect(photoBlockReason(photo({ phase: "uploading" }), ["amazon.main"])).toBeNull();
+  });
+});
+
+describe("demo mode", () => {
+  it("answers a simulated ready result", () => {
+    const ready = demoPreflight("ws/demo/src/photo");
+    expect(ready).toMatchObject({ status: "ready", demo: true, found: "your product" });
+    expect(ready.sizes).toEqual(sizeNeeds());
+    expect(readyLine(ready, ["amazon.main"])).toBe("Found: your product. Ready for Amazon.");
+  });
+
+  it("simulates the chooser and a screenshot for the demo's own photos", () => {
+    const several = demoPreflight("ws/demo/src/e2e-several");
+    expect(several.status).toBe("choose");
+    expect(several.items).toHaveLength(2);
+    expect(several.items.every((item) => item.thumbUrl?.startsWith("data:image/svg+xml"))).toBe(true);
+    expect(demoPreflight("ws/demo/src/e2e-several", "just the watch").preselect).toBe(1);
+    expect(demoPreflight("ws/demo/src/e2e-screenshot").status).toBe("blocked");
+  });
+});
