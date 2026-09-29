@@ -492,8 +492,9 @@ export type CarouselBeat = "hook" | "benefit" | "details" | "in_the_box" | "cta"
  *   decision 4). The story runs hook, benefits (one slide each, at most
  *   maxBenefitSlides), details (up to maxDetailLines features), in the box
  *   (only with the seller's lines), then the call to action. Fewer than
- *   minSlides and the carousel is skipped; never more than maxSlides (Meta
- *   and Pinterest carousels take 10, docs/verification.md).
+ *   minSlides and the carousel is skipped; never more than maxSlides (the
+ *   largest carousel docs/verification.md names: Pinterest's 10 for the
+ *   sales objective; Meta's own card limit is not verified yet).
  * - adPack: static ad variants, each a headline and a call to action,
  *   rendered for every picked placement inside its safe zone. The variant
  *   count is the most the product's usable headlines allow, from
