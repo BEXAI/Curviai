@@ -93,7 +93,18 @@ describe("recipeFromRow", () => {
     expect(recipe?.models).toEqual(["model-a", "model-b"]);
   });
 
+  it("carries the body's thinking and effort per model and its timeout", () => {
+    const modelOptions = { "model-a": { effort: "low" as const }, "model-b": { thinking: "disabled" as const } };
+    const recipe = recipeFromRow({ ...row, body: { system: "plan the pack", modelOptions, timeoutMs: 90_000 } });
+    expect(recipe?.modelOptions).toEqual(modelOptions);
+    expect(recipe?.timeoutMs).toBe(90_000);
+    expect(recipeFromRow(row)).not.toHaveProperty("modelOptions");
+    expect(recipeFromRow(row)).not.toHaveProperty("timeoutMs");
+  });
+
   it("drops rows that cannot run", () => {
+    expect(recipeFromRow({ ...row, body: { system: "x".repeat(10), modelOptions: { "model-a": { effort: "huge" } } } })).toBeNull();
+    expect(recipeFromRow({ ...row, body: { system: "x".repeat(10), timeoutMs: 5 } })).toBeNull();
     expect(recipeFromRow({ ...row, body: { system: "" } })).toBeNull();
     expect(recipeFromRow({ ...row, stage: "render" })).toBeNull();
     expect(recipeFromRow({ ...row, model: "" })).toBeNull();
@@ -197,12 +208,16 @@ describe("dbRecipeLoader", () => {
 
   it("reads active rows, so a seeded table plus a new version is an A/B test", async () => {
     await loadRecipes(db as unknown as Db, recipeSeedRows);
-    const planner = recipeSeedRows.find((r) => r.stage === "plan")!;
+    const planner = recipeSeedRows.find((r) => r.stage === "plan" && r.active)!;
+    const next = planner.version + 10;
     await loadRecipes(db as unknown as Db, [
-      { ...planner, version: 2, fallbackModels: [], body: { system: "planner v2" }, trafficPct: 50 },
-      { ...planner, version: 3, body: { system: "retired planner" }, active: false },
+      { ...planner, version: next, fallbackModels: [], body: { system: "planner next" }, trafficPct: 50 },
+      { ...planner, version: next + 1, body: { system: "retired planner" }, active: false },
     ]);
-    await client.query("update recipes set traffic_pct = 50 where key = $1 and version = 1", [planner.key]);
+    await client.query("update recipes set traffic_pct = 50 where key = $1 and version = $2", [
+      planner.key,
+      planner.version,
+    ]);
 
     const catalog = new RecipeCatalog(dbRecipeLoader(db as unknown as Db));
     const versions = new Set<number>();
@@ -212,7 +227,7 @@ describe("dbRecipeLoader", () => {
       expect(recipes.plan!.source).toBe("db");
       expect(recipes.intake!.source).toBe("db");
     }
-    expect([...versions].sort()).toEqual([1, 2]);
+    expect([...versions].sort((a, b) => a - b)).toEqual([planner.version, next]);
     const recipes = await catalog.forJob("job-1");
     expect(recipes.intake!.models).toEqual([
       recipeSeedRows[0].model,
@@ -322,8 +337,25 @@ describe("runGeneratePack with runtime recipes", () => {
     expect(store.recipeVariants.get(baseInput.jobId)).toMatchObject({
       [intakeKey]: { recipeId: "intake-v4", version: 4, source: "db" },
       [activeRecipe("qc").key]: { recipeId: "qc-v2", version: 2, source: "db" },
-      [planKey]: { recipeId: null, version: 1, source: "seed" },
+      [planKey]: { recipeId: null, version: seedRecipe("plan").version, source: "seed" },
     });
+  });
+
+  it("sends the analyzer recipe's per model options and timeout with the call", async () => {
+    const { ai } = makeAi();
+    const analyze = ai.registry.get("mock-analyze") as MockProvider;
+    const store = new InMemoryJobStore();
+    await runGeneratePack(
+      { ...baseInput, jobId: "job-recipe-options" },
+      { ai, store, clock: systemClock, generator: new DemoShotGenerator(), recipes: { forJob: async () => seedJobRecipes() } },
+    );
+    const seeded = seedRecipe("analyze");
+    expect(seeded.modelOptions).toBeDefined();
+    expect(analyze.calls.length).toBeGreaterThan(0);
+    const req = analyze.calls[0];
+    expect((req.input as LlmTaskInput).modelOptions).toEqual(seeded.modelOptions);
+    expect((req.input as LlmTaskInput).maxTokens).toBe(seeded.maxTokens);
+    expect(req.timeoutMs).toBe(seeded.timeoutMs);
   });
 
   it("runs on the seed when the resolver throws or the store cannot record", async () => {
@@ -341,6 +373,6 @@ describe("runGeneratePack with runtime recipes", () => {
     });
     expect(recipes).toEqual(seedJobRecipes());
     expect(recipeFor(undefined, "qc")).toEqual(seedRecipe("qc"));
-    expect(recipeVariantsOf(recipes)[planKey]).toEqual({ recipeId: null, version: 1, source: "seed" });
+    expect(recipeVariantsOf(recipes)[planKey]).toEqual({ recipeId: null, version: seedRecipe("plan").version, source: "seed" });
   });
 });

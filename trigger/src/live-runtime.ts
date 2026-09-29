@@ -16,7 +16,6 @@ import {
   callWithFailover,
   CircuitBreaker,
   downloadBytes,
-  FAL_API_KEY_ENV,
   type CallResult,
   type CapsHook,
   GeminiImageProvider,
@@ -435,22 +434,23 @@ export function wireLiveProviders(
   // Cutouts run on fal (BiRefNet by default), in seed failover order. Every
   // shot starts from the cutout, so an exhausted or failing cutout provider
   // fails over to the next seeded one instead of failing every pack.
-  const falKey = readEnv(FAL_API_KEY_ENV);
-  if (falKey) {
-    for (const row of cutoutModelSeedRows) {
-      registry.register(
-        new FalCutoutProvider({
-          name: row.providerName,
-          tasks: [CUTOUT_TASK],
-          apiKey: falKey,
-          modelId: row.model,
-          modelParams: row.params,
-          priceTable: { perCallMicros: row.perCallMicros },
-          fetchFn: fetchFn as typeof fetch,
-        }),
-      );
-      wiring.cutoutProviders.push(row.providerName);
-    }
+  // Each row names its own key env, so a second fal account is a failover
+  // target with its own balance; a row whose key is unset is skipped.
+  for (const row of cutoutModelSeedRows) {
+    const falKey = readEnv(row.keyEnv);
+    if (!falKey) continue;
+    registry.register(
+      new FalCutoutProvider({
+        name: row.providerName,
+        tasks: [CUTOUT_TASK],
+        apiKey: falKey,
+        modelId: row.model,
+        modelParams: row.params,
+        priceTable: { perCallMicros: row.perCallMicros },
+        fetchFn: fetchFn as typeof fetch,
+      }),
+    );
+    wiring.cutoutProviders.push(row.providerName);
   }
   if (wiring.cutoutProviders.length > 0) {
     routing[CUTOUT_TASK] = [...wiring.cutoutProviders];

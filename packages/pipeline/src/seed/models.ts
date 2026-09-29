@@ -63,6 +63,11 @@ export interface CutoutModelSeedRow {
   params: Record<string, unknown>;
   /** Budgeted per image price in USD micros. */
   perCallMicros: number;
+  /** Env var holding this row's fal key. A name, never a value. Each row
+   * may bill a different fal account, so one empty balance fails over to the
+   * next row instead of pausing every pack. A row whose key is unset is not
+   * registered. */
+  keyEnv: string;
 }
 
 /**
@@ -88,6 +93,25 @@ export const cutoutModelSeedRows: CutoutModelSeedRow[] = [
       refine_foreground: true,
     },
     perCallMicros: 10_000,
+    keyEnv: "FAL_KEY",
+  },
+  {
+    // The same MIT BiRefNet model on a second fal account with its own
+    // balance (audit 2026-09-29, PHASE_14 1.2). With a single row, one
+    // exhausted fal balance ("Exhausted balance", HTTP 403) left the router
+    // nothing to fail over to, and every pack that needs a cutout paused.
+    // Registered only when FAL_KEY_BACKUP is set; same API, price and
+    // parameters as the primary, so no new vendor or adapter is involved.
+    providerName: "fal-birefnet-backup",
+    model: "fal-ai/birefnet/v2",
+    params: {
+      model: "General Use (Dynamic)",
+      operating_resolution: "2304x2304",
+      output_format: "png",
+      refine_foreground: true,
+    },
+    perCallMicros: 10_000,
+    keyEnv: "FAL_KEY_BACKUP",
   },
 ];
 
