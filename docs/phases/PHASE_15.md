@@ -805,3 +805,84 @@ Two reviews checked the draft against the code. Every factual claim below was co
 - Grayscale photos are rendered, not passed through, which is the more conservative reading of "space srgb or b-w".
 - The axe check moved to the backlog: it needs a new dev dependency while home/liquid-metal holds uncommitted changes to apps/web/package.json. The e2e asserts roles, names and keyboard behavior directly.
 - The dark color note for custom colors ships only if the golden fringe review still shows a fringe after the edge blend change.
+
+## Implementation status
+
+Recorded 2026-09-29 on the integration branch `p15/output-options` (head cc01a2e before this docs commit). Migration 0023 is applied in production (2026-09-29). Nothing else from this phase is live: the seeds, the worker, the web app and the env flag are still founder steps (docs/PENDING.md, "Phase 15 founder steps").
+
+### What shipped, P0
+
+| Control | Status | Where |
+| --- | --- | --- |
+| Foundations | Built | Registry version 2 (`bordersAllowed`, Google byte and megapixel limits), specs helpers, seed swatches and `originalFit`, `@curvi/pipeline/output-options`, `@curvi/pipeline/treatment`, the ingest record, migration 0023 with object CHECK constraints, `original_photo` in the Shot enum with `LlmShot`. |
+| 1. Look | Built | `LOOK_PRESETS` and server derived `lookOf`; three cards in a radiogroup with the Custom chip and Reset; Brand look disabled with the kit and plan lines. |
+| 2. Remove the background | Built | `Switch` in @curvi/ui (role=switch, 44 px). Keep plans `original_photo`, skips the LLM plan and the paid judge on originals, and can run while cutouts are paused. |
+| 3. Background color | Built | Native Select with named swatches, brand colors and a custom hex; the hex is snapshotted on the job. Colored backgrounds render through `placeOnBackground` with the edge blend. |
+| 4. Channels that need white | Built | Chips, heads up lines and Leave it out; made white shots narrowed to white required specs; `FORCED_WHITE_NOTE` in the report. |
+| 5. Extra images | Built | Five family checkboxes; `skipSellerOffShots` on both plan paths and `coverSellerOffSpecs`; SELLER_OFF_REASON skips carry their channels. |
+| 6. Photo shape | Built | `auto` and `pad` in `original.ts` with `keptScale`, the megapixel cap and `SOURCE_TOO_SMALL_REASON` at plan time. |
+| 7. Already white photos | Built | `detectAlreadyWhite` and `makeAlreadyWhite`, reading the cutout cache only, falling back to made white. |
+| Job page, report, reveal, share | Built | Your choices card, channel shaped previews, Sized for each channel reveal, treatment notes, no badge on kept files, share pages with no before for a kept hero. |
+| Flags | Built | `NEXT_PUBLIC_OUTPUT_OPTIONS` env flag and the `output_options_enabled` kill switch (fails closed, 30 s cache); non default options are refused while either is off. |
+| Trigger handoff | Built | Kept files above 6 MiB cross the subtask boundary as R2 keys (`handoffFileKey`), because of Trigger.dev's 10MB output cap. |
+
+### What shipped, P1
+
+| Control | Status |
+| --- | --- |
+| Trim to the channel's shape (`fit: crop`) | Built, with the product box from the preflight and a pad fallback note. |
+| Background per photo | Built as `uploads[].background`, resolved to `keepMediaIds`. |
+| Number of scenes | Built on the deterministic path. Partial on the LLM path (see Known gaps). |
+| Scene style | Built in `applyBrandStylePreset`. The demo plan shows it but does not apply it. |
+| Logo on graphics, Product size, Never enlarge, Match my photo's edges, Graphics follow your color | Built, each with its schema field, renderer and tests. |
+| Remember choices per product | Built as `products.output_defaults`, saved inside the createJob transaction, a client prefill only; drops skip scenes for a product whose choices turn them off. |
+| Cutout preview | Built in live mode (640 px alpha PNG in R2). Not in demo mode. |
+| "Background matches your color" check | Built (`backgroundMatchesChoice`, CIEDE2000 at most 2.0). |
+| Added text on kept photos | Built as intake_normalizer version 5 with `addedOverlays`. Needs the re-seed and a live eval. |
+| "Keep my background" hint | Built from the seeded `keepBackgroundPhrases`. |
+| Free resizer alignment | Built: the resizer follows the kept photo rules and drops white required channels. |
+
+### Deviations from this plan
+
+- Slate and charcoal were removed from `backgroundSwatches` for P0, because the golden fringe review has not been run. `DARK_COLOR_EDGE_NOTE` covers dark custom colors in the meantime.
+- `BACKGROUND_WHITE_OR_CLEAR_ENABLED` stays false. A JPEG q90 white render measures about 0.99 against the 0.999 limit, so the check waits for a golden set run and the PNG escape for white_or_transparent and white_preferred specs. Until then Google main and TikTok Shop main files have no pixel level white gate beyond the main class checks.
+- Both Google specs refuse borders (registry version 2), so a kept photo on Google is fitted with auto and never padded; a pad choice there raises a `borders_refused` conflict.
+- `createJob` now refuses a pack that needs a cutout while cutouts are paused (503 with `PACKS_PAUSED_COPY`). Before this phase such a pack was accepted.
+- The form's look, Custom chip and the `pack_created` look ignore the P1 controls under More options, while the server's `lookOf` says custom. Left as is for the founder to decide.
+- The P1 fields arrived in one slice rather than one pull request each; every field still landed with its renderer and tests, worker code included.
+
+### Known gaps found in review
+
+Correctness:
+- Follow up paths (an angle added through shot-ops, and trigger `runPackFollowUp`) ignore `addedOverlays`, so a kept photo with added text can ship to eBay or Google.
+- Idempotent replay compares `outputOptionsKey` only and ignores per photo backgrounds, so two requests that differ only in `uploads[].background` replay as the same job.
+- The strict intake tool schema requires `addedOverlays`, while the active production recipe (version 4 until the re-seed) never asks for it. The re-seed and the worker deploy must land together.
+- The already white path ignores the seller's product target and ships every item in the photo on the white main image.
+- An already white file on tiktokshop.main or google.merchant.main is never checked for pure white after encoding.
+- A kept PNG with partial (semi transparent) alpha always fails the exact proof and goes to review.
+- Scene count on the LLM plan path: a plan with more scenes than picked fails the budget check before `capSceneCount` can trim it, and a plan with fewer is never topped up. The shot_planner prompt still asks for 2 to 4 scenes; changing it needs a recipe bump and pnpm eval.
+
+Copy and UI:
+- The too small line always cites the 1.5x enlarge limit, even with Never enlarge my photo on.
+- The Your choices card ignores per photo backgrounds, so a Remove pack with a kept photo reads as fully removed.
+- The More options change count includes scene fields that scenes_paused keeps out of the body.
+- The per photo Background Select is a 40 px touch target, under the 44 px used elsewhere.
+- The report shows the "Background matches your color" check under its internal name.
+- Scenes trimmed to the seller's scene count read as a generic "Skipped".
+- The share page still says before and after, and shows a slider, when the hero is a kept photo; the share grid still uses square tiles.
+
+Operations:
+- Cutout preview objects (`ws/{id}/cache/preview/`) are written on every preflight and handoff objects (`ws/{ws}/jobs/{job}/handoff/`) are never deleted. Both need an R2 lifecycle rule.
+- The already white path and the cache only inventory honor the 24 hour cutout cache, so a Keep pack made more than a day after upload pays for a new cutout.
+- `NEXT_PUBLIC_OUTPUT_OPTIONS` is still missing from .env.example (env files were off limits to the builders; not checked here).
+- `originalFit.srgbProfileNames` has not been checked against real camera and phone ICC descriptions.
+
+### Still needs a live run
+
+The "Done when" gates are not met yet:
+- The golden set of Keep photos with zero fidelity failures, and the golden already white photos.
+- The swatch fringe review (which also decides slate and charcoal).
+- The 80 MP peak memory test.
+- `pnpm eval` with live keys, including intake version 5 and the added text flag.
+- `pnpm e2e` across the whole suite (e2e/output-options.spec.ts is written; the full suite has not been run on this branch), then the full rule 6 gate.
+- A live end to end pack in staging for each look, including a Keep pack on the Trigger.dev path once v4 lands (production runs packs inline today).
