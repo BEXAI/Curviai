@@ -4,6 +4,7 @@ import { buttonVariants } from "@curvi/ui";
 import { JsonLd } from "@/components/json-ld";
 import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { helpArticles, helpClosing, structuredHelpArticles } from "@/components/marketing/help-articles";
+import { pillarPages } from "@/components/marketing/pillar-copy";
 import { breadcrumbJsonLd, faqPageJsonLd, jsonLdGraph, pageMetadata } from "@/lib/seo";
 
 export const metadata: Metadata = pageMetadata({
@@ -66,7 +67,23 @@ export default function HelpPage() {
         ))}
       </div>
 
-      <div className="mt-16 rounded-xl border border-ink-100 p-8 text-center">
+      <nav aria-label="Guides" className="mt-16">
+        <h2 className="text-lg font-semibold text-ink-950">Guides</h2>
+        <ul className="mt-3 flex flex-wrap gap-2">
+          {pillarPages.map((guide) => (
+            <li key={guide.path}>
+              <Link
+                href={guide.path}
+                className="inline-block rounded-full border border-ink-200 px-3 py-1 text-sm text-ink-600 hover:bg-ink-50"
+              >
+                {guide.name}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <div className="mt-10 rounded-xl border border-ink-100 p-8 text-center">
         <h2 className="text-xl font-semibold text-ink-950">Ready to try it?</h2>
         <p className="mt-2 text-sm text-ink-600">{helpClosing}</p>
         <Link

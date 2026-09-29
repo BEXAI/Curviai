@@ -1,5 +1,6 @@
 import type { MetadataRoute } from "next";
 import { categories } from "@/components/marketing/categories";
+import { pillarPages } from "@/components/marketing/pillar-copy";
 import { imageSpecs, specSlug } from "@/components/marketing/spec-slug";
 
 const BASE_URL = "https://curvi.ai";
@@ -17,6 +18,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${BASE_URL}/login`, changeFrequency: "yearly", priority: 0.3 },
   ];
 
+  const guideRoutes: MetadataRoute.Sitemap = pillarPages.map((page) => ({
+    url: `${BASE_URL}${page.path}`,
+    changeFrequency: "monthly",
+    priority: 0.8,
+  }));
+
   const channelRoutes: MetadataRoute.Sitemap = imageSpecs().map((spec) => ({
     url: `${BASE_URL}/channels/${specSlug(spec.id)}/image-requirements`,
     changeFrequency: "monthly",
@@ -29,5 +36,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.7,
   }));
 
-  return [...staticRoutes, ...channelRoutes, ...categoryRoutes];
+  return [...staticRoutes, ...guideRoutes, ...channelRoutes, ...categoryRoutes];
 }

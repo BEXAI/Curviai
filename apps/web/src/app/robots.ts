@@ -8,7 +8,8 @@ import type { MetadataRoute } from "next";
  * fetchers such as ChatGPT-User and Perplexity-User may not read robots.txt.
  * A crawler that matches a named group ignores the wildcard group, so each
  * group repeats the same disallow list. Tokens checked against each
- * operator's docs on 2026-09-28 (docs/verification.md).
+ * operator's docs on 2026-09-28, and the Amazon, Meta user fetcher and
+ * Mistral tokens added on 2026-09-29 (docs/verification.md).
  */
 const AI_CRAWLERS = [
   "GPTBot",
@@ -24,8 +25,13 @@ const AI_CRAWLERS = [
   "Applebot-Extended",
   "Amazonbot",
   "Amzn-SearchBot",
+  "Amzn-User",
   "meta-webindexer",
   "meta-externalagent",
+  "meta-externalfetcher",
+  "MistralAI-User",
+  "MistralAI-Index",
+  "MistralAI-Training",
   "DuckAssistBot",
   "CCBot",
 ];

@@ -24,6 +24,7 @@ import {
   homeHero,
   homeSteps,
 } from "./home-copy";
+import { pillarPageTexts, pillarPages } from "./pillar-copy";
 import { signupLead } from "./signup-copy";
 import { imageSpecs, specDisplayName } from "./spec-slug";
 import { checkerGateCopy, checkerVerdictCopy, fixerGateCopy, resizerGateCopy, toolPackCta } from "./tool-copy";
@@ -83,6 +84,7 @@ function liveCopy(): { where: string; text: string }[] {
       text: `${gate.title}. ${gate.body}`,
     })),
     { where: "signup lead", text: signupLead() },
+    ...pillarPages.flatMap((page) => pillarPageTexts(page, { curviOnly: true }).map((text) => ({ where: `guide ${page.path}`, text }))),
     ...Object.entries(brandKitCopy).map(([key, text]) => ({ where: `brand kit ${key}`, text })),
     ...imageSpecs().flatMap((spec) => {
       const copy = channelPageCopy(spec);

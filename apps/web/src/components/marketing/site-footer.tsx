@@ -12,6 +12,10 @@ const productLinks = [
 
 const resourceLinks = [
   { href: "/help", label: "Help center" },
+  { href: "/ai-product-images", label: "AI product images" },
+  { href: "/ai-ecommerce", label: "AI for e-commerce" },
+  { href: "/compare/ai-image-generators", label: "Curvi vs AI image generators" },
+  { href: "/compare/ecommerce-photo-tools", label: "Curvi vs product photo tools" },
   { href: "/channels/amazon-main/image-requirements", label: "Amazon image requirements" },
   { href: "/channels/google-merchant-main/image-requirements", label: "Google image requirements" },
   { href: "/channels/shopify-product/image-requirements", label: "Shopify image requirements" },
@@ -26,7 +30,7 @@ export function SiteFooter() {
           <div>
             <Wordmark className="text-white" />
             <p className="mt-3 max-w-xs text-sm text-ink-400">
-              Studio product photos for marketplaces and social, from one photo, without changing your product.
+              AI product images for e-commerce: studio photos for marketplaces and social, from one photo, without changing your product.
             </p>
           </div>
           <div>

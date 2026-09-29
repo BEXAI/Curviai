@@ -11,6 +11,7 @@ import {
   typicalPackCredits,
   type Availability,
 } from "@/lib/marketing-facts";
+import { answerFaqs } from "./pillar-copy";
 
 /**
  * Copy for the home page. Numbers come from the seeds through
@@ -20,10 +21,10 @@ import {
  */
 
 export const homeHero = {
-  eyebrow: "Built for marketplace sellers",
-  lead: `Studio product photos for ${liveChannelShortList()}, from one photo, without changing your product.`,
+  eyebrow: "AI product images for e-commerce",
+  lead: `AI product images for ${liveChannelShortList()}, from one photo, without changing your product.`,
   proof:
-    "Every file is measured against the channel rules before you download it. We keep your real product pixels, so labels never warp.",
+    "Every file is measured against the channel rules before you download it. We keep your real product pixels and generate only the light, shadow and setting around them, so labels never warp.",
   sliderCaption: "Illustration, not a customer photo. Drag the divider: the product stays, the background changes.",
 };
 
@@ -110,17 +111,17 @@ export interface HomeFaq {
  * test enforces that.
  */
 export const homeFaqs: HomeFaq[] = [
-  {
-    q: "Does the AI change my product?",
-    a: "No. Curvi masks your product first and only rebuilds what is around it: backgrounds, lighting and scenes. Product pixels inside the mask are never regenerated, which is why labels never warp.",
-  },
+  answerFaqs.willAiChangeProduct,
+  answerFaqs.bestAmazonTool,
+  answerFaqs.amazonWhiteBackground,
+  answerFaqs.generatorsVsPhotoTools,
   {
     q: "What do I need to start?",
     a: "One photo per product. A phone photo on a table works. Higher resolution photos give the pack more room for large formats.",
   },
   {
     q: "Which channels are covered?",
-    a: `You pick the channels for each pack. Curvi makes ${liveFilesPhrase()}. ${comingSoonFilesSentence(["video formats"])}`,
+    a: `Curvi makes ${liveFilesPhrase()}. You pick the channels for each pack. ${comingSoonFilesSentence(["video formats"])}`,
   },
   {
     q: "How do credits work?",

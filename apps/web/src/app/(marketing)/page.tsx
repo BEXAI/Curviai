@@ -17,6 +17,7 @@ import {
   homeSteps,
   type HomeFeatureKey,
 } from "@/components/marketing/home-copy";
+import { pillarPages } from "@/components/marketing/pillar-copy";
 import { UploadBox } from "@/components/marketing/upload-box";
 import { Wordmark } from "@/components/marketing/site-header";
 import { isStripeConfigured } from "@/lib/env";
@@ -255,6 +256,21 @@ export default function HomePage() {
               </details>
             ))}
           </div>
+          <nav aria-label="Guides" className="mt-8 text-center">
+            <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink-400">Guides</h3>
+            <ul className="mt-3 flex flex-wrap justify-center gap-2">
+              {pillarPages.map((guide) => (
+                <li key={guide.path}>
+                  <Link
+                    href={guide.path}
+                    className="inline-block rounded-full px-3 py-1 text-sm text-ink-300 ring-1 ring-inset ring-white/15 transition-colors hover:bg-white/5 hover:text-white"
+                  >
+                    {guide.name}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </nav>
         </div>
       </section>
 

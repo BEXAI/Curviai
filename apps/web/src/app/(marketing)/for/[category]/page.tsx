@@ -8,6 +8,7 @@ import { categories, categoryForSlug } from "@/components/marketing/categories";
 import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
 import { EmailCapture } from "@/components/marketing/email-capture";
+import { pillarPages } from "@/components/marketing/pillar-copy";
 import { freeCredits, freeCreditsReach } from "@/lib/marketing-facts";
 import { breadcrumbJsonLd, categoryPageSeo, jsonLdGraph, pageMetadata } from "@/lib/seo";
 
@@ -145,6 +146,20 @@ export default async function CategoryPage({
               </Link>
             </li>
           ))}
+      </ul>
+
+      <h2 className="mt-10 text-lg font-semibold text-ink-950">Guides</h2>
+      <ul className="mt-3 flex flex-wrap gap-2">
+        {pillarPages.map((guide) => (
+          <li key={guide.path}>
+            <Link
+              href={guide.path}
+              className="inline-block rounded-full border border-ink-200 px-3 py-1 text-sm text-ink-600 hover:bg-ink-50"
+            >
+              {guide.name}
+            </Link>
+          </li>
+        ))}
       </ul>
     </div>
   );
