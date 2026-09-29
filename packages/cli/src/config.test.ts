@@ -3,7 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_BASE_URL } from "./client.ts";
-import { configDir, configPath, maskKey, readConfig, resolveAuth, writeConfig, type ConfigEnv } from "./config.ts";
+import {
+  assertKeyTarget,
+  checkApiUrl,
+  configDir,
+  configPath,
+  maskKey,
+  readConfig,
+  resolveAuth,
+  writeConfig,
+  type ConfigEnv,
+} from "./config.ts";
 
 describe("configDir", () => {
   const home = "/home/sam";
@@ -73,6 +83,31 @@ describe("resolveAuth", () => {
     });
     expect(resolveAuth({ CURVI_API_URL: "http://env" }, stored, "http://flag").apiUrl).toBe("http://flag");
     expect(resolveAuth({ CURVI_API_KEY: "  " }, {})).toEqual({ apiKey: null, apiUrl: DEFAULT_BASE_URL, keySource: null });
+  });
+});
+
+describe("checkApiUrl and assertKeyTarget", () => {
+  it("allows https anywhere and plain http on this machine only", () => {
+    expect(checkApiUrl("https://curvi.ai/api/v1").origin).toBe("https://curvi.ai");
+    for (const local of ["http://localhost:3000/api/v1", "http://127.0.0.1:3000", "http://[::1]:3000"]) {
+      expect(() => checkApiUrl(local)).not.toThrow();
+    }
+    for (const bad of ["http://evil.example", "http://localhost.evil.example", "ftp://curvi.ai", "curvi.ai", "javascript:alert(1)"]) {
+      expect(() => checkApiUrl(bad)).toThrow();
+    }
+  });
+
+  it("binds a saved key to the origin it was saved for", () => {
+    const stored = { apiKey: "saved" };
+    expect(() => assertKeyTarget(resolveAuth({}, stored), stored)).not.toThrow();
+    expect(() => assertKeyTarget(resolveAuth({}, stored, "https://curvi.ai/other"), stored)).not.toThrow();
+    expect(() => assertKeyTarget(resolveAuth({}, stored, "https://evil.example/api/v1"), stored)).toThrow(
+      /saved key is for https:\/\/curvi.ai/,
+    );
+    expect(() => assertKeyTarget(resolveAuth({ CURVI_API_URL: "https://evil.example" }, stored), stored)).toThrow();
+    const env = { CURVI_API_KEY: "env", CURVI_API_URL: "https://staging.example" };
+    expect(() => assertKeyTarget(resolveAuth(env, stored), stored)).not.toThrow();
+    expect(() => assertKeyTarget(resolveAuth({ ...env, CURVI_API_URL: "http://staging.example" }, stored), stored)).toThrow();
   });
 });
 

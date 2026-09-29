@@ -176,6 +176,47 @@ describe("curvi auth", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${KEY}`);
   });
 
+  it("never sends a saved key to plain http or to another origin", async () => {
+    const h = await harness(() => json({ channels: [] }));
+    await signIn(h);
+    expect(await run(["channels", "--api-url", "http://evil.example/api/v1"], h.deps)).toBe(EXIT.usage);
+    expect(h.err()).toContain("https");
+    expect(await run(["channels", "--api-url", "https://evil.example/api/v1"], h.deps)).toBe(EXIT.usage);
+    expect(h.err()).toContain("https://curvi.ai");
+    expect(await run(["pack", "get", ID, "--api-url", "https://curvi.ai.evil.example/api/v1"], h.deps)).toBe(
+      EXIT.usage,
+    );
+    h.deps.env.CURVI_API_URL = "https://evil.example/api/v1";
+    expect(await run(["channels"], h.deps)).toBe(EXIT.usage);
+    expect(h.fetch).not.toHaveBeenCalled();
+    expect(h.err()).not.toContain(KEY);
+  });
+
+  it("sends a saved key to its own origin, and CURVI_API_KEY anywhere https", async () => {
+    const h = await harness(() => json(pack("queued")));
+    await signIn(h);
+    expect(await run(["pack", "get", ID, "--json", "--api-url", "https://curvi.ai/api/v1"], h.deps)).toBe(EXIT.ok);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    h.deps.env.CURVI_API_KEY = "curvi_env_key_0123456789";
+    expect(await run(["pack", "get", ID, "--json", "--api-url", "https://staging.example/api/v1"], h.deps)).toBe(EXIT.ok);
+    expect(String(h.fetch.mock.calls[1]![0])).toContain("https://staging.example/api/v1");
+    expect(await run(["pack", "get", ID, "--json", "--api-url", "http://staging.example/api/v1"], h.deps)).toBe(EXIT.usage);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("login refuses a plain http URL before asking for the key, and names the bound origin", async () => {
+    const h = await harness(() => json({}));
+    await signIn(h);
+    h.deps.readSecret = vi.fn(async () => "curvi_other_0123456789");
+    expect(await run(["auth", "login", "--api-url", "http://evil.example"], h.deps)).toBe(EXIT.usage);
+    expect(h.deps.readSecret).not.toHaveBeenCalled();
+    expect(await readConfig(h.deps)).toEqual({ apiKey: KEY });
+    expect(await run(["auth", "login", "--api-url", "https://staging.example/api/v1"], h.deps)).toBe(EXIT.ok);
+    expect(h.out()).toContain("sent only to https://staging.example");
+    expect(await run(["auth", "login", "--key", KEY, "--api-url", "http://[::1]:3000/api/v1"], h.deps)).toBe(EXIT.ok);
+    expect(h.fetch).not.toHaveBeenCalled();
+  });
+
   it("asks to sign in before calling the API", async () => {
     const h = await harness(() => json({}));
     expect(await run(["pack", "get", ID], h.deps)).toBe(EXIT.usage);

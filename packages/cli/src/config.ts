@@ -12,6 +12,7 @@
 
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { UsageError } from "./args.ts";
 import { DEFAULT_BASE_URL } from "./client.ts";
 
 export const CONFIG_FILE_NAME = "config.json";
@@ -97,6 +98,50 @@ export function resolveAuth(
     apiUrl: apiUrlFlag || env.CURVI_API_URL || stored.apiUrl || DEFAULT_BASE_URL,
     keySource: envKey ? "env" : stored.apiKey ? "config" : null,
   };
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Checks an API base URL before a key is sent to it or saved with it: https
+ * only, with plain http allowed for this machine alone, so a typo or a proxy
+ * never carries the bearer key in cleartext.
+ */
+export function checkApiUrl(value: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new UsageError(`The API URL ${value} is not a valid URL.`);
+  }
+  if (url.protocol === "https:") return url;
+  if (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname)) return url;
+  throw new UsageError(
+    `The API URL must start with https. Plain http is allowed only for localhost; ${value} was refused.`,
+  );
+}
+
+/** The origin a saved key belongs to: the URL saved with it at login. */
+export function savedKeyOrigin(stored: StoredConfig): string {
+  return checkApiUrl(stored.apiUrl ?? DEFAULT_BASE_URL).origin;
+}
+
+/**
+ * Refuses to send a key where it does not belong. The URL must pass
+ * checkApiUrl, and a key saved by curvi auth login only goes to the origin it
+ * was saved for; --api-url or CURVI_API_URL pointing elsewhere needs a new
+ * login there (or CURVI_API_KEY), so an injected flag cannot repoint it.
+ */
+export function assertKeyTarget(auth: ResolvedAuth, stored: StoredConfig): void {
+  const target = checkApiUrl(auth.apiUrl).origin;
+  if (auth.keySource !== "config") return;
+  const bound = savedKeyOrigin(stored);
+  if (target !== bound) {
+    throw new UsageError(
+      `The saved key is for ${bound}, so it was not sent to ${target}. ` +
+        `To use that API, run curvi auth login --api-url ${auth.apiUrl} or set CURVI_API_KEY.`,
+    );
+  }
 }
 
 /** "curvi_live_ab12...wxyz": enough to tell keys apart, never the secret. */
