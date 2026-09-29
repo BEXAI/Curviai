@@ -5,7 +5,13 @@ import { Button, Card, CardContent, buttonVariants, cn } from "@curvi/ui";
 import { OutputPreview } from "@/components/app/output-preview";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { ILLUSTRATION_LABEL, isIllustrationSrc } from "@/components/marketing/demo-images";
-import { makeoverDownloadPath, makeoverShareLink, type RevealShot } from "@/lib/makeover";
+import {
+  MAKEOVER_WORKSPACE_LINK_COPY,
+  PACK_WORKSPACE_LINK_COPY,
+  makeoverDownloadPath,
+  makeoverShareLink,
+  type RevealShot,
+} from "@/lib/makeover";
 import { channelName, SIZED_FOR_EACH_CHANNEL_TITLE } from "@/lib/output-options-copy";
 import { isTransparentShot, previewAspect } from "@/lib/output-preview";
 import { allHeroCandidatesOriginal } from "@/lib/shares/hero";
@@ -279,8 +285,8 @@ export function PackReveal({ jobId, sourceImageUrl, shots }: PackRevealProps) {
                   ? "Anyone with the link can see this pack."
                   : "Anyone with the link can see this before and after."
                 : sized
-                  ? "The link opens this pack for people in your workspace. Public share pages are coming soon."
-                  : "The link opens this pack for people in your workspace. To share it more widely, download the side by side image. Public share pages are coming soon."}
+                  ? PACK_WORKSPACE_LINK_COPY
+                  : MAKEOVER_WORKSPACE_LINK_COPY}
             </p>
           </div>
         </div>

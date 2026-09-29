@@ -22,6 +22,7 @@ import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
 import { estimatePackCredits, type EstimateMode } from "@/lib/pack-estimate";
 import { intentFor, type SubmitIntent } from "@/lib/submit-intent";
 import { track } from "@/lib/track";
+import { uploadTypeForFile } from "@/lib/upload-validation";
 import { requestPhotoImport } from "@/lib/url-import/client";
 import { IMPORT_TITLE_MAX, sellerNotesFrom, type ImportedImage, type ImportedProduct } from "@/lib/url-import/types";
 import {
@@ -680,7 +681,8 @@ export function NewPackForm({
     const taken = photos.filter((p) => p.kind === "image").map((p) => p.angle);
     const added: Array<{ item: PhotoItem; file: File }> = [];
     for (const file of files.slice(0, Math.max(0, room))) {
-      const kind = file.type.startsWith("video/") ? "video" : "image";
+      const type = uploadTypeForFile(file);
+      const kind = type.ok ? type.kind : "image";
       const angle = nextAngle(taken);
       if (kind === "image") {
         taken.push(angle);
@@ -723,15 +725,18 @@ export function NewPackForm({
 
   async function handleFile(file: File, id: number) {
     const update = (patch: Partial<PhotoItem>) => updatePhoto(id, patch);
+    // Drag and drop skips the input's accept list: check the type here, and
+    // read an empty type from the file name, before asking to sign.
+    const type = uploadTypeForFile(file);
+    if (!type.ok) {
+      update({ phase: "error", message: type.message });
+      return;
+    }
     try {
       const response = await fetch("/api/uploads/sign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          kind: file.type.startsWith("video/") ? "video" : "image",
-          contentType: file.type,
-          bytes: file.size,
-        }),
+        body: JSON.stringify({ kind: type.kind, contentType: type.contentType, bytes: file.size }),
       });
       const data = (await response.json().catch(() => ({}))) as {
         url?: string;
@@ -752,7 +757,7 @@ export function NewPackForm({
       }
       const put = await fetch(data.url, {
         method: "PUT",
-        headers: { "Content-Type": file.type },
+        headers: { "Content-Type": type.contentType },
         body: file,
       });
       if (!put.ok) {
@@ -760,7 +765,7 @@ export function NewPackForm({
         return;
       }
       update({ phase: "uploaded", key: data.key, sha256: await sha256Hex(file) });
-      if (!file.type.startsWith("video/")) {
+      if (type.kind === "image") {
         void runPreflight(id, data.key);
       }
     } catch {
