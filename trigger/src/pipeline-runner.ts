@@ -47,6 +47,7 @@ import {
   AplusCopyResult,
   badgeEligible,
   capAplusModules,
+  CAROUSEL_INCOMPLETE_REASON,
   dropIncompleteCarousels,
   isAdsShotType,
   packGroupFor,
@@ -63,6 +64,7 @@ import {
   lifestyleScenesFor,
   reservedSlotsFor,
   sellerOffShotTypes,
+  skipBundleOffShots,
   skipSellerOffShots,
   uprightSize,
   CHANNEL_LIMIT_REASON,
@@ -214,6 +216,10 @@ export const SHOT_CHANNEL_FULL =
   "This channel already has as many images as it allows, so this one was left out of the pack and not charged.";
 /** Plain copy for a passing shot the packager left out for another reason. */
 export const SHOT_NOT_DELIVERED = "This image could not be added to the pack, so it was left out and not charged.";
+/** Plain copy for a passing carousel slide left out because another slide
+ * of its carousel could not be made (a carousel ships whole or not at all). */
+export const SHOT_CAROUSEL_INCOMPLETE =
+  "Another slide in this carousel could not be made, so this slide was left out and not charged.";
 /** Skipped reason for shots whose method no live provider delivers yet. */
 export const PROVIDER_NOT_ENABLED = "provider not enabled";
 /** Skipped reason for shots none of whose channel specs the seller picked. */
@@ -3087,10 +3093,22 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
       ? { ...shot, method: "deterministic" as const, stylePreset: "none", scene: undefined }
       : shot,
   );
+  const enabled: Shot[] = [];
   for (const shot of packshotsFixed) {
     if (excluded.has(shot.method)) {
       skipped.push({ type: shot.type, reason: PROVIDER_NOT_ENABLED });
-    } else if (off.has(shot.type)) {
+    } else {
+      enabled.push(shot);
+    }
+  }
+  // Shots outside the pack's bundle (PHASE_16) are skipped with
+  // BUNDLE_OFF_REASON before every check, as fitShotsToChannels would skip
+  // them, so a plan that names lifestyle or A+ shots under a smaller set is
+  // trimmed, not rejected and paid for twice. The bundle picks a smaller
+  // set, so these never ask for cover.
+  const inBundle = skipBundleOffShots(enabled, rules.output, skipped);
+  for (const shot of inBundle) {
+    if (off.has(shot.type)) {
       // The seller turned this family off: skipped before every check, so a
       // plan that follows the recipe is neither rejected nor charged for it.
       skipped.push({ type: shot.type, reason: SELLER_OFF_REASON, channels: pickedOf(shot) });
@@ -3509,6 +3527,27 @@ export function carouselRunOrder(shots: readonly Shot[]): [Shot[], Shot[]] {
   const later = (shot: Shot): boolean =>
     shot.type === "carousel_slide" && COMPOSITE_METHODS.has(shot.method) && (shot.slideIndex ?? 1) > 1;
   return [shots.filter((shot) => !later(shot)), shots.filter(later)];
+}
+
+/**
+ * The passing carousel slides that must not ship (PHASE_16 workstream 3: a
+ * carousel ships whole or not at all): every passing slide of a carousel
+ * whose other slide ended in needs review, or never ran. The plan time
+ * check (dropIncompleteCarousels) cannot see a slide that fails QC, and a
+ * scene carousel's later slides pass on the layer its failed first slide
+ * made, at no charge of their own. Pure.
+ */
+export function brokenCarouselSlides(
+  shots: readonly Shot[],
+  outcomes: ReadonlyArray<Pick<ShotOutcome, "shotId" | "status">>,
+): Set<string> {
+  const passed = new Set(outcomes.filter((o) => o.status === "passed").map((o) => o.shotId));
+  const slides = shots.filter((shot) => shot.type === "carousel_slide" && shot.carouselId && passed.has(shot.id));
+  if (slides.length === 0) {
+    return new Set();
+  }
+  const whole = new Set(dropIncompleteCarousels(slides, []).map((shot) => shot.id));
+  return new Set(slides.filter((shot) => !whole.has(shot.id)).map((shot) => shot.id));
 }
 
 /** Runs shots through the fan out in carouselRunOrder and returns the
@@ -4290,13 +4329,37 @@ export async function runGeneratePack(
     // Passing shots stay held until their files are delivered (below), so a
     // pack that never ships is never charged.
     await advance(transition(state, "shots_generated"));
-    const passing = outcomes.filter((o) => o.status === "passed");
+    const broken = brokenCarouselSlides(runList, outcomes);
+    const passing = outcomes.filter((o) => o.status === "passed" && !broken.has(o.shotId));
     for (const outcome of outcomes) {
       if (outcome.status !== "passed") {
         needsReview += 1;
         if (outcome.credits > 0) {
           await applyLedger(ledger.releaseForFailedShot(outcome.shotId, outcome.credits));
         }
+      }
+    }
+    // A carousel ships whole or not at all (PHASE_16 workstream 3): a slide
+    // that passed in a carousel whose other slide did not is left out and
+    // not charged, like a shot the packager left out.
+    for (const outcome of outcomes) {
+      if (!broken.has(outcome.shotId)) continue;
+      needsReview += 1;
+      if (outcome.credits > 0) {
+        await applyLedger(
+          ledger.releaseForUndeliveredShot(outcome.shotId, outcome.credits, CAROUSEL_INCOMPLETE_REASON),
+        );
+      }
+      try {
+        await store.markShotUndelivered?.({
+          jobId: input.jobId,
+          workspaceId: input.workspaceId,
+          shotId: outcome.shotId,
+          shotType: outcome.shotType,
+          reason: SHOT_CAROUSEL_INCOMPLETE,
+        });
+      } catch (markErr) {
+        console.warn(`[runner] could not mark carousel slide ${outcome.shotId} as not delivered`, markErr);
       }
     }
     // A pack fails only when nothing in it can be delivered.
