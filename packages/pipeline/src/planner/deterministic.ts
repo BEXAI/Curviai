@@ -21,6 +21,7 @@ import {
   listSpecs,
   type ChannelSpec,
 } from "@curvi/specs";
+import { GALLERY_SLOTS, specAcceptsImage, type PlannedImageKind } from "../output-options";
 import { creditCosts, isEntitled, type TierKey } from "../seed/credits";
 import { ProductProfile, Shot, ShotList, type ShotMethod } from "../schemas";
 import { printableSellerLines } from "../seller-inputs";
@@ -79,39 +80,10 @@ export const NO_BOX_CONTENTS_REASON = "seller did not list contents";
 /** Reason recorded for the comparison shot when the seller supplied no facts. */
 export const NO_COMPARISON_FACTS_REASON = "seller did not supply comparison facts";
 
-/**
- * What a planned image looks like, for matching it to a spec's rules:
- * - white: the product on pure white (main image, alternate angles).
- * - transparent: the cutout PNG, which keeps its alpha.
- * - colored: a studio sweep in a color other than white.
- * - text: a template with copy on a colored card (infographic, dimensions,
- *   in the box, comparison).
- * - generated: a composited scene from an image model.
- */
-export type PlannedImageKind = "white" | "transparent" | "colored" | "text" | "generated";
-
-interface GallerySlot {
-  family: string;
-  /** The spec the family's listing images ship on. */
-  specId: string;
-  /** Generated scenes (composite and edit methods) may ship here. The newer
-   * marketplaces get deterministic and template images only. */
-  generated: boolean;
-  /** The listing's first image comes from this same spec, so the white front
-   * image leads it. Amazon has its own amazon.main spec instead. */
-  leadsWithWhiteFront: boolean;
-}
-
-/** Listing image slots per marketplace family, in plan order. */
-const GALLERY_SLOTS: readonly GallerySlot[] = [
-  { family: "amazon", specId: "amazon.secondary", generated: true, leadsWithWhiteFront: false },
-  { family: "shopify", specId: "shopify.product", generated: true, leadsWithWhiteFront: false },
-  { family: "google", specId: "google.merchant.lifestyle", generated: true, leadsWithWhiteFront: false },
-  { family: "etsy", specId: "etsy.listing", generated: false, leadsWithWhiteFront: true },
-  { family: "ebay", specId: "ebay.listing", generated: false, leadsWithWhiteFront: true },
-  { family: "walmart", specId: "walmart.main", generated: false, leadsWithWhiteFront: true },
-  { family: "tiktokshop", specId: "tiktokshop.main", generated: false, leadsWithWhiteFront: true },
-];
+// PlannedImageKind, specAcceptsImage and the listing gallery slots live in
+// the client safe options module (PHASE_15), so the form, the estimate and
+// this planner read one definition.
+export { specAcceptsImage, type PlannedImageKind } from "../output-options";
 
 const PINTEREST_PIN_SPEC = "pinterest.pin";
 const AMAZON_MAIN_SPEC = "amazon.main";
@@ -124,42 +96,6 @@ const GOOGLE_MAIN_SPEC = "google.merchant.main";
 /** Channel family of a spec id or family string: "etsy.listing" is "etsy". */
 function familyOf(channel: string): string {
   return channel.split(".")[0] ?? channel;
-}
-
-function isPureWhite(rgb: readonly number[] | undefined): boolean {
-  return !!rgb && rgb[0] === 255 && rgb[1] === 255 && rgb[2] === 255;
-}
-
-/** True when the spec's background rule allows a backdrop other than white. */
-function allowsColoredBackground(spec: ChannelSpec): boolean {
-  const bg = spec.background?.type;
-  return bg === undefined || bg === "any" || bg === "consistent";
-}
-
-/**
- * Whether an image of this kind meets the spec's registry rules. Solid white
- * and white preferred specs take only white images. Text needs textAllowed
- * and a background rule that allows the template's card color. The cutout
- * needs PNG and a background rule that keeps transparency; a spec that does
- * not would get the front photo flattened onto white again, a duplicate of
- * the white front image.
- */
-export function specAcceptsImage(spec: ChannelSpec, kind: PlannedImageKind): boolean {
-  const bg = spec.background;
-  switch (kind) {
-    case "white":
-      return bg?.type !== "solid" || isPureWhite(bg.rgb);
-    case "transparent":
-      return (
-        (!spec.formats || spec.formats.includes("png")) &&
-        (bg === undefined || bg.type === "any" || bg.type === "consistent" || bg.type === "white_or_transparent")
-      );
-    case "colored":
-    case "generated":
-      return allowsColoredBackground(spec);
-    case "text":
-      return spec.textAllowed !== false && allowsColoredBackground(spec);
-  }
 }
 
 /** Longest label a Shot callout may carry (ShotList schema). */
