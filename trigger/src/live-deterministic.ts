@@ -7,6 +7,10 @@
  *
  * The returned image is always the decoded pixels of the encoded file that
  * ships, so the runner's pixelChecks measures exactly what the seller gets.
+ *
+ * The background color is resolved per spec (PHASE_15): backgroundFor gives
+ * the seller's color, or white on a spec whose rule requires it. With no
+ * output options every file is on white exactly as before.
  */
 
 import {
@@ -15,8 +19,8 @@ import {
   decodeMask,
   decodeToRgba,
   encodePng,
-  makeAmazonMain,
   makeCutoutPng,
+  makeOnBackground,
   makeSweep,
   nonZeroMask,
   PRODUCT_RESIZE_KERNEL,
@@ -27,7 +31,9 @@ import {
   type RawMask,
   type Shot,
 } from "@curvi/pipeline";
+import { backgroundFor, rgbToHex, type ResolvedOutputOptions, type SpecBackground } from "@curvi/pipeline/output-options";
 import { canvasDefaults, stillStyle } from "@curvi/pipeline/seed";
+import type { PackAssetTreatment } from "@curvi/pipeline/treatment";
 import { getSpec, type ChannelSpec } from "@curvi/specs";
 import { ShotUnavailableError } from "./errors";
 import type { LiveProduct, StillRender } from "./live-product";
@@ -42,6 +48,9 @@ export const DETERMINISTIC_LIVE_TYPES: ReadonlySet<ShotType> = new Set<ShotType>
   "sweep_gray",
   "sweep_brand",
   "collection_thumb",
+  // The seller's kept photo: rendered by live-original.ts from the stored
+  // upload, never from a cutout, so renderDeterministicShot refuses it.
+  "original_photo",
 ]);
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
@@ -50,8 +59,14 @@ export async function renderDeterministicShot(input: {
   shot: Shot;
   product: LiveProduct;
   brandColors?: string[];
+  /** The seller's resolved output options; absent means white everywhere. */
+  output?: ResolvedOutputOptions | null;
+  /** The shot's photo is one the seller kept: its background was removed
+   * here only because the spec requires white (control 4). */
+  keptSource?: boolean;
 }): Promise<StillRender> {
   const { shot, product } = input;
+  const output = input.output ?? null;
   if (shot.method !== "deterministic" || !DETERMINISTIC_LIVE_TYPES.has(shot.type)) {
     throw new ShotUnavailableError(
       `We cannot build a ${shot.type.replaceAll("_", " ")} shot from the product photo alone yet, so it needs review.`,
@@ -72,13 +87,18 @@ export async function renderDeterministicShot(input: {
     case "amazon_main":
     case "alt_angle_white":
     case "collection_thumb":
-      return renderOnWhite(product, spec);
+      return withTreatment(
+        await renderOnBackground(product, spec, backgroundFor(spec, output)),
+        backgroundTreatment(spec, output, input.keptSource),
+      );
     case "cutout_png":
-      return renderCutout(product, spec);
+      return withTreatment(await renderCutout(product, spec, output), cutoutTreatment(spec, output, input.keptSource));
     case "sweep_gray":
       return renderSweep(product, spec, stillStyle.sweepGrayHex);
     case "sweep_brand":
-      return renderSweep(product, spec, brandHex(input.brandColors));
+      // The brand color createJob snapshotted, so a retry after a kit edit
+      // still matches the pack; today's kit read when the job has none.
+      return renderSweep(product, spec, output?.brandSweepHex ?? brandHex(input.brandColors));
     default:
       throw new ShotUnavailableError(
         `We cannot build a ${String(shot.type).replaceAll("_", " ")} shot from the product photo alone yet, so it needs review.`,
@@ -92,9 +112,52 @@ function brandHex(brandColors: string[] | undefined): string {
   return found ?? stillStyle.fallbackBrandHex;
 }
 
-/** Product on pure white at the spec size, fill inside spec.fill. */
-async function renderOnWhite(product: LiveProduct, spec: ChannelSpec): Promise<StillRender> {
-  const main = await makeAmazonMain(product.productPng, product.maskPng, spec);
+/**
+ * The treatment of a file whose product was placed on a color, or undefined
+ * without output options (today's pack carries no note). A kept photo's file
+ * here was made white only because the spec requires it.
+ */
+function backgroundTreatment(
+  spec: ChannelSpec,
+  output: ResolvedOutputOptions | null,
+  keptSource: boolean | undefined,
+): PackAssetTreatment | undefined {
+  if (!output) {
+    return undefined;
+  }
+  const background = backgroundFor(spec, output);
+  return {
+    kind: "background",
+    colorHex: rgbToHex(background.rgb),
+    ...(background.forcedWhite || keptSource ? { forcedWhite: true } : {}),
+  };
+}
+
+/** The cutout keeps its transparency where the spec allows it (no note);
+ * otherwise it is flattened onto the spec's color like the white image. */
+function cutoutTreatment(
+  spec: ChannelSpec,
+  output: ResolvedOutputOptions | null,
+  keptSource: boolean | undefined,
+): PackAssetTreatment | undefined {
+  return allowsTransparency(spec) ? undefined : backgroundTreatment(spec, output, keptSource);
+}
+
+function withTreatment(still: StillRender, treatment: PackAssetTreatment | undefined): StillRender {
+  return treatment ? { ...still, treatment } : still;
+}
+
+/**
+ * Product on one flat color at the spec size, fill inside spec.fill: white
+ * (the registry's, else seed white) on a spec that requires it, the seller's
+ * color elsewhere. Edge pixels blend toward that color, never toward white.
+ */
+export async function renderOnBackground(
+  product: LiveProduct,
+  spec: ChannelSpec,
+  background: Pick<SpecBackground, "rgb">,
+): Promise<StillRender> {
+  const main = await makeOnBackground(product.productPng, product.maskPng, spec, { rgb: background.rgb });
   const reference = await referenceFor(product, main.placement, main.width, main.height);
   return encodeStill(main.raw, main.mask, reference, spec, main.placement, main.jpeg);
 }
@@ -102,13 +165,17 @@ async function renderOnWhite(product: LiveProduct, spec: ChannelSpec): Promise<S
 /**
  * Transparent PNG cutout scaled and centered on a spec sized canvas. When the
  * spec does not take PNG or does not accept a transparent background, the
- * cutout is flattened onto white at the spec size instead (the same
- * treatment as the main image), because a transparent file would fail the
- * channel's upload rules.
+ * cutout is flattened onto the spec's background color at the spec size
+ * instead (the same treatment as the main image), because a transparent file
+ * would fail the channel's upload rules.
  */
-async function renderCutout(product: LiveProduct, spec: ChannelSpec): Promise<StillRender> {
+async function renderCutout(
+  product: LiveProduct,
+  spec: ChannelSpec,
+  output: ResolvedOutputOptions | null,
+): Promise<StillRender> {
   if (!allowsTransparency(spec)) {
-    return renderOnWhite(product, spec);
+    return renderOnBackground(product, spec, backgroundFor(spec, output));
   }
   const cutout = await makeCutoutPng(product.productPng, product.maskPng);
   const trimmed = await decodeToRgba(cutout.png);

@@ -14,13 +14,26 @@ import { MockProvider } from "@curvi/ai/testing";
 import {
   buildPack,
   decodeToRgba,
+  encodeJpeg,
   encodePng,
+  fidelityReport,
   planShots,
   solidCanvas,
   type PackFileReport,
   type PlanOptions,
+  type RawImage,
+  type RawMask,
   type Shot,
 } from "@curvi/pipeline";
+import {
+  normalizeOutputOptions,
+  resolveColorHex,
+  resolveOutputOptions,
+  SELLER_OFF_REASON,
+  type OutputOptionsInput,
+  type ResolvedOutputOptions,
+} from "@curvi/pipeline/output-options";
+import { createHash } from "node:crypto";
 import { creditCosts, CUTOUT_TASK } from "@curvi/pipeline/seed";
 import type { Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
 import { isMarketplaceSpec } from "@curvi/specs";
@@ -49,7 +62,13 @@ import {
   wrapUserDescription,
   InMemoryJobStore,
   isSpendCapBlock,
+  handoffFileKey,
+  KEPT_PHOTO_PLAN_REJECTION,
   MULTIPLE_PRODUCTS_MESSAGE,
+  OUTPUT_OPTIONS_UNREADABLE,
+  parseRunOutput,
+  runPlanFlags,
+  shotFailureOutcome,
   moderationBlockedMessage,
   moderationBlockReasons,
   NO_SELLABLE_PRODUCT_MESSAGE,
@@ -61,10 +80,13 @@ import {
   type LlmPlanCheck,
   type LlmPlanRules,
   type LlmTaskInput,
+  type PackFileHandoff,
   type PipelineDeps,
+  type SerializableShotOutcome,
   type ShotGenerateArgs,
   type ShotGeneration,
   type ShotGenerator,
+  type ShotOutcome,
   type StoredAsset,
   type StoredPack,
 } from "./pipeline-runner";
@@ -3033,5 +3055,425 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     const reviewed = deps.store.assets.filter((a) => a.verdict.issues.includes("extra_items"));
     expect(reviewed.length).toBeGreaterThan(0);
     expect(reviewed[0].verdict.repairHint).toBe(SHOT_EXTRA_ITEMS);
+  });
+});
+
+describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => {
+  const cleanFlags = { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false };
+  const whiteHex = resolveColorHex({ kind: "swatch", key: "white" }, []) as string;
+
+  /** Options as createJob resolves them, with the given photos kept. */
+  function resolved(input: OutputOptionsInput, keep: string[] = []): ResolvedOutputOptions {
+    const normalized = normalizeOutputOptions(input);
+    return resolveOutputOptions(normalized, {
+      colorHex: resolveColorHex(normalized.color, []) ?? whiteHex,
+      brandSweepHex: whiteHex,
+      keepMediaIds: normalized.background === "keep" ? keep : [],
+    });
+  }
+  const keepAll = (ids: string[]) => resolved({ background: "keep" }, ids);
+
+  const mainShot: Shot = {
+    id: "s1",
+    type: "amazon_main",
+    sourceMediaId: "m1",
+    method: "deterministic",
+    channels: ["amazon.main"],
+    stylePreset: "none",
+    credits: creditCosts.deterministic,
+    priority: 1,
+  };
+  const planShot = (id: string, type: Shot["type"], method: Shot["method"], channels: string[], priority = 3): Shot => ({
+    ...mainShot,
+    id,
+    type,
+    method,
+    channels,
+    priority,
+    ...(method === "composite_generate" ? { stylePreset: "kitchen_lifestyle", scene: "kitchen counter" } : {}),
+  });
+
+  /** The message the plan recipe was sent, parsed. */
+  const planPayload = (plan: MockProvider) =>
+    JSON.parse((plan.calls[0].input as LlmTaskInput).messages[0].content as string) as Record<string, unknown> & {
+      options: Record<string, unknown>;
+    };
+
+  it("never calls the plan recipe for a Keep pack and plans deterministically", async () => {
+    const plan = new MockProvider({ name: "mock-plan", tasks: [planKey], output: { notAShotList: true } });
+    const deps = makeDeps({ ai: makeAi({ plan }) });
+    const summary = await runGeneratePack({ ...baseInput, output: keepAll(["m1"]) }, deps);
+    expect(summary.state).toBe("done");
+    expect(plan.calls).toHaveLength(0);
+    expect(summary.plannerSource).toBe("deterministic");
+    expect(summary.planRejection).toBe(KEPT_PHOTO_PLAN_REJECTION);
+    expect(deps.store.assets.some((a) => a.shotType === "original_photo" && a.status === "passed")).toBe(true);
+  });
+
+  it("sends the plan recipe no output key when nothing is kept", async () => {
+    const plan = new MockProvider({ name: "mock-plan", tasks: [planKey], output: { notAShotList: true } });
+    const summary = await runGeneratePack(
+      { ...baseInput, output: resolved({ extras: { scenes: false } }) },
+      makeDeps({ ai: makeAi({ plan }) }),
+    );
+    expect(summary.state).toBe("done");
+    expect(plan.calls).toHaveLength(1);
+    const sent = planPayload(plan);
+    expect(Object.keys(sent).sort()).toEqual(["options", "profile"]);
+    expect(sent.options).not.toHaveProperty("output");
+    expect(JSON.stringify(sent)).not.toContain("keepMediaIds");
+  });
+
+  it("accepts an LLM plan whose scenes the seller turned off, skipping them and keeping the llm source", async () => {
+    const llmPlan = {
+      shots: [
+        mainShot,
+        planShot("a1", "alt_angle_white", "deterministic", ["amazon.secondary"], 2),
+        planShot("l1", "lifestyle", "composite_generate", ["amazon.secondary"], 5),
+        planShot("l2", "lifestyle", "composite_generate", ["amazon.secondary"], 5),
+      ],
+      skipped: [],
+    };
+    const plan = new MockProvider({ name: "mock-plan", tasks: [planKey], output: llmPlan });
+    const deps = makeDeps({ ai: makeAi({ plan }) });
+    const summary = await runGeneratePack(
+      { ...baseInput, channels: ["amazon.main", "amazon.secondary"], output: resolved({ extras: { scenes: false } }) },
+      deps,
+    );
+    expect(summary.state).toBe("done");
+    expect(summary.plannerSource).toBe("llm");
+    expect(summary.skipped.filter((s) => s.type === "lifestyle")).toEqual([
+      { type: "lifestyle", reason: SELLER_OFF_REASON },
+      { type: "lifestyle", reason: SELLER_OFF_REASON },
+    ]);
+    // The picked specs a skipped entry named never reach the stored plan.
+    expect(summary.skipped.every((s) => !("channels" in s))).toBe(true);
+    expect(deps.store.assets.some((a) => a.shotType === "lifestyle")).toBe(false);
+  });
+
+  it("covers meta.feed_1x1 with the front image when cards are off, on both planner paths", async () => {
+    const input: GeneratePackInput = {
+      ...baseInput,
+      channels: ["amazon.main", "meta.feed_1x1"],
+      output: resolved({ extras: { cards: false } }),
+    };
+    const llmPlan = { shots: [mainShot, planShot("c1", "social_1x1", "template", ["meta.feed_1x1"], 4)], skipped: [] };
+    const llm = await runGeneratePack(
+      input,
+      makeDeps({ ai: makeAi({ plan: new MockProvider({ name: "mock-plan", tasks: [planKey], output: llmPlan }) }) }),
+    );
+    const fallback = await runGeneratePack({ ...input, jobId: "job2" }, makeDeps());
+    expect(llm.plannerSource).toBe("llm");
+    expect(fallback.plannerSource).toBe("deterministic");
+    for (const summary of [llm, fallback]) {
+      expect(summary.state).toBe("done");
+      const files = await packReport(summary);
+      expect(files.some((f) => f.specId === "meta.feed_1x1" && f.pass)).toBe(true);
+      expect(summary.skipped).toContainEqual({ type: "social_1x1", reason: SELLER_OFF_REASON });
+    }
+  });
+
+  it("validateLlmShotList rejects original_photo and records the picked specs of seller off shots", () => {
+    const rules: LlmPlanRules = {
+      budget: 20,
+      mediaIds: ["m1"],
+      channels: ["amazon.main", "meta.feed_1x1"],
+      mode: "listing",
+      requireAmazonMain: true,
+    };
+    const original = planShot("o1", "original_photo", "deterministic", ["meta.feed_1x1"], 1);
+    const withOriginal = validateLlmShotList({ shots: [mainShot, original], skipped: [] }, rules);
+    expect(withOriginal.ok).toBe(false);
+
+    const card = planShot("c1", "social_1x1", "template", ["meta.feed_1x1", "meta.feed_4x5"], 4);
+    const flags = runPlanFlags(resolved({ extras: { cards: false } }), [{ mediaId: "m1" }]);
+    const result = validateLlmShotList({ shots: [mainShot, card], skipped: [] }, { ...rules, output: flags });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.shotList.shots.map((s) => s.id)).toEqual(["s1"]);
+    expect(result.shotList.skipped).toContainEqual({
+      type: "social_1x1",
+      reason: SELLER_OFF_REASON,
+      channels: ["meta.feed_1x1"],
+    });
+  });
+
+  describe("several items in a kept photo", () => {
+    const ambiguousIntake = {
+      images: [
+        {
+          sellableProduct: true,
+          distinctProducts: 2,
+          sharpEnough: true,
+          screenshot: false,
+          flags: cleanFlags,
+          products: [
+            { label: "red bottle", box: { x: 0.1, y: 0.2, width: 0.35, height: 0.6 }, matchesIntent: "no" },
+            { label: "blue bottle", box: { x: 0.5, y: 0.2, width: 0.35, height: 0.6 }, matchesIntent: "no" },
+          ],
+        },
+      ],
+    };
+    const intake = () => new MockProvider({ name: "mock-intake", tasks: [intakeKey], output: ambiguousIntake });
+
+    it("completes a Keep pack with no white channel, noting the other items", async () => {
+      const deps = makeDeps({ ai: makeAi({ intake: intake() }) });
+      const summary = await runGeneratePack(
+        { ...baseInput, channels: ["shopify.product"], output: keepAll(["m1"]) },
+        deps,
+      );
+      expect(summary.state).toBe("done");
+      const files = await packReport(summary);
+      expect(files.length).toBeGreaterThan(0);
+      expect(files.every((f) => f.notes.includes("original: other items kept"))).toBe(true);
+    });
+
+    it("stops with MULTIPLE_PRODUCTS_MESSAGE when amazon.main needs a cutout of that photo", async () => {
+      const summary = await runGeneratePack(
+        { ...baseInput, channels: ["amazon.main", "shopify.product"], output: keepAll(["m1"]) },
+        makeDeps({ ai: makeAi({ intake: intake() }) }),
+      );
+      expect(summary.state).toBe("failed");
+      expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+      expect(summary.chargedCredits).toBe(0);
+    });
+  });
+
+  it("never asks the judge about a kept photo, asks it about amazon_main, and charges the kept photo once", async () => {
+    const qc = new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict });
+    const deps = makeDeps({ ai: makeAi({ qc }) });
+    const summary = await runGeneratePack(
+      { ...baseInput, channels: ["amazon", "shopify"], output: keepAll(["m1"]) },
+      deps,
+    );
+    expect(summary.state).toBe("done");
+    const original = deps.store.assets.find((a) => a.shotType === "original_photo");
+    const main = deps.store.assets.find((a) => a.shotType === "amazon_main");
+    expect(original?.status).toBe("passed");
+    expect(main?.status).toBe("passed");
+    const steps = qc.calls.map((c) => c.stepId ?? "");
+    expect(steps.some((step) => step.startsWith(`${main?.shotId}:`))).toBe(true);
+    expect(steps.some((step) => step.startsWith(`${original?.shotId}:`))).toBe(false);
+    // One kept photo, several channels, one charge.
+    const files = await packReport(summary);
+    expect(files.filter((f) => f.ref === original?.shotId).length).toBeGreaterThan(1);
+    const charges = deps.store.ledger.filter((e) => e.reason === "charge" && e.ref === original?.shotId);
+    expect(charges).toHaveLength(1);
+    expect(charges[0].credits).toBe(creditCosts.deterministic);
+  });
+
+  describe("per output checks for original_photo", () => {
+    const shot: Shot = { ...mainShot, id: "o1", type: "original_photo", channels: ["amazon.secondary"], priority: 1 };
+    const ctx = { jobId: "job1", workspaceId: "ws1" };
+
+    /** A textured size x size canvas and a copy shifted by delta in red. */
+    function photoPair(delta: number, size = 2000): { base: RawImage; shifted: RawImage } {
+      const base = solidCanvas(size, size, 0, 0, 0);
+      for (let i = 0; i < size * size; i++) {
+        base.data[i * 4] = 60 + (i % 97);
+        base.data[i * 4 + 1] = 80 + (i % 53);
+        base.data[i * 4 + 2] = 120;
+      }
+      const shifted = { ...base, data: Buffer.from(base.data) };
+      for (let i = 0; i < size * size; i++) shifted.data[i * 4] = Math.min(255, shifted.data[i * 4] + delta);
+      return { base, shifted };
+    }
+    const fullMask = (size = 2000): RawMask => ({ data: Buffer.alloc(size * size, 255), width: size, height: size });
+
+    class FixedGenerator implements ShotGenerator {
+      constructor(private readonly generation: () => Promise<ShotGeneration>) {}
+      generate(): Promise<ShotGeneration> {
+        return this.generation();
+      }
+    }
+
+    it("checks a kept photo with the main fidelity row whatever the spec", async () => {
+      // A drift the spec's own row (other) accepts but the main row refuses.
+      let delta = 0;
+      for (let d = 1; d <= 40; d++) {
+        const { base, shifted } = photoPair(d, 200);
+        const other = await fidelityReport(base, shifted, fullMask(200), { kind: "other" });
+        const main = await fidelityReport(base, shifted, fullMask(200), { kind: "main" });
+        if (other.pass && !main.pass) {
+          delta = d;
+          break;
+        }
+      }
+      expect(delta).toBeGreaterThan(0);
+      const { base, shifted } = photoPair(delta);
+      const png = await encodePng(shifted);
+      const generation = (fidelityKind?: "main") => async (): Promise<ShotGeneration> => ({
+        image: shifted,
+        mask: fullMask(),
+        productReference: base,
+        encoded: { buffer: png, format: "png" },
+        costMicros: 0,
+        fidelityRequired: true,
+        ...(fidelityKind ? { fidelityKind } : {}),
+      });
+      const strict = await runShot(shot, ctx, makeDeps({ generator: new FixedGenerator(generation("main")) }));
+      const loose = await runShot(shot, ctx, makeDeps({ generator: new FixedGenerator(generation()) }));
+      expect(strict.status).toBe("needs_review");
+      expect(strict.fidelityPass).toBe(false);
+      expect(loose.status).toBe("passed");
+    });
+
+    it("fails an unchanged file whose bytes differ from the stored upload, and passes a matching one", async () => {
+      const bytes = await encodeJpeg(solidCanvas(2000, 1500, 120, 140, 160));
+      const unchanged = (sha256: string) => async (): Promise<ShotGeneration> => ({
+        image: { data: Buffer.alloc(0), width: 2000, height: 1500, channels: 4 },
+        mask: null,
+        encoded: { buffer: bytes, format: "jpg" },
+        costMicros: 0,
+        fidelityKind: "main",
+        treatment: { kind: "original_unchanged", scale: 1, sourceWidth: 2000, sourceHeight: 1500 },
+        passthrough: { sha256 },
+      });
+      const stored = createHash("sha256").update(bytes).digest("hex");
+      const other = createHash("sha256").update(Buffer.from("another upload")).digest("hex");
+      const bad = await runShot(shot, ctx, makeDeps({ generator: new FixedGenerator(unchanged(other)) }));
+      expect(bad.status).toBe("needs_review");
+      expect(bad.fidelityPass).toBe(false);
+      const good = await runShot(shot, ctx, makeDeps({ generator: new FixedGenerator(unchanged(stored)) }));
+      expect(good.status).toBe("passed");
+      expect(good.digitalSource).toBe("none");
+      expect(good.packAssets?.[0].treatment?.kind).toBe("original_unchanged");
+      expect(good.packAssets?.[0].passthroughSha256).toBe(stored);
+      expect(good.packAssets?.[0].buffer.equals(bytes)).toBe(true);
+    });
+  });
+
+  it("completes a Keep pack with no white channel and no extras while the cutout provider fails every call", async () => {
+    const mediaId = "ws/ws1/src/kept.jpg";
+    const photo = solidCanvas(1800, 1350, 0, 0, 0);
+    for (let i = 0; i < 1800 * 1350; i++) {
+      photo.data[i * 4] = 40 + (i % 150);
+      photo.data[i * 4 + 1] = 90;
+      photo.data[i * 4 + 2] = 160 - (i % 90);
+    }
+    const bytes = await encodeJpeg(photo, 92);
+    const ai = makeAi();
+    let cutoutCalls = 0;
+    const failing: Provider = {
+      name: "fal-birefnet",
+      kind: "cutout",
+      supports: (task) => task === CUTOUT_TASK,
+      invoke: async <TIn, TOut>(_req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> => {
+        cutoutCalls += 1;
+        throw new ProviderError("cutout service down", "fal-birefnet", CUTOUT_TASK, true);
+      },
+    };
+    ai.registry.register(failing);
+    ai.routing[CUTOUT_TASK] = ["fal-birefnet"];
+    const generator = new LiveShotGenerator({
+      ai,
+      wiring: { llmLive: false, imageProviders: [], cutoutProviders: ["fal-birefnet"], cutoutLive: true },
+      loadMedia: async (key) => (key === mediaId ? bytes : null),
+    });
+    const input: GeneratePackInput = {
+      ...baseInput,
+      channels: ["shopify.product", "etsy.listing"],
+      images: [{ mediaId, width: 1800, height: 1350 }],
+      output: keepAll([mediaId]),
+    };
+    const deps = makeDeps({ ai, generator });
+    const summary = await runGeneratePack(input, deps);
+    expect(summary.state).toBe("done");
+    expect(summary.passed).toBeGreaterThan(0);
+    expect(cutoutCalls).toBe(0);
+    expect(deps.store.assets.every((a) => a.shotType === "original_photo")).toBe(true);
+  });
+
+  it("fails an unreadable or unknown version output before any provider call and releases the hold", async () => {
+    for (const output of [{ v: 2 }, { ...keepAll(["m1"]), v: 2 }, { ...keepAll(["m1"]), colorHex: "red" }]) {
+      const intake = new MockProvider({ name: "mock-intake", tasks: [intakeKey], output: intakeFixture });
+      const deps = makeDeps({ ai: makeAi({ intake }) });
+      const summary = await runGeneratePack({ ...baseInput, output: output as unknown as ResolvedOutputOptions }, deps);
+      expect(summary.state).toBe("failed");
+      expect(summary.error).toBe(OUTPUT_OPTIONS_UNREADABLE);
+      expect(intake.calls).toHaveLength(0);
+      expect(summary.chargedCredits).toBe(0);
+      expect(summary.releasedCredits).toBe(baseInput.creditBudget);
+    }
+    expect(parseRunOutput(undefined)).toEqual({ ok: true, output: null });
+    expect(parseRunOutput(null)).toEqual({ ok: true, output: null });
+  });
+
+  describe("the subtask boundary", () => {
+    const ctx = { jobId: "job1", workspaceId: "ws1", sku: "SKU1", seoSlug: "mug" };
+    async function keptOutcome(): Promise<ShotOutcome> {
+      const unchanged = await encodeJpeg(solidCanvas(64, 48, 10, 20, 30));
+      const rendered = await encodePng(solidCanvas(64, 64, 200, 100, 50));
+      const sha = createHash("sha256").update(unchanged).digest("hex");
+      const base = shotFailureOutcome(
+        { ...mainShot, id: "o1", type: "original_photo", channels: ["etsy.listing", "shopify.product"] },
+        ctx,
+      );
+      return {
+        ...base,
+        status: "passed",
+        packAssets: [
+          {
+            specId: "etsy.listing",
+            buffer: unchanged,
+            format: "jpg",
+            treatment: { kind: "original_unchanged", scale: 1, sourceWidth: 64, sourceHeight: 48 },
+            passthroughSha256: sha,
+          },
+          {
+            specId: "shopify.product",
+            buffer: rendered,
+            format: "png",
+            treatment: { kind: "original", padHex: "#F4F4F5", scale: 1, sourceWidth: 64, sourceHeight: 48 },
+          },
+        ],
+      };
+    }
+
+    it("round trips the treatment and the passthrough flag", async () => {
+      const outcome = await keptOutcome();
+      const back = await deserializeShotOutcome(
+        JSON.parse(JSON.stringify(await serializeShotOutcome(outcome))) as SerializableShotOutcome,
+        ctx,
+      );
+      expect(back.packAssets?.map((a) => a.treatment)).toEqual(outcome.packAssets?.map((a) => a.treatment));
+      expect(back.packAssets?.[0].passthroughSha256).toBe(outcome.packAssets?.[0].passthroughSha256);
+      expect(back.packAssets?.[1].passthroughSha256).toBeUndefined();
+      expect(back.packAssets?.[0].buffer.equals(outcome.packAssets![0].buffer)).toBe(true);
+    });
+
+    it("hands a file over the inline budget to R2 under the workspace prefix and reads it back", async () => {
+      const outcome = await keptOutcome();
+      const objects = new Map<string, Buffer>();
+      const handoff: PackFileHandoff = {
+        put: async (key, bytes) => {
+          objects.set(key, bytes);
+        },
+        get: async (key) => objects.get(key) ?? null,
+      };
+      const serialized = await serializeShotOutcome(outcome, {
+        handoff,
+        workspaceId: "ws1",
+        jobId: "job1",
+        runKey: "run-1",
+        inlineChars: 1,
+      });
+      expect(serialized.files?.every((f) => f.encodedBase64 === undefined && f.objectKey)).toBe(true);
+      const keys = [
+        handoffFileKey("ws1", "job1", "run-1", "o1", "etsy.listing", "jpg"),
+        handoffFileKey("ws1", "job1", "run-1", "o1", "shopify.product", "png"),
+      ];
+      expect([...objects.keys()]).toEqual(keys);
+      expect(keys.every((key) => key.startsWith("ws/ws1/jobs/job1/"))).toBe(true);
+      const back = await deserializeShotOutcome(serialized, ctx, { handoff });
+      expect(back.packAssets?.map((a, i) => a.buffer.equals(objects.get(keys[i])!))).toEqual([true, true]);
+      // A key outside the job's workspace, or bytes that no longer match the
+      // upload, are left out instead of shipped.
+      const foreign = { ...serialized, files: serialized.files!.map((f) => ({ ...f, objectKey: "ws/other/x.jpg" })) };
+      expect((await deserializeShotOutcome(foreign, ctx, { handoff })).packAssets).toEqual([]);
+      objects.set(keys[0], Buffer.from("changed"));
+      const changed = await deserializeShotOutcome(serialized, ctx, { handoff });
+      expect(changed.packAssets?.map((a) => a.specId)).toEqual(["shopify.product"]);
+    });
   });
 });

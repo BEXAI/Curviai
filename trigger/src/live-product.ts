@@ -5,7 +5,8 @@
  * pixels; nothing regenerates them (CLAUDE.md rule 3).
  */
 
-import type { RawImage, RawMask } from "@curvi/pipeline";
+import type { QcKind, RawImage, RawMask } from "@curvi/pipeline";
+import type { PackAssetTreatment } from "@curvi/pipeline/treatment";
 import type { QcErosion } from "./shot-outputs";
 
 export interface LiveProduct {
@@ -40,4 +41,9 @@ export interface StillRender {
    * re-framed. Thin products get a smaller erosion instead of an empty region.
    */
   fidelityErosion?: QcErosion;
+  /** What was done to the background (PHASE_15), for the report notes. */
+  treatment?: PackAssetTreatment;
+  /** The fidelity row the runner checks with, when not the spec's own
+   * ("main" for the seller's kept pixels). */
+  fidelityKind?: QcKind;
 }

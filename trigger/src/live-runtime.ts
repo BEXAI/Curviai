@@ -44,9 +44,14 @@ import {
 } from "@curvi/ai";
 import {
   boxInCrop,
+  buildProductReferenceFromEncoded,
   compositeShot,
   decodeToRgba,
   deriveQcErodePx,
+  detectAlreadyWhite,
+  fidelityReport,
+  makeAlreadyWhite,
+  pixelChecks,
   encodePng,
   HarmonizeAspectError,
   isolateTarget,
@@ -87,7 +92,8 @@ import {
   type ImageModelSeedRow,
   type PresetKey,
 } from "@curvi/pipeline/seed";
-import { getSpec, listSpecs, type ChannelSpec } from "@curvi/specs";
+import { MAX_SOURCE_UPSCALE } from "@curvi/pipeline/output-options";
+import { getSpec, listSpecs, requiresWhiteBackground, type ChannelSpec } from "@curvi/specs";
 
 /** Long edge of the source photo the live shots work from: the largest
  * channel output (from the spec registry) plus headroom, so no spec is ever
@@ -97,8 +103,10 @@ export const WORKING_SOURCE_MAX_PX = Math.ceil(
   Math.max(...listSpecs().map((spec) => Math.max(spec.width ?? 0, spec.height ?? 0, spec.minWidth ?? 0, spec.minHeight ?? 0))) *
     1.25,
 );
+import { CUTOUT_CACHE_FRESH_MS, cutoutCacheKey, type CutoutCacheStore } from "./cutout-cache";
 import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
+import { ORIGINAL_NOT_PREPARED, renderOriginalShot } from "./live-original";
 import type { LiveProduct, StillRender } from "./live-product";
 import { isWorkspaceObjectKey } from "./object-keys";
 import { llmModelProviderName, seedRecipe } from "./recipes";
@@ -110,6 +118,7 @@ import {
   SHOT_SCENE_PAUSED,
   type PipelineDeps,
   type InventoryCutout,
+  type InventoryCutoutArgs,
   type ProductTarget,
   type ShotGenerateArgs,
   type ShotGeneration,
@@ -122,6 +131,7 @@ import {
   encodeMaskPng,
   fitsSpecSize,
   maskArea,
+  QC_EDGE_MARGIN_PX,
   resizeCanvasTo,
   RESIZE_KERNEL_REACH_PX,
   sameAspect,
@@ -659,7 +669,22 @@ export interface LiveShotGeneratorOptions {
   wiring: LiveWiring;
   /** Null when R2 is not configured; every shot is then unavailable. */
   loadMedia: MediaLoader | null;
+  /**
+   * The upload's cutout cache (PHASE_14 workstream 4), the same store the
+   * cutout providers are wrapped with, built once in runtime.ts. Read
+   * directly, never through the router: the inventory of a kept photo, the
+   * already white check (control 7) and every cutout before it calls a
+   * provider, so a photo checked at upload still renders while the cutout
+   * breaker is open (PHASE_15 item 16). A cache read is not a provider call.
+   */
+  cutoutCache?: CutoutCacheStore | null;
+  /** Clock for the cache's freshness; tests pin it. */
+  now?: () => Date;
 }
+
+/** Shot types that make a white required file from a kept photo, which the
+ * already white path may make from the photo itself (control 7). */
+const MADE_WHITE_TYPES: ReadonlySet<string> = new Set(["amazon_main", "alt_angle_white"]);
 
 /**
  * A cut out product plus what it cost; cached per job and source photo. A
@@ -734,6 +759,9 @@ export class LiveShotGenerator implements ShotGenerator {
   private readonly cutoutCosts = new Map<string, number>();
   private readonly cutoutCostClaimed = new Set<string>();
   private readonly logos = new Map<string, Promise<Buffer | null>>();
+  /** Stored uploads of kept photos, as encoded bytes per job and photo,
+   * never as RGBA (PHASE_15 memory section). */
+  private readonly sources = new Map<string, Promise<Buffer | null>>();
 
   constructor(private readonly opts: LiveShotGeneratorOptions) {}
 
@@ -911,6 +939,15 @@ export class LiveShotGenerator implements ShotGenerator {
         // after it stay bounded. Bytes sharp cannot read go as they are; the
         // service may.
         const upright = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
+        // The upload's cached answer for these exact bytes first: no provider
+        // call, so an open cutout breaker never stops a photo checked at
+        // upload (PHASE_15 item 16).
+        const cached = await this.readCachedCutout(workspaceId, upright);
+        if (cached) {
+          console.info(`[live] job ${jobId} ${label} cutout read from the upload cache`);
+          this.cutoutCosts.set(key, 0);
+          return { rgba: cached, costMicros: 0 };
+        }
         let cutout: CallResult<CutoutOutput>;
         try {
           cutout = await callWithFailover<CutoutInput, CutoutOutput>(
@@ -937,6 +974,44 @@ export class LiveShotGenerator implements ShotGenerator {
       })();
       this.cutouts.set(key, pending);
       pending.catch(() => this.cutouts.delete(key));
+    }
+    return pending;
+  }
+
+  /**
+   * The upload's cached cutout of these exact working bytes, decoded, when a
+   * fresh one exists; null on a miss, without a cache, or when it cannot be
+   * read. Never calls a provider.
+   */
+  private async readCachedCutout(workspaceId: string, working: Buffer): Promise<RawImage | null> {
+    const store = this.opts.cutoutCache;
+    if (!store) return null;
+    const key = cutoutCacheKey(workspaceId, working, "png");
+    const hit = await store.get(key).catch(() => null);
+    const now = (this.opts.now ?? (() => new Date()))().getTime();
+    if (!hit || now - hit.storedAt.getTime() >= CUTOUT_CACHE_FRESH_MS) return null;
+    return decodeToRgba(hit.bytes).catch(() => null);
+  }
+
+  /** The upload's cached cutout of a stored photo, prepared the way the
+   * cutout was sent, so the key matches what the preflight stored. */
+  private async cachedCutoutOf(workspaceId: string, source: Buffer): Promise<RawImage | null> {
+    const working = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
+    return this.readCachedCutout(workspaceId, working);
+  }
+
+  /** A stored upload as encoded bytes, loaded once per job and photo. */
+  private sourceFor(jobId: string, mediaId: string): Promise<Buffer | null> {
+    const { loadMedia } = this.opts;
+    if (!loadMedia) return Promise.resolve(null);
+    const key = `${jobId}:${mediaId}`;
+    let pending = this.sources.get(key);
+    if (!pending) {
+      pending = loadMedia(mediaId).catch(() => null);
+      this.sources.set(key, pending);
+      void pending.then((bytes) => {
+        if (!bytes) this.sources.delete(key);
+      });
     }
     return pending;
   }
@@ -991,8 +1066,11 @@ export class LiveShotGenerator implements ShotGenerator {
    * provider failure, a spend cap, an unusable mask) comes back with no
    * cutout and keeps the intake only path.
    */
-  async inventoryCutout(args: { jobId: string; workspaceId: string; mediaId: string }): Promise<InventoryCutout> {
+  async inventoryCutout(args: InventoryCutoutArgs): Promise<InventoryCutout> {
     const { wiring, loadMedia, ai } = this.opts;
+    if (args.cacheOnly) {
+      return this.cachedInventoryCutout(args);
+    }
     if (!wiring.cutoutLive || !loadMedia || !isWorkspaceObjectKey(args.workspaceId, args.mediaId)) {
       return { cutout: null, costMicros: 0 };
     }
@@ -1020,6 +1098,26 @@ export class LiveShotGenerator implements ShotGenerator {
         return { cutout: null, costMicros: err.billedMicros };
       }
       console.warn(`[live] job ${args.jobId} inventory cutout failed`, err);
+      return { cutout: null, costMicros: 0 };
+    }
+  }
+
+  /**
+   * The inventory cutout of a photo no shot cuts out (a kept photo), from
+   * the upload's cache only: the upright working bytes, their cache key,
+   * one store read. Never through the router and never paid; a miss leaves
+   * the photo's inventory empty.
+   */
+  private async cachedInventoryCutout(args: InventoryCutoutArgs): Promise<InventoryCutout> {
+    if (!this.opts.loadMedia || !isWorkspaceObjectKey(args.workspaceId, args.mediaId)) {
+      return { cutout: null, costMicros: 0 };
+    }
+    try {
+      const source = await this.sourceFor(args.jobId, args.mediaId);
+      const cutout = source && source.length > 0 ? await this.cachedCutoutOf(args.workspaceId, source) : null;
+      return { cutout: cutout && !segmentationRefusal(alphaMask(cutout)) ? cutout : null, costMicros: 0 };
+    } catch (err) {
+      console.warn(`[live] job ${args.jobId} cached inventory cutout could not be read`, err);
       return { cutout: null, costMicros: 0 };
     }
   }
@@ -1243,12 +1341,165 @@ export class LiveShotGenerator implements ShotGenerator {
     };
   }
 
+  /**
+   * The seller's kept photo for one spec (PHASE_15 item 17): the stored
+   * upload fitted by live-original.ts. No cutout, no provider and no spend,
+   * so it renders whatever the cutout wiring says.
+   */
+  private async generateOriginal(args: ShotGenerateArgs): Promise<ShotGeneration> {
+    const { shot } = args;
+    const specId = shot.channels[0];
+    if (!specId) {
+      throw new ShotUnavailableError("This shot has no channel to size it for, so it needs review.");
+    }
+    try {
+      const rendered = await renderOriginalShot({
+        shot,
+        spec: getSpec(specId),
+        output: args.output,
+        workspaceId: args.workspaceId,
+        loadSource: this.opts.loadMedia ? (key) => this.sourceFor(args.jobId, key) : null,
+        ...(args.reencodedAtUpload ? { reencodedAtUpload: true } : {}),
+      });
+      if (rendered.kind === "unchanged") {
+        return {
+          // The stored bytes ship as they are; the runner proves them by
+          // sha256 and never decodes them, so the image carries its size only.
+          image: { data: Buffer.alloc(0), width: rendered.width, height: rendered.height, channels: 4 },
+          mask: null,
+          encoded: rendered.encoded,
+          costMicros: 0,
+          fidelityKind: "main",
+          treatment: rendered.treatment,
+          passthrough: { sha256: rendered.sha256 },
+        };
+      }
+      const { still } = rendered;
+      return {
+        image: still.image,
+        mask: still.mask,
+        productReference: still.productReference,
+        encoded: still.encoded,
+        costMicros: 0,
+        fidelityRequired: true,
+        fidelityKind: still.fidelityKind,
+        treatment: still.treatment,
+        ...(still.fidelityErosion
+          ? { fidelityErodePx: still.fidelityErosion.erodePx, fidelityErodeFloorPx: still.fidelityErosion.floorPx }
+          : {}),
+      };
+    } catch (err) {
+      if (err instanceof ShotUnavailableError) {
+        throw err;
+      }
+      console.error(`[live] ${shot.id} kept photo render failed`, err);
+      throw new ShotUnavailableError(ORIGINAL_NOT_PREPARED);
+    }
+  }
+
+  /**
+   * An already white kept photo's white required file (PHASE_15 control 7),
+   * or null for the made white path. It needs the preflight cutout mask from
+   * the upload's cache (never a new provider call just for detection), a
+   * background that already passes the main class white check outside the
+   * mask, and a crop plus white pad that reaches spec.fill. The file is the
+   * photo itself cropped, resized and padded with white: no composite and no
+   * cutout pixels, proven exact against its own reference before encoding,
+   * and the main class checks run on it here so a file that would fail them
+   * takes the made white path instead. The runner's checks gate it again.
+   */
+  private async alreadyWhite(args: ShotGenerateArgs): Promise<ShotGeneration | null> {
+    const { shot, output } = args;
+    const specId = shot.channels[0];
+    if (
+      !this.opts.cutoutCache ||
+      !output?.keepMediaIds.includes(shot.sourceMediaId) ||
+      !MADE_WHITE_TYPES.has(shot.type) ||
+      !specId ||
+      !isWorkspaceObjectKey(args.workspaceId, shot.sourceMediaId)
+    ) {
+      return null;
+    }
+    const spec = getSpec(specId);
+    if (!requiresWhiteBackground(spec)) {
+      return null;
+    }
+    try {
+      const source = await this.sourceFor(args.jobId, shot.sourceMediaId);
+      const cutout = source && source.length > 0 ? await this.cachedCutoutOf(args.workspaceId, source) : null;
+      if (!source || !cutout) {
+        return null;
+      }
+      const productMask = alphaMask(cutout);
+      if (segmentationRefusal(productMask)) {
+        return null;
+      }
+      const detection = await detectAlreadyWhite(source, productMask, spec, { edgeMarginPx: QC_EDGE_MARGIN_PX });
+      if (!detection.alreadyWhite) {
+        return null;
+      }
+      const file = await makeAlreadyWhite(source, productMask, spec, {
+        maxUpscale: MAX_SOURCE_UPSCALE,
+        edgeMarginPx: QC_EDGE_MARGIN_PX,
+        ...(args.reencodedAtUpload ? { reencodedAtUpload: true } : {}),
+      });
+      if (!file.ok) {
+        return null;
+      }
+      const canvas = { width: file.width, height: file.height };
+      const reference = await buildProductReferenceFromEncoded(source, file.placement, canvas);
+      const erosion = await stillQcErosion(file.mask, file.treatment.scale ?? 1);
+      const exact = await fidelityReport(reference, file.raw, file.mask, {
+        kind: "main",
+        exact: true,
+        erodePx: erosion.erodePx,
+      });
+      if (!exact.pass) {
+        console.warn(`[live] job ${args.jobId} already white file for ${specId} drifted; using the made white path`);
+        return null;
+      }
+      const out = await encodeForSpec(file.raw, file.mask, reference, spec, {
+        preferPng: true,
+        erodePx: erosion.erodePx,
+        fidelityKind: "main",
+      });
+      const pixel = await pixelChecks(out.image, file.productMask, spec, {
+        encoded: { bytes: out.encoded.buffer.length, format: out.encoded.format },
+        edgeMarginPx: QC_EDGE_MARGIN_PX,
+      });
+      if (!pixel.pass) {
+        return null;
+      }
+      return {
+        image: out.image,
+        mask: file.mask,
+        qcMask: file.productMask,
+        productReference: reference,
+        encoded: out.encoded,
+        costMicros: 0,
+        fidelityRequired: true,
+        fidelityKind: "main",
+        fidelityErodePx: erosion.erodePx,
+        fidelityErodeFloorPx: erosion.floorPx,
+        treatment: { ...file.treatment, alreadyWhite: true },
+      };
+    } catch (err) {
+      console.warn(`[live] job ${args.jobId} already white check failed; using the made white path`, err);
+      return null;
+    }
+  }
+
   private async generateLive(args: ShotGenerateArgs, spend: AttemptSpend): Promise<ShotGeneration> {
     const { wiring, loadMedia } = this.opts;
     const { shot } = args;
     const label = shot.type.replaceAll("_", " ");
     const method = shot.method;
     const isComposite = COMPOSITE_METHODS.has(method);
+    // The seller's kept photo needs no cutout and no product, so it runs
+    // before the cutout wiring gate and productFor.
+    if (shot.type === "original_photo" && method === "deterministic") {
+      return this.generateOriginal(args);
+    }
     if (!isComposite && method !== "deterministic" && method !== "template") {
       throw new ShotUnavailableError(`The ${label} shot is not produced by live providers yet.`);
     }
@@ -1257,6 +1508,12 @@ export class LiveShotGenerator implements ShotGenerator {
     }
     if (method === "template" && !TEMPLATE_STILL_TYPES.has(shot.type)) {
       throw new ShotUnavailableError(`The ${label} shot needs seller details this pack does not have.`);
+    }
+    // An already white kept photo makes its own white file from the cached
+    // preflight mask, with no provider; otherwise the made white path below.
+    const own = method === "deterministic" ? await this.alreadyWhite(args) : null;
+    if (own) {
+      return own;
     }
     if (!wiring.cutoutLive || !loadMedia || (isComposite && wiring.imageProviders.length === 0)) {
       throw new ShotUnavailableError(
@@ -1282,7 +1539,13 @@ export class LiveShotGenerator implements ShotGenerator {
       try {
         const still: StillRender =
           method === "deterministic"
-            ? await renderDeterministicShot({ shot, product, brandColors: args.brandColors })
+            ? await renderDeterministicShot({
+                shot,
+                product,
+                brandColors: args.brandColors,
+                output: args.output,
+                keptSource: args.output?.keepMediaIds.includes(shot.sourceMediaId) === true,
+              })
             : await renderTemplateStill({
                 type: shot.type as TemplateStillType,
                 spec: getSpec(shot.channels[0]),
@@ -1307,6 +1570,7 @@ export class LiveShotGenerator implements ShotGenerator {
           spendReserved,
           fidelityRequired: true,
           ...(erosion ? { fidelityErodePx: erosion.erodePx, fidelityErodeFloorPx: erosion.floorPx } : {}),
+          ...(still.treatment ? { treatment: still.treatment } : {}),
         };
       } catch (err) {
         // A still that cannot be rendered ends this shot only, never the

@@ -8,6 +8,7 @@
 import { task } from "@trigger.dev/sdk/v3";
 import type { Shot } from "@curvi/pipeline";
 import { resolveRuntimeDeps } from "../db-runtime";
+import { buildR2Handoff } from "../r2";
 import {
   runShot,
   serializeShotOutcome,
@@ -15,6 +16,9 @@ import {
   type ShotContext,
 } from "../pipeline-runner";
 
+/** The shot plus its context. The context carries the job's resolved output
+ * options (ShotContext.output), so the subtask renders the pack's colors and
+ * kept photos exactly as the in process fan out does (PHASE_15 item 21). */
 export interface GenerateShotPayload extends ShotContext {
   shot: Shot;
 }
@@ -32,6 +36,13 @@ export const generateShot = task({
   run: async (payload: GenerateShotPayload): Promise<SerializableShotOutcome> => {
     const deps = resolveRuntimeDeps();
     const outcome = await runShot(payload.shot, payload, deps);
-    return await serializeShotOutcome(outcome);
+    // A file past the inline budget goes through R2 under the workspace's
+    // own prefix: Trigger.dev caps a task output at 10MB (PHASE_15 item 15).
+    return await serializeShotOutcome(outcome, {
+      handoff: buildR2Handoff(),
+      workspaceId: payload.workspaceId,
+      jobId: payload.jobId,
+      ...(payload.runKey ? { runKey: payload.runKey } : {}),
+    });
   },
 });
