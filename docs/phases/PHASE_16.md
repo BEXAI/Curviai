@@ -216,3 +216,49 @@ Decided 2026-09-29 as defaults. The founder may revise any of them later; a chan
 - A rule 3 test covers every new shot type.
 - docs/verification.md has dated rows for A+ module sizes, TikTok and Reels ad specs and text limits, and any directory listing requirements.
 - The home page, pricing page and llms.txt describe bundles, A+ modules, carousels, ad packs and the agent skill, with no claim that is not live.
+
+## Implementation status
+
+Recorded 2026-09-29 on the integration branch `p16/integration` (head 38bd279 before the fix passes and this docs commit). Nothing from this phase is live in production: migrations 0024 and 0025, the re-seed, the worker, the web app and the eval run are founder steps (docs/PENDING.md, "Phase 16 founder steps"). All seven founder decisions above are built as their recorded defaults.
+
+### What shipped, per workstream
+
+| # | Workstream | Status | Where |
+| --- | --- | --- | --- |
+| Foundations | Migration and rule 7 checks | Built | Migration 0024 (`generation_jobs.seller_answers` with an object check, `asset_variants.picked`, `api_keys`, `favorites`, the `assets (id, workspace_id)` unique index) with RLS tests; dated rows in docs/verification.md for A+ sizes, TikTok, Reels and Story safe zones, text limits, MCP and skills. |
+| 1 | Pack bundles | Built | Seed `packBundles`, `bundle` in the output options (default `everything`, left out of every key while default), `skipBundleOffShots`, bundle aware Looks, `PackBundleCards` on the form. |
+| 2 | More A+ modules | Built | Six template modules, `copy_generator` v2 with the claims guard and rule 9 lint, press quote and award endorsements (migration 0025), four coming soon A+ registry sizes. |
+| 3 | Pins, carousels and ad packs | Built | `pin_moodboard`, `carousel_slide`, `ad_variant`; `tiktok.ad_9x16` and `meta.reels_9x16`; one sliced canvas per carousel; `carousel/NN` and `ads/{placement}/vN` folders with `ads/ads.csv`; the `ads` extra family, off by default. |
+| 4 | Question step | Built | `question_planner` v1 (stage `question`), deterministic skipping, `SellerAnswers` stored on the job, `QuestionStep` under the note field, skippable. |
+| 5 | Curvi inside AI agents | Built, not public | Public API v1 (`/api/v1/packs`, `/packs/{id}`, `/packs/{id}/files`, `/checks/main-image`, `/channels`, `/openapi.json`), hosted MCP server at `/api/mcp` (protocol 2026-07-28), workspace API keys at /app/settings/api gated by `apiAccess`, the `curvi` CLI in `packages/cli` and the skill in `skills/curvi/` (MIT). `FEATURES.agentApi` and `FEATURES.agentSkill` stay coming soon. |
+| 6 | Reuse, variations, gallery | Built | "Make this pack again" (`/app/new?from=`), up to 4 scene versions with `picked`, favorites, `/app/library` with the masonry `GalleryGrid`. |
+| 7 | Brand kit from a logo | Built | `readLogoPalette` (Lab k means, CIEDE2000), `brand_palette_namer` v1 only when ambiguous, confirm panel on /app/brand, nothing saves without the seller. |
+
+### Deviations from this plan
+
+- Migration 0024 did not hold everything: endorsements needed `products.endorsements`, so migration 0025 was added. The next free number is 0026.
+- Extra variations reuse `creditCosts.generativeStill`; no `creditCosts.variation` key exists (founder decision 3).
+- Every A+ module renders at 970 x 600 on `amazon.aplus.basic_header`. The four smaller A+ sizes are in the registry as coming soon, since no module targets them yet.
+- Endorsements are press quotes and awards, not customer reviews, because Amazon's A+ guidelines do not allow reviews. The module's skip copy says so.
+- The A+ modules, the ads formats, `headline`, `variations` and `variation` are left out of `LlmShot`; the runner adds the deterministic plan's modules and ads shots to an LLM plan. Ad headlines and calls to action are planned deterministically, not written by the copy recipe.
+- `POST /api/v1/packs` has no answers field. Seller answers cannot go through the API, the MCP server or the CLI yet; supporting them needs a preflight for API uploads.
+- The skill and CLI are in this repository, and the CLI is not on npm (founder decision 6). The CLI help and SKILL.md say "Growth plan and up" as text, matching the seed's `apiAccess` tiers with no test tying the two.
+
+### Known gaps
+
+As of 38bd279. The fix passes that run beside this docs commit may close some of these; check the branch log before acting on one.
+
+- `validateLlmShotList` in trigger/src/pipeline-runner.ts does not know bundles, so an LLM plan with shots outside the bundle can fall back to the deterministic plan.
+- A small bundle with only non marketplace channels can plan zero shots and show "About 0 credits".
+- The all files zip does not include `ads/ads.csv` and can give a picked extra version a `-2` suffix. Picking a version does not update the compliance report.
+- The TikTok safe zone and the A+ sizes other than 970 x 600 come from secondary sources (`tiktok.ad_9x16` is marked verified false).
+- Question channel and mood keywords are English only.
+- Marketing copy (home, pricing, llms.txt) does not yet describe bundles, A+ modules, carousels, ad packs or scene versions as live. The "Done when" copy item is open.
+
+### Needs a live run
+
+- `pnpm eval` with live keys for `copy_generator` v2, `question_planner` v1 and `brand_palette_namer` v1 (none has live fixtures yet), and the `--stage aplus` and `--stage questions` golden sets (the A+ fidelity stage passed 60 of 60 offline on 2026-09-29). There is no eval stage for the ads formats yet.
+- A scene carousel against a real image provider, with the R2 cutout cache shared across shot subtasks.
+- The MCP server against real clients (only the spec's message shapes are tested).
+- `pnpm e2e`: not run on the integration branch. Earlier reports named pre existing failures in e2e/home-hero.spec.ts (3) and e2e/claims.spec.ts (1). There are no Playwright specs yet for /app/library, Make this pack again, version picking, the Carousel and Ads sections or /app/settings/api.
+- A reviewer agent pass on the tenant writes (favorites, the `picked` update, the zip row delete in `pickShotVersion`), on workstream 5 (the owner connection prefix lookup, keys acting as their maker, MCP discovery without a key, the `api-{sha256}` source keys, CLI key storage, `--out` path handling) and on the /app/brand vision call. Rollout step 6 requires the workstream 5 pass before the API goes public.
