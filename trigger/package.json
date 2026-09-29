@@ -18,6 +18,7 @@
     "./provider-probes": "./src/provider-probes.ts",
     "./shot-concurrency": "./src/shot-concurrency.ts",
     "./preflight": "./src/preflight.ts",
+    "./brand-palette": "./src/brand-palette.ts",
     "./preflight-intake": "./src/preflight-intake.ts"
   },
   "scripts": {

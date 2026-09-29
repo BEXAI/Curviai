@@ -9,6 +9,7 @@
 import type { OutputOptionsInput, PhotoBackgroundChoice } from "@curvi/pipeline/output-options";
 import type { ComplianceReportView } from "@/lib/compliance-report";
 import type { OutputOptionsSummary } from "@/lib/job-copy";
+import type { BrandPaletteOutcome } from "@/lib/brand/types";
 import type { PreflightBox, PreflightOutcome } from "@/lib/preflight/types";
 
 export type {
@@ -425,6 +426,11 @@ export interface Services {
    * output_options_enabled kill switch too (cached briefly per process). */
   outputOptionsEnabled(): Promise<boolean>;
   saveBrandKit(workspaceId: string, kit: BrandKitView): Promise<SaveResult>;
+  /** Suggests brand colors from an uploaded logo (PHASE_16 workstream 7).
+   * Owners, admins and editors on a plan with a brand kit; the logo key
+   * must sit in this workspace's source prefix. Never saves the kit: the
+   * seller confirms the suggestion and saves through saveBrandKit. */
+  suggestBrandPalette(workspaceId: string, logoKey: string): Promise<BrandPaletteOutcome>;
   listMembers(workspaceId: string): Promise<MemberView[]>;
   listIntegrations(workspaceId: string): Promise<IntegrationView[]>;
 }

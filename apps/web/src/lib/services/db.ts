@@ -89,6 +89,8 @@ import {
 import type { PreflightOutcome } from "@/lib/preflight/types";
 import type { UploadPreflight } from "@curvi/db";
 import { brandKitInputSchema, brandKitIssueNotice, normalizeFontChoice } from "@/lib/validation/brand-kit";
+import { brandPaletteOutcomeOf, defaultBrandPaletteRun, type BrandPaletteOutcome, type BrandPaletteRunner } from "@/lib/brand/palette";
+import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import { isUuid } from "@/lib/validation/ids";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import { ingestUpload, type IngestOutcome } from "@/lib/trust/ingest";
@@ -185,6 +187,9 @@ export interface DbServiceDeps {
   /** Overrides the provider pause verdict createJob checks (tests). Left
    * out, lib/provider-preflight decides. */
   providerVerdict?: () => Promise<PreflightVerdict>;
+  /** Overrides the logo palette reader (tests). Left out, the worker
+   * runtime reads the logo (lib/brand/palette.ts). */
+  brandPalette?: BrandPaletteRunner;
 }
 
 /** A source_media.ingest record read back, or null when it is missing or
@@ -2504,6 +2509,42 @@ export class DbService implements Services {
         .where(and(eq(brandKits.id, existing.id), eq(brandKits.workspaceId, workspaceId)));
     }
     return { ok: true, notice: "Brand kit saved." };
+  }
+
+  /** PHASE_16 workstream 7: the same role, prefix and plan checks as
+   * saving the kit, and the same server side check of the upload, before
+   * the worker runtime reads the logo. Suggestion only; nothing is saved. */
+  async suggestBrandPalette(workspaceId: string, logoKey: string): Promise<BrandPaletteOutcome> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return { ok: false, reason: "forbidden", notice: "Only owners, admins and editors can change the brand kit." };
+    }
+    if (!isWorkspaceSourceKey(workspaceId, logoKey)) {
+      return { ok: false, reason: "foreign_key", notice: brandKitCopy.paletteMissing };
+    }
+    const workspace = await this.db.query.workspaces.findFirst({ where: (t, { eq }) => eq(t.id, workspaceId) });
+    const allowance = checkBrandKitEntitlement(tierKeyOf(workspace?.plan), 0, false);
+    if (!allowance.ok) {
+      return { ok: false, reason: "upgrade_required", notice: allowance.message };
+    }
+    const checked = await this.ingest(logoKey, "image");
+    if (checked && !checked.ok) {
+      return { ok: false, reason: checked.retryable ? "unavailable" : "invalid_upload", notice: checked.notice };
+    }
+    try {
+      const run = await (this.deps.brandPalette ?? defaultBrandPaletteRun)({
+        requestId: crypto.randomUUID(),
+        workspaceId,
+        logoKey,
+      });
+      if (run.costMicros > 0) {
+        console.info(`[brand-palette] workspace ${workspaceId} palette namer spend ${run.costMicros} micros`);
+      }
+      return brandPaletteOutcomeOf(run);
+    } catch (err) {
+      console.error(`[brand-palette] could not read a logo in workspace ${workspaceId}`, err);
+      return { ok: false, reason: "unavailable", notice: brandKitCopy.paletteUnavailable };
+    }
   }
 
   async listMembers(workspaceId: string): Promise<MemberView[]> {

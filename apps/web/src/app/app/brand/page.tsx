@@ -3,7 +3,8 @@ import { AUTO_STYLE_PRESET, DEFAULT_TEMPLATE_FONT, presets, templateFonts } from
 import { BrandKitForm } from "@/components/app/brand-kit-form";
 import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import { getServices } from "@/lib/services";
-import { saveBrandKitAction } from "./actions";
+import { MAX_BRAND_COLORS } from "@/lib/validation/brand-kit";
+import { saveBrandKitAction, suggestBrandPaletteAction } from "./actions";
 
 export const metadata: Metadata = { title: "Brand kit" };
 export const dynamic = "force-dynamic";
@@ -43,6 +44,8 @@ export default async function BrandPage() {
           presetOptions={presetOptions}
           fontOptions={fontOptions}
           save={saveBrandKitAction}
+          suggestPalette={suggestBrandPaletteAction}
+          maxColors={MAX_BRAND_COLORS}
         />
       </div>
     </div>

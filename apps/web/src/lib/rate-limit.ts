@@ -42,6 +42,9 @@ export const RATE_LIMIT_POLICIES = {
   "uploads.complete": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },
   // The preflight at upload: one per photo, again when the note changes.
   "uploads.preflight": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },
+  // Brand colors from a logo (PHASE_16 workstream 7): a pixel read, and a
+  // metered vision call when the logo is ambiguous. A seller tries a few logos.
+  "brand.palette": { user: { limit: 30, windowSeconds: HOUR }, ip: { limit: 60, windowSeconds: HOUR } },
   "jobs.create": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
   "products.create": { user: { limit: 120, windowSeconds: HOUR }, ip: { limit: 240, windowSeconds: HOUR } },
   // Each side by side image fetches two pictures and renders a new one.

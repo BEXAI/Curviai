@@ -56,6 +56,11 @@ export function createFakeServices(role: WorkspaceRole | null = "owner"): Servic
     })),
     outputOptionsEnabled: vi.fn(async () => true),
     saveBrandKit: vi.fn(async () => ({ ok: true, notice: "Brand kit saved." })),
+    suggestBrandPalette: vi.fn(async () => ({
+      ok: false as const,
+      reason: "unavailable" as const,
+      notice: "Not configured.",
+    })),
     listMembers: vi.fn(async () => []),
     listIntegrations: vi.fn(async () => []),
   };
