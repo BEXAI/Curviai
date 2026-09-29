@@ -30,18 +30,37 @@ export function parseShotConcurrency(raw: string | undefined): number | undefine
  */
 export const SERIAL_SHOT_TYPES: ReadonlySet<string> = new Set(["original_photo"]);
 
+/** Longest a serial shot holds the queue. A kept photo renders in seconds;
+ * one that has not settled by then (a stalled read) lets the next one start,
+ * so a single hang never blocks every later pack in the process. */
+export const SERIAL_SLOT_MAX_MS = 5 * 60_000;
+
 let serialTail: Promise<unknown> = Promise.resolve();
 
 /**
  * Runs fn in the shot concurrency class of its type: through one process
  * wide queue for SERIAL_SHOT_TYPES, directly for every other type. A failed
- * run never blocks the next one.
+ * run never blocks the next one, and neither does a run that never settles:
+ * the queue moves on after slotMaxMs, while the caller still gets fn's own
+ * result.
  */
-export function withShotClassSlot<T>(shotType: string, fn: () => Promise<T>): Promise<T> {
+export function withShotClassSlot<T>(
+  shotType: string,
+  fn: () => Promise<T>,
+  slotMaxMs: number = SERIAL_SLOT_MAX_MS,
+): Promise<T> {
   if (!SERIAL_SHOT_TYPES.has(shotType)) {
     return fn();
   }
   const run = serialTail.then(fn, fn);
-  serialTail = run.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const released = new Promise<void>((resolve) => {
+    // Started once this run holds the slot, so waiting in line never counts.
+    void serialTail.finally(() => {
+      timer = setTimeout(resolve, slotMaxMs);
+      timer.unref?.();
+    });
+  });
+  serialTail = Promise.race([run.catch(() => undefined), released]).finally(() => clearTimeout(timer));
   return run;
 }
