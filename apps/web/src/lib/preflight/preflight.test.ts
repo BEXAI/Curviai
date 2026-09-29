@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { UploadPreflightRun } from "@curvi/trigger/preflight";
 import { photoBlockReason, photoTargetBox, type PhotoItem } from "@/components/app/new-pack-form";
 import {
+  addedTextPhotoLine,
+  addedTextSpecIds,
   CUTOUT_UNAVAILABLE_NOTICE,
   joinNames,
   keptPhotoHeadsUp,
@@ -222,6 +224,40 @@ describe("the output context (PHASE_15 item 31)", () => {
     expect(preflightBlockReason(small, ["amazon.main"], null, { output: removed })).toContain("too small for Amazon main");
     expect(keptPhotoHeadsUp(small, ["amazon.main"], null, removed)).toEqual([]);
     expect(keptPhotoHeadsUp(small, ["amazon.main"], null, undefined)).toEqual([]);
+  });
+
+  describe("added text on the photo (PHASE_15 P1)", () => {
+    const single = { products: [{ label: "silver watch", box: watchBox, matchesIntent: "yes" }] };
+    const flagged = view(storedPreflightOf(run({}, { ...single, addedOverlays: true })));
+    const clean = view(storedPreflightOf(run({}, { ...single, addedOverlays: false })));
+
+    it("stores the flag only when intake set it", () => {
+      expect(flagged.addedOverlays).toBe(true);
+      expect(clean).not.toHaveProperty("addedOverlays");
+      expect(view(storedPreflightOf(run({}, single)))).not.toHaveProperty("addedOverlays");
+    });
+
+    it("names the picked channels that refuse added text, and only those that take a kept photo", () => {
+      expect(
+        addedTextSpecIds(["amazon.main", "amazon.secondary", "ebay.listing", "google.merchant.main", "google.merchant.lifestyle"]),
+      ).toEqual(["ebay.listing", "google.merchant.lifestyle"]);
+      expect(addedTextPhotoLine([])).toBeNull();
+      expect(addedTextPhotoLine(["ebay.listing"])).toBe(
+        "This photo looks like it has added text, a border or a watermark, which eBay does not allow, so it will be left out there. Upload a clean photo to include it, or leave this channel out. Your product's own logo and labels are fine.",
+      );
+    });
+
+    it("says so under a kept flagged photo on eBay or Google, and nowhere else", () => {
+      const line = addedTextPhotoLine(["ebay.listing", "google.merchant.lifestyle"])!;
+      expect(line).toContain("which eBay and Google do not allow");
+      expect(line).toContain("leave these channels out");
+      const picked = ["amazon.secondary", "ebay.listing", "google.merchant.lifestyle"];
+      expect(keptPhotoHeadsUp(flagged, picked, null, keptNoCutout)).toContain(line);
+      expect(keptPhotoHeadsUp(clean, picked, null, keptNoCutout)).not.toContain(line);
+      expect(keptPhotoHeadsUp(flagged, ["amazon.secondary"], null, keptNoCutout)).toEqual([]);
+      expect(keptPhotoHeadsUp(flagged, picked, null, removed)).toEqual([]);
+      expect(line).not.toMatch(/[–—→←]| - |->|=>|[\u{1F300}-\u{1FAFF}]/u);
+    });
   });
 
   it("keeps the new lines plain (rule 9)", () => {

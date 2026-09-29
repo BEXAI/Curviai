@@ -65,6 +65,10 @@ export interface PreflightView {
   productLongSide: number | null;
   /** What every image channel spec needs from the photo. */
   sizes: PreflightSizeNeed[];
+  /** Intake saw text, borders, watermarks or stickers added on top of the
+   * photo (intake version 5). A kept photo so flagged is left out of the
+   * channels that refuse them. Absent on older rows: a clean photo. */
+  addedOverlays?: boolean;
   /** True for the simulated demo mode answer. */
   demo?: boolean;
 }

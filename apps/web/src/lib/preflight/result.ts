@@ -102,6 +102,7 @@ export function storedPreflightOf(run: UploadPreflightRun, thumbKeys: ReadonlyAr
     items: status === "choose" ? items : [],
     preselect,
     productLongSide,
+    ...(image.addedOverlays === true ? { addedOverlays: true } : {}),
   };
 }
 

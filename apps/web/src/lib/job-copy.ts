@@ -8,6 +8,7 @@
  */
 
 import {
+  ADDED_OVERLAYS_REASON,
   DEFAULT_OUTPUT_OPTIONS,
   EXTRA_FAMILY_KEYS,
   originalFitFor,
@@ -69,6 +70,14 @@ function tooSmallSentence(): string {
   return `Your photo is too small for this channel without enlarging it more than ${upscaleLimitText()} times. Upload the original from your camera, or untick this channel.`;
 }
 
+/** A kept photo intake saw added text, borders or watermarks on, left out of
+ * a channel that refuses them (PHASE_15 P1). Product logos and labels are
+ * always allowed (PHASE_14), so the copy says so. */
+export const ADDED_TEXT_COPY: SkippedCopy = {
+  label: "Needs a clean photo",
+  note: "Your photo looks like it has added text, a border or a watermark, which this channel does not allow, so it was left out here. Upload a clean photo, or untick this channel. Your product's own logo and labels are fine. Not charged.",
+};
+
 /**
  * Copy for a shot the planner left out, keyed on its stored reason. A video
  * or avatar shot that no plan delivers yet reads Coming soon whatever the
@@ -88,6 +97,9 @@ export function skippedCopy(reason: string | null | undefined, shotType?: string
   }
   if (r.includes(SOURCE_TOO_SMALL_REASON)) {
     return { label: "Needs a larger photo", note: `${tooSmallSentence()} Not charged.` };
+  }
+  if (r.includes(ADDED_OVERLAYS_REASON)) {
+    return ADDED_TEXT_COPY;
   }
   if (r.includes("needs photo")) {
     return { label: "Needs photo", note: `Add a photo of this angle to get this shot. ${NO_CHARGE}` };
