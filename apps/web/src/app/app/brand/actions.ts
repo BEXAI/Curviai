@@ -34,7 +34,8 @@ const LogoKey = z.string().min(1).max(512);
 
 /**
  * Suggests brand colors from the uploaded logo (PHASE_16 workstream 7).
- * Rate limited per user, since an ambiguous logo costs a vision call. It
+ * Rate limited per user and per workspace, since an ambiguous logo costs a
+ * vision call. It
  * only returns a suggestion: the kit changes when the seller confirms it in
  * the form and saves through saveBrandKitAction.
  */
@@ -48,9 +49,16 @@ export async function suggestBrandPaletteAction(logoKey: unknown): Promise<Brand
   if (!workspace) {
     return { ok: false, reason: "forbidden", notice: "Sign in to edit the brand kit." };
   }
-  const decision = await checkRateLimit("brand.palette", "user", await userRateLimitSubject(workspace.id));
-  if (!decision.allowed) {
-    return { ok: false, reason: "rate_limited", notice: rateLimitMessage(decision.retryAfterSeconds) };
+  // Counted per user and, with the same budget, per workspace: extra seats
+  // or a user switching addresses cannot multiply the vision calls one
+  // workspace makes, which only the global daily cap would otherwise bound.
+  const subject = await userRateLimitSubject(workspace.id);
+  const subjects = subject === `ws:${workspace.id}` ? [subject] : [subject, `ws:${workspace.id}`];
+  for (const s of subjects) {
+    const decision = await checkRateLimit("brand.palette", "user", s);
+    if (!decision.allowed) {
+      return { ok: false, reason: "rate_limited", notice: rateLimitMessage(decision.retryAfterSeconds) };
+    }
   }
   return services.suggestBrandPalette(workspace.id, parsed.data);
 }

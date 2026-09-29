@@ -125,6 +125,41 @@ export async function putSourceObject(
   return key;
 }
 
+/** True for the S3 answer to a conditional write whose precondition
+ * failed (412 PreconditionFailed): the object is already there. */
+function isPreconditionFailed(err: unknown): boolean {
+  const e = err as { name?: unknown; Code?: unknown; $metadata?: { httpStatusCode?: unknown } } | null;
+  return e?.$metadata?.httpStatusCode === 412 || e?.name === "PreconditionFailed" || e?.Code === "PreconditionFailed";
+}
+
+/** Writes a photo under a content addressed source key only when nothing is
+ * stored there yet (If-None-Match: *, which R2 supports on PutObject; see
+ * docs/verification.md). True when this call created the object, false when
+ * it was already there. The public API uses it so a retried request, or a
+ * later pack sending the same photo, never puts the raw upload back over
+ * the copy ingest already cleaned (EXIF, XMP and IPTC stripped, upright). */
+export async function putSourceObjectIfAbsent(
+  workspaceId: string,
+  body: Buffer,
+  contentType: string,
+  key: string,
+): Promise<boolean> {
+  if (!isWorkspaceSourceKey(workspaceId, key)) {
+    throw new Error("putSourceObjectIfAbsent: the key is outside the workspace source prefix");
+  }
+  try {
+    await r2Client().send(
+      new PutObjectCommand({ Bucket: privateBucket(), Key: key, Body: body, ContentType: contentType, IfNoneMatch: "*" }),
+    );
+    return true;
+  } catch (err) {
+    if (isPreconditionFailed(err)) {
+      return false;
+    }
+    throw err;
+  }
+}
+
 /** Writes generated output bytes under the workspace's out prefix. */
 export async function putGeneratedObject(key: string, body: Buffer, contentType: string): Promise<void> {
   await r2Client().send(
