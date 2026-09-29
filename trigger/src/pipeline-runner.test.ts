@@ -32,6 +32,7 @@ import {
   resolveOutputOptions,
   ADDED_OVERLAYS_REASON,
   SELLER_OFF_REASON,
+  BUNDLE_OFF_REASON,
   type OutputOptionsInput,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
@@ -51,6 +52,7 @@ import {
   sellerTextOf,
   withAplusModules,
   withAdsShots,
+  brokenCarouselSlides,
   carouselRunOrder,
   runInCarouselOrder,
   creditsForShot,
@@ -3344,6 +3346,30 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
     expect(deps.store.assets.some((a) => a.shotType === "lifestyle")).toBe(false);
   });
 
+  it("accepts an LLM plan under a smaller bundle, skipping the shots outside it instead of falling back", async () => {
+    const llmPlan = {
+      shots: [
+        mainShot,
+        planShot("a1", "alt_angle_white", "deterministic", ["amazon.secondary"], 2),
+        planShot("l1", "lifestyle", "composite_generate", ["amazon.secondary"], 5),
+      ],
+      skipped: [],
+    };
+    const plan = new MockProvider({ name: "mock-plan", tasks: [planKey], output: llmPlan });
+    const deps = makeDeps({ ai: makeAi({ plan }) });
+    const summary = await runGeneratePack(
+      { ...baseInput, channels: ["amazon.main", "amazon.secondary"], output: resolved({ bundle: "main" }) },
+      deps,
+    );
+    expect(summary.state).toBe("done");
+    expect(summary.plannerSource).toBe("llm");
+    expect(summary.skipped.filter((s) => s.reason === BUNDLE_OFF_REASON).map((s) => s.type).sort()).toEqual([
+      "alt_angle_white",
+      "lifestyle",
+    ]);
+    expect(deps.store.assets.map((a) => a.shotType)).toEqual(["amazon_main"]);
+  });
+
   it("covers meta.feed_1x1 with the front image when cards are off, on both planner paths", async () => {
     const input: GeneratePackInput = {
       ...baseInput,
@@ -3913,6 +3939,70 @@ describe("ads formats in a pack (PHASE_16 workstream 3)", () => {
       ["c2-composite_generate", "c3-composite_generate"],
     ]);
     expect(outcomes.map((o) => o.shotId)).toEqual(scenes.map((s) => s.id));
+  });
+
+  it("ships no carousel slide and charges none when one slide fails QC", async () => {
+    // Slide 1 fails QC (far below the spec's minimum size); the others pass.
+    const demo = new DemoShotGenerator();
+    const generator: ShotGenerator = {
+      generate: async (args) =>
+        args.shot.type === "carousel_slide" && args.shot.slideIndex === 1
+          ? {
+              image: solidCanvas(64, 64, 255, 255, 255),
+              mask: null,
+              encoded: { buffer: Buffer.from("stub"), format: "png" },
+              costMicros: 0,
+            }
+          : demo.generate(args),
+    };
+    const input: GeneratePackInput = {
+      ...baseInput,
+      channels: ["meta", "pinterest", "tiktok"],
+      creditBudget: 60,
+      output: adsOutput({ extras: { ads: true, scenes: false } }),
+    };
+    const whole = await runGeneratePack(input, makeDeps());
+    const wholeSlides = (await packReport(whole)).filter((f) => f.file.startsWith("carousel/")).length;
+    expect(wholeSlides).toBeGreaterThanOrEqual(3);
+
+    const deps = makeDeps({ generator });
+    const summary = await runGeneratePack({ ...input, jobId: "job-carousel-broken" }, deps);
+    expect(summary.state).toBe("done");
+    const files = await packReport(summary);
+    expect(files.some((f) => f.file.startsWith("carousel/"))).toBe(false);
+    const slides = deps.store.assets.filter((a) => a.shotType === "carousel_slide");
+    expect(slides.length).toBe(wholeSlides);
+    expect(slides.every((a) => a.status === "needs_review")).toBe(true);
+    expect(summary.chargedCredits).toBe(whole.chargedCredits - wholeSlides * creditCosts.deterministic);
+  });
+
+  it("finds the passing slides of a carousel that lost one, scene or template", () => {
+    const slide = (i: number, carouselId = "c1"): Shot => ({
+      id: `${carouselId}-${i}`,
+      type: "carousel_slide",
+      sourceMediaId: "m1",
+      method: "composite_generate",
+      channels: ["meta.feed_4x5"],
+      stylePreset: "none",
+      credits: i === 1 ? creditCosts.generativeStill : 0,
+      priority: 7,
+      carouselId,
+      slideIndex: i,
+      slideCount: 3,
+    });
+    const other: Shot = { ...slide(1), id: "social", type: "social_4x5", carouselId: undefined };
+    const shots = [slide(1), slide(2), slide(3), other];
+    const status = (failed: string[]) =>
+      shots.map((s) => ({ shotId: s.id, status: failed.includes(s.id) ? ("needs_review" as const) : ("passed" as const) }));
+    expect([...brokenCarouselSlides(shots, status(["c1-1"]))].sort()).toEqual(["c1-2", "c1-3"]);
+    expect([...brokenCarouselSlides(shots, status(["c1-3"]))].sort()).toEqual(["c1-1", "c1-2"]);
+    expect(brokenCarouselSlides(shots, status([])).size).toBe(0);
+    expect(brokenCarouselSlides(shots, status(["social"])).size).toBe(0);
+    // A slide that never ran counts as lost.
+    expect([...brokenCarouselSlides(shots, status([]).filter((o) => o.shotId !== "c1-2"))].sort()).toEqual([
+      "c1-1",
+      "c1-3",
+    ]);
   });
 
   it("drops a whole carousel when the budget cannot keep every slide", () => {
