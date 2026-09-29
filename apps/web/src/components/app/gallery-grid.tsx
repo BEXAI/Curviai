@@ -14,7 +14,9 @@ import {
   type GalleryItem,
 } from "@/lib/library";
 import { channelName } from "@/lib/output-options-copy";
+import { isTransparentShot } from "@/lib/output-preview";
 import { FAVORITE_COPY } from "@/lib/variation-picks";
+import { CHECKERBOARD } from "./output-preview";
 
 type Facets = ReturnType<typeof galleryFacets>;
 
@@ -64,7 +66,7 @@ export function GalleryGrid({
 
   const chip = (label: string, next: GalleryFilters, active: boolean, key: string) => {
     const className = cn(
-      "inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-medium transition-colors",
+      "inline-flex min-h-11 items-center rounded-full border px-3 text-xs font-medium transition-colors",
       active ? "border-ink-900 bg-ink-900 text-white" : "border-ink-200 bg-white text-ink-700 hover:border-ink-400",
     );
     return basePath ? (
@@ -109,12 +111,21 @@ export function GalleryGrid({
               data-favorite={item.favorite ? "true" : "false"}
             >
               <figure className="overflow-hidden rounded-lg border border-ink-200 bg-white">
-                <div className="bg-ink-50" style={{ aspectRatio: itemAspect(item) }}>
+                {/* A transparent PNG gets the job board's checkerboard, so a
+                    dark cutout never vanishes into the dark surface. */}
+                <div
+                  className="flex items-center justify-center bg-ink-50"
+                  style={{ aspectRatio: itemAspect(item) }}
+                  data-transparent={isTransparentShot(item.shotType) ? "true" : undefined}
+                >
                   {item.imageUrl ? (
                     <img
                       src={item.imageUrl}
                       alt={`${shotTypeLabel(item.shotType)} of ${item.productTitle}`}
-                      className="h-full w-full object-contain"
+                      className={cn(
+                        "block max-h-full max-w-full object-contain",
+                        isTransparentShot(item.shotType) && CHECKERBOARD,
+                      )}
                       loading="lazy"
                     />
                   ) : null}
@@ -197,8 +208,8 @@ export function FavoriteButton({
         aria-label={favorite ? FAVORITE_COPY.remove : FAVORITE_COPY.add}
         title={favorite ? FAVORITE_COPY.remove : FAVORITE_COPY.add}
         className={cn(
-          "inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors",
-          favorite ? "text-amber-500 hover:text-amber-600" : "text-ink-300 hover:text-ink-600",
+          "-m-1.5 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors",
+          favorite ? "text-amber-500 hover:text-amber-600" : "text-ink-500 hover:text-ink-700",
         )}
         data-testid="favorite-toggle"
       >

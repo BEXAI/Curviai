@@ -6,7 +6,7 @@ import { aspectRatioCss, type PreviewAspect } from "@/lib/output-preview";
  * palettes. It is painted on the image element, which is sized to the
  * picture, so only transparent pixels show it.
  */
-const CHECKERBOARD =
+export const CHECKERBOARD =
   "bg-[repeating-conic-gradient(var(--color-ink-200)_0%_25%,var(--color-ink-50)_0%_50%)] bg-[length:16px_16px]";
 
 export interface OutputPreviewProps {

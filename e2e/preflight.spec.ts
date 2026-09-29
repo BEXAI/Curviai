@@ -100,7 +100,7 @@ test("the question step asks which product with labeled options, and the answers
   await expect(targets).toHaveText(["silver watch", "white sneakers", "Both"]);
 
   await targets.nth(1).click();
-  await expect(targets.nth(1)).toHaveAttribute("aria-checked", "true");
+  await expect(targets.nth(1)).toHaveAttribute("aria-pressed", "true");
   const create = page.getByTestId("create-pack");
   await expect(create).toBeEnabled();
 
@@ -124,4 +124,8 @@ test("Skip, use my note hides the step and brings the chooser back, and Both nee
   await page.getByTestId("question-reopen").click();
   await page.getByTestId("question-target-option").filter({ hasText: "Both" }).click();
   await expect(page.getByTestId("create-pack")).toBeEnabled();
+  // Skipping after Both drops the pick, so the chooser asks again.
+  await page.getByTestId("question-skip").click();
+  await expect(page.getByTestId("product-chooser")).toBeVisible();
+  await expect(page.getByTestId("create-pack")).toBeDisabled();
 });

@@ -8,7 +8,10 @@ import {
   QUESTION_STEP_COPY,
   questionSourcePhoto,
   sellerAnswersBody,
+  skipPatchFor,
+  targetPatchFor,
   targetPickOf,
+  toggledAnswer,
   targetValueOf,
   visibleQuestions,
   type QuestionPhoto,
@@ -66,6 +69,23 @@ describe("the question step", () => {
     expect(targetValueOf({ chosen: 2 })).toBe("item:2");
     expect(targetValueOf({ chosen: null, targetAll: true })).toBe("all");
     expect(targetValueOf({})).toBeNull();
+  });
+
+  it("takes an answer back when the held option is tapped again", () => {
+    expect(toggledAnswer("gym", "gym")).toBeNull();
+    expect(toggledAnswer("gym", "home")).toBe("home");
+    expect(toggledAnswer(null, "gym")).toBe("gym");
+    expect(toggledAnswer("", "gym")).toBe("gym");
+    expect(targetPatchFor(null)).toEqual({ chosen: null, targetAll: false });
+    expect(targetPatchFor("all")).toEqual({ chosen: null, targetAll: true });
+    // A cleared pick is sent as nothing.
+    expect(sellerAnswersBody({ photo: photo(), questions, picks: { mood: "" }, skipped: false })).toBeUndefined();
+  });
+
+  it("undoes Both on skip so no hidden target answer is left", () => {
+    expect(skipPatchFor(photo({ chosen: null, targetAll: true }))).toEqual({ targetAll: false });
+    expect(skipPatchFor(photo({ chosen: 2 }))).toBeNull();
+    expect(skipPatchFor(null)).toBeNull();
   });
 
   it("swaps the marketplace picks for the answered ones and keeps the rest", () => {
