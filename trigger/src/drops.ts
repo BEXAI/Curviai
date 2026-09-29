@@ -18,6 +18,27 @@ export interface DropProduct {
   performanceScore: number;
   primaryMediaId?: string;
   useContexts?: string[];
+  /** The product's remembered choices (products.output_defaults), as stored. */
+  outputDefaults?: unknown;
+}
+
+/**
+ * True when a product's remembered choices turn lifestyle scenes off
+ * (PHASE_15 P1, remember choices per product): the scenes extra is false,
+ * or it is missing on a Keep record, where extras default to off. Read
+ * leniently, since the record may carry fields newer than this worker; an
+ * unreadable record turns nothing off.
+ */
+export function remembersScenesOff(outputDefaults: unknown): boolean {
+  if (!outputDefaults || typeof outputDefaults !== "object" || Array.isArray(outputDefaults)) {
+    return false;
+  }
+  const record = outputDefaults as { background?: unknown; extras?: unknown };
+  const extras = record.extras && typeof record.extras === "object" ? (record.extras as { scenes?: unknown }) : {};
+  if (typeof extras.scenes === "boolean") {
+    return !extras.scenes;
+  }
+  return record.background === "keep";
 }
 
 export interface DropWorkspace {
@@ -43,7 +64,7 @@ export interface WeeklyDropPlan {
 
 export interface WeeklyDropSkip {
   workspaceId: string;
-  reason: "workspace inactive" | "plan tier not eligible" | "no products";
+  reason: "workspace inactive" | "plan tier not eligible" | "no products" | "scenes turned off";
 }
 
 export interface WeeklyDropResult {
@@ -103,6 +124,11 @@ export function planWeeklyDrops(
     const items: DropVariant[] = [];
     for (let p = 0; p < top.length; p++) {
       const product = top[p];
+      // Drop variants are lifestyle scenes; a product whose remembered
+      // choices turn scenes off gets none.
+      if (remembersScenesOff(product.outputDefaults)) {
+        continue;
+      }
       const contexts = product.useContexts?.length ? product.useContexts : ["everyday use scene"];
       for (let v = 0; v < perProduct; v++) {
         const preset = presetKeys[(week + p + v) % presetKeys.length];
@@ -116,6 +142,10 @@ export function planWeeklyDrops(
           credits: creditCosts.generativeStill,
         });
       }
+    }
+    if (items.length === 0 && top.every((product) => remembersScenesOff(product.outputDefaults))) {
+      skipped.push({ workspaceId: workspace.id, reason: "scenes turned off" });
+      continue;
     }
     plans.push({ workspaceId: workspace.id, items });
   }

@@ -4,6 +4,7 @@
  * numbers are handed to the judge, which must trust them over its impression.
  */
 import { dimensionBounds, type ChannelSpec } from "@curvi/specs";
+import { ciede2000Rgb } from "../color";
 import { boundingBoxOfMask, dilate } from "../mask";
 import type { RawImage, RawMask } from "../raw";
 
@@ -44,17 +45,24 @@ export const QC_THRESHOLDS = {
    * transparent (PHASE_15 backgroundWhiteOrClear).
    */
   whiteOrClearShare: 0.999,
+  /**
+   * "Background matches your color" (PHASE_15 P1): the most CIEDE2000
+   * between the requested background and the median color measured outside
+   * the (margin dilated) mask, on outputs with a chosen color or added space.
+   */
+  backdropMaxDeltaE: 2.0,
 } as const;
 
 /**
- * Whether pixelChecks runs backgroundWhiteOrClear by default. Off: today's
- * white renders for google.merchant.main and tiktokshop.main pass it as
- * rendered and as PNG, but ship as a quality 90 JPEG whose ringing leaves
- * about 0.99 of the background exactly white outside the edge margin
- * (qc/whiteOrClear.test.ts). Turn it on once encodeForSpec escapes these
- * specs to PNG the way it does for solid white specs, and a golden set run
- * passes. A caller can opt in per call with
- * PixelCheckOptions.backgroundWhiteOrClear.
+ * Whether pixelChecks runs backgroundWhiteOrClear by default. The white
+ * renders for google.merchant.main and tiktokshop.main pass it as rendered
+ * and as PNG, but a plain quality 90 JPEG's ringing leaves about 0.99 of the
+ * background exactly white outside the edge margin (qc/whiteOrClear.test.ts).
+ * encodeForSpec now escapes these specs to PNG whenever a JPEG's white is not
+ * exact (trigger/src/shot-outputs.ts exactBackgroundRgb, PHASE_15 item 19).
+ * The plan turns this on only after a golden set run passes on that escape;
+ * that live run has not happened, so it stays off. A caller can opt in per
+ * call with PixelCheckOptions.backgroundWhiteOrClear.
  */
 export const BACKGROUND_WHITE_OR_CLEAR_ENABLED = false;
 
@@ -101,6 +109,10 @@ export interface PixelCheckOptions {
   /** Run backgroundWhiteOrClear on white or transparent and white preferred
    * specs. Default BACKGROUND_WHITE_OR_CLEAR_ENABLED. */
   backgroundWhiteOrClear?: boolean;
+  /** The background the file was asked to have (a chosen color, or a kept
+   * photo's added space). When set, backgroundMatchesChoice runs: fail
+   * closed without a mask. */
+  expectedBackground?: readonly [number, number, number];
 }
 
 /** Main class checks apply when the spec demands a pure white solid background with no text. */
@@ -219,6 +231,26 @@ export async function pixelChecks(
     }
   }
 
+  // The background matches the seller's color (PHASE_15 P1).
+  if (opts.expectedBackground) {
+    const limit = `<= ${QC_THRESHOLDS.backdropMaxDeltaE} deltaE`;
+    if (!mask) {
+      checks.push({ name: "backgroundMatchesChoice", pass: false, measured: MASK_MISSING, limit });
+    } else {
+      const margin = opts.edgeMarginPx ?? 0;
+      const checkMask = margin > 0 ? await dilate(mask, margin) : mask;
+      const measured = medianOutside(image, checkMask);
+      const [er, eg, eb] = opts.expectedBackground;
+      const deltaE = measured ? ciede2000Rgb(measured[0], measured[1], measured[2], er, eg, eb) : 0;
+      checks.push({
+        name: "backgroundMatchesChoice",
+        pass: deltaE <= QC_THRESHOLDS.backdropMaxDeltaE,
+        measured: Math.round(deltaE * 100) / 100,
+        limit,
+      });
+    }
+  }
+
   // Megapixels, when the spec caps them.
   if (spec.maxMegapixels !== undefined) {
     checks.push(megapixelsCheck(image.width, image.height, spec.maxMegapixels));
@@ -287,6 +319,34 @@ export async function pixelChecks(
     checks,
     pass: checks.every((c) => c.pass),
   };
+}
+
+/** The per channel median of the opaque pixels outside the mask, or null when there are none. */
+function medianOutside(image: RawImage, checkMask: RawMask): [number, number, number] | null {
+  const histograms = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+  let count = 0;
+  for (let i = 0; i < checkMask.data.length; i++) {
+    const o = i * 4;
+    if (checkMask.data[i] !== 0 || image.data[o + 3] === 0) {
+      continue;
+    }
+    histograms[0][image.data[o]]++;
+    histograms[1][image.data[o + 1]]++;
+    histograms[2][image.data[o + 2]]++;
+    count++;
+  }
+  if (count === 0) {
+    return null;
+  }
+  const median = (histogram: Uint32Array): number => {
+    let seen = 0;
+    for (let v = 0; v < 256; v++) {
+      seen += histogram[v];
+      if (seen * 2 >= count) return v;
+    }
+    return 255;
+  };
+  return [median(histograms[0]), median(histograms[1]), median(histograms[2])];
 }
 
 /** Share of pixels outside the mask that are exactly 255 white or alpha 0; 1 when none are outside. */

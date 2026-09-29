@@ -30,6 +30,7 @@ import {
   pickerNumbering,
   PICKER_MAX_PIECES,
   PICKER_MIN_PIECES,
+  renderCutoutPreview,
   renderPieceThumbnails,
   uprightSize,
   type InventoryDecision,
@@ -44,10 +45,14 @@ import {
   wrapUserDescription,
   type PipelineDeps,
 } from "./pipeline-runner";
-import { noteKey, type PreflightIntake } from "./preflight-intake";
+import { noteKey, trustedIntakeAnswer, type PreflightIntake } from "./preflight-intake";
 import { recipeFor, seedJobRecipes, type JobRecipes } from "./recipes";
 
 export { noteKey, PREFLIGHT_FRESH_MS, preflightFresh, type PreflightIntake } from "./preflight-intake";
+
+/** Longest side of the cutout preview the form shows on the chosen color
+ * (PHASE_15 P1): enough for the preview strip, far below any output. */
+export const CUTOUT_PREVIEW_LONG_SIDE = 640;
 
 export interface UploadPreflightArgs {
   /** A fresh id for this check: the job id every metered call carries. */
@@ -91,6 +96,14 @@ export interface UploadPreflightRun {
   rule: InventoryDecision["rule"] | null;
   /** One JPEG per item, in the same order, when the chooser is needed. */
   thumbnails: Buffer[];
+  /** The product box for the P1 crop fit (upload_preflights.result
+   * productBox): the union of the pieces the rules featured, else of every
+   * piece, normalized to the upright photo. Null without an inventory. */
+  productBox?: NormalizedBox | null;
+  /** An alpha PNG of the one product the photo is for, at most
+   * CUTOUT_PREVIEW_LONG_SIDE, drawn from the cutout already made (PHASE_15
+   * P1 cutout preview); null when there is no cutout or no single product. */
+  preview: Buffer | null;
   /** Provider spend of every call above, in USD micros. */
   costMicros: number;
 }
@@ -104,6 +117,18 @@ async function recipesFor(deps: PipelineDeps, preflightId: string): Promise<JobR
   }
 }
 
+/** The smallest normalized box holding every box, or null for none. */
+export function unionBox(boxes: readonly NormalizedBox[]): NormalizedBox | null {
+  if (boxes.length === 0) {
+    return null;
+  }
+  const left = Math.min(...boxes.map((b) => b.x));
+  const top = Math.min(...boxes.map((b) => b.y));
+  const right = Math.min(1, Math.max(...boxes.map((b) => b.x + b.width)));
+  const bottom = Math.min(1, Math.max(...boxes.map((b) => b.y + b.height)));
+  return right > left && bottom > top ? { x: left, y: top, width: right - left, height: bottom - top } : null;
+}
+
 export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflightArgs): Promise<UploadPreflightRun> {
   const run: UploadPreflightRun = {
     missing: false,
@@ -114,6 +139,8 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
     items: [],
     rule: null,
     thumbnails: [],
+    productBox: null,
+    preview: null,
     costMicros: 0,
   };
   const { preflightId, workspaceId, mediaKey } = args;
@@ -142,7 +169,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
       IntakeToolResult,
     );
     run.costMicros += answer.costMicros;
-    intake = answer.value && answer.value.images.length === 1 ? answer.value : null;
+    intake = answer.value && answer.value.images.length === 1 ? trustedIntakeAnswer(answer.value, recipe) : null;
   } catch (err) {
     run.costMicros += failureSpendMicros(err);
     console.warn(`[preflight] intake failed for ${preflightId}`, err instanceof Error ? err.message : err);
@@ -195,6 +222,8 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
   run.rule = decision.rule;
   const match = matchProducts(inventory.objects, products);
   const order = pickerNumbering(inventory.objects).map((index) => inventory.objects[index]);
+  const featuredBoxes = inventory.objects.filter((object) => decision.featured.includes(object.index)).map((o) => o.box);
+  run.productBox = unionBox(featuredBoxes.length > 0 ? featuredBoxes : inventory.objects.map((o) => o.box));
   run.items = order.map((object, i) => ({
     number: i + 1,
     label: itemLabel(object, products, match),
@@ -203,6 +232,18 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
     colorName: object.color.name,
     featured: decision.featured.includes(object.index),
   }));
+  // The cutout preview: the one product the pack is for, when the rules
+  // settled on one (a photo that needs the chooser gets none).
+  const featured = order.filter((object) => decision.featured.includes(object.index));
+  const product = featured.length === 1 ? featured[0] : order.length === 1 ? order[0] : null;
+  if (product) {
+    run.preview = await renderCutoutPreview(cutout, product.pixelBox, { longSide: CUTOUT_PREVIEW_LONG_SIDE }).catch(
+      (err: unknown) => {
+        console.warn(`[preflight] could not draw the cutout preview for ${preflightId}`, err);
+        return null;
+      },
+    );
+  }
   if (order.length >= PICKER_MIN_PIECES && order.length <= PICKER_MAX_PIECES) {
     run.thumbnails = await renderPieceThumbnails(
       cutout,

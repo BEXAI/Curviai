@@ -23,9 +23,9 @@
  */
 
 import type { JobRecipeVariant } from "@curvi/db";
-import { badgeEligible, buildPack, type Shot } from "@curvi/pipeline";
+import { applyAddedOverlays, badgeEligible, buildPack, type NormalizedBox, type Shot } from "@curvi/pipeline";
 import { channelFileLimit, getSpec, hasSpec } from "@curvi/specs";
-import type { ResolvedOutputOptions } from "@curvi/pipeline/output-options";
+import { ADDED_OVERLAYS_REASON, planFlagsOf, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 import {
   allSettledWithLimit,
   DEFAULT_SHOT_CONCURRENCY,
@@ -92,6 +92,13 @@ export interface PackFollowUpInput {
   output?: ResolvedOutputOptions;
   /** Media ids of photos whose stored copy was written again at upload. */
   reencoded?: string[];
+  /** The product box per photo, by media id (target_box, else the upload
+   * preflight's productBox), for the P1 crop fit of kept photos. */
+  productBoxes?: Record<string, NormalizedBox>;
+  /** Media ids of kept photos the upload preflight saw added text, borders
+   * or watermarks on (intake version 5). Their original_photo shots are
+   * left off the specs that refuse those, as a first run leaves them. */
+  addedOverlays?: string[];
 }
 
 export interface PackFollowUpSummary {
@@ -148,6 +155,29 @@ export function numberFollowUpFiles(
     }
   }
   return { assets, full };
+}
+
+/**
+ * The follow up's shots with every kept photo in `addedOverlays` left off
+ * the specs that refuse added text, borders or watermarks
+ * (applyAddedOverlays, the first run's rule), whatever the web plan said.
+ * `refused` holds the shots left with no spec at all; they do not run. Pure.
+ */
+export function followUpShotsWithoutOverlays(
+  shots: readonly Shot[],
+  output: ResolvedOutputOptions | null,
+  addedOverlays: readonly string[] | undefined,
+): { run: Shot[]; refused: Shot[] } {
+  if (!output || !addedOverlays || addedOverlays.length === 0) {
+    return { run: [...shots], refused: [] };
+  }
+  const flags = planFlagsOf(
+    output,
+    addedOverlays.map((id) => ({ id, addedOverlays: true })),
+  );
+  const run = applyAddedOverlays(shots, flags, []);
+  const kept = new Set(run.map((shot) => shot.id));
+  return { run, refused: shots.filter((shot) => !kept.has(shot.id)) };
 }
 
 /**
@@ -240,6 +270,9 @@ export async function runPackFollowUp(
       ...(input.brand ? { brand: input.brand } : {}),
       ...(parsedOutput.output ? { output: parsedOutput.output } : {}),
       ...(input.reencoded && input.reencoded.length > 0 ? { reencoded: [...input.reencoded] } : {}),
+      ...(input.productBoxes && Object.keys(input.productBoxes).length > 0
+        ? { productBoxes: { ...input.productBoxes } }
+        : {}),
     };
     // One shot failing never takes its siblings down, as in a first run, and
     // an added angle's shots share the first run's concurrency limit.
@@ -255,7 +288,16 @@ export async function runPackFollowUp(
           ),
         );
       });
-    const outcomes = await runShots(input.shots, ctx);
+    // A kept photo with added text never reaches eBay or Google, even when
+    // the plan it came with says so; a shot left with no channel ends in
+    // needs review and its credits go back.
+    const { run, refused } = followUpShotsWithoutOverlays(input.shots, parsedOutput.output, input.addedOverlays);
+    const refusedOutcomes = await Promise.all(
+      refused.map((shot) =>
+        recordShotFailure(store, shot, ctx, new Error(ADDED_OVERLAYS_REASON), ADDED_OVERLAYS_REASON),
+      ),
+    );
+    const outcomes = [...(run.length > 0 ? await runShots(run, ctx) : []), ...refusedOutcomes];
     costMicros += outcomes.reduce((sum, o) => sum + o.costMicros, 0);
 
     for (const outcome of outcomes) {

@@ -53,12 +53,12 @@ describe("backgroundWhiteOrClear", () => {
   });
 
   /*
-   * The enable gate. Today's white render for these specs passes as
-   * rendered and as PNG, but not as the quality 90 JPEG it ships as today:
-   * JPEG ringing reaches past the 2 px edge margin. So the check stays off
-   * by default until encodeForSpec escapes these specs to PNG.
+   * Why encodeForSpec escapes these specs to PNG (trigger/src/shot-outputs.ts
+   * exactBackgroundRgb): the white render passes as rendered and as PNG, but
+   * a plain quality 90 JPEG's ringing reaches past the 2 px edge margin. The
+   * default stays off until a golden set run passes on the escape.
    */
-  it.each(WHITE_OR_CLEAR_SPECS)("gates the default on today's white render for %s", async (specId) => {
+  it.each(WHITE_OR_CLEAR_SPECS)("passes the white render for %s as rendered and as PNG, not as a plain JPEG", async (specId) => {
     const spec = getSpec(specId);
     const product = await rectProduct(512);
     const main = await makeAmazonMain(product.source, product.mask, spec);
@@ -68,9 +68,9 @@ describe("backgroundWhiteOrClear", () => {
     expect(check(await pixelChecks(main.raw, main.mask, spec, ON), "backgroundWhiteOrClear")?.pass).toBe(true);
     expect(await share(await encodePng(main.raw))).toBeGreaterThanOrEqual(QC_THRESHOLDS.whiteOrClearShare);
     const jpegShare = await share((await encodeUnderLimit(main.raw, spec.maxBytes)).jpeg);
-    expect(BACKGROUND_WHITE_OR_CLEAR_ENABLED).toBe(jpegShare >= QC_THRESHOLDS.whiteOrClearShare);
+    expect(jpegShare).toBeLessThan(QC_THRESHOLDS.whiteOrClearShare);
 
-    // Off by default: the check does not run unless asked for.
+    // The check runs by default only once the flag is on.
     const byDefault = await pixelChecks(main.raw, main.mask, spec, { edgeMarginPx: EDGE_MARGIN_PX });
     expect(check(byDefault, "backgroundWhiteOrClear") !== undefined).toBe(BACKGROUND_WHITE_OR_CLEAR_ENABLED);
   });

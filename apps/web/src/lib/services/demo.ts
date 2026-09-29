@@ -35,9 +35,11 @@ import { demoPreflight } from "@/lib/preflight/demo";
 import type { PreflightOutcome } from "@/lib/preflight/types";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import { planDemoShots } from "./demo-plan";
+import { outputDefaultsFor } from "./output-defaults";
 import {
   INVALID_OPTIONS_MESSAGE,
   outputEstimateInputs,
+  photoBackgroundsOf,
   resolveJobOutput,
   type OutputPhoto,
 } from "./output-options";
@@ -159,7 +161,7 @@ export class DemoStore {
   readonly jobIdByIdempotencyKey = new Map<string, string>();
   readonly extraProducts: ProductSummary[] = [];
   /** Seller inputs saved by demo packs, over the fixture values. */
-  readonly productEdits = new Map<string, Pick<ProductSummary, "sku" | "boxContents" | "comparisonFacts">>();
+  readonly productEdits = new Map<string, Pick<ProductSummary, "sku" | "boxContents" | "comparisonFacts" | "outputDefaults">>();
   /** Photos each demo pack uploaded, per product. */
   readonly photoCounts = new Map<string, number>();
   /** Rename override for the demo workspace; null keeps the default name. */
@@ -186,13 +188,27 @@ export function getDemoStore(): DemoStore {
 
 /** The request body a replay must match. The options count by their
  * canonical key, so no options and explicit defaults are the same body, and
- * a concept pack's options always read as the defaults. Throws on options
- * the schema refuses. */
-export function hashBody(input: Pick<CreateJobInput, "productId" | "channels" | "mode" | "outputOptions">): string {
+ * a concept pack's options always read as the defaults. The uploads' own
+ * backgrounds (P1) count too, as in db mode's replay, and only when some
+ * upload has one, so a body without them hashes as before. Throws on
+ * options the schema refuses. */
+export function hashBody(
+  input: Pick<CreateJobInput, "productId" | "channels" | "mode" | "outputOptions" | "uploads">,
+): string {
   const options = outputOptionsKey(input.mode === "concept" ? null : (input.outputOptions ?? null));
+  const own = input.mode === "concept" ? {} : photoBackgroundsOf(input.uploads);
+  const backgrounds = Object.entries(own)
+    .filter(([, choice]) => choice !== "pack")
+    .sort(([a], [b]) => a.localeCompare(b));
   return createHash("sha256")
     .update(
-      JSON.stringify({ productId: input.productId, channels: [...input.channels].sort(), mode: input.mode, options }),
+      JSON.stringify({
+        productId: input.productId,
+        channels: [...input.channels].sort(),
+        mode: input.mode,
+        options,
+        ...(backgrounds.length > 0 ? { backgrounds } : {}),
+      }),
     )
     .digest("hex");
 }
@@ -651,6 +667,7 @@ export class DemoService implements Services {
       brandColors: DEMO_BRAND_KIT.colors,
       brandKitsAllowed: entitlementsFor(DEMO_TIER).brandKits > 0,
       photos: packPhotos,
+      photoBackgrounds: photoBackgroundsOf(photos),
     });
     if (!output.ok) {
       return { outcome: "rejected", reason: output.reason, message: output.message };
@@ -682,7 +699,9 @@ export class DemoService implements Services {
         title: input.newProductTitle?.trim() || "New product",
         mode: input.mode,
       }));
-    this.store.productEdits.set(product.id, sellerInputs);
+    // The choice is remembered on the product for the form's prefill, as in db mode.
+    const remembered = outputDefaultsFor(input) ?? this.store.productEdits.get(product.id)?.outputDefaults;
+    this.store.productEdits.set(product.id, { ...sellerInputs, ...(remembered ? { outputDefaults: remembered } : {}) });
     if (photos.length > 0) {
       this.store.photoCounts.set(product.id, (this.store.photoCounts.get(product.id) ?? 0) + photos.length);
     }

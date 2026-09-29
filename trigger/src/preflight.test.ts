@@ -7,7 +7,7 @@ import {
   type RoutingTable,
 } from "@curvi/ai";
 import { MockProvider } from "@curvi/ai/testing";
-import { analyzeInventory, encodePng, type IntakeImageResult, type RawImage } from "@curvi/pipeline";
+import { analyzeInventory, decodeToRgba, encodePng, type IntakeImageResult, type RawImage } from "@curvi/pipeline";
 import { CUTOUT_TASK } from "@curvi/pipeline/seed";
 import { cacheCutouts, cutoutCacheKey, type CachedCutout, type CutoutCacheStore } from "./cutout-cache";
 import {
@@ -23,8 +23,15 @@ import {
   type PipelineDeps,
   type ShotGenerator,
 } from "./pipeline-runner";
-import { runUploadPreflight } from "./preflight";
-import { noteKey, PREFLIGHT_FRESH_MS, reusablePreflightIntake, type PreflightIntake } from "./preflight-intake";
+import { CUTOUT_PREVIEW_LONG_SIDE, runUploadPreflight, unionBox } from "./preflight";
+import {
+  intakeAsksAddedOverlays,
+  noteKey,
+  PREFLIGHT_FRESH_MS,
+  reusablePreflightIntake,
+  trustedIntakeAnswer,
+  type PreflightIntake,
+} from "./preflight-intake";
 import { demoProfile, DemoShotGenerator } from "./runtime";
 
 // docs/phases/PHASE_14.md workstream 4 and item 3.2, runner side.
@@ -73,6 +80,7 @@ const twoProductsImage: IntakeImageResult = {
     { label: "red bottle", box: redBox, matchesIntent: "unclear" },
     { label: "blue bottle", box: blueBox, matchesIntent: "unclear" },
   ],
+  addedOverlays: false,
   flags,
 };
 
@@ -226,6 +234,28 @@ describe("reusablePreflightIntake", () => {
     expect(reusablePreflightIntake([broken], undefined, recipe, now)).toBeNull();
     expect(reusablePreflightIntake([fresh], "", recipe, now)).not.toBeNull();
   });
+
+  it("keeps the added text flag on a reused answer", () => {
+    const flagged = { preflight: preflightOf({ ...twoProductsImage, addedOverlays: true }) };
+    expect(reusablePreflightIntake([flagged], undefined, recipe, now)?.images[0].addedOverlays).toBe(true);
+  });
+});
+
+describe("trustedIntakeAnswer", () => {
+  const answer = { images: [{ ...twoProductsImage, addedOverlays: true }] };
+
+  it("keeps the added text flag from a recipe that asks for it", () => {
+    expect(intakeAsksAddedOverlays(intakeRecipe)).toBe(true);
+    expect(trustedIntakeAnswer(answer, intakeRecipe)).toBe(answer);
+  });
+
+  it("clears a guessed flag from an older recipe, so the worker can ship before the re-seed", () => {
+    const older = { key: intakeRecipe.key, version: 4 };
+    expect(intakeAsksAddedOverlays(older)).toBe(false);
+    expect(trustedIntakeAnswer(answer, older).images[0].addedOverlays).toBe(false);
+    expect(trustedIntakeAnswer(answer, { key: "other_recipe", version: 9 }).images[0].addedOverlays).toBe(false);
+    expect(answer.images[0].addedOverlays).toBe(true);
+  });
 });
 
 describe("a stored target box in the runner", () => {
@@ -260,7 +290,7 @@ describe("a stored target box in the runner", () => {
     expect(chosen.ambiguous).toEqual([]);
     expect(chosen.targets.m1.box).toEqual(blueBox);
     const bare = selectTargets(
-      { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, flags }] },
+      { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags }] },
       [{ mediaId: "m1", targetBox: blueBox }],
       "job",
     );
@@ -298,7 +328,7 @@ describe("runGeneratePack with a preflight", () => {
     sku: "SKU1",
     seoSlug: "watch",
   };
-  const single: IntakeImageResult = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, flags };
+  const single: IntakeImageResult = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags };
 
   function deps(ai: AiDeps): PipelineDeps & { store: InMemoryJobStore } {
     return { ai, store: new InMemoryJobStore(), clock: systemClock, generator: new DemoShotGenerator() };
@@ -383,11 +413,62 @@ describe("runUploadPreflight", () => {
     expect(run.intake).toMatchObject({ noteKey: noteKey(""), recipe: { key: intakeRecipe.key, version: intakeRecipe.version } });
   });
 
+  it("carries intake version 5's added text flag, and reads an older answer as clean", async () => {
+    const flagged = preflightDeps({ images: [{ ...twoProductsImage, addedOverlays: true }] }, generator(twoBottles()));
+    const run = await runUploadPreflight(flagged.deps, { preflightId: "pf-ov", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(run.intake?.image.addedOverlays).toBe(true);
+    const { addedOverlays: _unused, ...older } = twoProductsImage;
+    const clean = preflightDeps({ images: [older] }, generator(twoBottles()));
+    const oldRun = await runUploadPreflight(clean.deps, { preflightId: "pf-old", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(oldRun.intake?.image.addedOverlays).toBe(false);
+  });
+
   it("preselects the piece the note decides", async () => {
     const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
     const run = await runUploadPreflight(deps, { preflightId: "pf-2", workspaceId: WS, mediaKey: KEY, note: "the blue one only" });
     expect(run.rule).toBe("note");
     expect(run.items.filter((i) => i.featured).map((i) => i.label)).toEqual(["blue bottle"]);
+    // The crop box is the featured piece's box (PHASE_15 P1).
+    const blue = run.items.find((i) => i.featured)!;
+    expect(run.productBox).toEqual(blue.box);
+  });
+
+  it("keeps the union of every piece as the product box when none is featured", async () => {
+    const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
+    const run = await runUploadPreflight(deps, { preflightId: "pf-1b", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(run.items.some((i) => i.featured)).toBe(false);
+    const union = unionBox(run.items.map((i) => i.box))!;
+    expect(run.productBox).toEqual(union);
+    for (const item of run.items) {
+      expect(item.box.x).toBeGreaterThanOrEqual(union.x);
+      expect(item.box.x + item.box.width).toBeLessThanOrEqual(union.x + union.width + 1e-9);
+    }
+    expect(unionBox([])).toBeNull();
+  });
+
+  it("draws the cutout preview of the one product the pack is for (PHASE_15 P1)", async () => {
+    const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
+    const run = await runUploadPreflight(deps, { preflightId: "pf-8", workspaceId: WS, mediaKey: KEY, note: "the blue one only" });
+    expect(run.preview).not.toBeNull();
+    const preview = await decodeToRgba(run.preview!);
+    expect(Math.max(preview.width, preview.height)).toBeLessThanOrEqual(CUTOUT_PREVIEW_LONG_SIDE);
+    let clear = 0;
+    let red = 0;
+    for (let i = 0; i < preview.width * preview.height; i++) {
+      const [r, g, b, a] = [0, 1, 2, 3].map((c) => preview.data[i * 4 + c]);
+      if (a === 0) clear++;
+      else if (r > 150 && g < 80 && b < 80) red++;
+    }
+    // Only the blue bottle's own pixels, on a clear background.
+    expect(clear).toBeGreaterThan(0);
+    expect(red).toBe(0);
+  });
+
+  it("draws no cutout preview while the photo needs the chooser", async () => {
+    const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
+    const run = await runUploadPreflight(deps, { preflightId: "pf-9", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(run.rule).toBe("ambiguous");
+    expect(run.preview).toBeNull();
   });
 
   it("returns intake only and says so when the cutout provider is unavailable", async () => {

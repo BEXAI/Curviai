@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TREATMENT_NOTES, treatmentNotes, type TreatmentNoteKey } from "@curvi/pipeline/treatment";
 import { getSpec } from "@curvi/specs";
 import {
+  BACKGROUND_MATCHES_CHECK,
   buildComplianceReportView,
   channelTitle,
   demoComplianceReport,
@@ -25,6 +26,7 @@ const SAMPLE_NOTES: Record<TreatmentNoteKey, string> = {
   resizedFrom: TREATMENT_NOTES.resizedFrom(4032, 3024),
   padded: TREATMENT_NOTES.padded("#f4f4f5"),
   cropped: TREATMENT_NOTES.cropped,
+  cropFallback: TREATMENT_NOTES.cropFallback,
   enlarged: TREATMENT_NOTES.enlarged(1.3),
   colorConverted: TREATMENT_NOTES.colorConverted,
   alphaFilled: TREATMENT_NOTES.alphaFilled("#F4F4F5"),
@@ -43,6 +45,8 @@ describe("treatment notes", () => {
       resizedFrom: "Resized from 4032 by 3024 pixels.",
       padded: "Space added around your photo in #F4F4F5 to fit this channel's shape.",
       cropped: "Trimmed to this channel's shape. Your whole product stays in the picture.",
+      cropFallback:
+        "We never trim your product. It could not be trimmed to this channel's shape without cutting into it, so it was fitted without trimming.",
       enlarged: "Enlarged 1.3 times to reach this channel's minimum size.",
       colorConverted: "Colors converted to the standard sRGB profile that marketplaces expect.",
       alphaFilled: "Transparent areas of your photo were filled with #F4F4F5.",
@@ -112,6 +116,25 @@ describe("PHASE_15 check labels", () => {
     });
     expect(describeCheck(check, "tiktokshop.main").label).toBe("White background");
     expect(describeCheck(check).label).toBe("White or transparent background");
+  });
+
+  it("labels the chosen color check in plain words (P1)", () => {
+    const row = describeCheck({ name: BACKGROUND_MATCHES_CHECK, pass: true, measured: 1.2345, limit: "<= 2 deltaE" });
+    expect(row).toEqual({
+      key: BACKGROUND_MATCHES_CHECK,
+      label: "Background matches your color",
+      pass: true,
+      measured: "a difference of 1.23",
+      required: "a difference of at most 2",
+    });
+    expect(
+      describeCheck({ name: BACKGROUND_MATCHES_CHECK, pass: false, measured: "mask missing", limit: "<= 2 deltaE" })
+        .measured,
+    ).toBe("Could not be measured");
+    for (const text of [row.label, row.measured, row.required]) {
+      expect(text).not.toMatch(FORBIDDEN);
+      expect(text).not.toMatch(/deltaE|backgroundMatchesChoice/);
+    }
   });
 
   it("labels the megapixels check in megapixels", () => {

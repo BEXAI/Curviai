@@ -128,7 +128,49 @@ describe("POST /api/jobs output options (PHASE_15)", () => {
       color: { kind: "custom", hex: "#1f2a44" },
       fit: "pad",
       extras: { scenes: true },
+      sceneCount: 3,
+      scenePreset: "auto",
+      logo: true,
+      productSize: "standard",
+      enlarge: true,
+      graphicsColor: false,
     });
+  });
+
+  it("accepts every P1 field and a background per photo (PHASE_15 P1)", async () => {
+    const response = await post({
+      uploads: [
+        {
+          key: `ws/${TEST_WORKSPACE_ID}/src/a.jpg`,
+          sha256: "a".repeat(64),
+          kind: "image",
+          background: "keep",
+        },
+      ],
+      outputOptions: {
+        background: "keep",
+        color: { kind: "edge_match" },
+        fit: "crop",
+        sceneCount: 1,
+        scenePreset: "holiday",
+        logo: false,
+        productSize: "larger",
+        enlarge: false,
+        graphicsColor: true,
+      },
+    });
+    expect(response.status).toBe(201);
+    const input = vi.mocked(services.createJob).mock.calls[0]?.[1];
+    expect(input?.uploads?.[0]?.background).toBe("keep");
+    expect(input?.outputOptions).toMatchObject({ fit: "crop", color: { kind: "edge_match" }, sceneCount: 1 });
+  });
+
+  it("refuses a background per photo the schema does not know", async () => {
+    const response = await post({
+      uploads: [{ key: `ws/${TEST_WORKSPACE_ID}/src/a.jpg`, sha256: "a".repeat(64), kind: "image", background: "blur" }],
+    });
+    expect(response.status).toBe(400);
+    expect(services.createJob).not.toHaveBeenCalled();
   });
 
   it("accepts a request with no options, a swatch and a brand color", async () => {
@@ -145,9 +187,12 @@ describe("POST /api/jobs output options (PHASE_15)", () => {
     ["an unknown swatch", { color: { kind: "swatch", key: "neon" } }],
     ["an unknown key", { background: "keep", glow: true }],
     ["an unknown extra", { extras: { stickers: true } }],
-    ["the P1 crop fit", { fit: "crop" }],
-    ["the P1 edge match color", { color: { kind: "edge_match" } }],
-    ["the P1 scene count", { sceneCount: 3 }],
+    ["an unknown fit", { fit: "stretch" }],
+    ["an edge match color with a hex", { color: { kind: "edge_match", hex: "#FFFFFF" } }],
+    ["a scene count past the seeded bounds", { sceneCount: 5 }],
+    ["no scenes as a count", { sceneCount: 0 }],
+    ["an unknown scene style", { scenePreset: "neon" }],
+    ["an unknown product size", { productSize: "huge" }],
     ["an unknown version", { v: 2 }],
   ])("refuses %s with a 400 before the service", async (_label, outputOptions) => {
     const response = await post({ outputOptions });
@@ -166,6 +211,7 @@ describe("POST /api/jobs output options (PHASE_15)", () => {
         kind: "image",
         angle: "in_the_box",
         targetBox: { x: 0.123456789, y: 0.123456789, width: 0.5, height: 0.5 },
+        background: "remove",
       })),
       newProductTitle: "T".repeat(120),
       userDescription: "D".repeat(2000),
@@ -179,6 +225,12 @@ describe("POST /api/jobs output options (PHASE_15)", () => {
         color: { kind: "custom", hex: "#ABCDEF" },
         fit: "pad",
         extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: false },
+        sceneCount: 4,
+        scenePreset: "kitchen_lifestyle",
+        logo: false,
+        productSize: "smaller",
+        enlarge: false,
+        graphicsColor: true,
       },
     };
     expect(new TextEncoder().encode(JSON.stringify(body)).length).toBeLessThan(JOB_BODY_MAX_BYTES);

@@ -32,6 +32,13 @@ export interface ProductPlacement {
   /** Scaled crop height on the output canvas. */
   height: number;
   kernel: typeof PRODUCT_RESIZE_KERNEL;
+  /**
+   * The flat color a kept photo's partial alpha was composited over
+   * (treatment.alphaFilledHex). Set only when the photo has real alpha, so
+   * the rule 3 reference flattens the same way and a soft shadow or a
+   * translucent part compares exactly.
+   */
+  alphaFill?: Rgb;
 }
 
 /**
@@ -73,7 +80,8 @@ export interface WhitenResult {
   placement: ProductPlacement;
 }
 
-const DEFAULT_FILL_TARGET = 0.875;
+/** Today's product fill: the Standard product size (seed). */
+const DEFAULT_FILL_TARGET = canvasDefaults.productSizeFill.standard;
 
 /** An RGB color as three bytes. */
 export type Rgb = readonly [number, number, number];
@@ -115,6 +123,11 @@ export async function makeAmazonMain(
 export interface OnBackgroundOptions {
   /** The background color every pixel outside the mask gets. */
   rgb: Rgb;
+  /** Product longest side over canvas longest side (P1 "Product size in the
+   * frame", output-options productSizeFillFor). Clamped into spec.fill here
+   * too, so a white main never leaves its registry range. Default: today's
+   * standard fill. */
+  fill?: number;
 }
 
 /**
@@ -140,9 +153,8 @@ export async function makeOnBackground(
 
   const canvasW = spec.width ?? canvasDefaults.width;
   const canvasH = spec.height ?? canvasW;
-  const fillTarget = spec.fill
-    ? clamp(DEFAULT_FILL_TARGET, spec.fill.min, spec.fill.max)
-    : DEFAULT_FILL_TARGET;
+  const fill = opts.fill ?? DEFAULT_FILL_TARGET;
+  const fillTarget = spec.fill ? clamp(fill, spec.fill.min, spec.fill.max) : fill;
 
   let smallest = { bytes: 0, width: canvasW, height: canvasH };
   for (const size of stepDownSizes(canvasW, canvasH, spec)) {
@@ -573,7 +585,9 @@ export async function buildProductReference(
  * decoded into JS memory; only the placed rectangle is.
  *
  * Alpha is 255 inside the placed rectangle and 0 elsewhere; for a photo with
- * an alpha channel it is the photo's own (resized) alpha instead.
+ * an alpha channel it is the photo's own (resized) alpha instead, and with
+ * placement.alphaFill the RGB of every partly or fully clear pixel is
+ * composited over that color, as the renderer ships it.
  */
 export async function buildProductReferenceFromEncoded(
   sourceBytes: Buffer,
@@ -605,6 +619,21 @@ export async function buildProductReferenceFromEncoded(
     throw new Error(`Reference decode gave ${info.width}x${info.height}x${info.channels}, expected ${width}x${height}x4`);
   }
   const keepAlpha = meta.hasAlpha === true;
+  // A kept photo's partial alpha ships composited over placement.alphaFill
+  // (source over, rounded to the byte). The reference does the same, so the
+  // exact proof holds on a soft shadow or a translucent part; the alpha
+  // itself stays, since it is what the mask compares by.
+  if (keepAlpha && placement.alphaFill) {
+    const [fr, fg, fb] = placement.alphaFill;
+    for (let o = 0; o < scaled.length; o += 4) {
+      const a = scaled[o + 3];
+      if (a !== 255) {
+        scaled[o] = Math.round((a * scaled[o] + (255 - a) * fr) / 255);
+        scaled[o + 1] = Math.round((a * scaled[o + 1] + (255 - a) * fg) / 255);
+        scaled[o + 2] = Math.round((a * scaled[o + 2] + (255 - a) * fb) / 255);
+      }
+    }
+  }
 
   // The photo fills the canvas (a kept photo in its own shape): the scaled
   // pixels are the reference, with no second canvas sized copy.

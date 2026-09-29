@@ -72,6 +72,14 @@ describe("demo body hash", () => {
       hashBody({ ...body, mode: "concept" }),
     );
   });
+
+  it("changes with an upload's own background, as db mode's replay does (P1)", () => {
+    const upload = { key: "ws/demo/src/front.jpg", sha256: "a".repeat(64), kind: "image" as const };
+    const plain = hashBody({ ...body, uploads: [upload] });
+    expect(plain).toBe(hashBody(body));
+    expect(hashBody({ ...body, uploads: [{ ...upload, background: "pack" }] })).toBe(plain);
+    expect(hashBody({ ...body, uploads: [{ ...upload, background: "keep" }] })).not.toBe(plain);
+  });
 });
 
 describe("demo packs with output options", () => {

@@ -8,19 +8,24 @@
  */
 
 import {
+  ADDED_OVERLAYS_REASON,
   DEFAULT_OUTPUT_OPTIONS,
   EXTRA_FAMILY_KEYS,
+  keptMaxUpscale,
+  MAX_SOURCE_UPSCALE,
   originalFitFor,
+  sceneCountOf,
   SELLER_OFF_REASON,
   SOURCE_TOO_SMALL_REASON,
   specAcceptsImage,
   type Look,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
+import { SCENE_COUNT_REASON } from "@curvi/pipeline/planner";
 import { backgroundSwatches, isFeatureLive, shotMethodFeatures, stillStyle, type TierFeature } from "@curvi/pipeline/seed";
 import { getSpec, hasSpec, requiresWhiteBackground } from "@curvi/specs";
 import { specDisplayName } from "@/components/marketing/spec-slug";
-import { EXTRA_FAMILY_NAMES, upscaleLimitText } from "@/lib/output-options-copy";
+import { enlargeLimitClause, EXTRA_FAMILY_NAMES } from "@/lib/output-options-copy";
 import { familyName } from "@/lib/preflight/copy";
 
 export interface SkippedCopy {
@@ -63,11 +68,49 @@ export const SELLER_OFF_COPY: SkippedCopy = {
   note: "You turned this off for this pack. Not charged.",
 };
 
-/** A kept photo too small for a channel within the enlarge limit (PHASE_15
- * control 6), with the limit read from MAX_SOURCE_UPSCALE. */
-function tooSmallSentence(): string {
-  return `Your photo is too small for this channel without enlarging it more than ${upscaleLimitText()} times. Upload the original from your camera, or untick this channel.`;
+/** What the shot copy knows about the pack's own stored choices. */
+export interface ShotCopyContext {
+  /** The enlarge cap the pack ran with (keptMaxUpscale of its stored
+   * options): MAX_SOURCE_UPSCALE, or 1 with Never enlarge my photo. */
+  maxUpscale?: number;
+  /** The scene count the seller picked, when the pack stored one. */
+  sceneCount?: number;
 }
+
+/** The shot copy context of a job's stored options; empty for a job with
+ * none or with options that could not be read (today's pack). */
+export function shotCopyContextOf(stored: ResolvedOutputOptions | null | undefined): ShotCopyContext {
+  if (!stored) {
+    return {};
+  }
+  return { maxUpscale: keptMaxUpscale(stored), sceneCount: sceneCountOf(stored) };
+}
+
+/** A kept photo too small for a channel within the enlarge limit (PHASE_15
+ * control 6), with the cap the pack actually ran with. */
+function tooSmallSentence(maxUpscale: number = MAX_SOURCE_UPSCALE): string {
+  return `Your photo is too small for this channel ${enlargeLimitClause(maxUpscale)}. Upload the original from your camera, or untick this channel.`;
+}
+
+/** A lifestyle scene the planner trimmed to the pack's scene count
+ * (PHASE_15 P1). It follows the pack's own choice, not a problem, so it
+ * carries the turned off label and the board hides it like one
+ * (output-preview.ts isTurnedOffShot). */
+function sceneCountCopy(sceneCount: number | undefined): SkippedCopy {
+  const count =
+    sceneCount === undefined
+      ? "This pack has its full number of scenes"
+      : `This pack has ${sceneCount} ${sceneCount === 1 ? "scene" : "scenes"}`;
+  return { label: SELLER_OFF_COPY.label, note: `${count}, so this extra one was left out. Not charged.` };
+}
+
+/** A kept photo intake saw added text, borders or watermarks on, left out of
+ * a channel that refuses them (PHASE_15 P1). Product logos and labels are
+ * always allowed (PHASE_14), so the copy says so. */
+export const ADDED_TEXT_COPY: SkippedCopy = {
+  label: "Needs a clean photo",
+  note: "Your photo looks like it has added text, a border or a watermark, which this channel does not allow, so it was left out here. Upload a clean photo, or untick this channel. Your product's own logo and labels are fine. Not charged.",
+};
 
 /**
  * Copy for a shot the planner left out, keyed on its stored reason. A video
@@ -76,7 +119,11 @@ function tooSmallSentence(): string {
  * would promise output that does not ship (Phase 10 decision 1, rule 9).
  * "Not in your plan" stays for shots a higher plan really produces.
  */
-export function skippedCopy(reason: string | null | undefined, shotType?: string | null): SkippedCopy {
+export function skippedCopy(
+  reason: string | null | undefined,
+  shotType?: string | null,
+  context: ShotCopyContext = {},
+): SkippedCopy {
   if (isComingSoonShot(shotType)) {
     return COMING_SOON;
   }
@@ -87,7 +134,13 @@ export function skippedCopy(reason: string | null | undefined, shotType?: string
     return SELLER_OFF_COPY;
   }
   if (r.includes(SOURCE_TOO_SMALL_REASON)) {
-    return { label: "Needs a larger photo", note: `${tooSmallSentence()} Not charged.` };
+    return { label: "Needs a larger photo", note: `${tooSmallSentence(context.maxUpscale)} Not charged.` };
+  }
+  if (r.includes(SCENE_COUNT_REASON)) {
+    return sceneCountCopy(context.sceneCount);
+  }
+  if (r.includes(ADDED_OVERLAYS_REASON)) {
+    return ADDED_TEXT_COPY;
   }
   if (r.includes("needs photo")) {
     return { label: "Needs photo", note: `Add a photo of this angle to get this shot. ${NO_CHARGE}` };
@@ -149,13 +202,13 @@ export const SCENE_PAUSED_NOTE = "Paused, the scene service is unavailable, so t
  * matched first, since several of them are not a quality problem at all: a
  * shot left out over a channel's image limit passed every check.
  */
-export function needsReviewNote(hint: string | null | undefined): string {
+export function needsReviewNote(hint: string | null | undefined, context: ShotCopyContext = {}): string {
   const h = (hint ?? "").toLowerCase();
   let reason = "It did not meet our quality bar, so we held it back.";
   if (h.includes(SOURCE_TOO_SMALL_REASON)) {
     // live-original.ts: the last guard for a kept photo too small for the
     // channel (PHASE_15 control 6). Matched before "source photo".
-    reason = tooSmallSentence();
+    reason = tooSmallSentence(context.maxUpscale);
   } else if (h.includes(SELLER_OFF_REASON)) {
     reason = "You turned this off for this pack.";
   } else if (h.includes("as many images as it allows")) {
@@ -557,8 +610,10 @@ export function packSummaryLine(tally: PackTally): string {
 export interface OutputOptionsSummaryContext {
   /** The spec ids the pack was made for. */
   specIds: readonly string[];
-  /** Photos in the pack, for a Keep pack whose stored keep list is empty. */
-  photoCount: number;
+  /** Photos in the pack, when known. The kept count always comes from the
+   * stored keep list; this tells whether some photo had its background
+   * removed. Unknown, the pack's own switch decides. */
+  photoCount?: number;
 }
 
 /** The job page's "Your choices" card (PHASE_15 JobView.outputOptions). */
@@ -576,6 +631,8 @@ export function outputColorName(resolved: Pick<ResolvedOutputOptions, "color" | 
       return `brand color ${resolved.color.index + 1}, ${resolved.colorHex.toUpperCase()}`;
     case "custom":
       return resolved.colorHex.toUpperCase();
+    case "edge_match":
+      return "your photo's own edge color";
   }
 }
 
@@ -585,21 +642,31 @@ export function outputColorName(resolved: Pick<ResolvedOutputOptions, "color" | 
  * Amazon requires white.", "Added space: white." and "Turned off: lifestyle
  * scenes, studio backdrops, transparent PNG, graphics." A job with no stored
  * options (every pack before PHASE_15) reads as Marketplace ready on white.
+ *
+ * What was kept comes from the stored keep list, not the pack's switch, so
+ * the per photo backgrounds (P1) read right: a Remove pack with one photo on
+ * Keep as is says so, and a Keep pack whose photos were all set to Remove
+ * reads as removed.
  */
 export function outputOptionsSummary(
   stored: ResolvedOutputOptions | null | undefined,
   context: OutputOptionsSummaryContext,
 ): OutputOptionsSummary {
   const resolved = stored ?? { ...DEFAULT_OUTPUT_OPTIONS, look: "marketplace" as const, colorHex: stillStyle.whiteHex };
-  const keep = resolved.background === "keep";
+  const kept = stored?.keepMediaIds.length ?? 0;
+  const keep = kept > 0;
+  const someRemoved =
+    context.photoCount !== undefined ? context.photoCount > kept : !keep || resolved.background === "remove";
   const color = outputColorName(resolved);
   const specs = context.specIds.filter(hasSpec).map(getSpec);
   const lines: string[] = [];
   if (keep) {
-    const photos = stored?.keepMediaIds.length || context.photoCount;
-    lines.push(`Background kept as you took it, on ${plural(photos, "photo", "photos")}.`);
-  } else {
+    lines.push(`Background kept as you took it, on ${plural(kept, "photo", "photos")}.`);
+  }
+  if (!keep) {
     lines.push(`Background removed, on ${color}.`);
+  } else if (someRemoved) {
+    lines.push(`Background removed on your other photos, on ${color}.`);
   }
   const colorIsWhite = resolved.colorHex.toUpperCase() === stillStyle.whiteHex.toUpperCase();
   for (const spec of specs.filter(requiresWhiteBackground)) {

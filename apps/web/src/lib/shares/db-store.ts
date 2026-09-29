@@ -32,7 +32,7 @@ import {
 
 type JobRow = { id: string; workspaceId: string; productId: string; status: string; creditsCharged: number; createdAt: Date };
 type AssetRow = { id: string; shotType: string; createdAt: Date };
-type VariantRow = { id: string; assetId: string; r2Key: string; width: number | null; height: number | null; createdAt: Date };
+type VariantRow = { id: string; assetId: string; channelSpecId: string; r2Key: string; width: number | null; height: number | null; createdAt: Date };
 
 /** Mirrors DbService's servesFiles: a finished pack, or one that charged for
  * files it delivered. Nothing else has files to show. */
@@ -67,6 +67,7 @@ function shareImage(slug: string, title: string, file: { asset: AssetRow; varian
     ref: `v_${file.variant.id}`,
     src: shareImagePath(slug, `v_${file.variant.id}`),
     alt: `${title}, ${shotLabel(file.asset.shotType).toLowerCase()}`,
+    specId: file.variant.channelSpecId,
   };
 }
 
@@ -334,7 +335,8 @@ export class DbShareStore implements ShareStore {
     const image = (file: { asset: AssetRow; variant: VariantRow }): PublicShareImage => shareImage(slug, title, file);
     // A kept photo hero would show the same photo as its before (PHASE_15
     // item 34), so such a page shows the result alone.
-    const hasBefore = !allHeroCandidatesOriginal([heroFile.asset]) && (await this.beforeKey(share)) !== null;
+    const sizedForChannels = allHeroCandidatesOriginal([heroFile.asset]);
+    const hasBefore = !sizedForChannels && (await this.beforeKey(share)) !== null;
     const [gallery, product] = await Promise.all([
       this.db.query.galleryItems.findFirst({
         where: (t, { and, eq }) => and(eq(t.shareSlug, share.slug), eq(t.published, true)),
@@ -353,6 +355,7 @@ export class DbShareStore implements ShareStore {
       images: share.kind === "pack" ? [heroFile, ...files.filter((f) => f !== heroFile)].map(image) : [],
       inGallery: gallery !== undefined,
       illustration: false,
+      sizedForChannels,
     };
   }
 

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { UploadPreflightRun } from "@curvi/trigger/preflight";
 import { photoBlockReason, photoTargetBox, type PhotoItem } from "@/components/app/new-pack-form";
 import {
+  addedTextPhotoLine,
+  addedTextSpecIds,
   CUTOUT_UNAVAILABLE_NOTICE,
   joinNames,
   keptPhotoHeadsUp,
@@ -14,6 +16,7 @@ import {
 } from "./copy";
 import { demoPreflight } from "./demo";
 import { sizeNeeds, storedPreflightOf } from "./result";
+import { preflightProductBoxOf } from "./service";
 import type { PreflightView } from "./types";
 
 // docs/phases/PHASE_14.md workstream 4 and item 3.2: what the form says
@@ -59,6 +62,19 @@ describe("storedPreflightOf", () => {
     );
     expect(stored).toMatchObject({ status: "ready", found: "silver watch", problem: null, productLongSide: 1000 });
     expect(stored.sizes.find((s) => s.specId === "amazon.main")).toMatchObject({ measure: "product" });
+  });
+
+  it("keeps the inventory's product box for the crop fit (PHASE_15 P1)", () => {
+    const box = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 };
+    expect(storedPreflightOf(run({ productBox: box })).productBox).toEqual(box);
+    expect(storedPreflightOf(run({})).productBox).toBeUndefined();
+    const row = { result: { productBox: box } } as unknown as Parameters<typeof preflightProductBoxOf>[0];
+    expect(preflightProductBoxOf(row)).toEqual(box);
+    const outside = { result: { productBox: { x: 0.9, y: 0, width: 0.5, height: 0.5 } } } as unknown as Parameters<
+      typeof preflightProductBoxOf
+    >[0];
+    expect(preflightProductBoxOf(outside)).toBeUndefined();
+    expect(preflightProductBoxOf(undefined)).toBeUndefined();
   });
 
   it("blocks prohibited goods, screenshots and photos with no product, each with its own fix", () => {
@@ -224,6 +240,40 @@ describe("the output context (PHASE_15 item 31)", () => {
     expect(keptPhotoHeadsUp(small, ["amazon.main"], null, undefined)).toEqual([]);
   });
 
+  describe("added text on the photo (PHASE_15 P1)", () => {
+    const single = { products: [{ label: "silver watch", box: watchBox, matchesIntent: "yes" }] };
+    const flagged = view(storedPreflightOf(run({}, { ...single, addedOverlays: true })));
+    const clean = view(storedPreflightOf(run({}, { ...single, addedOverlays: false })));
+
+    it("stores the flag only when intake set it", () => {
+      expect(flagged.addedOverlays).toBe(true);
+      expect(clean).not.toHaveProperty("addedOverlays");
+      expect(view(storedPreflightOf(run({}, single)))).not.toHaveProperty("addedOverlays");
+    });
+
+    it("names the picked channels that refuse added text, and only those that take a kept photo", () => {
+      expect(
+        addedTextSpecIds(["amazon.main", "amazon.secondary", "ebay.listing", "google.merchant.main", "google.merchant.lifestyle"]),
+      ).toEqual(["ebay.listing", "google.merchant.lifestyle"]);
+      expect(addedTextPhotoLine([])).toBeNull();
+      expect(addedTextPhotoLine(["ebay.listing"])).toBe(
+        "This photo looks like it has added text, a border or a watermark, which eBay does not allow, so it will be left out there. Upload a clean photo to include it, or leave this channel out. Your product's own logo and labels are fine.",
+      );
+    });
+
+    it("says so under a kept flagged photo on eBay or Google, and nowhere else", () => {
+      const line = addedTextPhotoLine(["ebay.listing", "google.merchant.lifestyle"])!;
+      expect(line).toContain("which eBay and Google do not allow");
+      expect(line).toContain("leave these channels out");
+      const picked = ["amazon.secondary", "ebay.listing", "google.merchant.lifestyle"];
+      expect(keptPhotoHeadsUp(flagged, picked, null, keptNoCutout)).toContain(line);
+      expect(keptPhotoHeadsUp(clean, picked, null, keptNoCutout)).not.toContain(line);
+      expect(keptPhotoHeadsUp(flagged, ["amazon.secondary"], null, keptNoCutout)).toEqual([]);
+      expect(keptPhotoHeadsUp(flagged, picked, null, removed)).toEqual([]);
+      expect(line).not.toMatch(/[–—→←]| - |->|=>|[\u{1F300}-\u{1FAFF}]/u);
+    });
+  });
+
   it("keeps the new lines plain (rule 9)", () => {
     const lines = [
       ...keptPhotoHeadsUp(several, ["amazon.secondary"], null, keptNoCutout),
@@ -242,6 +292,10 @@ describe("demo mode", () => {
     expect(ready).toMatchObject({ status: "ready", demo: true, found: "your product" });
     expect(ready.sizes).toEqual(sizeNeeds());
     expect(readyLine(ready, ["amazon.main"])).toBe("Found: your product. Ready for Amazon.");
+    // The cutout preview (P1) shows in demo mode too, for one product only.
+    expect(ready.previewUrl).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(demoPreflight("ws/demo/src/e2e-several").previewUrl).toBeNull();
+    expect(demoPreflight("ws/demo/src/e2e-screenshot").previewUrl).toBeNull();
   });
 
   it("simulates the chooser and a screenshot for the demo's own photos", () => {

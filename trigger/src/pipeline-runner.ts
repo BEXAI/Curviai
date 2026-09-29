@@ -38,13 +38,16 @@ import {
 } from "@curvi/ai";
 import { createHash } from "node:crypto";
 import {
+  applyAddedOverlays,
   applyOriginalSizes,
   badgeEligible,
   applyBrandStylePreset,
   buildPack,
+  capSceneCount,
   capShotsPerChannel,
   coverSellerOffSpecs,
   headerChecks,
+  lifestyleScenesFor,
   reservedSlotsFor,
   sellerOffShotTypes,
   skipSellerOffShots,
@@ -116,8 +119,10 @@ import {
 } from "@curvi/pipeline";
 import {
   cutoutMediaIds,
+  hexToRgb,
   planFlagsOf,
   ResolvedOutputOptions,
+  sceneCountOf,
   SELLER_OFF_REASON,
   type OutputPlanFlags,
 } from "@curvi/pipeline/output-options";
@@ -127,6 +132,7 @@ import {
   qcJudgePolicy,
   recipeSeedRows,
   SCENE_PLATE_TASK,
+  sceneCountOptions,
   type RecipeRow,
   type TierKey,
 } from "@curvi/pipeline/seed";
@@ -161,7 +167,7 @@ import {
 } from "./shot-outputs";
 import { isTerminal, JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 import { DEFAULT_SHOT_CONCURRENCY, withShotClassSlot } from "./shot-concurrency";
-import { reusablePreflightIntake, type PreflightIntake } from "./preflight-intake";
+import { reusablePreflightIntake, trustedIntakeAnswer, type PreflightIntake } from "./preflight-intake";
 
 export type { JobState } from "./state";
 export { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
@@ -561,6 +567,13 @@ export interface ShotGenerateArgs {
   output?: ResolvedOutputOptions;
   /** The shot's photo was written again at upload (source_media.ingest). */
   reencodedAtUpload?: boolean;
+  /** The product box in the shot's photo, normalized to the upright photo:
+   * the seller's tap (source_media.target_box), else the upload preflight's
+   * productBox. The P1 crop fit trims around it; without one it falls back. */
+  productBox?: NormalizedBox;
+  /** The shot's photo is a kept photo that shows other items (ShotContext
+   * otherItems), so it is never shipped as its own white file. */
+  otherItems?: boolean;
 }
 
 /**
@@ -675,6 +688,9 @@ export interface ShotContext {
   /** Media ids of kept photos that show other items, which stay in the
    * picture (PHASE_15, several products in one photo). */
   otherItems?: string[];
+  /** The product box per photo, by media id, normalized to the upright
+   * photo (target_box, else the preflight productBox), for the P1 crop fit. */
+  productBoxes?: Record<string, NormalizedBox>;
 }
 
 /** IPTC digital source marking per plan 5.7.2: composited scenes carry
@@ -1051,6 +1067,9 @@ export interface GeneratePackInput {
     height?: number;
     /** The stored copy was written again at upload (source_media.ingest). */
     reencoded?: boolean;
+    /** The product box the upload preflight found (upload_preflights.result
+     * productBox), normalized to the upright photo; targetBox wins over it. */
+    productBox?: NormalizedBox;
   }>;
   userDescription?: string;
   sku?: string;
@@ -1250,6 +1269,31 @@ export function screenshotMediaIds(intake: IntakeResult, judged: readonly string
   }
   intake.images.forEach((image, i) => {
     if (image.screenshot === true) {
+      flagged.add(judged[i]);
+    }
+  });
+  return flagged;
+}
+
+/**
+ * Media ids intake flagged with addedOverlays: text, borders, watermarks or
+ * stickers added on top of the photo (intake version 5, PHASE_15 P1). Mapped
+ * like screenshotMediaIds: when the entry count does not match the photos,
+ * no photo is flagged, so a kept photo ships as before.
+ */
+export function addedOverlayMediaIds(intake: IntakeResult, judged: readonly string[], jobId: string): Set<string> {
+  const flagged = new Set<string>();
+  if (!intake.images.some((image) => image.addedOverlays === true)) {
+    return flagged;
+  }
+  if (intake.images.length !== judged.length) {
+    console.warn(
+      `[runner] job ${jobId} intake returned ${intake.images.length} verdicts for ${judged.length} photos; added text flags are not mapped to photos`,
+    );
+    return flagged;
+  }
+  intake.images.forEach((image, i) => {
+    if (image.addedOverlays === true) {
       flagged.add(judged[i]);
     }
   });
@@ -2063,6 +2107,18 @@ function coloredOutput(generation: ShotGeneration): boolean {
 }
 
 /**
+ * The background a colored output was asked to have ("Background matches
+ * your color", PHASE_15 P1): the chosen color behind a cut out product, or
+ * the added space of a kept photo. Null for every other file, which keeps
+ * today's checks.
+ */
+function expectedBackgroundOf(generation: ShotGeneration): [number, number, number] | null {
+  const treatment = generation.treatment;
+  const hex = treatment?.kind === "background" ? treatment.colorHex : treatment?.padHex;
+  return hex ? hexToRgb(hex) : null;
+}
+
+/**
  * QC of a kept photo shipped as the stored upload (PHASE_15 fidelity
  * section): the delivered sha256 must equal the stored one, which replaces
  * the RGBA decode, and the pixel checks read the header only (dimensions,
@@ -2133,9 +2189,11 @@ async function checkGeneration(
     shippedProblem = "does not decode";
   }
 
+  const expectedBackground = expectedBackgroundOf(generation);
   let pixel = await pixelChecks(shipped, qcMask, spec, {
     encoded: { bytes: generation.encoded.buffer.length, format: generation.encoded.format },
     edgeMarginPx: QC_EDGE_MARGIN_PX,
+    ...(expectedBackground ? { expectedBackground } : {}),
   });
   if (shippedProblem) {
     pixel = {
@@ -2449,10 +2507,16 @@ export function extraItemsFailure(target: ProductTarget | undefined, generation:
 }
 
 /** What the generator needs from the job's output options for one shot. */
-function outputArgs(ctx: ShotContext, shot: Shot): Pick<ShotGenerateArgs, "output" | "reencodedAtUpload"> {
+function outputArgs(
+  ctx: ShotContext,
+  shot: Shot,
+): Pick<ShotGenerateArgs, "output" | "reencodedAtUpload" | "productBox" | "otherItems"> {
+  const productBox = ctx.productBoxes?.[shot.sourceMediaId];
   return {
     ...(ctx.output ? { output: ctx.output } : {}),
     ...(ctx.reencoded?.includes(shot.sourceMediaId) ? { reencodedAtUpload: true } : {}),
+    ...(productBox ? { productBox } : {}),
+    ...(ctx.otherItems?.includes(shot.sourceMediaId) ? { otherItems: true } : {}),
   };
 }
 
@@ -2702,15 +2766,17 @@ export function shotFailureOutcome(
   };
 }
 
-/** Records a failed shot on the board (best effort) and returns its outcome. */
+/** Records a failed shot on the board (best effort) and returns its outcome.
+ * The reason is what the card says; provider trouble unless told. */
 export async function recordShotFailure(
   store: JobStore,
   shot: Shot,
   ctx: ShotContext,
   err: unknown,
+  reason: string = SHOT_PROVIDER_TROUBLE,
 ): Promise<ShotOutcome> {
   console.error(`[runner] shot ${shot.id} failed outside its QC loop`, err);
-  const outcome = shotFailureOutcome(shot, ctx, SHOT_PROVIDER_TROUBLE, errorDetail(err));
+  const outcome = shotFailureOutcome(shot, ctx, reason, errorDetail(err));
   try {
     await storeForRun(store, ctx.runKey).saveAsset(toStoredAsset(outcome, ctx, shot));
   } catch (saveErr) {
@@ -2989,7 +3055,7 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
     }
   }
   // Only the specs the seller picked are generated and charged.
-  const narrowed: Shot[] = [];
+  let narrowed: Shot[] = [];
   for (const shot of shots) {
     const kept = [...new Set(shot.channels.filter((c) => isSpecSelected(rules.channels, c)))];
     if (kept.length === 0) {
@@ -2998,6 +3064,10 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
     }
     narrowed.push(kept.length === shot.channels.length ? shot : { ...shot, channels: kept });
   }
+  // Scenes past the pack's scene count are skipped before the limits and
+  // the budget, as fitShotsToChannels would skip them, so a plan with more
+  // scenes than the hold paid for is trimmed, not rejected (PHASE_15 P1).
+  narrowed = capSceneCount(narrowed, rules.output, skipped);
   if (narrowed.length === 0) {
     return { ok: false, reason: "the plan has no shot for the selected channels" };
   }
@@ -3043,6 +3113,44 @@ export function coveredSpecs(shots: readonly Shot[]): Set<string> {
   return new Set(shots.flatMap((shot) => shot.channels));
 }
 
+/**
+ * Tops a validated LLM plan up to the pack's scene count (PHASE_15 P1): the
+ * hold paid for exactly that many scenes, and the plan recipe may ask for
+ * fewer. Each missing scene copies the plan's last lifestyle shot with the
+ * next scene lifestyleScenesFor gives that the plan does not use yet. The
+ * added scenes rank below every planned shot, so the budget trim drops them
+ * first and they only take room the plan left. A plan with no lifestyle
+ * shot (the seller turned scenes off, or the plan made none) is unchanged,
+ * and so is every plan without output options (today's pack).
+ */
+export function fillSceneCount(
+  plan: RunnerPlan,
+  profile: ProductProfile,
+  output: Pick<OutputPlanFlags, "sceneCount"> | undefined,
+): RunnerPlan {
+  const count = sceneCountOf(output);
+  const scenes = plan.shots.filter((shot) => shot.type === "lifestyle");
+  const template = scenes.at(-1);
+  if (!output || !template || scenes.length >= count) {
+    return plan;
+  }
+  const used = new Set(scenes.map((shot) => shot.scene?.trim().toLowerCase()));
+  const candidates = [
+    ...new Set([...lifestyleScenesFor(profile, count), ...lifestyleScenesFor(profile, sceneCountOptions.max)]),
+  ].filter((scene) => !used.has(scene.trim().toLowerCase()));
+  const priority = Math.max(...plan.shots.map((shot) => shot.priority)) + 1;
+  const added = candidates.slice(0, count - scenes.length).map(
+    (scene, i): Shot => ({
+      ...template,
+      id: `${template.id}_scene${i + 2}`,
+      scene,
+      credits: creditsForShot(template),
+      priority,
+    }),
+  );
+  return added.length > 0 ? { shots: [...plan.shots, ...added], skipped: plan.skipped } : plan;
+}
+
 export interface FitOptions {
   channels: readonly string[];
   mode: "listing" | "concept";
@@ -3072,8 +3180,11 @@ const MAX_PLAN_SHOTS = 40;
  *    spec in concept mode), and a shot left with none is skipped, so
  *    unselected crops, banners and heroes cost nothing;
  * 3. shots in an extra family the seller turned off are skipped with
- *    SELLER_OFF_REASON (the excluded types, PHASE_15), and each kept photo
- *    leaves the specs it is too small for (applyOriginalSizes);
+ *    SELLER_OFF_REASON (the excluded types, PHASE_15), lifestyle scenes past
+ *    the pack's scene count are skipped (capSceneCount), and each kept photo
+ *    leaves the specs it is too small for (applyOriginalSizes) and, when
+ *    intake saw added text on it, the specs that refuse overlays
+ *    (applyAddedOverlays);
  * 4. when google.merchant.main is picked its slot is filled: the white main
  *    image also ships to Google when there is one, otherwise a white front
  *    shot is added; a picked spec the seller's switches emptied gets the
@@ -3109,7 +3220,9 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
     shots.push({ ...shot, channels: kept });
   }
   shots = skipSellerOffShots(shots, opts.output, skipped);
+  shots = capSceneCount(shots, opts.output, skipped);
   shots = applyOriginalSizes(shots, opts.output, skipped);
+  shots = applyAddedOverlays(shots, opts.output, skipped);
 
   const frontUsable = opts.profile.imageQuality.usableForMain && opts.profile.photographedAngles.includes("front");
   if (
@@ -3138,7 +3251,7 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
   }
 
   shots = coverSellerOffSpecs(shots, skipped, opts.output, { frontMediaId: opts.primaryMediaId, frontUsable });
-  shots = capShotsPerChannel(shots, skipped, reservedSlotsFor(shots));
+  shots = capShotsPerChannel(shots, skipped, reservedSlotsFor(shots, sceneCountOf(opts.output)));
   shots = trimShotsToBudget(shots, opts.budget, skipped);
 
   // Shot ids key the ledger charges; a duplicate would hold credits forever.
@@ -3351,10 +3464,15 @@ function pickedSpecIds(channels: readonly string[]): string[] {
 
 /**
  * The plan flags of a run: the resolved options over the camera photos, in
- * pack order, with their stored sizes and seller angles. Only camera photos
- * can be kept, so a screenshot in keepMediaIds is dropped.
+ * pack order, with their stored sizes and seller angles, and the photos
+ * intake saw added text on (addedOverlayMediaIds). Only camera photos can be
+ * kept, so a screenshot in keepMediaIds is dropped.
  */
-export function runPlanFlags(output: ResolvedOutputOptions, images: GeneratePackInput["images"]): OutputPlanFlags {
+export function runPlanFlags(
+  output: ResolvedOutputOptions,
+  images: GeneratePackInput["images"],
+  addedOverlays: ReadonlySet<string> = new Set(),
+): OutputPlanFlags {
   const ids = new Set(images.map((image) => image.mediaId));
   return planFlagsOf(
     { ...output, keepMediaIds: output.keepMediaIds.filter((id) => ids.has(id)) },
@@ -3363,8 +3481,22 @@ export function runPlanFlags(output: ResolvedOutputOptions, images: GeneratePack
       ...(image.angle !== undefined ? { angle: image.angle } : {}),
       ...(image.width !== undefined ? { width: image.width } : {}),
       ...(image.height !== undefined ? { height: image.height } : {}),
+      ...(addedOverlays.has(image.mediaId) ? { addedOverlays: true } : {}),
     })),
   );
+}
+
+/** The product box per photo for the P1 crop fit: the seller's tap
+ * (targetBox) wins over the preflight's productBox. */
+export function productBoxesOf(images: GeneratePackInput["images"]): { productBoxes?: Record<string, NormalizedBox> } {
+  const boxes: Record<string, NormalizedBox> = {};
+  for (const image of images) {
+    const box = image.targetBox ?? image.productBox;
+    if (box) {
+      boxes[image.mediaId] = box;
+    }
+  }
+  return Object.keys(boxes).length > 0 ? { productBoxes: boxes } : {};
 }
 
 /** The media ids of photos whose stored copy was written again at upload. */
@@ -3544,7 +3676,17 @@ export async function runGeneratePack(
     }
     // The output options as plan flags over the camera photos: a screenshot
     // is never the product, so it is never kept either.
-    const flags = output ? runPlanFlags(output, images) : undefined;
+    // A kept photo intake saw added text on is left out of the specs that
+    // refuse it (applyAddedOverlays).
+    // Only an intake recipe that asks for the flag is trusted with it
+    // (trustedIntakeAnswer), so a worker ahead of the re-seed ships as before.
+    const flags = output
+      ? runPlanFlags(
+          output,
+          images,
+          addedOverlayMediaIds(trustedIntakeAnswer(intake.value, intakeRecipe), judged, input.jobId),
+        )
+      : undefined;
     const keptIds = flags?.keepMediaIds ?? [];
     // The photos a cutout shot needs; the others (kept photos no shot cuts
     // out) read the upload's cached cutout only. Null: every photo.
@@ -3755,7 +3897,7 @@ export async function runGeneratePack(
       : { ok: false, reason: KEPT_PHOTO_PLAN_REJECTION };
     let chosen: ShotList | null = null;
     if (check.ok) {
-      const fitted = fitShotsToChannels(check.shotList, fit);
+      const fitted = fitShotsToChannels(fillSceneCount(check.shotList, profile, flags), fit);
       const fittedSpecs = coveredSpecs(fitted.shots);
       const uncovered = fallback ? [...coveredSpecs(fallback.shots)].filter((specId) => !fittedSpecs.has(specId)) : [];
       if (uncovered.length === 0) {
@@ -3781,9 +3923,13 @@ export async function runGeneratePack(
       chosen = fallback;
       plannerSource = "deterministic";
     }
-    // The brand kit's style preset, when it names one, replaces the
-    // planner's category pick on every shot that uses a preset.
-    const shotList: ShotList = withSellerCopy(applyBrandStylePreset(chosen, input.brand?.stylePreset, profile), sellerCopy);
+    // The seller's scene style for this pack, else the brand kit's style
+    // preset, replaces the planner's category pick on every shot that uses a
+    // preset (PHASE_15 P1).
+    const shotList: ShotList = withSellerCopy(
+      applyBrandStylePreset(chosen, input.brand?.stylePreset, profile, output?.scenePreset),
+      sellerCopy,
+    );
     plannedShots = shotList.shots.length;
     skipped = [
       ...conceptExcluded.map((channel) => ({
@@ -3818,6 +3964,7 @@ export async function runGeneratePack(
       ...(output ? { output } : {}),
       ...reencodedOf(images),
       ...(otherItems.length > 0 ? { otherItems } : {}),
+      ...productBoxesOf(images),
       deferTransientFailures: true,
     };
     // Pack level spend cap: a shared tracker gates every generation attempt

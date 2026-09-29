@@ -19,14 +19,17 @@ import {
   hasSpec,
   isSpecSelected,
   listSpecs,
+  refusesOverlays,
   requiresWhiteBackground,
 } from "@curvi/specs";
 import {
+  ADDED_OVERLAYS_REASON,
   GALLERY_SLOTS,
   SELLER_OFF_REASON,
   SOURCE_TOO_SMALL_REASON,
   extraFamilyOf,
   originalScale,
+  sceneCountOf,
   specAcceptsImage,
   whiteRequiredGallerySpecIds,
   type OutputPlanFlags,
@@ -34,6 +37,7 @@ import {
   type PlannedImageKind,
 } from "../output-options";
 import { creditCosts, isEntitled, type TierKey } from "../seed/credits";
+import { lifestyleFallbackScenes, sceneCountOptions } from "../seed/templates";
 import { ProductProfile, Shot, ShotList, type ShotMethod } from "../schemas";
 import { printableSellerLines } from "../seller-inputs";
 
@@ -377,8 +381,9 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     "colored",
   );
 
-  // 2 to 4 lifestyle scenes matched to useContexts.
-  const lifestyleScenes = lifestyleScenesFor(profile);
+  // Exactly the pack's scene count (seed default 3, the seller's Number of
+  // scenes in P1), category scenes first, then useContexts.
+  const lifestyleScenes = lifestyleScenesFor(profile, sceneCountOf(output));
   for (const scene of lifestyleScenes) {
     planGallery(
       {
@@ -603,16 +608,23 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     skip("video_ugc_hook", "avatar", "Pro or Agency only");
   }
 
-  // Kept photos too small for a spec leave that spec, then a spec emptied
-  // only by the seller's switches gets the front image, before the limits
-  // and the trim see the plan.
-  const sized = applyOriginalSizes(shots, output, skipped);
+  // Kept photos too small for a spec, or with added text on a spec that
+  // refuses it, leave that spec, then a spec emptied only by the seller's
+  // switches gets the front image, before the limits and the trim see the
+  // plan.
+  const sized = applyAddedOverlays(applyOriginalSizes(shots, output, skipped), output, skipped);
   const covered = coverSellerOffSpecs(sized, skipped, output, { frontMediaId: frontMedia, frontUsable });
 
   // Channel file limits (amazon.secondary takes 8, amazon.main takes 1) and
   // rule 6, the credit budget, which keeps a file for every picked spec it
   // can afford (trimToBudget).
-  const kept = fitLimitsAndBudget(covered, opts.creditBudget, skipped, specSelected, reservedSlotsFor(covered));
+  const kept = fitLimitsAndBudget(
+    covered,
+    opts.creditBudget,
+    skipped,
+    specSelected,
+    reservedSlotsFor(covered, sceneCountOf(output)),
+  );
 
   // Schema cap: at most 40 shots.
   while (kept.length > 40) {
@@ -667,22 +679,57 @@ export const CHANNEL_LIMIT_REASON = "channel image limit";
  * the cutout and the sweeps (priority 2 and 3) fill all 8 Amazon slots and a
  * seller with many photographed angles gets no lifestyle scene and no
  * infographic, against the default pack of CURVI_BUILD_PLAN.md section 5.3.
- * A spec that takes a single file (amazon.main) keeps its best shot.
+ * A spec that takes a single file (amazon.main) keeps its best shot. The
+ * lifestyle reservation is the pack's scene count (seed default here;
+ * reservedSlotsFor takes the seller's).
  */
 export const RESERVED_GALLERY_SLOTS: ReadonlyArray<{ type: Shot["type"]; count: number }> = [
-  { type: "lifestyle", count: 2 },
+  { type: "lifestyle", count: sceneCountOptions.default },
   { type: "infographic", count: 1 },
 ];
 
 /**
- * The channel file limit reservations for a plan: when it holds kept photos,
- * each one keeps a slot ahead of RESERVED_GALLERY_SLOTS, so the seller's own
+ * The channel file limit reservations for a plan: the lifestyle reservation
+ * is the pack's scene count (PHASE_15 P1), and when the plan holds kept
+ * photos each one keeps a slot ahead of the others, so the seller's own
  * photos keep amazon.secondary before generated extras (PHASE_15 item 3).
  * The runner passes the same reservations to capShotsPerChannel.
  */
-export function reservedSlotsFor(shots: readonly Shot[]): ReadonlyArray<{ type: Shot["type"]; count: number }> {
+export function reservedSlotsFor(
+  shots: readonly Shot[],
+  sceneCount: number = sceneCountOptions.default,
+): ReadonlyArray<{ type: Shot["type"]; count: number }> {
+  const gallery = RESERVED_GALLERY_SLOTS.map((slot) => (slot.type === "lifestyle" ? { ...slot, count: sceneCount } : slot));
   const originals = shots.filter((shot) => shot.type === "original_photo").length;
-  return originals > 0 ? [{ type: "original_photo", count: originals }, ...RESERVED_GALLERY_SLOTS] : RESERVED_GALLERY_SLOTS;
+  return originals > 0 ? [{ type: "original_photo", count: originals }, ...gallery] : gallery;
+}
+
+/** Reason recorded for a lifestyle scene past the pack's scene count. */
+export const SCENE_COUNT_REASON = "more scenes than the pack's scene count";
+
+/**
+ * Keeps at most the pack's scene count of lifestyle shots (sceneCountOf the
+ * flags: the seller's Number of scenes, else the seed default), in plan
+ * order, and records the rest with SCENE_COUNT_REASON. For plans this
+ * planner did not make (the fitted LLM plan), so a plan holds and makes
+ * exactly what the estimate held. Returns the other shots untouched.
+ */
+export function capSceneCount(
+  shots: readonly Shot[],
+  flags: Pick<OutputPlanFlags, "sceneCount"> | undefined,
+  skipped: SkippedShot[],
+): Shot[] {
+  const limit = sceneCountOf(flags);
+  let scenes = 0;
+  const out: Shot[] = [];
+  for (const shot of shots) {
+    if (shot.type === "lifestyle" && ++scenes > limit) {
+      skipped.push({ type: shot.type, reason: SCENE_COUNT_REASON });
+      continue;
+    }
+    out.push(shot);
+  }
+  return out;
 }
 
 /**
@@ -760,7 +807,8 @@ export function skipSellerOffShots(
   return out;
 }
 
-/** The skipped type recorded for a kept photo too small for one spec. */
+/** The skipped type recorded for a kept photo left off one spec: too small
+ * for it, or flagged with added text it refuses (applyAddedOverlays). */
 export function originalTooSmallType(specId: string): string {
   return `original_photo:${specId}`;
 }
@@ -795,6 +843,45 @@ export function applyOriginalSizes(
         return true;
       }
       skipped.push({ type: originalTooSmallType(specId), reason: SOURCE_TOO_SMALL_REASON });
+      return false;
+    });
+    if (channels.length > 0) {
+      out.push(channels.length === shot.channels.length ? shot : { ...shot, channels });
+    }
+  }
+  return out;
+}
+
+/**
+ * Leaves each original_photo whose photo intake flagged with addedOverlays
+ * (text, borders, watermarks or stickers added on top) off every spec that
+ * refuses added text or overlays (refusesOverlays: eBay, Google), recording
+ * `original_photo:{specId}` with ADDED_OVERLAYS_REASON per spec. The per
+ * spec type is the too small one, so seller off cover never fills the spec
+ * with the same photo. An original left with no spec is dropped. Runs next to
+ * applyOriginalSizes. Pure: returns a new list; other shot types and
+ * unflagged photos pass through untouched.
+ */
+export function applyAddedOverlays(
+  shots: readonly Shot[],
+  flags: OutputPlanFlags | undefined,
+  skipped: SkippedShot[],
+): Shot[] {
+  const flagged = new Set(flags?.photos.filter((photo) => photo.addedOverlays === true).map((photo) => photo.id));
+  if (flagged.size === 0) {
+    return [...shots];
+  }
+  const out: Shot[] = [];
+  for (const shot of shots) {
+    if (shot.type !== "original_photo" || !flagged.has(shot.sourceMediaId)) {
+      out.push(shot);
+      continue;
+    }
+    const channels = shot.channels.filter((specId) => {
+      if (!hasSpec(specId) || !refusesOverlays(getSpec(specId))) {
+        return true;
+      }
+      skipped.push({ type: originalTooSmallType(specId), reason: ADDED_OVERLAYS_REASON });
       return false;
     });
     if (channels.length > 0) {
@@ -1113,19 +1200,18 @@ function presetForCategory(category: ProductProfile["category"]): string {
   }
 }
 
-const MIN_LIFESTYLE_SCENES = 2;
-const MAX_LIFESTYLE_SCENES = 4;
-const FALLBACK_LIFESTYLE_SCENES = ["clean studio scene", "everyday use scene"];
-
 /**
- * 2 to 4 lifestyle scenes: the seller's use contexts, plus the rule 4
- * category scenes, which always keep their slots (Update.md 2.16: apparel
- * used to return early, so it could end with one scene, and 4 or more
- * contexts cut the ghost style scene; the same cut dropped the jewelry,
- * food, furniture and electronics additions). Every category then shares the
- * dedupe and the two scene minimum.
+ * Exactly n lifestyle scenes (PHASE_15 P1 "Number of scenes", n within seed
+ * sceneCountOptions), for every category: the rule 4 category scenes first
+ * (Update.md 2.16: they always keep their slots, where apparel once returned
+ * early and 4 or more contexts cut them), then the seller's use contexts,
+ * deduped, then seed lifestyleFallbackScenes until n. The scenes keep
+ * today's order: contexts first, then the category scenes, so the budget
+ * trim, which drops the later scene first, keeps the seller's first
+ * contexts.
  */
-function lifestyleScenesFor(profile: ProductProfile): string[] {
+export function lifestyleScenesFor(profile: ProductProfile, n: number = sceneCountOptions.default): string[] {
+  const count = Math.max(sceneCountOptions.min, Math.min(sceneCountOptions.max, Math.floor(n)));
   let contexts = profile.useContexts;
   const required: string[] = [];
   // Rule 4 category additions.
@@ -1151,15 +1237,15 @@ function lifestyleScenesFor(profile: ProductProfile): string[] {
       required.push("ports detail");
       break;
   }
-  const contextSlots = MAX_LIFESTYLE_SCENES - required.length;
-  const chosen = [...new Set(contexts)].filter((s) => !required.includes(s)).slice(0, contextSlots);
-  const scenes = [...chosen, ...required];
-  if (scenes.length < MIN_LIFESTYLE_SCENES) {
-    for (const fallback of FALLBACK_LIFESTYLE_SCENES) {
-      if (!scenes.includes(fallback)) {
-        scenes.push(fallback);
-      }
+  const kept = required.slice(0, count);
+  const contextSlots = count - kept.length;
+  const chosen = [...new Set(contexts)].filter((s) => !kept.includes(s)).slice(0, contextSlots);
+  const scenes = [...chosen, ...kept];
+  for (const fallback of lifestyleFallbackScenes) {
+    if (scenes.length >= count) break;
+    if (!scenes.includes(fallback)) {
+      scenes.push(fallback);
     }
   }
-  return scenes.slice(0, MAX_LIFESTYLE_SCENES);
+  return scenes.slice(0, count);
 }

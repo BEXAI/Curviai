@@ -20,6 +20,7 @@ import {
   type NormalizedOutputOptions,
   type OutputOptionsInput,
   type OutputPlanFlags,
+  type PhotoBackgroundChoice,
   type PlanPhoto,
 } from "@curvi/pipeline/output-options";
 import { stillStyle } from "@curvi/pipeline/seed";
@@ -58,6 +59,9 @@ export interface ResolveJobOutputArgs {
   brandKitsAllowed: boolean;
   /** The pack's photos (images only), in pack order. */
   photos: readonly OutputPhoto[];
+  /** Background per photo (P1), by photo id: uploads[].background. A photo
+   * with none, or with "pack", follows the pack's switch. */
+  photoBackgrounds?: Readonly<Partial<Record<string, PhotoBackgroundChoice>>>;
 }
 
 export type ResolvedJobOutput =
@@ -76,6 +80,34 @@ const DEFAULT_KEY = outputOptionsKey(DEFAULT_OUTPUT_OPTIONS);
 /** True when the options differ from today's pack (lookBase never counts). */
 export function isNonDefaultOutput(options: NormalizedOutputOptions | ResolvedOutputOptions | OutputOptionsInput | null | undefined): boolean {
   return outputOptionsKey(options ?? null) !== DEFAULT_KEY;
+}
+
+/** Each upload's own background choice (P1 "Background per photo"), by R2
+ * key; an upload without one follows the pack. */
+export function photoBackgroundsOf(
+  uploads: ReadonlyArray<{ key: string; background?: PhotoBackgroundChoice }> | null | undefined,
+): Partial<Record<string, PhotoBackgroundChoice>> {
+  const out: Partial<Record<string, PhotoBackgroundChoice>> = {};
+  for (const upload of uploads ?? []) {
+    if (upload.background) {
+      out[upload.key] = upload.background;
+    }
+  }
+  return out;
+}
+
+/**
+ * True when a photo's own background choice (P1 "Background per photo")
+ * differs from what the pack's switch gives it: a kept photo in a Remove
+ * pack, or a removed photo in a Keep pack. Such a request is not today's
+ * pack even with default options.
+ */
+export function hasPhotoBackgroundOverride(
+  options: OutputOptionsInput | null | undefined,
+  photoBackgrounds: Readonly<Partial<Record<string, PhotoBackgroundChoice>>> | null | undefined,
+): boolean {
+  const pack = options?.background ?? "remove";
+  return Object.values(photoBackgrounds ?? {}).some((choice) => choice !== undefined && choice !== "pack" && choice !== pack);
 }
 
 /** The first valid brand kit hex, else the seeded fallback: the color
@@ -102,8 +134,9 @@ function planPhotosOf(photos: readonly OutputPhoto[]): PlanPhoto[] {
  *    receives a Keep request it would run as a Remove pack.
  * 3. A brand color needs a plan with brand kits (upgrade_required) and a kit
  *    color at that index (invalid_options).
- * 4. The color and the brand sweep are snapshotted as hexes, and every photo
- *    is kept when the pack keeps its backgrounds.
+ * 4. The color and the brand sweep are snapshotted as hexes, and a photo is
+ *    kept when its own choice says keep (P1 "Background per photo"), or it
+ *    follows the pack and the pack keeps its backgrounds.
  */
 export function resolveJobOutput(args: ResolveJobOutputArgs): ResolvedJobOutput {
   let normalized: NormalizedOutputOptions;
@@ -112,7 +145,9 @@ export function resolveJobOutput(args: ResolveJobOutputArgs): ResolvedJobOutput 
   } catch {
     return { ok: false, reason: "invalid_options", message: INVALID_OPTIONS_MESSAGE };
   }
-  if (!args.enabled && isNonDefaultOutput(normalized)) {
+  // Concept packs have no real photo to keep.
+  const perPhoto = args.mode === "concept" ? undefined : args.photoBackgrounds;
+  if (!args.enabled && (isNonDefaultOutput(normalized) || hasPhotoBackgroundOverride(normalized, perPhoto))) {
     return { ok: false, reason: "feature_unavailable", message: OPTIONS_UNAVAILABLE_MESSAGE };
   }
   if (normalized.color.kind === "brand" && !args.brandKitsAllowed) {
@@ -126,7 +161,11 @@ export function resolveJobOutput(args: ResolveJobOutputArgs): ResolvedJobOutput 
   const resolved = resolveOutputOptions(normalized, {
     colorHex,
     brandSweepHex: brandSweepHexFor(args.brandColors),
-    keepMediaIds: keepMediaIdsFor(normalized, photos.map((photo) => photo.id)),
+    keepMediaIds: keepMediaIdsFor(
+      normalized,
+      photos.map((photo) => photo.id),
+      perPhoto,
+    ),
   });
   return { ok: true, resolved, flags: planFlagsOf(resolved, photos) };
 }
@@ -157,13 +196,34 @@ export function readStoredOutputOptions(stored: unknown): ResolvedOutputOptions 
  * What the credit estimate needs from the options, the same for the form,
  * the createJob hold and the demo plan: nothing for today's pack (its hold
  * stays the reference product's, exactly as before PHASE_15), otherwise the
- * plan flags, the photos in pack order and the chosen color.
+ * plan flags, the photos in pack order and the chosen color. A pack whose
+ * only difference is a photo kept on its own (P1) counts as not today's.
  */
 export function outputEstimateInputs(
-  resolved: Pick<ResolvedOutputOptions, "background" | "keepMediaIds" | "extras" | "fit" | "color" | "colorHex"> | null | undefined,
+  resolved:
+    | (Pick<ResolvedOutputOptions, "background" | "keepMediaIds" | "extras" | "fit" | "color" | "colorHex"> &
+        Partial<Pick<ResolvedOutputOptions, "sceneCount" | "scenePreset" | "logo" | "productSize" | "enlarge" | "graphicsColor">>)
+    | null
+    | undefined,
   photos: readonly OutputPhoto[],
 ): Pick<EstimateSellerInputs, "output" | "photos" | "colorHex"> {
-  if (!resolved || !isNonDefaultOutput({ v: 1, background: resolved.background, color: resolved.color, fit: resolved.fit, extras: resolved.extras })) {
+  const perPhotoKeep = resolved?.background === "remove" && resolved.keepMediaIds.length > 0;
+  const choices = resolved
+    ? {
+        v: 1 as const,
+        background: resolved.background,
+        color: resolved.color,
+        fit: resolved.fit,
+        extras: resolved.extras,
+        ...(resolved.sceneCount !== undefined ? { sceneCount: resolved.sceneCount } : {}),
+        ...(resolved.scenePreset !== undefined ? { scenePreset: resolved.scenePreset } : {}),
+        ...(resolved.logo !== undefined ? { logo: resolved.logo } : {}),
+        ...(resolved.productSize !== undefined ? { productSize: resolved.productSize } : {}),
+        ...(resolved.enlarge !== undefined ? { enlarge: resolved.enlarge } : {}),
+        ...(resolved.graphicsColor !== undefined ? { graphicsColor: resolved.graphicsColor } : {}),
+      }
+    : null;
+  if (!resolved || (!perPhotoKeep && !isNonDefaultOutput(choices))) {
     return {};
   }
   const estimatePhotos: EstimatePhoto[] = photos.map((photo) => ({

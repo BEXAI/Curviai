@@ -1,4 +1,4 @@
-export { RecipeRow, qcJudgePolicy, recipeSeedRows } from "./recipes";
+export { RecipeRow, addedOverlaysIntake, qcJudgePolicy, recipeSeedRows } from "./recipes";
 export {
   CUTOUT_TASK,
   HARMONIZE_TASK,
@@ -13,8 +13,11 @@ export {
   backgroundSwatches,
   badgeStyle,
   canvasDefaults,
+  jpegEncoding,
+  lifestyleFallbackScenes,
   originalFit,
   presets,
+  sceneCountOptions,
   sceneDefaults,
   stillStyle,
   templates,
@@ -23,6 +26,7 @@ export type { BackgroundSwatchKey, PresetKey } from "./templates";
 export { DEFAULT_TEMPLATE_FONT, isTemplateFontKey, templateFonts } from "./fonts";
 export type { TemplateFontEntry, TemplateFontKey } from "./fonts";
 export { AUTO_STYLE_PRESET, MAX_BRAND_COLORS } from "./brand";
+export { keepBackgroundPhrases } from "./phrases";
 export { retentionOffers } from "./retention";
 export type { RetentionOffers } from "./retention";
 export {

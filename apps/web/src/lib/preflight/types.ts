@@ -65,6 +65,13 @@ export interface PreflightView {
   productLongSide: number | null;
   /** What every image channel spec needs from the photo. */
   sizes: PreflightSizeNeed[];
+  /** A signed url of the product's cutout preview (a small alpha PNG), for
+   * the preview strip on the chosen color (PHASE_15 P1); null when none. */
+  previewUrl?: string | null;
+  /** Intake saw text, borders, watermarks or stickers added on top of the
+   * photo (intake version 5). A kept photo so flagged is left out of the
+   * channels that refuse them. Absent on older rows: a clean photo. */
+  addedOverlays?: boolean;
   /** True for the simulated demo mode answer. */
   demo?: boolean;
 }

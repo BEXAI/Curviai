@@ -251,6 +251,50 @@ export async function renderPieceThumbnails(
   return out;
 }
 
+export interface CutoutPreviewOptions {
+  /** Longest side of the preview, in pixels; the cutout is never enlarged. */
+  longSide: number;
+  /** Margin around the product's box, as a share of its longer side. */
+  margin?: number;
+}
+
+/**
+ * A small alpha PNG of the product from the cutout, for the new pack form's
+ * preview strip (docs/phases/PHASE_15.md P1, cutout preview): the piece's
+ * own pixels only, on a clear background, fitted inside longSide and never
+ * enlarged. With no piece, every opaque pixel of the cutout is drawn.
+ * Shown to the seller only, never used as listing output. Null when the
+ * cutout has nothing opaque.
+ */
+export async function renderCutoutPreview(
+  cutout: RawImage,
+  piece: BBox | null,
+  opts: CutoutPreviewOptions,
+): Promise<Buffer | null> {
+  const alpha = Buffer.alloc(cutout.width * cutout.height);
+  for (let i = 0; i < alpha.length; i++) alpha[i] = cutout.data[i * 4 + 3];
+  const { labels, components } = maskComponents({ data: alpha, width: cutout.width, height: cutout.height }, CUTOUT_ALPHA_THRESHOLD);
+  let box = piece;
+  let label: number | null = null;
+  if (box) {
+    const component = components.find((c) => sameBox(c.bbox, box as BBox));
+    label = component ? component.label : null;
+  } else {
+    if (components.length === 0) return null;
+    const left = Math.min(...components.map((c) => c.bbox.left));
+    const top = Math.min(...components.map((c) => c.bbox.top));
+    const right = Math.max(...components.map((c) => c.bbox.left + c.bbox.width));
+    const bottom = Math.max(...components.map((c) => c.bbox.top + c.bbox.height));
+    box = { left, top, width: right - left, height: bottom - top };
+  }
+  const crop = cropPiece(cutout, labels, label, box, Math.max(0, opts.margin ?? 0.04));
+  const side = Math.max(32, Math.round(opts.longSide));
+  return sharp(crop.data, { raw: { width: crop.width, height: crop.height, channels: 4 } })
+    .resize(side, side, { fit: "inside", withoutEnlargement: true })
+    .png()
+    .toBuffer();
+}
+
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
   return {
     r: Number.parseInt(hex.slice(1, 3), 16),

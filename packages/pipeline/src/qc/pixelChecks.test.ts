@@ -277,3 +277,38 @@ describe("semanticChecks (pluggable OCR and embedding)", () => {
     expect(await embedding.cosine(img, img, mask)).toBe(1);
   });
 });
+
+describe("backgroundMatchesChoice (PHASE_15 P1)", () => {
+  const spec = getSpec("meta.feed_1x1");
+  const sage: [number, number, number] = [0xdd, 0xe4, 0xd8];
+  const find = (report: Awaited<ReturnType<typeof pixelChecks>>) =>
+    report.checks.find((c) => c.name === "backgroundMatchesChoice");
+
+  it("passes a background within the seeded CIEDE2000 limit of the chosen color", async () => {
+    const img = rawCanvas(1080, 1080, ...sage);
+    const mask = rectMask(1080, 1080, { left: 300, top: 300, width: 400, height: 400 });
+    paintRect(img, { left: 300, top: 300, width: 400, height: 400 }, 200, 20, 30);
+    const report = await pixelChecks(img, mask, spec, { expectedBackground: sage });
+    expect(find(report)).toMatchObject({ pass: true, measured: 0 });
+    expect(QC_THRESHOLDS.backdropMaxDeltaE).toBe(2);
+  });
+
+  it("fails a background that drifted from the chosen color", async () => {
+    const img = rawCanvas(1080, 1080, 0xc8, 0xe4, 0xd8);
+    const mask = rectMask(1080, 1080, { left: 300, top: 300, width: 400, height: 400 });
+    const report = await pixelChecks(img, mask, spec, { expectedBackground: sage });
+    const check = find(report)!;
+    expect(check.pass).toBe(false);
+    expect(check.measured as number).toBeGreaterThan(QC_THRESHOLDS.backdropMaxDeltaE);
+    expect(report.pass).toBe(false);
+  });
+
+  it("fails closed without a mask, and does not run unless asked", async () => {
+    const img = rawCanvas(1080, 1080, ...sage);
+    expect(find(await pixelChecks(img, null, spec, { expectedBackground: sage }))).toMatchObject({
+      pass: false,
+      measured: MASK_MISSING,
+    });
+    expect(find(await pixelChecks(img, null, spec))).toBeUndefined();
+  });
+});

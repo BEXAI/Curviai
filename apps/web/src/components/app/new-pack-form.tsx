@@ -33,8 +33,20 @@ import {
   type ConflictLine,
 } from "@/lib/output-options-copy";
 import {
+  KEEP_BACKGROUND_HINT_ACTION,
+  PHOTO_BACKGROUND_OPTIONS,
+  REMEMBERED_RESET_LABEL,
   RESIZE_ONLY_BADGE,
   addedSpaceSpecIds,
+  isPhotoBackground,
+  keepBackgroundHint,
+  photoBackgroundLabel,
+  rememberedFormState,
+  rememberedLine,
+  uploadBackgroundField,
+  usableBrandColors,
+  type OutputFormState,
+  type PhotoBackground,
   backgroundSummaryLine,
   conflictContextOf,
   effectiveChoices,
@@ -109,6 +121,9 @@ export interface ProductOption {
   /** Photos already stored for the product (capped at MAX_PACK_PHOTOS), for
    * the estimate when the seller adds none. */
   storedPhotoCount?: number;
+  /** The last choices a pack of this product carried (products.output_defaults),
+   * prefilled when the product is picked (PHASE_15 P1). */
+  outputDefaults?: Record<string, unknown> | null;
 }
 
 interface NewPackFormProps {
@@ -133,8 +148,30 @@ interface NewPackFormProps {
   brandColors?: string[];
   /** The plan includes brand kits (seed tierEntitlements). */
   brandKitsAllowed?: boolean;
+  /** The brand kit has a logo, so More options offers Logo on graphics. */
+  brandHasLogo?: boolean;
   /** Set while scenes are paused: the scenes extra is forced off and shows this. */
   scenesPausedNote?: string | null;
+}
+
+/** The form's first options: the preselected product's remembered choices, else Marketplace ready. */
+function initialOptionsFor(product: ProductOption | null, enabled: boolean, brandColorCount: number): {
+  state: OutputFormState;
+  remembered: boolean;
+} {
+  const remembered = enabled && product ? rememberedFormState(product.outputDefaults, { brandColorCount }) : null;
+  return remembered ? { state: remembered, remembered: true } : { state: initialOutputForm(), remembered: false };
+}
+
+/** Each photo's own Background Select, by the id the options use; "pack" photos are left out. */
+export function photoBackgroundsOf(photos: readonly PhotoItem[]): Record<string, PhotoBackground> {
+  const out: Record<string, PhotoBackground> = {};
+  for (const photo of photos) {
+    if (photo.kind === "image" && photo.phase !== "error" && photo.background && photo.background !== "pack") {
+      out[formPhotoId(photo)] = photo.background;
+    }
+  }
+  return out;
 }
 
 const DEFAULT_CHANNELS = ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"];
@@ -250,6 +287,8 @@ export interface PhotoItem {
   /** Object URL of the picked file, for the thumbnail and the preview strip.
    * Revoked when the photo is removed and when the form unmounts. */
   previewUrl?: string;
+  /** This photo's own background (PHASE_15 P1); "pack" or missing follows the switch. */
+  background?: PhotoBackground;
 }
 
 /** Why this photo cannot start a pack right now, or null (a photo whose
@@ -327,6 +366,7 @@ export function NewPackForm({
   outputOptionsEnabled = false,
   brandColors,
   brandKitsAllowed = false,
+  brandHasLogo = false,
   scenesPausedNote = null,
 }: NewPackFormProps) {
   const router = useRouter();
@@ -390,7 +430,14 @@ export function NewPackForm({
   // as picked; the pack is sent and estimated with the effective ones, which
   // apply the scenes pause and concept mode.
   const optionsOn = outputOptionsEnabled;
-  const [outputForm, dispatchOutput] = useReducer(outputFormReducer, undefined, initialOutputForm);
+  // Brand colors a remembered choice may still use: the kit's, on a plan with kits.
+  const brandColorCount = brandKitsAllowed ? usableBrandColors(brandColors).length : 0;
+  const [initialOptions] = useState(() => initialOptionsFor(initialProduct, optionsOn, brandColorCount));
+  const [outputForm, dispatchOutput] = useReducer(outputFormReducer, initialOptions.state);
+  // The title whose remembered choices filled the options, for the notice.
+  const [rememberedTitle, setRememberedTitle] = useState<string | null>(
+    initialOptions.remembered ? (initialProduct?.title ?? null) : null,
+  );
   const [colorProblem, setColorProblem] = useState<string | null>(null);
   const [pauseLeftOut, setPauseLeftOut] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -403,7 +450,7 @@ export function NewPackForm({
       }),
     [outputForm.choices, effectiveMode, scenesPausedNote],
   );
-  const optionsKey = optionsIntentKey(choices);
+  const optionsKey = optionsIntentKey(choices, outputForm.more);
   const usableBrand = useMemo(() => brandColors ?? [], [brandColors]);
   const storedPhotoCount = selectedProduct?.storedPhotoCount ?? 0;
   const output = useMemo(() => {
@@ -417,10 +464,13 @@ export function NewPackForm({
       brandColors: usableBrand,
       brandKitsAllowed,
       photos: planned,
+      more: outputForm.more,
+      photoBackgrounds: photoBackgroundsOf(photos),
     });
     const estimateInputs = outputEstimateInputs(current.resolved, parsed);
-    return { planned, parsed, current, estimateInputs };
-  }, [photos, storedPhotoCount, choices, outputForm.lookBase, usableBrand, brandKitsAllowed]);
+    const keptCount = parsed.filter((photo) => current.resolved.keepMediaIds.includes(photo.id)).length;
+    return { planned, parsed, current, estimateInputs, keptCount };
+  }, [photos, storedPhotoCount, choices, outputForm.lookBase, outputForm.more, usableBrand, brandKitsAllowed]);
   const flags: OutputPlanFlags | null = optionsOn ? output.current.flags : null;
 
   const estimate = useMemo(
@@ -457,7 +507,7 @@ export function NewPackForm({
   }, [optionsOn, anglesKey, boxContents, comparisonFacts, scenesPausedNote, usableBrand, brandKitsAllowed, output, selected, effectiveMode, tier]);
 
   const conflicts = optionsOn && effectiveMode !== "concept" ? formConflicts(selected, output.current.resolved, output.planned) : [];
-  const conflictContext = conflictContextOf(choices.background, output.planned);
+  const conflictContext = conflictContextOf(choices.background, output.planned, output.current.resolved);
   const headsUp: ConflictLine[] = conflictLines(conflicts, conflictContext);
   const photoOutput = (photo: PhotoItem): PhotoOutputContext | undefined =>
     flags && effectiveMode !== "concept" ? photoOutputContext(formPhotoId(photo), selected, flags) : undefined;
@@ -483,6 +533,24 @@ export function NewPackForm({
     setSku(product?.sku ?? "");
     setBoxText((product?.boxContents ?? []).join("\n"));
     setComparisonText((product?.comparisonFacts ?? []).join("\n"));
+    // Its remembered choices prefill the options, like the SKU (PHASE_15
+    // P1). A product without them, after one with them, starts over from
+    // Marketplace ready so one product's choices never carry to another.
+    const remembered =
+      optionsOn && product ? rememberedFormState(product.outputDefaults, { brandColorCount }) : null;
+    if (remembered && product) {
+      dispatchOutput({ type: "prefill", state: remembered });
+      setRememberedTitle(product.title);
+    } else if (rememberedTitle !== null) {
+      dispatchOutput({ type: "look", look: "marketplace" });
+      setRememberedTitle(null);
+    }
+  }
+
+  /** "Start from Marketplace ready": drops the remembered choices. */
+  function startFromMarketplace() {
+    applyOutput({ type: "look", look: "marketplace" });
+    setRememberedTitle(null);
   }
 
   function updatePhoto(id: number, patch: Partial<PhotoItem>) {
@@ -806,6 +874,8 @@ export function NewPackForm({
         kind: p.kind,
         ...(p.kind === "image" ? { angle: p.angle } : {}),
         ...(targetBox ? { targetBox } : {}),
+        // A photo's own background (PHASE_15 P1), sent only when it has one.
+        ...(sendsOptions && p.kind === "image" ? uploadBackgroundField(p.background) : {}),
       };
     });
     const details = { sku: sku.trim(), boxContents, comparisonFacts };
@@ -824,6 +894,7 @@ export function NewPackForm({
           ...details,
           // Any change to the image choices is a new intent (PHASE_15).
           ...(sendsOptions ? { options: optionsKey } : {}),
+          ...(uploads.some((u) => u.background) ? { backgrounds: uploads.map((u) => u.background ?? "") } : {}),
         }),
       },
       () => crypto.randomUUID(),
@@ -845,7 +916,7 @@ export function NewPackForm({
           newProductTitle: productId === "new" && newProductTitle.trim() ? newProductTitle.trim() : undefined,
           userDescription: description.trim() ? description.trim() : undefined,
           ...details,
-          ...(sendsOptions ? { outputOptions: outputOptionsBody(outputForm.lookBase, choices) } : {}),
+          ...(sendsOptions ? { outputOptions: outputOptionsBody(outputForm.lookBase, choices, outputForm.more) } : {}),
         }),
       });
       const data = (await response.json().catch(() => ({}))) as {
@@ -875,7 +946,7 @@ export function NewPackForm({
         photo_count: uploads.filter((u) => u.kind === "image").length,
         replayed: data.replayed === true,
         ...(sendsOptions
-          ? packCreatedOutputProps(outputForm.lookBase, choices, output.parsed.length)
+          ? packCreatedOutputProps(outputForm.lookBase, choices, output.keptCount, outputForm.more)
           : {}),
       });
       intentRef.current = null;
@@ -903,6 +974,14 @@ export function NewPackForm({
     photos.find((p) => p.kind === "image" && p.phase !== "error" && p.angle === "front" && p.previewUrl)?.previewUrl ??
     photos.find((p) => p.kind === "image" && p.phase !== "error" && p.previewUrl)?.previewUrl ??
     null;
+  // The cutout preview the preflight made, front photo first (PHASE_15 P1).
+  const cutoutPreview =
+    photos.find((p) => p.kind === "image" && p.phase === "uploaded" && p.angle === "front" && p.preflight?.previewUrl)
+      ?.preflight?.previewUrl ??
+    photos.find((p) => p.kind === "image" && p.phase === "uploaded" && p.preflight?.previewUrl)?.preflight?.previewUrl ??
+    null;
+  const keepHint =
+    optionsOn && effectiveMode !== "concept" ? keepBackgroundHint(description, outputForm.choices.background) : null;
   const buttonLabel = uploading
     ? "Uploading photo"
     : checking
@@ -1062,6 +1141,7 @@ export function NewPackForm({
                         </Label>
                         <Select
                           id={`photo-angle-${photo.id}`}
+                          className="[&_select]:h-11"
                           value={photo.angle}
                           onChange={(event) => updatePhoto(photo.id, { angle: event.target.value as AngleRole })}
                           data-testid="photo-angle"
@@ -1073,7 +1153,34 @@ export function NewPackForm({
                           ))}
                         </Select>
                       </div>
-                    ) : (
+                    ) : null}
+                    {photo.kind === "image" && optionsOn && effectiveMode !== "concept" ? (
+                      <div>
+                        <Label htmlFor={`photo-background-${photo.id}`} className="sr-only">
+                          {photoBackgroundLabel(index + 1)}
+                        </Label>
+                        <Select
+                          id={`photo-background-${photo.id}`}
+                          className="[&_select]:h-11"
+                          value={photo.background ?? "pack"}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (isPhotoBackground(value)) {
+                              updatePhoto(photo.id, { background: value });
+                              setSubmitError(null);
+                            }
+                          }}
+                          data-testid="photo-background"
+                        >
+                          {PHOTO_BACKGROUND_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                    ) : null}
+                    {photo.kind === "image" ? null : (
                       <span className="text-xs text-ink-500">Video</span>
                     )}
                     <Button size="sm" variant="ghost" onClick={() => removePhoto(photo.id)}>
@@ -1119,6 +1226,19 @@ export function NewPackForm({
                   ? "A new photo starts a new product."
                   : "Leave the photo empty to use the photos already saved for this product."}
               </p>
+              {optionsOn && rememberedTitle ? (
+                <p className="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-ink-600" data-testid="remembered-choices">
+                  <span>{rememberedLine(rememberedTitle)}</span>
+                  <button
+                    type="button"
+                    onClick={startFromMarketplace}
+                    className="inline-flex min-h-11 items-center font-medium text-accent-700 underline"
+                    data-testid="remembered-reset"
+                  >
+                    {REMEMBERED_RESET_LABEL}
+                  </button>
+                </p>
+              ) : null}
               {needsAttachConfirm && selectedProduct ? (
                 <div
                   className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3"
@@ -1155,6 +1275,18 @@ export function NewPackForm({
               <p className="mt-1 text-xs text-ink-400">
                 Optional. The analyzer reads this as seller notes when planning your shots.
               </p>
+              {keepHint ? (
+                <p className="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-amber-800" data-testid="keep-background-hint">
+                  <span>{keepHint}</span>
+                  <button
+                    type="button"
+                    onClick={() => applyOutput({ type: "background", background: "keep" })}
+                    className="inline-flex min-h-11 items-center font-medium underline"
+                  >
+                    {KEEP_BACKGROUND_HINT_ACTION}
+                  </button>
+                </p>
+              ) : null}
             </div>
           </div>
 
@@ -1281,7 +1413,9 @@ export function NewPackForm({
               addedSpace={addedSpaceSpecIds(selected, choices).length > 0}
               frames={previewFrames(selected)}
               photoUrl={frontPreview}
+              cutoutUrl={cutoutPreview}
               hasPhoto={output.parsed.length > 0}
+              hasLogo={brandHasLogo}
               scenesPausedNote={scenesPausedNote}
               conceptMode={effectiveMode === "concept"}
               onColorProblem={setColorProblem}

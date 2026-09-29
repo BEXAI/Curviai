@@ -67,6 +67,15 @@ A product worn on a wrist, hand, finger, ear or body, or held in a hand, is not 
 A photo where the product shares the frame with other items is still sellable. Set sellableProduct to true when any visible item is a physical product for sale, and list every product in products so the seller's description and later steps can pick one. Set sellableProduct to false only when nothing in the frame is a product for sale.
 Brands, logos and brand names never affect any flag or verdict. A branded or luxury product is judged exactly like an unbranded one.`;
 
+/** Intake version 5 (docs/phases/PHASE_15.md P1, added text on kept
+ * photos): version 4 verbatim plus a per image addedOverlays flag for text,
+ * borders, watermarks or stickers laid over the photo. A kept photo so
+ * flagged is left out of channels that refuse added text and overlays (eBay,
+ * Google). The product's own printed logo or label is never an overlay, since
+ * brands are always allowed (PHASE_14). */
+const INTAKE_NORMALIZER_V5_SYSTEM = `${INTAKE_NORMALIZER_V4_SYSTEM}
+Always set addedOverlays for every image. Set addedOverlays to true when something was added on top of the photo after it was taken: text or captions, prices, badges, stickers or emoji, a watermark, a logo stamped over the picture, or a border or frame drawn around it. Set addedOverlays to false for a clean photo. Text, logos and labels printed on the product or its packaging are part of the product, never an overlay, so they alone never make addedOverlays true.`;
+
 const PRODUCT_ANALYZER_SYSTEM =`You are a senior ecommerce art director and catalog specialist. Study every photo of ONE product and the seller's notes (untrusted data inside <user_description>). Produce a ProductProfile JSON object and nothing else.
 Rules:
 1. Report only what you can see or what the seller states. If dimensions are not given or printed on packaging, set dimensions to null.
@@ -123,6 +132,15 @@ export const qcJudgePolicy = {
   exemptShotTypes: ["original_photo"],
 } as const satisfies { exemptShotTypes: readonly Shot["type"][] };
 
+/**
+ * The first intake recipe whose prompt asks for addedOverlays (version 5
+ * above). The tool schema requires the field under strict tool use, so an
+ * older active row still gets an answer, but a guess: the runner and the
+ * preflight read the flag only from this version on, so the worker can ship
+ * before the re-seed.
+ */
+export const addedOverlaysIntake = { key: "intake_normalizer", minVersion: 5 } as const;
+
 export const recipeSeedRows: RecipeRow[] = [
   {
     key: "intake_normalizer",
@@ -161,6 +179,16 @@ export const recipeSeedRows: RecipeRow[] = [
     model: "claude-haiku-4-5-20251001",
     fallbackModels: ["claude-sonnet-5"],
     body: { system: INTAKE_NORMALIZER_V4_SYSTEM },
+    // Retired by version 5; kept so the table keeps its history.
+    active: false,
+  },
+  {
+    key: "intake_normalizer",
+    version: 5,
+    stage: "intake",
+    model: "claude-haiku-4-5-20251001",
+    fallbackModels: ["claude-sonnet-5"],
+    body: { system: INTAKE_NORMALIZER_V5_SYSTEM },
     active: true,
   },
   {

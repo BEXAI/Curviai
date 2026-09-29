@@ -10,14 +10,22 @@ import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { getSpec, listSpecs } from "@curvi/specs";
 import { ciede2000, rgbToLab } from "../color";
-import { MAX_SOURCE_UPSCALE, originalFitFor, originalScale, specAcceptsImage } from "../output-options";
+import {
+  canvasSizeFor,
+  cropWindowFor,
+  MAX_SOURCE_UPSCALE,
+  originalFitFor,
+  originalScale,
+  specAcceptsImage,
+} from "../output-options";
 import { fidelityReport } from "../qc/fidelity";
 import { decodeToRgba, encodeJpeg, encodePng, type RawImage, type RawMask } from "../raw";
 import { originalFit } from "../seed/templates";
 import { TREATMENT_NOTES, treatmentNotes } from "../treatment";
 import {
-  CropFitUnavailableError,
+  cropFor,
   detectAlreadyWhite,
+  edgeRingMedian,
   iccProfileDescription,
   keptScale,
   makeAlreadyWhite,
@@ -271,10 +279,172 @@ describe("makeOriginalFit: geometry and rule 3", () => {
     expect(scaled.height).toBe(500);
   });
 
-  it("leaves a seam for the P1 crop fit", async () => {
-    await expect(makeOriginalFit(await jpegPhoto(800, 800), getSpec("etsy.listing"), { ...OPTS, fit: "crop" })).rejects.toBeInstanceOf(
-      CropFitUnavailableError,
-    );
+  it("never enlarges with Never enlarge my photo (cap 1.0)", () => {
+    const spec = getSpec("etsy.listing");
+    const small = { width: 1500, height: 1500 };
+    const capped = keptScale(small, spec, "auto", { maxUpscale: 1, maxMegapixels: originalFit.maxMegapixels });
+    const planned = originalScale(small, spec, { fit: "auto", enlarge: false });
+    expect(capped.scale).toBeLessThanOrEqual(1);
+    expect(capped.skip).toBe(planned.skip);
+    expect(planned.scale).toBeLessThanOrEqual(1);
+    // Within the cap nothing changes: a photo that already fits stays at 1.
+    const fits = originalScale({ width: 2000, height: 2000 }, spec, { fit: "auto", enlarge: false });
+    expect(fits.skip).toBeUndefined();
+    expect(fits.scale).toBe(1);
+  });
+});
+
+describe("makeOriginalFit: trim to the channel's shape (P1 crop)", () => {
+  const W = 1600;
+  const H = 1200;
+  // The product: the red label in photoPixels, 35% to 65% across, 30% to 70% down.
+  const BOX = { left: Math.floor(W * 0.35), top: Math.floor(H * 0.3), width: Math.floor(W * 0.3), height: Math.floor(H * 0.4) };
+
+  it("trims to meta.feed_4x5 around the product box and proves every pixel", async () => {
+    const bytes = await jpegPhoto(W, H);
+    const result = await rendered(bytes, "meta.feed_4x5", { fit: "crop", productBox: BOX });
+    expect([result.width, result.height]).toEqual([1080, 1350]);
+    const { crop } = result.placement;
+    expect(crop.left).toBeLessThanOrEqual(BOX.left);
+    expect(crop.top).toBeLessThanOrEqual(BOX.top);
+    expect(crop.left + crop.width).toBeGreaterThanOrEqual(BOX.left + BOX.width);
+    expect(crop.top + crop.height).toBeGreaterThanOrEqual(BOX.top + BOX.height);
+    expect(result.treatment.cropped).toBe(true);
+    expect(result.treatment.padHex).toBeUndefined();
+    expect(treatmentNotes(result.treatment)).toContain(TREATMENT_NOTES.cropped);
+    // No added space: the mask covers the whole canvas.
+    expect(result.mask.data.every((v) => v === 255)).toBe(true);
+    const exact = await fidelityReport(await referenceFor(bytes, result), result.raw, result.mask, { kind: "main", exact: true });
+    expect(exact.pass).toBe(true);
+  });
+
+  it("keeps the product inside meta.story_9x16's safe zone", async () => {
+    // Large enough that the 9:16 window reaches 1080 by 1920 within the cap.
+    const bytes = await jpegPhoto(2400, 1800);
+    const box = { left: 840, top: 540, width: 720, height: 720 };
+    const spec = getSpec("meta.story_9x16");
+    const result = await rendered(bytes, spec.id, { fit: "crop", productBox: box });
+    expect(result.treatment.cropped).toBe(true);
+    const scale = result.width / result.placement.crop.width;
+    const top = (box.top - result.placement.crop.top) * scale;
+    const bottom = (box.top + box.height - result.placement.crop.top) * scale;
+    expect(top).toBeGreaterThanOrEqual((spec.safeZone?.top ?? 0) - 1);
+    expect(bottom).toBeLessThanOrEqual(result.height - (spec.safeZone?.bottom ?? 0) + 1);
+  });
+
+  it("falls back to added space, with a note, when there is no product box", async () => {
+    const result = await rendered(await jpegPhoto(W, H), "meta.feed_4x5", { fit: "crop" });
+    expect(result.treatment.cropped).toBeUndefined();
+    expect(result.treatment.cropFallback).toBe(true);
+    expect(result.treatment.padHex).toBe("#1F2A44");
+    expect(treatmentNotes(result.treatment)).toContain(TREATMENT_NOTES.cropFallback);
+  });
+
+  it("falls back to the photo's own shape on a spec that refuses borders", async () => {
+    // A box as wide as the photo cannot fit a square window of a 4:3 photo.
+    const wide = { left: 0, top: 400, width: W, height: 300 };
+    const result = await makeOriginalFit(await jpegPhoto(W, H), getSpec("ebay.listing"), { ...OPTS, fit: "crop", productBox: wide });
+    expect(result.width / result.height).toBeCloseTo(W / H, 2);
+    expect(result.treatment.cropFallback).toBe(true);
+    expect(result.treatment.padHex).toBeUndefined();
+  });
+
+  it("falls back when the window would need enlarging past the cap", () => {
+    const fit = cropFor({ width: 900, height: 900 }, getSpec("meta.story_9x16"), {
+      productBox: { left: 300, top: 300, width: 300, height: 300 },
+      maxUpscale: 1,
+      maxMegapixels: originalFit.maxMegapixels,
+    });
+    expect(fit).toBeNull();
+  });
+
+  it("property: the window always holds the box plus margin, in the spec's shape, or there is none", () => {
+    let seed = 20260929;
+    const rand = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const specs = listSpecs().filter((s) => specAcceptsImage(s, "original"));
+    let windows = 0;
+    for (let i = 0; i < 3000; i++) {
+      const spec = specs[Math.floor(rand() * specs.length)];
+      const photo = { width: 200 + Math.floor(rand() * 5000), height: 200 + Math.floor(rand() * 5000) };
+      const bw = 1 + Math.floor(rand() * photo.width);
+      const bh = 1 + Math.floor(rand() * photo.height);
+      const box = {
+        left: Math.floor(rand() * (photo.width - bw + 1)),
+        top: Math.floor(rand() * (photo.height - bh + 1)),
+        width: bw,
+        height: bh,
+      };
+      const win = cropWindowFor(photo, box, spec);
+      if (!win) continue;
+      windows++;
+      const margin = originalFit.cropMarginShare * Math.max(bw, bh);
+      const needLeft = Math.max(0, box.left - margin);
+      const needTop = Math.max(0, box.top - margin);
+      const needRight = Math.min(photo.width, box.left + bw + margin);
+      const needBottom = Math.min(photo.height, box.top + bh + margin);
+      expect(win.left).toBeGreaterThanOrEqual(0);
+      expect(win.top).toBeGreaterThanOrEqual(0);
+      expect(win.left + win.width).toBeLessThanOrEqual(photo.width);
+      expect(win.top + win.height).toBeLessThanOrEqual(photo.height);
+      expect(win.left).toBeLessThanOrEqual(needLeft);
+      expect(win.top).toBeLessThanOrEqual(needTop);
+      expect(win.left + win.width).toBeGreaterThanOrEqual(needRight);
+      expect(win.top + win.height).toBeGreaterThanOrEqual(needBottom);
+      const canvas = canvasSizeFor(spec);
+      expect(Math.abs(win.width / win.height - canvas.width / canvas.height)).toBeLessThan(0.02);
+      if (spec.safeZone) {
+        const s = canvas.height / win.height;
+        expect((needTop - win.top) * s).toBeGreaterThanOrEqual(spec.safeZone.top - 2);
+        expect((win.top + win.height - needBottom) * s).toBeGreaterThanOrEqual(spec.safeZone.bottom - 2);
+      }
+    }
+    expect(windows).toBeGreaterThan(300);
+  });
+});
+
+describe("makeOriginalFit: match my photo's edges (P1)", () => {
+  /** A photo with a flat sage border two pixels wide and one stray pixel. */
+  async function framedPhoto(width: number, height: number): Promise<Buffer> {
+    const data = photoPixels(width, height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (x < 4 || y < 4 || x >= width - 4 || y >= height - 4) {
+          const o = (y * width + x) * 3;
+          data[o] = 120;
+          data[o + 1] = 140;
+          data[o + 2] = 110;
+        }
+      }
+    }
+    data[0] = 255;
+    return sharp(data, { raw: { width, height, channels: 3 } }).png().toBuffer();
+  }
+
+  it("fills the added space with the median color of the photo's outer ring", async () => {
+    const result = await rendered(await framedPhoto(1000, 1000), "meta.feed_4x5", { fit: "pad", edgeMatch: true });
+    expect(result.treatment.padHex).toBe("#788C6E");
+    const { data, width } = result.raw;
+    // The first row is added space, one flat color.
+    for (let x = 0; x < width; x += 97) {
+      expect([data[x * 4], data[x * 4 + 1], data[x * 4 + 2]]).toEqual([120, 140, 110]);
+    }
+  });
+
+  it("edgeRingMedian reads only the ring and ignores clear pixels", () => {
+    const w = 6;
+    const h = 6;
+    const rgba = Buffer.alloc(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      rgba.set([10, 20, 30, 255], i * 4);
+    }
+    // The center is never read; a clear ring pixel is skipped.
+    rgba.set([250, 250, 250, 255], (3 * w + 3) * 4);
+    rgba.set([250, 250, 250, 0], 0);
+    expect(edgeRingMedian(rgba, w, h, 2)).toEqual([10, 20, 30]);
+    expect(edgeRingMedian(Buffer.alloc(w * h * 4), w, h, 2)).toBeNull();
   });
 });
 
@@ -337,6 +507,43 @@ describe("makeOriginalFit: color and format fixtures", () => {
     // A PNG whose alpha is fully opaque still ships unchanged.
     const opaque = await sharp(photoPixels(W, H, 4), { raw: { width: W, height: H, channels: 4 } }).png().toBuffer();
     expect((await makeOriginalFit(opaque, getSpec("etsy.listing"), OPTS)).passthrough).toBeDefined();
+  });
+
+  it("proves a kept PNG with partial alpha exactly: a translucent part at 180 and a soft shadow", async () => {
+    const rgba = photoPixels(W, H, 4);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const o = (y * W + x) * 4;
+        if (x >= 300 && x < 700 && y >= 200 && y < 600) rgba[o + 3] = 180;
+        // A shadow that fades from 250 to 10 across the bottom band.
+        if (y >= H - 150) rgba[o + 3] = Math.round(250 - (240 * (y - (H - 150))) / 150);
+      }
+    }
+    const png = await sharp(rgba, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer();
+    for (const [specId, opts] of [
+      ["etsy.listing", {}],
+      ["etsy.listing", { fit: "pad" }],
+      ["amazon.main", { fit: "pad" }],
+      ["google.merchant.lifestyle", { edgeMatch: true }],
+    ] as const) {
+      const result = await rendered(png, specId, opts);
+      expect(result.treatment.alphaFilledHex).toBeDefined();
+      expect(result.placement.alphaFill).toBeDefined();
+      const reference = await referenceFor(png, result);
+      const report = await fidelityReport(reference, result.raw, result.mask, { kind: "main", exact: true, erodePx: 0 });
+      expect(report.issues, `${specId} ${JSON.stringify(opts)}`).toEqual([]);
+      // Interior pixels at 180 are compared, not left out of the mask.
+      const { left, top, width } = result.placement;
+      const at = (top + Math.round((400 * result.placement.height) / H)) * result.width + left + Math.round((500 * width) / W);
+      expect(result.mask.data[at]).toBe(180);
+    }
+    // Without the flatten color the reference keeps the unblended RGB and the proof fails.
+    const plain = await rendered(png, "etsy.listing");
+    const { alphaFill: _dropped, ...unflattened } = plain.placement;
+    const stale = await buildProductReferenceFromEncoded(png, unflattened, { width: plain.width, height: plain.height });
+    expect((await fidelityReport(stale, plain.raw, plain.mask, { kind: "main", exact: true, erodePx: 0 })).issues).toContain(
+      "not_exact",
+    );
   });
 
   it("renders a grayscale JPEG instead of passing it through", async () => {
@@ -451,6 +658,27 @@ describe("already white photos", () => {
     expect(report.exactByteShare).toBe(1);
   });
 
+  it("proves a transparent PNG with a translucent part exactly on the white main", async () => {
+    const box = { left: 700, top: 300, width: 1000, height: 1200 };
+    const { mask } = await studioPhoto(2400, 1800, box);
+    const rgba = photoPixels(2400, 1800, 4);
+    for (let y = 0; y < 1800; y++) {
+      for (let x = 0; x < 2400; x++) {
+        const inBox = x >= box.left && x < box.left + box.width && y >= box.top && y < box.top + box.height;
+        const glass = x >= 900 && x < 1300 && y >= 600 && y < 1000;
+        rgba[(y * 2400 + x) * 4 + 3] = !inBox ? 0 : glass ? 180 : 255;
+      }
+    }
+    const bytes = await sharp(rgba, { raw: { width: 2400, height: 1800, channels: 4 } }).png().toBuffer();
+    const spec = getSpec("amazon.main");
+    const made = await makeAlreadyWhite(bytes, mask, spec, { maxUpscale: MAX_SOURCE_UPSCALE, edgeMarginPx: 2 });
+    if (!made.ok) throw new Error(made.reason);
+    expect(made.treatment.alphaFilledHex).toBe("#FFFFFF");
+    const reference = await buildProductReferenceFromEncoded(bytes, made.placement, { width: made.width, height: made.height });
+    const report = await fidelityReport(reference, made.raw, made.mask, { kind: "main", exact: true, erodePx: 0 });
+    expect(report.issues).toEqual([]);
+  });
+
   it("refuses a photo on off white, and reports a fill it cannot reach", async () => {
     const spec = getSpec("amazon.main");
     const { bytes, mask } = await studioPhoto(2400, 1800, { left: 700, top: 300, width: 1000, height: 1200 });
@@ -476,10 +704,12 @@ describe("memory on an 80 MP photo", () => {
     expect(result.width * result.height).toBeLessThanOrEqual(originalFit.maxMegapixels * 1_000_000);
   });
 
-  // Runs in its own process so the peak is this render's alone. Set
-  // CURVI_RSS_TEST=1 to run it; it takes several seconds.
-  it.runIf(process.env.CURVI_RSS_TEST === "1")(
-    "keeps peak RSS under the worker budget",
+  // Runs in its own process so the peak is this output's alone: the source, the render,
+  // the rule 3 reference, the encode and the shipped decode, all held at
+  // once as the runner holds them. It takes a few seconds; CURVI_RSS_TEST=0
+  // skips it.
+  it.skipIf(process.env.CURVI_RSS_TEST === "0")(
+    "keeps peak RSS under the seeded worker budget",
     async () => {
       const dir = await mkdtemp(path.join(tmpdir(), "curvi-rss-"));
       const here = path.dirname(fileURLToPath(import.meta.url));
@@ -499,23 +729,34 @@ import sharp from ${JSON.stringify(resolve("sharp"))};
 import { getSpec } from ${JSON.stringify(resolve("@curvi/specs"))};
 import { makeOriginalFit } from ${JSON.stringify(path.join(here, "original.ts"))};
 import { buildProductReferenceFromEncoded } from ${JSON.stringify(path.join(here, "whiten.ts"))};
+import { decodeToRgba, encodeJpeg } from ${JSON.stringify(path.join(here, "..", "raw.ts"))};
+import { fidelityReport } from ${JSON.stringify(path.join(here, "..", "qc", "fidelity.ts"))};
 // As on Render: no operation cache, one libvips thread (glibc without jemalloc).
 sharp.cache(false);
 sharp.concurrency(1);
-const bytes = await readFile(${JSON.stringify(photo)});
-const before = process.resourceUsage().maxRSS;
+// The process at rest (its peak so far, the loader included), before the
+// source is loaded: everything above it is this output's.
+const rest = process.resourceUsage().maxRSS / 1024;
 const started = Date.now();
-const result = await makeOriginalFit(bytes, getSpec("google.merchant.lifestyle"), { fit: "auto", padRgb: [255, 255, 255], maxUpscale: 1.5, maxMegapixels: 16 });
+const bytes = await readFile(${JSON.stringify(photo)});
+const result = await makeOriginalFit(bytes, getSpec("google.merchant.lifestyle"), { fit: "auto", padRgb: [255, 255, 255], maxUpscale: ${MAX_SOURCE_UPSCALE}, maxMegapixels: ${originalFit.maxMegapixels} });
 if (result.passthrough) throw new Error("expected a render");
 const reference = await buildProductReferenceFromEncoded(bytes, result.placement, { width: result.width, height: result.height });
-console.log(JSON.stringify({ before: before / 1024, peak: process.resourceUsage().maxRSS / 1024, ms: Date.now() - started, bytes: bytes.length, out: [result.width, result.height], ref: reference.width }));
+const exact = await fidelityReport(reference, result.raw, result.mask, { kind: "main", exact: true, erodePx: 0 });
+const encoded = await encodeJpeg(result.raw, 90);
+const shipped = await decodeToRgba(encoded);
+// Pure noise never passes a JPEG fidelity row; this is here for its memory, as the runner runs it.
+const after = await fidelityReport(reference, shipped, result.mask, { kind: "main" });
+if (!exact.pass || after.maskArea === 0 || shipped.width !== result.width) throw new Error("the 80 MP render did not prove out");
+const peak = process.resourceUsage().maxRSS / 1024;
+console.log(JSON.stringify({ rest, peak, added: peak - rest, ms: Date.now() - started, bytes: bytes.length, out: [result.width, result.height], shipped: encoded.length }));
 `,
       );
       try {
         const { stdout } = await execFileAsync("npx", ["tsx", script], { cwd: path.join(here, "..", ".."), maxBuffer: 1 << 20 });
-        const facts = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { peak: number; ms: number };
+        const facts = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { added: number; ms: number };
         console.log(`80 MP render: ${stdout.trim()}`);
-        expect(facts.peak).toBeLessThan(RSS_LIMIT_MB);
+        expect(facts.added).toBeLessThan(originalFit.peakRssAddedMb);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
@@ -523,6 +764,3 @@ console.log(JSON.stringify({ before: before / 1024, peak: process.resourceUsage(
     300_000,
   );
 });
-
-/** The 512 MB worker budget less headroom for the runner's own heap. */
-const RSS_LIMIT_MB = 448;

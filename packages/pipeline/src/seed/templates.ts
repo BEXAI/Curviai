@@ -55,7 +55,41 @@ export const canvasDefaults = {
   cutoutFillTarget: 0.875,
   /** Largest share of either canvas axis the placed product may cover. */
   maxAxisShare: 0.98,
+  /**
+   * Product longest side over the canvas longest side for removed photos,
+   * per the seller's "Product size in the frame" (PHASE_15 P1). Clamped to
+   * spec.fill where the spec sets one, so amazon.main stays within its
+   * registry range whatever the seller picks. Standard is today's target.
+   */
+  productSizeFill: {
+    standard: 0.875,
+    larger: 0.93,
+    smaller: 0.75,
+  },
 } as const;
+
+/**
+ * Lifestyle scenes per pack (PHASE_15 P1 "Number of scenes", founder
+ * decision 4): the seller picks from min to max, and a pack that names no
+ * count plans the default, for every category.
+ */
+export const sceneCountOptions = {
+  min: 1,
+  max: 4,
+  default: 3,
+} as const;
+
+/**
+ * Scenes that fill a pack's scene count after the category's required
+ * scenes and the seller's use contexts, in order. At least sceneCountOptions
+ * .max entries, so every count can be planned exactly.
+ */
+export const lifestyleFallbackScenes = [
+  "clean studio scene",
+  "everyday use scene",
+  "styled tabletop scene",
+  "close detail scene",
+] as const;
 
 /**
  * Colors for deterministic and template stills (gray sweep, brand sweep
@@ -90,6 +124,15 @@ export const stillStyle = {
    * line "Dark colors can show a light edge around your product."
    */
   lightEdgeBelowLightness: 70,
+  /** Template text on a card whose background is dark ("Graphics follow
+   * your color", PHASE_15 P1). */
+  textOnDarkHex: "#FFFFFF",
+  /**
+   * A card background whose WCAG relative luminance (0 to 1) is below this
+   * takes textOnDarkHex instead of textHex. 0.179 is where white text and
+   * textHex give about the same contrast.
+   */
+  darkBackgroundLuminance: 0.179,
 } as const;
 
 /**
@@ -129,6 +172,29 @@ export const originalFit = {
     "sRGB2014",
     "c2",
   ],
+  /** Trim to the channel's shape (P1 crop fit): the margin kept around the
+   * product box on every side, as a share of the box's longest side. */
+  cropMarginShare: 0.05,
+  /** Match my photo's edges (P1): the width in pixels of the photo's outer
+   * ring whose median color fills the added space. */
+  edgeRingPx: 2,
+  /** Memory (512 MB workers): the most RSS, in MB, one kept output of an
+   * 80 MP photo may add above the resting process while its source, the
+   * render, the reference, the encode and the shipped decode are all held,
+   * as the runner holds them. The 512 MB worker less 128 MB for the runner at
+   * rest. A test holds it; if it fails, maxMegapixels drops to 12. */
+  peakRssAddedMb: 384,
+} as const;
+
+/**
+ * JPEG encoding (raw.ts encodeJpeg). libjpeg's optimized Huffman coding
+ * holds every DCT coefficient of the image until the end, about 180 MB more
+ * peak memory on a 16 MP kept photo, for files about 6 percent smaller.
+ * Above this size it is off, so a kept photo at the originalFit cap fits a
+ * 512 MB worker; every generated canvas is under it and encodes as before.
+ */
+export const jpegEncoding = {
+  optimiseCodingMaxMegapixels: 8,
 } as const;
 
 /**

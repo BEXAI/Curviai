@@ -130,6 +130,10 @@ export function planAngleShots(args: {
   output?: ResolvedOutputOptions | null;
   /** The new photo's stored upright size, when the ingest check read it. */
   photoSize?: { width: number; height: number } | null;
+  /** The upload preflight saw text, borders or watermarks added on top of
+   * the new photo (intake version 5): a kept copy is left off the channels
+   * that refuse them (applyAddedOverlays), as on a first run. */
+  addedOverlays?: boolean;
 }): Shot[] {
   const profile: ProductProfile = {
     ...ESTIMATE_REFERENCE_PRODUCT,
@@ -149,7 +153,12 @@ export function planAngleShots(args: {
     ...(args.output
       ? {
           output: planFlagsOf({ ...args.output, keepMediaIds: kept ? [args.mediaKey] : [] }, [
-            { id: args.mediaKey, angle: args.angle, ...(args.photoSize ?? {}) },
+            {
+              id: args.mediaKey,
+              angle: args.angle,
+              ...(args.photoSize ?? {}),
+              ...(args.addedOverlays === true ? { addedOverlays: true } : {}),
+            },
           ]),
         }
       : {}),

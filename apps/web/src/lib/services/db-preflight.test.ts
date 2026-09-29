@@ -33,7 +33,7 @@ function runOf(overrides: Partial<UploadPreflightRun> = {}): UploadPreflightRun 
     missing: false,
     photo: { width: 3000, height: 4000 },
     intake: {
-      image: { sellableProduct: true, distinctProducts: 2, sharpEnough: true, screenshot: false, flags },
+      image: { sellableProduct: true, distinctProducts: 2, sharpEnough: true, screenshot: false, addedOverlays: false, flags },
       noteKey: "set by the test",
       recipe: { key: "intake_normalizer", version: 3 },
       at: new Date().toISOString(),
@@ -46,6 +46,7 @@ function runOf(overrides: Partial<UploadPreflightRun> = {}): UploadPreflightRun 
     ],
     rule: "ambiguous",
     thumbnails: [Buffer.from("a"), Buffer.from("b")],
+    preview: null,
     costMicros: 21_000,
     ...overrides,
   };
@@ -105,6 +106,42 @@ beforeEach(() => {
 
 afterAll(async () => {
   await client.close();
+});
+
+describe("DbService.preflightUpload cutout preview", () => {
+  it("stores the preview under the workspace cache and signs it, never keeping bytes in the row", async () => {
+    const { ws } = await workspace();
+    const key = `ws/${ws}/src/single.jpg`;
+    const single = runOf({
+      items: [{ number: 1, label: "silver watch", box: shoeBox, areaShare: 0.2, colorName: "gray", featured: true }],
+      rule: "single_object",
+      thumbnails: [],
+      preview: Buffer.from("png"),
+    });
+    const putObject = vi.fn(async () => undefined);
+    const svc = service(OWNER, async () => single, putObject);
+    const first = await svc.preflightUpload(ws, { key });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.preflight.status).toBe("ready");
+    expect(putObject).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`^ws/${ws}/cache/preview/`)), single.preview, "image/png");
+    expect(first.preflight.previewUrl).toMatch(new RegExp(`^https://r2\\.example/ws/${ws}/cache/preview/.+\\.png$`));
+    const [row] = await db.select().from(uploadPreflights).where(eq(uploadPreflights.r2Key, key));
+    expect(JSON.stringify(row.result)).not.toContain("https://");
+    expect((row.result as { previewKey?: string }).previewKey).toMatch(/cache\/preview/);
+    // The cached answer signs the same preview again.
+    const again = await svc.preflightUpload(ws, { key });
+    expect(again.ok && again.preflight.previewUrl).toBe(first.preflight.previewUrl);
+  });
+
+  it("keeps no preview for a photo that needs the chooser", async () => {
+    const { ws } = await workspace();
+    const putObject = vi.fn(async () => undefined);
+    const svc = service(OWNER, async () => runOf({ preview: Buffer.from("png") }), putObject);
+    const result = await svc.preflightUpload(ws, { key: `ws/${ws}/src/two.jpg` });
+    expect(result.ok && result.preflight.status).toBe("choose");
+    expect(result.ok && result.preflight.previewUrl).toBeUndefined();
+  });
 });
 
 describe("DbService.preflightUpload", () => {

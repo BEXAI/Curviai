@@ -31,6 +31,7 @@ import {
   normalizeOutputOptions,
   resolveColorHex,
   resolveOutputOptions,
+  templateCardColors,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
 import { getSpec } from "@curvi/specs";
@@ -44,6 +45,7 @@ import {
   llmModelPrices,
   recipeSeedRows,
   sceneDefaults,
+  stillStyle,
   templates,
 } from "@curvi/pipeline/seed";
 import { GeminiImageProvider } from "@curvi/ai";
@@ -329,6 +331,45 @@ describe("LiveShotGenerator", () => {
     const foreign = await generator.generate(social("s3", "ws/ws-2/src/logo.png"));
     expect(loaded).not.toContain("ws/ws-2/src/logo.png");
     expect(foreign.encoded.buffer.length).toBeGreaterThan(0);
+  });
+
+  it("P1: draws no logo with Logo on graphics off, and puts cards on the seller's color with text flipped", async () => {
+    const scene = new FakeSceneProvider();
+    const { ai, wiring } = liveDeps(scene, await productCutoutPng(96));
+    const logo = await encodePng(solidCanvas(120, 48, 230, 20, 20));
+    const loaded: string[] = [];
+    const generator = new LiveShotGenerator({
+      ai,
+      wiring,
+      loadMedia: async (key) => {
+        loaded.push(key);
+        return key.endsWith("logo.png") ? logo : Buffer.from("source-photo");
+      },
+    });
+    const dark = "#1B1F24";
+    const output = (input: Parameters<typeof normalizeOutputOptions>[0]): ResolvedOutputOptions =>
+      resolveOutputOptions(normalizeOutputOptions(input), { colorHex: dark, brandSweepHex: dark, keepMediaIds: [] });
+    const social = (id: string, out: ResolvedOutputOptions) => ({
+      ...argsFor({ ...compositeShotArgs, id, type: "social_1x1", method: "template", channels: ["meta.feed_1x1"] }),
+      brand: { logoKey: "ws/ws-1/src/logo.png" },
+      output: out,
+    });
+
+    const noLogo = await generator.generate(
+      social("s1", output({ color: { kind: "custom", hex: dark }, logo: false })),
+    );
+    expect(noLogo.encoded.buffer.length).toBeGreaterThan(0);
+    expect(loaded).not.toContain("ws/ws-1/src/logo.png");
+
+    const colored = await generator.generate(
+      social("s2", output({ color: { kind: "custom", hex: dark }, graphicsColor: true })),
+    );
+    const card = await decodeToRgba(colored.encoded.buffer);
+    // The card's corner is the seller's dark color, not the preset card color.
+    expect([card.data[0], card.data[1], card.data[2]].every((c, i) => Math.abs(c - [0x1b, 0x1f, 0x24][i]) <= 3)).toBe(true);
+    expect(templateCardColors(getSpec("meta.feed_1x1"), "minimal_studio", output({ color: { kind: "custom", hex: dark }, graphicsColor: true })).textHex).toBe(
+      stillStyle.textOnDarkHex,
+    );
   });
 
   it("refuses stills that can never render before paying for the cutout", async () => {
@@ -1235,6 +1276,32 @@ describe("kept photos and the upload cache (PHASE_15 item 16)", () => {
     const made = await offWhite.generate(argsFor(shotOf("amazon_main", "amazon.main"), keep()));
     expect(made.treatment).toEqual({ kind: "background", colorHex: white, forcedWhite: true });
     // The made white path reused the upload's cutout too.
+    expect(cutout.calls).toBe(0);
+  });
+
+  it("takes the made white path for an already white photo that shows other items", async () => {
+    const studio = await studioPhoto(255);
+    const { ai, wiring, cutout } = liveDeps(new FakeSceneProvider(), await productCutoutPng(96));
+    const generator = (): LiveShotGenerator =>
+      new LiveShotGenerator({
+        ai,
+        wiring,
+        loadMedia: async () => studio.photo,
+        cutoutCache: cacheWith(studio.photo, studio.cutout),
+      });
+    const madeWhite = { kind: "background", colorHex: white, forcedWhite: true };
+    const shot = shotOf("amazon_main", "amazon.main");
+    // A kept photo the runner saw other items in.
+    const withOthers = await generator().generate({ ...argsFor(shot, keep()), otherItems: true });
+    expect(withOthers.treatment).toEqual(madeWhite);
+    // A product the seller picked among others: only the made white path
+    // isolates it.
+    const box = { x: 0.05, y: 0.05, width: 0.9, height: 0.9 };
+    const targeted = await generator().generate({
+      ...argsFor(shot, keep()),
+      target: { label: "mug", box, others: [{ label: "spoon", box: { x: 0, y: 0, width: 0.05, height: 0.05 } }], keep: [box] },
+    });
+    expect(targeted.treatment).toEqual(madeWhite);
     expect(cutout.calls).toBe(0);
   });
 });

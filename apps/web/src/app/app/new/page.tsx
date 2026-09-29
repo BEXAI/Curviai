@@ -53,9 +53,12 @@ export default async function NewPackPage({
   const outputOptionsEnabled = await services.outputOptionsEnabled();
   const brandKitsAllowed = entitlementsFor(tier).brandKits > 0;
   let brandColors: string[] = [];
+  let brandHasLogo = false;
   if (outputOptionsEnabled && brandKitsAllowed) {
     try {
-      brandColors = usableBrandColors((await services.getBrandKit(workspace.id)).colors);
+      const kit = await services.getBrandKit(workspace.id);
+      brandColors = usableBrandColors(kit.colors);
+      brandHasLogo = kit.hasLogo;
     } catch {
       // Without the kit the form offers the seeded and custom colors only.
       brandColors = [];
@@ -98,6 +101,8 @@ export default async function NewPackPage({
             boxContents: p.boxContents,
             comparisonFacts: p.comparisonFacts,
             ...(p.storedPhotoCount !== undefined ? { storedPhotoCount: p.storedPhotoCount } : {}),
+            // Remembered choices prefill the form only while options are on.
+            ...(outputOptionsEnabled && p.outputDefaults ? { outputDefaults: p.outputDefaults } : {}),
           }))}
           channels={channels}
           tier={tier}
@@ -108,6 +113,7 @@ export default async function NewPackPage({
           outputOptionsEnabled={outputOptionsEnabled}
           brandColors={brandColors}
           brandKitsAllowed={brandKitsAllowed}
+          brandHasLogo={brandHasLogo}
           scenesPausedNote={outputOptionsEnabled && preflight === "scenes_paused" ? SCENES_PAUSED_COPY : null}
         />
       </div>

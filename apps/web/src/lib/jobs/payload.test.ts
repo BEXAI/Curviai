@@ -218,6 +218,19 @@ describe("buildGeneratePackInput output options (PHASE_15 item 27)", () => {
     expect(buildGeneratePackInput(base).output).toBeUndefined();
   });
 
+  it("passes the preflight's product box for the crop fit, and drops one outside the photo", () => {
+    const box = { x: 0.2, y: 0.1, width: 0.5, height: 0.6 };
+    const input = buildGeneratePackInput({
+      ...base,
+      media: [
+        { ...base.media[1], productBox: box },
+        { ...base.media[0], productBox: { x: 0.8, y: 0, width: 0.5, height: 0.5 } },
+      ],
+    });
+    expect(input.images[0].productBox).toEqual(box);
+    expect(input.images[1].productBox).toBeUndefined();
+  });
+
   it("throws on stored options the schema refuses", () => {
     expect(() => buildGeneratePackInput({ ...base, outputOptions: { ...stored, v: 2 } })).toThrow();
     expect(() => buildGeneratePackInput({ ...base, outputOptions: { ...stored, colorHex: "red" } })).toThrow();

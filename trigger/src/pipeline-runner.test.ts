@@ -18,6 +18,7 @@ import {
   encodePng,
   fidelityReport,
   planShots,
+  SCENE_COUNT_REASON,
   solidCanvas,
   type PackFileReport,
   type PlanOptions,
@@ -29,12 +30,13 @@ import {
   normalizeOutputOptions,
   resolveColorHex,
   resolveOutputOptions,
+  ADDED_OVERLAYS_REASON,
   SELLER_OFF_REASON,
   type OutputOptionsInput,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
 import { createHash } from "node:crypto";
-import { creditCosts, CUTOUT_TASK } from "@curvi/pipeline/seed";
+import { creditCosts, CUTOUT_TASK, sceneCountOptions } from "@curvi/pipeline/seed";
 import type { Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
 import { isMarketplaceSpec } from "@curvi/specs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
@@ -46,6 +48,7 @@ import {
   creditsForShot,
   deserializeShotOutcome,
   deterministicPlan,
+  fillSceneCount,
   fitShotsToChannels,
   PLAN_FAILED_MESSAGE,
   runGeneratePack,
@@ -67,7 +70,9 @@ import {
   MULTIPLE_PRODUCTS_MESSAGE,
   OUTPUT_OPTIONS_UNREADABLE,
   parseRunOutput,
+  productBoxesOf,
   runPlanFlags,
+  addedOverlayMediaIds,
   shotFailureOutcome,
   moderationBlockedMessage,
   moderationBlockReasons,
@@ -660,7 +665,7 @@ describe("brands and logos are always allowed (PHASE_14 workstream 2)", () => {
   });
 
   it("never blocks on a brand or a logo alone", () => {
-    const intake = { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, flags: cleanFlags }] };
+    const intake = { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags: cleanFlags }] };
     const profile = { ...demoProfile, preserveLogos: ["ROLEX"], complianceFlags: ["possible_counterfeit" as const] };
     expect(moderationBlockReasons(intake, profile)).toEqual([]);
     const claims = { ...demoProfile, complianceFlags: ["medical_claim" as const, "child_product" as const, "none" as const] };
@@ -1143,6 +1148,133 @@ describe("every selected channel gets its files (2.11)", () => {
     expect(fitted.shots.map((s) => s.id)).toEqual(["dup", "dup_2"]);
     expect(fitted.shots.every((s) => s.channels.join() === "amazon.secondary")).toBe(true);
     expect(fitted.skipped).toEqual([{ type: "cutout_png", reason: "channel not selected" }]);
+  });
+
+  it("keeps an LLM plan to the pack's scene count (PHASE_15 P1)", () => {
+    const scene: Shot = {
+      id: "l0",
+      type: "lifestyle",
+      sourceMediaId: "m1",
+      method: "composite_generate",
+      channels: ["amazon.secondary"],
+      stylePreset: "kitchen_lifestyle",
+      scene: "kitchen",
+      credits: creditCosts.generativeStill,
+      priority: 4,
+    };
+    const scenes = [0, 1, 2, 3].map((i) => ({ ...scene, id: `l${i}` }));
+    const fit = { channels: ["amazon"], mode: "listing" as const, budget: 100, profile: demoProfile, primaryMediaId: "m1" };
+    const flags = runPlanFlags(
+      resolveOutputOptions(normalizeOutputOptions({ sceneCount: 2 }), {
+        colorHex: "#FFFFFF",
+        brandSweepHex: "#FFFFFF",
+        keepMediaIds: [],
+      }),
+      [{ mediaId: "m1" }],
+    );
+    const two = fitShotsToChannels({ shots: scenes.map((s) => ({ ...s })), skipped: [] }, { ...fit, output: flags });
+    expect(two.shots.filter((s) => s.type === "lifestyle").map((s) => s.id)).toEqual(["l0", "l1"]);
+    expect(two.skipped.filter((s) => s.reason === SCENE_COUNT_REASON)).toHaveLength(2);
+    // Without options the seed default holds.
+    const plain = fitShotsToChannels({ shots: scenes.map((s) => ({ ...s })), skipped: [] }, fit);
+    expect(plain.shots.filter((s) => s.type === "lifestyle")).toHaveLength(sceneCountOptions.default);
+  });
+
+  it("trims an LLM plan with more scenes than the hold paid for instead of rejecting it", () => {
+    const main: Shot = {
+      id: "s1",
+      type: "amazon_main",
+      sourceMediaId: "m1",
+      method: "deterministic",
+      channels: ["amazon.main"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    };
+    const scene: Shot = {
+      ...main,
+      type: "lifestyle",
+      method: "composite_generate",
+      channels: ["amazon.secondary"],
+      stylePreset: "kitchen_lifestyle",
+      credits: creditCosts.generativeStill,
+      priority: 4,
+    };
+    const flags = runPlanFlags(
+      resolveOutputOptions(normalizeOutputOptions({ sceneCount: 1 }), {
+        colorHex: "#FFFFFF",
+        brandSweepHex: "#FFFFFF",
+        keepMediaIds: [],
+      }),
+      [{ mediaId: "m1" }],
+    );
+    // The hold for one scene: the main image and that scene.
+    const hold = creditCosts.deterministic + creditCosts.generativeStill;
+    const result = validateLlmShotList(
+      {
+        shots: [main, ...[1, 2, 3].map((i) => ({ ...scene, id: `l${i}`, scene: `scene ${i}` }))],
+        skipped: [],
+      },
+      { budget: hold, mediaIds: ["m1"], channels: ["amazon"], mode: "listing", requireAmazonMain: true, output: flags },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.shotList.shots.map((s) => s.id)).toEqual(["s1", "l1"]);
+    expect(result.shotList.skipped.filter((s) => s.reason === SCENE_COUNT_REASON)).toHaveLength(2);
+  });
+
+  it("tops an LLM plan with fewer scenes up to the pack's scene count, ranked below every planned shot", () => {
+    const scene: Shot = {
+      id: "l1",
+      type: "lifestyle",
+      sourceMediaId: "m1",
+      method: "composite_generate",
+      channels: ["amazon.secondary"],
+      stylePreset: "kitchen_lifestyle",
+      scene: "kitchen counter",
+      credits: creditCosts.generativeStill,
+      priority: 4,
+    };
+    const flags = (sceneCount: number) =>
+      runPlanFlags(
+        resolveOutputOptions(normalizeOutputOptions({ sceneCount }), {
+          colorHex: "#FFFFFF",
+          brandSweepHex: "#FFFFFF",
+          keepMediaIds: [],
+        }),
+        [{ mediaId: "m1" }],
+      );
+    const plan = { shots: [scene], skipped: [] };
+    const filled = fillSceneCount(plan, demoProfile, flags(3));
+    const scenes = filled.shots.filter((s) => s.type === "lifestyle");
+    expect(scenes).toHaveLength(3);
+    expect(new Set(scenes.map((s) => s.scene)).size).toBe(3);
+    expect(scenes.slice(1).every((s) => s.priority === 5 && s.channels.join() === "amazon.secondary")).toBe(true);
+    expect(scenes.slice(1).every((s) => s.credits === creditCosts.generativeStill)).toBe(true);
+    // Enough scenes, or none to copy: unchanged.
+    expect(fillSceneCount(plan, demoProfile, flags(1))).toBe(plan);
+    const none = { shots: [{ ...scene, type: "amazon_main" as const }], skipped: [] };
+    expect(fillSceneCount(none, demoProfile, flags(4))).toBe(none);
+    // Without output options the pack is today's pack.
+    expect(fillSceneCount(plan, demoProfile, undefined)).toBe(plan);
+    // The budget trim drops the added scenes before any planned shot.
+    const fit = { channels: ["amazon"], mode: "listing" as const, profile: demoProfile, primaryMediaId: "m1" };
+    const tight = fitShotsToChannels(filled, { ...fit, budget: creditCosts.generativeStill * 2, output: flags(3) });
+    expect(tight.shots.map((s) => s.id)).toContain("l1");
+    expect(tight.shots.filter((s) => s.type === "lifestyle")).toHaveLength(2);
+  });
+
+  it("takes each photo's product box from the seller's tap, else the preflight", () => {
+    const tap = { x: 0.1, y: 0.1, width: 0.5, height: 0.5 };
+    const found = { x: 0.2, y: 0.2, width: 0.3, height: 0.3 };
+    expect(
+      productBoxesOf([
+        { mediaId: "a", targetBox: tap, productBox: found },
+        { mediaId: "b", productBox: found },
+        { mediaId: "c" },
+      ]),
+    ).toEqual({ productBoxes: { a: tap, b: found } });
+    expect(productBoxesOf([{ mediaId: "c" }])).toEqual({});
   });
 });
 
@@ -3195,6 +3327,61 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
       type: "social_1x1",
       reason: SELLER_OFF_REASON,
       channels: ["meta.feed_1x1"],
+    });
+  });
+
+  describe("added text on a kept photo (intake version 5)", () => {
+    const flaggedIntake = (addedOverlays: boolean) => ({
+      images: [
+        {
+          sellableProduct: true,
+          distinctProducts: 1,
+          sharpEnough: true,
+          screenshot: false,
+          addedOverlays,
+          flags: cleanFlags,
+          products: [{ label: "blue bottle", box: { x: 0.3, y: 0.2, width: 0.4, height: 0.6 }, matchesIntent: "yes" }],
+        },
+      ],
+    });
+    const intake = (addedOverlays: boolean) =>
+      new MockProvider({ name: "mock-intake", tasks: [intakeKey], output: flaggedIntake(addedOverlays) });
+
+    it("addedOverlayMediaIds maps the flag to photos, and none when the counts differ", () => {
+      const one = { images: [{ ...flaggedIntake(true).images[0], products: [] }] };
+      expect(addedOverlayMediaIds(one, ["m1"], "job")).toEqual(new Set(["m1"]));
+      expect(addedOverlayMediaIds(one, ["m1", "m2"], "job")).toEqual(new Set());
+      const clean = { images: [{ ...flaggedIntake(false).images[0], products: [] }] };
+      expect(addedOverlayMediaIds(clean, ["m1"], "job")).toEqual(new Set());
+    });
+
+    it("runPlanFlags marks only the flagged photos", () => {
+      const flags = runPlanFlags(keepAll(["m1", "m2"]), [{ mediaId: "m1" }, { mediaId: "m2" }], new Set(["m2"]));
+      expect(flags.photos).toEqual([{ id: "m1" }, { id: "m2", addedOverlays: true }]);
+    });
+
+    it("leaves a flagged kept photo out of eBay and ships it elsewhere", async () => {
+      const deps = makeDeps({ ai: makeAi({ intake: intake(true) }) });
+      const summary = await runGeneratePack(
+        { ...baseInput, channels: ["ebay.listing", "shopify.product"], output: keepAll(["m1"]) },
+        deps,
+      );
+      expect(summary.state).toBe("done");
+      expect(summary.skipped).toContainEqual({ type: "original_photo:ebay.listing", reason: ADDED_OVERLAYS_REASON });
+      const files = await packReport(summary);
+      expect(files.some((f) => f.specId === "shopify.product" && f.pass)).toBe(true);
+      expect(files.some((f) => f.specId === "ebay.listing")).toBe(false);
+    });
+
+    it("ships a clean kept photo to eBay as before", async () => {
+      const summary = await runGeneratePack(
+        { ...baseInput, channels: ["ebay.listing", "shopify.product"], output: keepAll(["m1"]) },
+        makeDeps({ ai: makeAi({ intake: intake(false) }) }),
+      );
+      expect(summary.state).toBe("done");
+      expect(summary.skipped.some((s) => s.reason === ADDED_OVERLAYS_REASON)).toBe(false);
+      const files = await packReport(summary);
+      expect(files.some((f) => f.specId === "ebay.listing" && f.pass)).toBe(true);
     });
   });
 
