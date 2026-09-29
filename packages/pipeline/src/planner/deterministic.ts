@@ -24,10 +24,15 @@ import {
 } from "@curvi/specs";
 import {
   ADDED_OVERLAYS_REASON,
+  BUNDLE_OFF_REASON,
   GALLERY_SLOTS,
   SELLER_OFF_REASON,
   SOURCE_TOO_SMALL_REASON,
+  bundleMaxSecondary,
+  bundleOf,
+  bundleShotTypes,
   extraFamilyOf,
+  isSecondaryShot,
   originalScale,
   sceneCountOf,
   specAcceptsImage,
@@ -172,14 +177,31 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   const output = opts.output;
   const keptIds = new Set(output?.keepMediaIds ?? []);
   const offTypes = sellerOffShotTypes(output);
+  const bundleOff = bundleOffShotTypes(output);
+  const maxSecondary = output ? bundleMaxSecondary(bundleOf(output)) : null;
+  let secondaries = 0;
+  /** True when the bundle leaves this shot out: a type outside it, or an
+   * other angle image past its maxSecondary. */
+  const outsideBundle = (shot: Pick<Shot, "type" | "priority">): boolean =>
+    bundleOff.has(shot.type) || (maxSecondary !== null && isSecondaryShot(shot) && secondaries >= maxSecondary);
 
   const shots: Shot[] = [];
   const skipped: SkippedShot[] = [];
   let seq = 0;
   const nextId = (type: string): string => `s${String(++seq).padStart(2, "0")}_${type}`;
-  /** Records a shot the plan leaves out. An undeliverable method wins over the given reason. */
+  /** Records a shot the plan leaves out. An undeliverable method wins over
+   * the given reason, and the bundle wins over the rest: a shot the seller's
+   * set leaves out never asks for a photo or a plan. */
   const skip = (type: string, method: ShotMethod, reason: string): void => {
-    skipped.push({ type, reason: undeliverable.has(method) ? UNDELIVERABLE_METHOD_REASON : reason });
+    const [base, angle] = type.split(":");
+    const shotType = Shot.shape.type.safeParse(base);
+    const inBundle =
+      !shotType.success ||
+      !outsideBundle({ type: shotType.data, priority: angle === undefined || angle === "front" ? 1 : 2 });
+    skipped.push({
+      type,
+      reason: undeliverable.has(method) ? UNDELIVERABLE_METHOD_REASON : inBundle ? reason : BUNDLE_OFF_REASON,
+    });
   };
   /**
    * Plans a shot on the specs the seller picked, or skips it: when its method
@@ -202,9 +224,16 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
       skipped.push({ type: shot.type, reason: CHANNEL_NOT_SELECTED_REASON });
       return;
     }
+    if (outsideBundle(shot)) {
+      skipped.push({ type: shot.type, reason: BUNDLE_OFF_REASON, channels });
+      return;
+    }
     if (offTypes.has(shot.type)) {
       skipped.push({ type: shot.type, reason: SELLER_OFF_REASON, channels });
       return;
+    }
+    if (isSecondaryShot(shot)) {
+      secondaries += 1;
     }
     shots.push({ id: nextId(shot.type), ...shot, channels });
   };
@@ -780,8 +809,51 @@ export function sellerOffShotTypes(flags: OutputPlanFlags | undefined): Set<Shot
   return off;
 }
 
+/** The shot types outside the pack's bundle (PHASE_16). Empty without flags
+ * and for today's pack. */
+export function bundleOffShotTypes(flags: Pick<OutputPlanFlags, "bundle"> | undefined): Set<Shot["type"]> {
+  const inBundle = bundleShotTypes(bundleOf(flags));
+  return new Set(Shot.shape.type.options.filter((type) => !inBundle.has(type)));
+}
+
 /**
- * Removes the shots in extra families the seller turned off and records each
+ * Removes the shots the pack's bundle leaves out (PHASE_16 workstream 1):
+ * every shot of a type outside the bundle, then every other angle image
+ * (isSecondaryShot) past the bundle's maxSecondary, in plan order. Each is
+ * recorded with BUNDLE_OFF_REASON and the specs it targeted; seller off
+ * cover never fills those specs, since the seller picked a smaller set. For
+ * plans this planner did not make; skipSellerOffShots runs it first, so the
+ * runner's fitShotsToChannels applies it too. Returns the other shots in order.
+ */
+export function skipBundleOffShots(
+  shots: readonly Shot[],
+  flags: Pick<OutputPlanFlags, "bundle"> | undefined,
+  skipped: SkippedShot[],
+): Shot[] {
+  const off = bundleOffShotTypes(flags);
+  const maxSecondary = bundleMaxSecondary(bundleOf(flags));
+  if (off.size === 0 && maxSecondary === null) {
+    return [...shots];
+  }
+  let secondaries = 0;
+  const out: Shot[] = [];
+  for (const shot of shots) {
+    const pastCap = maxSecondary !== null && isSecondaryShot(shot) && secondaries >= maxSecondary;
+    if (off.has(shot.type) || pastCap) {
+      skipped.push({ type: shot.type, reason: BUNDLE_OFF_REASON, channels: [...new Set(shot.channels)] });
+      continue;
+    }
+    if (isSecondaryShot(shot)) {
+      secondaries += 1;
+    }
+    out.push(shot);
+  }
+  return out;
+}
+
+/**
+ * Removes the shots the pack's bundle leaves out (skipBundleOffShots), then
+ * the shots in extra families the seller turned off, recording each of those
  * with SELLER_OFF_REASON and the specs it targeted, so coverSellerOffSpecs
  * can fill a spec left empty. For plans this planner did not make (the
  * fitted LLM plan): the runner calls it before the channel limits, as
@@ -792,12 +864,13 @@ export function skipSellerOffShots(
   flags: OutputPlanFlags | undefined,
   skipped: SkippedShot[],
 ): Shot[] {
+  const inBundle = skipBundleOffShots(shots, flags, skipped);
   const off = sellerOffShotTypes(flags);
   if (off.size === 0) {
-    return [...shots];
+    return inBundle;
   }
   const out: Shot[] = [];
-  for (const shot of shots) {
+  for (const shot of inBundle) {
     if (off.has(shot.type)) {
       skipped.push({ type: shot.type, reason: SELLER_OFF_REASON, channels: [...new Set(shot.channels)] });
     } else {

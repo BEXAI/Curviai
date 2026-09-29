@@ -118,7 +118,8 @@ describe("client safe modules", () => {
       }
       for (const spec of imports) {
         expect(spec, `${file} imports ${spec}`).not.toMatch(/^(sharp|node:|fs$|path$|exiftool)/);
-        expect(["zod", "@curvi/specs", "./schemas", "./seed/brand", "./seed/templates"], `${file} imports ${spec}`).toContain(spec);
+        // seed/templates.ts reads Shot from ../schemas (PHASE_16 packBundles), the same module.
+        expect(["zod", "@curvi/specs", "./schemas", "../schemas", "./seed/brand", "./seed/templates"], `${file} imports ${spec}`).toContain(spec);
       }
     }
   });

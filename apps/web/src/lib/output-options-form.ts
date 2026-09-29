@@ -12,6 +12,8 @@
  */
 
 import {
+  BUNDLE_KEYS,
+  DEFAULT_BUNDLE,
   DEFAULT_OUTPUT_OPTIONS,
   DEFAULT_SWATCH_KEY,
   EXTRA_FAMILY_KEYS,
@@ -24,7 +26,11 @@ import {
   cutoutMediaIds,
   keptPhotoSpecIds,
   LOOK_KEYS,
+  bundleExtrasFor,
+  bundleHoldsFamily,
+  bundleOf,
   lookOf,
+  lookPresetFor,
   keepMediaIdsFor,
   keptMaxUpscale,
   normalizeOutputOptions,
@@ -34,6 +40,7 @@ import {
   packNeedsCutout,
   PRODUCT_SIZE_KEYS,
   SCENE_PRESET_AUTO,
+  type BundleKey,
   type ColorChoice,
   type ConflictPhoto,
   type ExtraFamily,
@@ -56,6 +63,7 @@ import {
   creditCosts,
   entitlementsFor,
   keepBackgroundPhrases,
+  packBundles,
   presets,
   sceneCountOptions,
   stillStyle,
@@ -72,7 +80,8 @@ import {
   whiteRequiredSpecIds,
   type ConflictCopyContext,
 } from "@/lib/output-options-copy";
-import { resolveJobOutput, type OutputPhoto } from "@/lib/services/output-options";
+import { estimatePackCredits, type EstimateMode, type EstimateSellerInputs } from "@/lib/pack-estimate";
+import { outputEstimateInputs, resolveJobOutput, type OutputPhoto } from "@/lib/services/output-options";
 import { MAX_BRAND_COLORS } from "@/lib/validation/brand-kit";
 
 // ---------------------------------------------------------------------------
@@ -166,14 +175,30 @@ export type OutputFormAction =
   | { type: "reset" }
   /** "Keep my photos instead" while cutouts are paused: the Keep look with
    * every extra off. The form unticks the white required channels itself. */
-  | { type: "keep_instead" };
+  | { type: "keep_instead" }
+  /** A bundle card (PHASE_16 workstream 1): how much the pack makes. The
+   * Extra images switches move to the bundle's start; every other choice,
+   * the look included, stays. */
+  | { type: "bundle"; bundle: BundleKey };
 
 function copyChoices(choices: OutputChoices): OutputChoices {
   return { ...choices, color: { ...choices.color }, extras: { ...choices.extras } };
 }
 
-function allExtras(on: boolean): OutputExtras {
-  return Object.fromEntries(EXTRA_FAMILY_KEYS.map((family) => [family, on])) as OutputExtras;
+/** The choices with this bundle and the extras it starts from with their
+ * background. The default bundle is left out, as the schema leaves it out. */
+export function withBundle(choices: OutputChoices, bundle: BundleKey): OutputChoices {
+  const { bundle: _previous, ...rest } = copyChoices(choices);
+  return {
+    ...rest,
+    extras: bundleExtrasFor(bundle, choices.background),
+    ...(bundle !== DEFAULT_BUNDLE ? { bundle } : {}),
+  };
+}
+
+/** A look card's choices for the pack's current bundle. */
+function lookChoices(look: LookKey, choices: OutputChoices): OutputChoices {
+  return copyChoices(lookPresetFor(look, bundleOf(choices)));
 }
 
 /** The form's first state: Marketplace ready, today's pack. */
@@ -191,12 +216,16 @@ function clampSceneCount(count: number): number {
 export function outputFormReducer(state: OutputFormState, action: OutputFormAction): OutputFormState {
   switch (action.type) {
     case "look":
-      return { lookBase: action.look, choices: copyChoices(LOOK_PRESETS[action.look]), more: defaultMore() };
+      return { lookBase: action.look, choices: lookChoices(action.look, state.choices), more: defaultMore() };
     case "background":
       if (state.choices.background === action.background) return state;
       return {
         ...state,
-        choices: { ...state.choices, background: action.background, extras: allExtras(action.background === "remove") },
+        choices: {
+          ...state.choices,
+          background: action.background,
+          extras: bundleExtrasFor(bundleOf(state.choices), action.background),
+        },
       };
     case "color":
       if (action.color.kind === "edge_match") {
@@ -204,6 +233,8 @@ export function outputFormReducer(state: OutputFormState, action: OutputFormActi
       }
       return { ...state, choices: { ...state.choices, color: { ...action.color } }, more: { ...state.more, edgeMatch: false } };
     case "extra":
+      // A family the bundle holds nothing of stays off (the server turns it off too).
+      if (action.on && !bundleHoldsFamily(bundleOf(state.choices), action.family)) return state;
       return { ...state, choices: { ...state.choices, extras: { ...state.choices.extras, [action.family]: action.on } } };
     case "fit":
       // Trim keeps the P0 fit at auto, so the heads ups and the estimate
@@ -212,6 +243,7 @@ export function outputFormReducer(state: OutputFormState, action: OutputFormActi
         ? { ...state, choices: { ...state.choices, fit: "auto" }, more: { ...state.more, trim: true } }
         : { ...state, choices: { ...state.choices, fit: action.fit }, more: { ...state.more, trim: false } };
     case "scenes":
+      if (action.count !== SCENES_OFF && !bundleHoldsFamily(bundleOf(state.choices), "scenes")) return state;
       return action.count === SCENES_OFF
         ? { ...state, choices: { ...state.choices, extras: { ...state.choices.extras, scenes: false } } }
         : {
@@ -224,9 +256,12 @@ export function outputFormReducer(state: OutputFormState, action: OutputFormActi
     case "prefill":
       return { lookBase: action.state.lookBase, choices: copyChoices(action.state.choices), more: { ...action.state.more } };
     case "reset":
-      return { ...state, choices: copyChoices(LOOK_PRESETS[state.lookBase]), more: defaultMore() };
+      return { ...state, choices: lookChoices(state.lookBase, state.choices), more: defaultMore() };
     case "keep_instead":
-      return { lookBase: "keep_photo", choices: copyChoices(LOOK_PRESETS.keep_photo), more: defaultMore() };
+      return { lookBase: "keep_photo", choices: lookChoices("keep_photo", state.choices), more: defaultMore() };
+    case "bundle":
+      if (bundleOf(state.choices) === action.bundle) return state;
+      return { ...state, choices: withBundle(state.choices, action.bundle) };
   }
 }
 
@@ -308,6 +343,9 @@ export function outputOptionsBody(
     fit: keep && more.trim ? "crop" : choices.fit,
     extras: { ...choices.extras },
     ...p1OutputFields(choices, more),
+    // Only a bundle other than today's pack rides along, so an unchanged
+    // form sends the same body, and the same Idempotency-Key, as before.
+    ...(bundleOf(choices) !== DEFAULT_BUNDLE ? { bundle: bundleOf(choices) } : {}),
   };
 }
 
@@ -733,8 +771,9 @@ export function brandLookAvailability(tier: TierKey, brandColors: readonly strin
   return { available: true };
 }
 
-/** Arrow key movement in the look radiogroup, skipping disabled cards. */
-export function nextLook(current: LookKey, key: string, enabled: readonly LookKey[]): LookKey | null {
+/** Arrow key movement in the look radiogroup (and the bundle radiogroup),
+ * skipping disabled cards. */
+export function nextLook<T extends string = LookKey>(current: T, key: string, enabled: readonly T[]): T | null {
   if (enabled.length === 0) return null;
   const at = Math.max(0, enabled.indexOf(current));
   switch (key) {
@@ -751,6 +790,86 @@ export function nextLook(current: LookKey, key: string, enabled: readonly LookKe
     default:
       return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pack bundles (PHASE_16 workstream 1): how much the pack makes
+
+/** The bundle cards in order, from the seed. */
+export const BUNDLE_CARD_KEYS: readonly BundleKey[] = BUNDLE_KEYS;
+
+/** A bundle card's title, the seeded label. */
+export function bundleTitle(bundle: BundleKey): string {
+  return packBundles[bundle].label;
+}
+
+export const BUNDLE_CARD_COPY: Readonly<Record<BundleKey, string>> = {
+  main: "The main image for each channel you picked, and nothing else.",
+  listing: "The main image plus your other listing images: angles, backdrops, scenes and graphics.",
+  aplus: "The main image plus A+ modules for your Amazon product page.",
+  everything: "Every image we make for the channels you picked.",
+};
+
+export const BUNDLE_GROUP_LABEL = "How much to make";
+
+/** The line on an Extra images row the chosen set holds nothing of. */
+export const EXTRA_OUTSIDE_BUNDLE_NOTE = "Not in the set you picked.";
+
+/** The bundle the choices use. */
+export function currentBundle(state: Pick<OutputFormState, "choices">): BundleKey {
+  return bundleOf(state.choices);
+}
+
+/** True when the Extra images row can be switched on with the chosen set. */
+export function extraInBundle(state: Pick<OutputFormState, "choices">, family: ExtraFamily): boolean {
+  return bundleHoldsFamily(bundleOf(state.choices), family);
+}
+
+export interface BundleEstimateArgs {
+  channels: readonly string[];
+  mode: EstimateMode;
+  tier: TierKey;
+  /** What the seller told us, as the pack's own estimate gets it. */
+  seller: Pick<EstimateSellerInputs, "angles" | "hasBoxContents" | "hasComparisonFacts">;
+  /** The seller's current choices; each card swaps in its bundle. */
+  state: OutputFormState;
+  brandColors: readonly string[];
+  brandKitsAllowed: boolean;
+  /** The pack's photos in pack order (formPhotos), and the list the options
+   * are resolved with (planningPhotos). */
+  photos: readonly FormPhoto[];
+  planned: readonly FormPhoto[];
+  photoBackgrounds?: Readonly<Record<string, PhotoBackground>>;
+  context?: EffectiveContext;
+}
+
+/**
+ * Each bundle card's figure: the pack's estimate with the seller's choices
+ * and that bundle (withBundle; the picked card keeps the choices as they are), through the same resolveFormOutput,
+ * outputEstimateInputs and estimatePackCredits the pack's own figure uses,
+ * so the picked card always shows the pack's total. Credits come from the
+ * seed through the planner (rule 2).
+ */
+export function bundleEstimates(args: BundleEstimateArgs): Record<BundleKey, number> {
+  const out = {} as Record<BundleKey, number>;
+  for (const bundle of BUNDLE_KEYS) {
+    const picked = bundle === bundleOf(args.state.choices);
+    const choices = effectiveChoices(picked ? args.state.choices : withBundle(args.state.choices, bundle), args.context);
+    const { resolved } = resolveFormOutput({
+      choices,
+      lookBase: args.state.lookBase,
+      brandColors: args.brandColors,
+      brandKitsAllowed: args.brandKitsAllowed,
+      photos: args.planned,
+      more: args.state.more,
+      ...(args.photoBackgrounds ? { photoBackgrounds: args.photoBackgrounds } : {}),
+    });
+    out[bundle] = estimatePackCredits([...args.channels], args.mode, args.tier, {
+      ...args.seller,
+      ...outputEstimateInputs(resolved, args.photos),
+    }).total;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -896,7 +1015,7 @@ export function moreOptionsVisibility(choices: OutputChoices, context: MoreOptio
   const graphicsOn = choices.extras.graphics || choices.extras.cards;
   return {
     photoShape: keep,
-    sceneCount: true,
+    sceneCount: bundleHoldsFamily(bundleOf(choices), "scenes"),
     sceneStyle: choices.extras.scenes && !context.scenesPaused,
     logo: !!context.hasLogo && graphicsOn,
     productSize: !keep,
@@ -1025,6 +1144,8 @@ export interface PackCreatedOutputProps {
   extras_off: number;
   kept_photos: number;
   fit: FormFit;
+  /** The pack bundle (PHASE_16 workstream 1). */
+  bundle: BundleKey;
 }
 
 /** The pack_created properties the options add. kept_photos counts the
@@ -1044,6 +1165,7 @@ export function packCreatedOutputProps(
     extras_off: extrasOffCount(choices.extras),
     kept_photos: keptPhotos,
     fit: formFit({ choices, more }),
+    bundle: bundleOf(choices),
   };
 }
 

@@ -4,6 +4,8 @@
  * positive instructions because FLUX.2 has no negative prompt field.
  */
 
+import { Shot } from "../schemas";
+
 export const presets = {
   minimal_studio: { surface: "clean matte light gray tabletop in front of a smooth, evenly lit pale gray wall" },
   luxury_marble: { surface: "white Carrara marble slab with soft window light" },
@@ -220,3 +222,75 @@ export const badgeStyle = {
   backgroundOpacity: 0.78,
   textHex: "#FFFFFF",
 } as const;
+
+/** One pack bundle (PHASE_16 workstream 1); see packBundles. */
+export interface PackBundle {
+  key: string;
+  label: string;
+  shotTypes: readonly Shot["type"][];
+  aplusModules?: readonly Shot["type"][];
+  extras: Readonly<Record<"scenes" | "backdrops" | "transparentPng" | "graphics" | "cards", boolean>>;
+  maxSecondary?: number;
+}
+
+/** The main image of every marketplace: the Amazon main image, the white
+ * front image, a kept front photo and the Shopify collection thumbnail. */
+const MAIN_SHOT_TYPES: readonly Shot["type"][] = ["amazon_main", "alt_angle_white", "original_photo", "collection_thumb"];
+
+/**
+ * Pack bundles (PHASE_16 workstream 1): "how much" a pack makes, next to
+ * Phase 15's Looks, which answer "how it looks". Seed data per CLAUDE.md
+ * rule 2, so the planner, the estimate and the form read one definition.
+ * - shotTypes: the shot types the bundle may plan. Any other shot type is
+ *   skipped as not in the chosen set, before the channel limits.
+ * - aplusModules: the A+ module shot types the bundle adds on top
+ *   (workstream 2 adds its module types here and to Shot.type).
+ * - extras: the Extra images switches the bundle starts from with Remove
+ *   (Keep starts with every extra off). A family can only be on when the
+ *   bundle holds one of its shot types.
+ * - maxSecondary: the most other angle images (a white alternate angle, or
+ *   a kept photo other than the front one) the bundle plans; absent is no cap.
+ * Keys are stored on jobs, so never rename one. `everything` is today's pack
+ * and takes every shot type the schema has, new ones included.
+ */
+export const packBundles = {
+  main: {
+    key: "main",
+    label: "Main image only",
+    shotTypes: MAIN_SHOT_TYPES,
+    extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: false },
+    maxSecondary: 0,
+  },
+  listing: {
+    key: "listing",
+    label: "Listing set",
+    shotTypes: [
+      ...MAIN_SHOT_TYPES,
+      "cutout_png",
+      "sweep_gray",
+      "sweep_brand",
+      "lifestyle",
+      "infographic",
+      "dimensions",
+      "in_the_box",
+      "comparison",
+    ],
+    extras: { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: false },
+  },
+  aplus: {
+    key: "aplus",
+    label: "A+ set",
+    shotTypes: MAIN_SHOT_TYPES,
+    aplusModules: ["aplus_banner"],
+    extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: true },
+    maxSecondary: 0,
+  },
+  everything: {
+    key: "everything",
+    label: "Everything",
+    shotTypes: Shot.shape.type.options,
+    extras: { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: true },
+  },
+} as const satisfies Record<string, PackBundle>;
+
+export type PackBundleKey = keyof typeof packBundles;

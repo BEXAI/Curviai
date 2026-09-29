@@ -8,11 +8,13 @@ import type { TierKey } from "@curvi/pipeline/seed";
 import { LOOK_TITLES, type ConflictLine } from "@/lib/output-options-copy";
 import {
   EXTRAS_WITH_KEEP_NOTE,
+  EXTRA_OUTSIDE_BUNDLE_NOTE,
   LISTING_MODE_LINE,
   LOOK_CARD_COPY,
   SWITCH_LABEL,
   brandLookAvailability,
   customChipText,
+  extraInBundle,
   extraRows,
   moreOptionsChanged,
   moreOptionsSummary,
@@ -249,26 +251,29 @@ export function OutputOptionsPanel({
           <div className="mt-2 space-y-1">
             {extraRows().map((row) => {
               const paused = row.family === "scenes" && scenesPausedNote !== null;
-              const checked = !paused && choices.extras[row.family];
+              // A family the chosen set holds nothing of (PHASE_16 bundles) stays off.
+              const outside = !extraInBundle(state, row.family);
+              const disabled = paused || outside;
+              const checked = !disabled && choices.extras[row.family];
               return (
                 <label
                   key={row.family}
                   className={cn(
                     "flex min-h-11 items-start gap-3 rounded-lg px-2 py-2",
-                    paused ? "cursor-not-allowed text-ink-400" : "cursor-pointer hover:bg-ink-50",
+                    disabled ? "cursor-not-allowed text-ink-400" : "cursor-pointer hover:bg-ink-50",
                   )}
                   data-testid={`extra-${row.family}`}
                 >
                   <input
                     type="checkbox"
                     checked={checked}
-                    disabled={paused}
+                    disabled={disabled}
                     onChange={(event) => onAction({ type: "extra", family: row.family, on: event.target.checked })}
                     className="mt-0.5 h-5 w-5 shrink-0 rounded border-ink-300 accent-accent-600"
                   />
                   <span className="min-w-0">
                     <span className="block text-sm font-medium text-ink-900">{row.title}</span>
-                    <span className="block text-xs text-ink-500">{paused ? scenesPausedNote : row.line}</span>
+                    <span className="block text-xs text-ink-500">{paused ? scenesPausedNote : outside ? EXTRA_OUTSIDE_BUNDLE_NOTE : row.line}</span>
                   </span>
                 </label>
               );
