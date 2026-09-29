@@ -126,8 +126,14 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="border-y border-white/10 bg-white/[0.02]">
-        <div className="mx-auto max-w-6xl px-6 py-16">
+      <section className="relative overflow-hidden">
+        {/* Continues the hero's teal glow from its bottom left corner, so the
+            two sections read as one surface with no seam between them. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(44rem_28rem_at_0%_0%,rgb(45_212_191/0.14),transparent_70%)]"
+        />
+        <div className="relative mx-auto max-w-6xl px-6 py-16">
           <h2 className="text-center font-display text-3xl font-bold uppercase tracking-tight text-white">How it works</h2>
           <div className="mt-10 grid gap-8 md:grid-cols-3">
             {homeSteps.map((step, index) => (
