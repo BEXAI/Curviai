@@ -16,6 +16,7 @@ import {
   SELLER_OFF_REASON,
   SOURCE_TOO_SMALL_REASON,
 } from "@curvi/pipeline/output-options";
+import { SCENE_COUNT_REASON } from "@curvi/pipeline/planner";
 import { listSpecs } from "@curvi/specs";
 import { SETTLED_JOB_MESSAGES } from "@/lib/jobs/enqueue";
 import {
@@ -24,8 +25,18 @@ import {
   outputOptionsSummary,
   packSummaryLine,
   publicJobError,
+  SELLER_OFF_COPY,
+  shotCopyContextOf,
   skippedCopy,
 } from "./job-copy";
+
+function keepDefaults() {
+  return resolveOutputOptions(normalizeOutputOptions({ background: "keep" }), {
+    colorHex: "#FFFFFF",
+    brandSweepHex: "#1F2A44",
+    keepMediaIds: ["ws/a"],
+  });
+}
 
 // enqueue.ts schedules inline packs with next/server's after(); only its
 // settled messages are read here.
@@ -233,8 +244,37 @@ describe("PHASE_15 reasons", () => {
     expect(skippedCopy(ADDED_OVERLAYS_REASON).label).not.toBe("Needs photo");
   });
 
+  it("names Never enlarge my photo when the pack ran with it, not the enlarge limit", () => {
+    const stored = resolveOutputOptions(normalizeOutputOptions({ background: "keep", enlarge: false }), {
+      colorHex: "#FFFFFF",
+      brandSweepHex: "#1F2A44",
+      keepMediaIds: ["ws/a"],
+    });
+    const context = shotCopyContextOf(stored);
+    expect(context.maxUpscale).toBe(1);
+    const copy = skippedCopy(SOURCE_TOO_SMALL_REASON, "original_photo", context);
+    expect(copy.note).toBe(
+      "Your photo is too small for this channel without enlarging it, since you chose Never enlarge my photo. Upload the original from your camera, or untick this channel. Not charged.",
+    );
+    expect(needsReviewNote(SOURCE_TOO_SMALL_REASON, context)).toContain("since you chose Never enlarge my photo");
+    expect(shotCopyContextOf(null)).toEqual({});
+    expect(shotCopyContextOf(keepDefaults()).maxUpscale).toBe(MAX_SOURCE_UPSCALE);
+  });
+
+  it("reads scenes trimmed to the pack's scene count as the pack's own choice, hidden like turned off", () => {
+    const copy = skippedCopy(`lifestyle ${SCENE_COUNT_REASON}`, "lifestyle", { sceneCount: 1 });
+    expect(copy).toEqual({
+      label: SELLER_OFF_COPY.label,
+      note: "This pack has 1 scene, so this extra one was left out. Not charged.",
+    });
+    expect(skippedCopy(SCENE_COUNT_REASON, "lifestyle", { sceneCount: 2 }).note).toContain("This pack has 2 scenes");
+    expect(skippedCopy(SCENE_COUNT_REASON, "lifestyle").note).toContain("This pack has its full number of scenes");
+  });
+
   it("keeps every new line plain spoken (rule 9)", () => {
     const lines = [
+      skippedCopy(SOURCE_TOO_SMALL_REASON, null, { maxUpscale: 1 }).note,
+      skippedCopy(SCENE_COUNT_REASON, null, { sceneCount: 1 }).note,
       ADDED_TEXT_COPY.label,
       ADDED_TEXT_COPY.note,
       skippedCopy(SELLER_OFF_REASON).label,
@@ -306,6 +346,43 @@ describe("outputOptionsSummary", () => {
     });
     expect(outputOptionsSummary(brand, { specIds: [], photoCount: 1 }).lines[0]).toBe(
       "Background removed, on brand color 1, #1F2A44.",
+    );
+  });
+
+  it("reads the kept photos from the keep list, not the pack's switch (per photo backgrounds)", () => {
+    // Remove pack with one photo set to Keep as is.
+    const removeWithKept = resolveOutputOptions(normalizeOutputOptions({ background: "remove" }), {
+      colorHex: "#FFFFFF",
+      brandSweepHex: "#1F2A44",
+      keepMediaIds: ["ws/a"],
+    });
+    const mixed = outputOptionsSummary(removeWithKept, { specIds: ["amazon.main", "meta.feed_1x1"], photoCount: 3 });
+    expect(mixed.lines.slice(0, 3)).toEqual([
+      "Background kept as you took it, on 1 photo.",
+      "Background removed on your other photos, on white.",
+      "Amazon main image: background removed, because Amazon requires white.",
+    ]);
+    expect(mixed.lines).toContain("Added space: white.");
+    // Unknown photo count: the Remove switch says the rest were removed.
+    expect(outputOptionsSummary(removeWithKept, { specIds: [] }).lines.slice(0, 2)).toEqual([
+      "Background kept as you took it, on 1 photo.",
+      "Background removed on your other photos, on white.",
+    ]);
+    // Keep pack with every photo set to Remove: nothing was kept.
+    const keepNoneKept = resolveOutputOptions(normalizeOutputOptions({ background: "keep" }), {
+      colorHex: "#FFFFFF",
+      brandSweepHex: "#1F2A44",
+      keepMediaIds: [],
+    });
+    const none = outputOptionsSummary(keepNoneKept, { specIds: ["amazon.main", "meta.feed_1x1"], photoCount: 2 });
+    expect(none.lines[0]).toBe("Background removed, on white.");
+    expect(none.lines.some((line) => line.includes("kept as you took it") || line.startsWith("Added space"))).toBe(false);
+    // Every photo kept: no removed line.
+    expect(outputOptionsSummary(keepResolved, { specIds: [], photoCount: 3 }).lines[0]).toBe(
+      "Background kept as you took it, on 3 photos.",
+    );
+    expect(outputOptionsSummary(keepResolved, { specIds: [], photoCount: 3 }).lines.join(" ")).not.toContain(
+      "Background removed",
     );
   });
 

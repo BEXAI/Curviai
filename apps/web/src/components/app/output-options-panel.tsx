@@ -87,7 +87,7 @@ export function OutputOptionsPanel({
   const chip = customChipText(state);
   const { choices } = state;
   const keep = choices.background === "keep";
-  const changed = moreOptionsChanged(state);
+  const changed = moreOptionsChanged(state, { scenesPaused: scenesPausedNote !== null });
 
   function pickLook(look: LookKey) {
     if (look === "brand" && !brand.available) return;

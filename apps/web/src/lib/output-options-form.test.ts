@@ -3,6 +3,7 @@ import {
   DEFAULT_OUTPUT_OPTIONS,
   EXTRA_FAMILY_KEYS,
   LOOK_PRESETS,
+  MAX_SOURCE_UPSCALE,
   OutputOptionsInput,
   outputOptionsKey,
   type OutputPlanFlags,
@@ -176,6 +177,19 @@ describe("the output options reducer", () => {
     expect(moreOptionsSummary(1)).toBe("More options, 1 changed");
     expect(PHOTO_SHAPE_OPTIONS.map((o) => o.value)).toEqual(["auto", "pad"]);
   });
+
+  it("does not count a scene count the body leaves out while scenes are paused", () => {
+    const state = reduce({ type: "scenes", count: 2 });
+    expect(moreOptionsChanged(state)).toBe(1);
+    expect(moreOptionsChanged(state, { scenesPaused: true })).toBe(0);
+    const body = outputOptionsBody(state.lookBase, effectiveChoices(state.choices, { scenesPaused: true }), state.more);
+    expect(body.sceneCount).toBeUndefined();
+  });
+
+  it("gives the conflict copy the enlarge cap of the resolved options", () => {
+    expect(conflictContextOf("keep", [], { enlarge: false }).maxUpscale).toBe(1);
+    expect(conflictContextOf("keep", []).maxUpscale).toBe(MAX_SOURCE_UPSCALE);
+  });
 });
 
 describe("effective choices", () => {
@@ -290,6 +304,7 @@ describe("photos and conflicts", () => {
     expect(rowConflicts(conflicts, "shopify.product")).toHaveLength(0);
     expect(conflictContextOf("keep", [{ id: "x", width: 900, height: null }])).toEqual({
       background: "keep",
+      maxUpscale: MAX_SOURCE_UPSCALE,
       photos: [{ id: "x", width: 900 }],
     });
   });

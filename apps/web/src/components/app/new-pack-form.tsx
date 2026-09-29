@@ -507,7 +507,7 @@ export function NewPackForm({
   }, [optionsOn, anglesKey, boxContents, comparisonFacts, scenesPausedNote, usableBrand, brandKitsAllowed, output, selected, effectiveMode, tier]);
 
   const conflicts = optionsOn && effectiveMode !== "concept" ? formConflicts(selected, output.current.resolved, output.planned) : [];
-  const conflictContext = conflictContextOf(choices.background, output.planned);
+  const conflictContext = conflictContextOf(choices.background, output.planned, output.current.resolved);
   const headsUp: ConflictLine[] = conflictLines(conflicts, conflictContext);
   const photoOutput = (photo: PhotoItem): PhotoOutputContext | undefined =>
     flags && effectiveMode !== "concept" ? photoOutputContext(formPhotoId(photo), selected, flags) : undefined;

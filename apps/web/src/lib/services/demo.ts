@@ -188,13 +188,27 @@ export function getDemoStore(): DemoStore {
 
 /** The request body a replay must match. The options count by their
  * canonical key, so no options and explicit defaults are the same body, and
- * a concept pack's options always read as the defaults. Throws on options
- * the schema refuses. */
-export function hashBody(input: Pick<CreateJobInput, "productId" | "channels" | "mode" | "outputOptions">): string {
+ * a concept pack's options always read as the defaults. The uploads' own
+ * backgrounds (P1) count too, as in db mode's replay, and only when some
+ * upload has one, so a body without them hashes as before. Throws on
+ * options the schema refuses. */
+export function hashBody(
+  input: Pick<CreateJobInput, "productId" | "channels" | "mode" | "outputOptions" | "uploads">,
+): string {
   const options = outputOptionsKey(input.mode === "concept" ? null : (input.outputOptions ?? null));
+  const own = input.mode === "concept" ? {} : photoBackgroundsOf(input.uploads);
+  const backgrounds = Object.entries(own)
+    .filter(([, choice]) => choice !== "pack")
+    .sort(([a], [b]) => a.localeCompare(b));
   return createHash("sha256")
     .update(
-      JSON.stringify({ productId: input.productId, channels: [...input.channels].sort(), mode: input.mode, options }),
+      JSON.stringify({
+        productId: input.productId,
+        channels: [...input.channels].sort(),
+        mode: input.mode,
+        options,
+        ...(backgrounds.length > 0 ? { backgrounds } : {}),
+      }),
     )
     .digest("hex");
 }

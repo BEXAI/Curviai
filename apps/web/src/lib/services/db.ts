@@ -62,7 +62,7 @@ import {
   outputOptionsSwitchOn,
 } from "@/lib/features";
 import { inventoryView } from "@/lib/inventory-copy";
-import { outputOptionsSummary, publicJobError } from "@/lib/job-copy";
+import { outputOptionsSummary, publicJobError, shotCopyContextOf } from "@/lib/job-copy";
 import { OPTIONS_UNREADABLE_COPY } from "@/lib/output-options-copy";
 import { PACKS_PAUSED_COPY, providerPreflight, type PreflightVerdict } from "@/lib/provider-preflight";
 import { enqueueGeneratePack, enqueuePackFollowUp, settleJob } from "@/lib/jobs/enqueue";
@@ -823,7 +823,12 @@ export class DbService implements Services {
     ]);
     const mode = current.mode ?? product?.mode ?? "listing";
 
-    const shots = buildShotViews(steps, assetRows, { status: current.status as JobStatus, mode });
+    const storedOutput = readStoredOutputOptions(current.outputOptions);
+    const shots = buildShotViews(steps, assetRows, {
+      status: current.status as JobStatus,
+      mode,
+      copy: shotCopyContextOf(storedOutput),
+    });
 
     // Delivered variants give each finished shot its real channels, a
     // preview and a download link. DbJobStore records each asset's shot id
@@ -924,22 +929,32 @@ export class DbService implements Services {
       canManage: role !== null && role !== "client",
       followUpRunning: Boolean(report) && !["done", "failed", "canceled"].includes(current.status),
       inventory: inventoryView(current.inventory),
-      ...this.outputOptionsView(current),
+      ...this.outputOptionsView(current, storedOutput, assetRows),
     };
   }
 
   /** The "Your choices" card for a job row. A row with no options reads as
-   * today's pack; one the schema refuses shows no card and is logged. */
-  private outputOptionsView(job: typeof generationJobs.$inferSelect): Pick<JobView, "outputOptions"> {
-    const stored = readStoredOutputOptions(job.outputOptions);
+   * today's pack; one the schema refuses shows no card and is logged. The
+   * pack's photos are the source photos its shots used plus the kept ones;
+   * before any shot is saved the count is unknown and the pack's switch
+   * decides whether "Background removed" shows. */
+  private outputOptionsView(
+    job: typeof generationJobs.$inferSelect,
+    stored: ResolvedOutputOptions | null | undefined,
+    assetRows: readonly { qc: Record<string, unknown> | null }[],
+  ): Pick<JobView, "outputOptions"> {
     if (stored === undefined) {
       console.warn(`[jobs] job ${job.id} has output options that could not be read`);
       return {};
     }
+    const sources = assetRows
+      .map((a) => storedShot(a.qc)?.sourceMediaId)
+      .filter((key): key is string => typeof key === "string" && key.length > 0);
+    const photos = new Set([...sources, ...(stored?.keepMediaIds ?? [])]);
     return {
       outputOptions: outputOptionsSummary(stored, {
         specIds: job.channels ?? [],
-        photoCount: stored?.keepMediaIds.length ?? 0,
+        ...(sources.length > 0 ? { photoCount: photos.size } : {}),
       }),
     };
   }

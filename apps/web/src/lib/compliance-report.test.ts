@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TREATMENT_NOTES, treatmentNotes, type TreatmentNoteKey } from "@curvi/pipeline/treatment";
 import { getSpec } from "@curvi/specs";
 import {
+  BACKGROUND_MATCHES_CHECK,
   buildComplianceReportView,
   channelTitle,
   demoComplianceReport,
@@ -115,6 +116,25 @@ describe("PHASE_15 check labels", () => {
     });
     expect(describeCheck(check, "tiktokshop.main").label).toBe("White background");
     expect(describeCheck(check).label).toBe("White or transparent background");
+  });
+
+  it("labels the chosen color check in plain words (P1)", () => {
+    const row = describeCheck({ name: BACKGROUND_MATCHES_CHECK, pass: true, measured: 1.2345, limit: "<= 2 deltaE" });
+    expect(row).toEqual({
+      key: BACKGROUND_MATCHES_CHECK,
+      label: "Background matches your color",
+      pass: true,
+      measured: "a difference of 1.23",
+      required: "a difference of at most 2",
+    });
+    expect(
+      describeCheck({ name: BACKGROUND_MATCHES_CHECK, pass: false, measured: "mask missing", limit: "<= 2 deltaE" })
+        .measured,
+    ).toBe("Could not be measured");
+    for (const text of [row.label, row.measured, row.required]) {
+      expect(text).not.toMatch(FORBIDDEN);
+      expect(text).not.toMatch(/deltaE|backgroundMatchesChoice/);
+    }
   });
 
   it("labels the megapixels check in megapixels", () => {

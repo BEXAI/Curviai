@@ -231,6 +231,24 @@ describe("DbService.createJob with output options", () => {
     expect((await svc.createJob(ws, { ...input, uploads: [{ ...side, background: "remove" }] })).outcome).toBe("conflict");
   });
 
+  it("replays a pack setting upload as the pack, and a kept upload only as itself (P1)", async () => {
+    const { ws, productId } = await workspaceWith("starter");
+    const upload = { key: `ws/${ws}/src/new.jpg`, sha256: "c".repeat(64), kind: "image" as const, angle: "back" as const };
+    const input = jobInput(productId, { uploads: [upload] });
+    expect((await service().createJob(ws, input)).outcome).toBe("created");
+    expect((await service().createJob(ws, { ...input, uploads: [{ ...upload, background: "pack" }] })).outcome).toBe(
+      "replayed",
+    );
+    const kept = await service().createJob(ws, { ...input, uploads: [{ ...upload, background: "keep" }] });
+    expect(kept.outcome).toBe("conflict");
+
+    const keptInput = jobInput(productId, { uploads: [{ ...upload, key: `ws/${ws}/src/kept.jpg`, background: "keep" }] });
+    expect((await service().createJob(ws, keptInput)).outcome).toBe("created");
+    expect((await service().createJob(ws, keptInput)).outcome).toBe("replayed");
+    const removed = await service().createJob(ws, { ...keptInput, uploads: [{ ...keptInput.uploads![0], background: "pack" }] });
+    expect(removed.outcome).toBe("conflict");
+  });
+
   it("answers invalid_options for a brand color the kit does not have", async () => {
     const { ws, productId } = await workspaceWith("starter", { kit: ["#112233"] });
     const result = await service().createJob(ws, jobInput(productId, { outputOptions: { color: { kind: "brand", index: 3 } } }));
@@ -418,12 +436,19 @@ describe("DbService.listProducts and getJob", () => {
   });
 
   it("shows the Your choices card, and none for options it cannot read", async () => {
-    const { ws, productId } = await workspaceWith("starter");
+    const { ws, productId, keys } = await workspaceWith("starter");
     const created = await service().createJob(ws, jobInput(productId, { outputOptions: KEEP }));
     const jobId = created.outcome === "created" ? created.job.id : "";
     const view = await service().getJob(ws, jobId);
     expect(view?.outputOptions?.look).toBe("keep_photo");
     expect(view?.outputOptions?.lines[0]).toBe("Background kept as you took it, on 1 photo.");
+
+    // A Remove pack whose only photo was kept on its own (P1): the card
+    // follows the keep list, and the shots' photos show nothing was removed.
+    const ownKept = await deliveredPack(ws, productId, { ...storedOptions("remove", keys), keepMediaIds: [keys[0]] });
+    const ownView = await service().getJob(ws, ownKept);
+    expect(ownView?.outputOptions?.lines[0]).toBe("Background kept as you took it, on 1 photo.");
+    expect(ownView?.outputOptions?.lines.join(" ")).not.toContain("Background removed on your other photos");
 
     vi.spyOn(console, "warn").mockImplementation(() => {});
     await db.update(generationJobs).set({ outputOptions: { v: 9 } }).where(eq(generationJobs.id, jobId));

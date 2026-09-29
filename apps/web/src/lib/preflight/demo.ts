@@ -21,6 +21,15 @@ function thumb(label: string, fill: string): string {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
 
+/**
+ * The demo's cutout preview (PHASE_15 P1): a product shape on a clear
+ * background, so the preview strip shows a cut out product on the chosen
+ * color in demo mode and e2e, as the signed preview does in db mode.
+ */
+const DEMO_CUTOUT_URL = `data:image/svg+xml;base64,${Buffer.from(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320"><rect x="110" y="40" width="100" height="40" rx="10" fill="#52525b"/><rect x="80" y="70" width="160" height="220" rx="28" fill="#a1a1aa"/><rect x="104" y="130" width="112" height="70" rx="8" fill="#e4e4e7"/></svg>`,
+).toString("base64")}`;
+
 const DEMO_ITEMS: PreflightItemView[] = [
   {
     number: 1,
@@ -50,11 +59,19 @@ export function demoPreflight(key: string, note?: string): PreflightView {
     photo: DEMO_PHOTO,
     productLongSide: 2400,
     sizes: sizeNeeds(),
+    previewUrl: DEMO_CUTOUT_URL,
     demo: true,
   };
   const name = key.toLowerCase();
   if (name.includes("screenshot")) {
-    return { ...base, status: "blocked", found: null, productLongSide: null, problem: problemFor("screenshot") };
+    return {
+      ...base,
+      status: "blocked",
+      found: null,
+      productLongSide: null,
+      problem: problemFor("screenshot"),
+      previewUrl: null,
+    };
   }
   if (name.includes("several")) {
     const text = (note ?? "").toLowerCase();
@@ -66,6 +83,8 @@ export function demoPreflight(key: string, note?: string): PreflightView {
       productLongSide: null,
       items: DEMO_ITEMS,
       preselect: named.length === 1 ? named[0].number : null,
+      // The preview shows one product, so the chooser has none (as in db mode).
+      previewUrl: null,
     };
   }
   return base;

@@ -292,6 +292,10 @@ describe("demo mode", () => {
     expect(ready).toMatchObject({ status: "ready", demo: true, found: "your product" });
     expect(ready.sizes).toEqual(sizeNeeds());
     expect(readyLine(ready, ["amazon.main"])).toBe("Found: your product. Ready for Amazon.");
+    // The cutout preview (P1) shows in demo mode too, for one product only.
+    expect(ready.previewUrl).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(demoPreflight("ws/demo/src/e2e-several").previewUrl).toBeNull();
+    expect(demoPreflight("ws/demo/src/e2e-screenshot").previewUrl).toBeNull();
   });
 
   it("simulates the chooser and a screenshot for the demo's own photos", () => {
