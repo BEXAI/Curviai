@@ -25,8 +25,9 @@ import sharp from "sharp";
 import { channelFileLimit, filenameFor, getSpec, isMarketplaceSpec, type ChannelSpec } from "@curvi/specs";
 import { writeDigitalSourceType, type DigitalSourceKind } from "../metadata/iptc";
 import { decodeToRgba } from "../raw";
-import { pixelChecks, type CheckItem, type PixelCheckReport } from "../qc/pixelChecks";
+import { headerChecks, pixelChecks, type CheckItem, type PixelCheckReport } from "../qc/pixelChecks";
 import type { RawImage, RawMask } from "../raw";
+import { treatmentNotes, type PackAssetTreatment } from "../treatment";
 import { applyBadge } from "./badge";
 
 export { applyBadge, badgeEligible, badgePlacement, renderBadge, type BadgeBox, type BadgeOutcome } from "./badge";
@@ -66,6 +67,17 @@ export interface PackAsset {
    * "trained" for fully generated images, "none" or omitted for deterministic
    * edits of the user's photo (plan 5.7.2). */
   digitalSource?: DigitalSourceKind;
+  /** What was done to the file's background and pixels (PHASE_15). Its
+   * machine notes go into the report. A kept photo (original or unchanged)
+   * and an already white file never carry the badge (founder decision 6),
+   * and an unchanged file is checked from its header only. */
+  treatment?: PackAssetTreatment;
+}
+
+/** Kept photos and already white files ship the seller's own pixels, so the
+ * packager never draws the badge on them. */
+function keepsSellerPixels(treatment: PackAssetTreatment | undefined): boolean {
+  return treatment?.kind === "original" || treatment?.kind === "original_unchanged" || treatment?.alreadyWhite === true;
 }
 
 export interface PackFileReport {
@@ -175,9 +187,10 @@ export async function buildPack(
       continue;
     }
 
-    const notes: string[] = [];
-    // Badges never touch marketplace bound files.
-    let badge = asset.badge === true;
+    const notes: string[] = treatmentNotes(asset.treatment);
+    // Badges never touch marketplace bound files, and never a kept photo
+    // (skipped with no note).
+    let badge = asset.badge === true && !keepsSellerPixels(asset.treatment);
     if (badge && (isMarketplaceSpec(asset.specId) || spec.badgeAllowed !== true)) {
       badge = false;
       notes.push("badge suppressed: not allowed for this channel spec");
@@ -255,10 +268,10 @@ export async function buildPack(
     let checks: CheckItem[] = [];
     let measured: PackFileReport["measured"] = null;
     let pass = true;
-    let pixels: { raw: RawImage; mask?: RawMask } | null = rawForChecks
-      ? { raw: rawForChecks, mask: asset.mask }
-      : null;
-    if (!pixels && asset.loadPixels) {
+    const unchanged = asset.treatment?.kind === "original_unchanged";
+    let pixels: { raw: RawImage; mask?: RawMask } | null =
+      rawForChecks && !unchanged ? { raw: rawForChecks, mask: asset.mask } : null;
+    if (!pixels && asset.loadPixels && !unchanged) {
       try {
         pixels = await asset.loadPixels(buffer);
       } catch {
@@ -280,6 +293,22 @@ export async function buildPack(
         fillRatio: report.fillRatio,
         bytes: report.bytes,
         format: report.format,
+      };
+    } else if (unchanged) {
+      // The stored bytes, proven by sha256 upstream: read the header only.
+      const meta = await sharp(buffer).metadata();
+      const width = meta.width ?? 0;
+      const height = meta.height ?? 0;
+      checks = headerChecks(width, height, spec, { bytes: buffer.length, format });
+      pass = checks.every((c) => c.pass);
+      measured = {
+        width,
+        height,
+        longestSide: Math.max(width, height),
+        backgroundWhiteShare: null,
+        fillRatio: null,
+        bytes: buffer.length,
+        format,
       };
     } else {
       const meta = await sharp(buffer).metadata();

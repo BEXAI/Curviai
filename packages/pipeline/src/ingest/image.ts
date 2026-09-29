@@ -106,6 +106,12 @@ export type ImageIngestResult =
       /** The bytes to store: the upload itself when nothing had to change. */
       bytes: Buffer;
       changed: boolean;
+      /** True when the photo was decoded and written again (a rotated photo,
+       * a GIF or TIFF, or a container the byte level strip could not parse).
+       * False when only metadata was dropped, byte for byte. */
+      reencoded: boolean;
+      /** The uploaded format, from the magic bytes. */
+      sourceFormat: IngestImageFormat;
       format: IngestImageFormat;
       contentType: string;
       /** Upright dimensions, after the orientation is applied. */
@@ -113,6 +119,22 @@ export type ImageIngestResult =
       height: number;
     }
   | { ok: false; reason: ImageIngestRefusal; message: string };
+
+/**
+ * What the upload path stores in source_media.ingest (PHASE_15 fidelity
+ * section), so a kept photo's notes can say which case the stored copy is.
+ * A null record (uploads before it existed) reads as unknown.
+ */
+export interface SourceMediaIngest {
+  v: 1;
+  reencoded: boolean;
+  sourceFormat: IngestImageFormat;
+}
+
+/** The source_media.ingest record for an accepted upload. */
+export function sourceMediaIngestOf(result: Extract<ImageIngestResult, { ok: true }>): SourceMediaIngest {
+  return { v: 1, reencoded: result.reencoded, sourceFormat: result.sourceFormat };
+}
 
 /** Plain spoken notices for each refusal, shown to the seller as is. */
 export const IMAGE_INGEST_MESSAGES: Record<ImageIngestRefusal, string> = {
@@ -215,6 +237,8 @@ export async function ingestImage(input: Buffer): Promise<ImageIngestResult> {
             ok: true,
             bytes: stripped,
             changed: !stripped.equals(input),
+            reencoded: false,
+            sourceFormat: detected,
             format: detected,
             contentType: INGEST_CONTENT_TYPES[detected],
             ...upright,
@@ -244,6 +268,8 @@ export async function ingestImage(input: Buffer): Promise<ImageIngestResult> {
       ok: true,
       bytes: output.data,
       changed: true,
+      reencoded: true,
+      sourceFormat: detected,
       format,
       contentType: INGEST_CONTENT_TYPES[format],
       width: output.info.width,

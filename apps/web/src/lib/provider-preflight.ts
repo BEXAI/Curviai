@@ -11,8 +11,12 @@
  *   last PROBE_FRESH_MS.
  *
  * Verdicts:
- * - "packs_paused": every configured cutout provider is unavailable. Every
- *   shot starts from the cutout, so Create pack is disabled.
+ * - "packs_paused": every configured cutout provider is unavailable. A pack
+ *   that needs a cutout (packNeedsCutout in @curvi/pipeline/output-options:
+ *   any removed background, any extra image, or a channel that requires
+ *   white) cannot start, so the form disables Create pack for it and
+ *   createJob refuses it. A pack that keeps every photo as it is, with no
+ *   extras and no white required channel, still runs.
  * - "scenes_paused": every configured image provider is unavailable. Packs
  *   still run: white background, cutout and other photo based files are
  *   delivered, scenes are paused and not charged.
@@ -49,7 +53,7 @@ export const PREFLIGHT_CACHE_MS = 15_000;
 const ACCOUNT_REFUSED = new Set([401, 402, 403]);
 
 export const PACKS_PAUSED_COPY =
-  "Packs are paused for a few minutes while an image service recovers. Nothing will be charged.";
+  "Packs that remove the background are paused for a few minutes while an image service recovers. Nothing will be charged.";
 export const SCENES_PAUSED_COPY =
   "Lifestyle scenes are paused while an image service recovers. White background and cutout files still work, and paused scenes are not charged.";
 

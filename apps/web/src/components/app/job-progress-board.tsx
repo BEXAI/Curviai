@@ -11,12 +11,15 @@ import {
 } from "@/components/app/pack-actions";
 import { ComplianceReportPanel } from "@/components/app/compliance-report-panel";
 import { InventoryCard } from "@/components/app/inventory-card";
+import { JobOptionsCard } from "@/components/app/job-options-card";
+import { OutputPreview } from "@/components/app/output-preview";
 import { PackDownloads } from "@/components/app/pack-downloads";
 import { PackReveal } from "@/components/app/pack-reveal";
 import { StatusChip } from "@/components/app/status-chip";
 import { packSummaryLine } from "@/lib/job-copy";
 import { isTerminalJobStatus, nextPoll, pollStopCopy, type PollResult, type PollStopReason } from "@/lib/job-poll";
 import { canReveal, revealShots } from "@/lib/makeover";
+import { boardShots, isOriginalShot, isTransparentShot, isTurnedOffShot, previewAspect } from "@/lib/output-preview";
 import { track } from "@/lib/track";
 import type { JobShotView, JobView } from "@/lib/services/types";
 
@@ -85,7 +88,10 @@ function ComplianceBadge({ shot }: { shot: JobShotView }) {
   if (shot.status !== "done" || !shot.compliance) {
     return null;
   }
-  const { pass, fillPct, background } = shot.compliance;
+  const { pass, fillPct } = shot.compliance;
+  // A kept photo is never held to a background rule, so no background
+  // reading is shown for it (PHASE_15: no pure white check on originals).
+  const background = isOriginalShot(shot.shotType) ? null : shot.compliance.background;
   if (!pass) {
     return <Badge variant="warning">Needs another pass</Badge>;
   }
@@ -123,6 +129,86 @@ function shotChip(shot: JobShotView, jobStatus: JobView["status"]): { status: st
     }
   }
   return { status: shot.status, label: shot.label ?? null };
+}
+
+/**
+ * One shot on the board. The preview shows the whole file inside a box in
+ * its channel's shape, with a checkerboard behind a transparent PNG
+ * (PHASE_15 job page), so a kept photo is never cropped to a square.
+ */
+export function ShotCard({
+  shot,
+  job,
+  canManage,
+  onAction,
+}: {
+  shot: JobShotView;
+  job: Pick<JobView, "id" | "status">;
+  canManage: boolean;
+  onAction: (result: PackActionResult) => void;
+}) {
+  const chip = shotChip(shot, job.status);
+  const title = shotTitle(shot.shotType);
+  return (
+    <Card
+      className={cn(
+        "h-full transition-shadow hover:shadow-raised",
+        shot.status === "skipped" && "border-dashed bg-ink-50/60",
+      )}
+      data-testid="shot-card"
+      data-shot-status={shot.status}
+      data-shot-type={shot.shotType}
+    >
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-semibold text-ink-900">{title}</p>
+          <StatusChip status={chip.status} label={chip.label} />
+        </div>
+        {shot.imageUrl ? (
+          <>
+            <OutputPreview
+              src={shot.imageUrl}
+              alt={`${title} result`}
+              aspect={previewAspect(shot.channels)}
+              transparent={isTransparentShot(shot.shotType)}
+              className="mt-3"
+              testId="shot-preview"
+            />
+            {shot.downloadUrl ? (
+              <a
+                href={shot.downloadUrl}
+                className="mt-2 inline-block text-xs font-medium text-accent-600 hover:text-accent-700"
+                onClick={() => track("pack_downloaded", { jobId: job.id, kind: "shot", channel: shot.channels[0] ?? null })}
+              >
+                Download {title.toLowerCase()} image
+              </a>
+            ) : null}
+          </>
+        ) : null}
+        {shot.providerStage ? <p className="mt-1 font-mono text-xs text-ink-400">{shot.providerStage}</p> : null}
+        {shot.channels.length > 0 ? (
+          <p className="mt-2 font-mono text-xs text-ink-500">{channelList(shot.channels)}</p>
+        ) : null}
+        {shot.note ? (
+          <p
+            className={cn("mt-2 text-xs", shot.status === "needs_review" ? "text-amber-800" : "text-ink-500")}
+            data-testid="shot-note"
+          >
+            {shot.note}
+          </p>
+        ) : null}
+        <div className="mt-3 min-h-6">
+          <ComplianceBadge shot={shot} />
+        </div>
+        {canManage && shot.action === "retry" ? (
+          <RetryShotButton jobId={job.id} shot={shot} title={title} onDone={onAction} />
+        ) : null}
+        {canManage && shot.action === "add_photo" ? (
+          <AddPhotoButton jobId={job.id} shot={shot} angleName={shot.angle ?? "missing"} onDone={onAction} />
+        ) : null}
+      </CardContent>
+    </Card>
+  );
 }
 
 function BoardSkeleton() {
@@ -300,8 +386,10 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
     return <BoardSkeleton />;
   }
 
+  // Shots the seller turned off are not shown, and not counted as left out.
+  const shots = boardShots(job.shots);
   const planned = job.shots.filter((s) => s.status !== "skipped");
-  const skipped = job.shots.filter((s) => s.status === "skipped");
+  const skipped = job.shots.filter((s) => s.status === "skipped" && !isTurnedOffShot(s));
   const delivered = planned.filter((s) => s.status === "done").length;
   const needsReview = planned.filter((s) => s.status === "needs_review" || s.status === "failed").length;
   const finished = delivered + needsReview;
@@ -408,7 +496,12 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
         <PackReveal jobId={job.id} sourceImageUrl={job.sourceImageUrl} shots={revealShots(job.shots)} />
       ) : null}
 
-      <InventoryCard inventory={job.inventory} />
+      {job.outputOptions || job.inventory ? (
+        <div className="grid gap-4 lg:auto-cols-fr lg:grid-flow-col [&:empty]:hidden">
+          <JobOptionsCard options={job.outputOptions} />
+          <InventoryCard inventory={job.inventory} />
+        </div>
+      ) : null}
 
       {planning ? (
         <Card data-testid="plan-pending">
@@ -421,76 +514,13 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
         </Card>
       ) : null}
 
-      {job.shots.length > 0 ? (
+      {shots.length > 0 ? (
         <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Shots in this pack">
-          {job.shots.map((shot) => {
-            const chip = shotChip(shot, job.status);
-            const title = shotTitle(shot.shotType);
-            return (
-              <li key={shot.shotId}>
-                <Card
-                  className={cn(
-                    "h-full transition-shadow hover:shadow-raised",
-                    shot.status === "skipped" && "border-dashed bg-ink-50/60",
-                  )}
-                  data-testid="shot-card"
-                  data-shot-status={shot.status}
-                >
-                  <CardContent className="p-5">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm font-semibold text-ink-900">{title}</p>
-                      <StatusChip status={chip.status} label={chip.label} />
-                    </div>
-                    {shot.imageUrl ? (
-                      <>
-                        {/* Signed R2 preview; a plain img avoids next/image domain config. */}
-                        <img
-                          src={shot.imageUrl}
-                          alt={`${title} result`}
-                          className="mt-3 aspect-square w-full rounded-lg border border-ink-950/10 object-cover"
-                        />
-                        {shot.downloadUrl ? (
-                          <a
-                            href={shot.downloadUrl}
-                            className="mt-2 inline-block text-xs font-medium text-accent-600 hover:text-accent-700"
-                            onClick={() => track("pack_downloaded", { jobId: job.id, kind: "shot", channel: shot.channels[0] ?? null })}
-                          >
-                            Download {title.toLowerCase()} image
-                          </a>
-                        ) : null}
-                      </>
-                    ) : null}
-                    {shot.providerStage ? (
-                      <p className="mt-1 font-mono text-xs text-ink-400">{shot.providerStage}</p>
-                    ) : null}
-                    {shot.channels.length > 0 ? (
-                      <p className="mt-2 font-mono text-xs text-ink-500">{channelList(shot.channels)}</p>
-                    ) : null}
-                    {shot.note ? (
-                      <p
-                        className={cn(
-                          "mt-2 text-xs",
-                          shot.status === "needs_review" ? "text-amber-800" : "text-ink-500",
-                        )}
-                        data-testid="shot-note"
-                      >
-                        {shot.note}
-                      </p>
-                    ) : null}
-                    <div className="mt-3 min-h-6">
-                      <ComplianceBadge shot={shot} />
-                    </div>
-                    {canManage && shot.action === "retry" ? (
-                      <RetryShotButton jobId={job.id} shot={shot} title={title} onDone={onAction} />
-                    ) : null}
-                    {canManage && shot.action === "add_photo" ? (
-                      <AddPhotoButton jobId={job.id} shot={shot} angleName={shot.angle ?? "missing"} onDone={onAction} />
-                    ) : null}
-                  </CardContent>
-                </Card>
-              </li>
-            );
-          })}
+          {shots.map((shot) => (
+            <li key={shot.shotId}>
+              <ShotCard shot={shot} job={job} canManage={canManage} onAction={onAction} />
+            </li>
+          ))}
         </ul>
       ) : null}
 

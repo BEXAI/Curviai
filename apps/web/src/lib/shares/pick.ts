@@ -27,36 +27,9 @@ export function isShareSlug(value: unknown): value is string {
   return typeof value === "string" && SLUG_PATTERN.test(value);
 }
 
-/**
- * Shot types in the order the hero "after" image is chosen: a lifestyle
- * scene shows the makeover best, then the white main image, then the rest.
- * The shot type may carry a suffix ("lifestyle:2"), which is ignored.
- */
-const HERO_ORDER = [
-  "lifestyle",
-  "amazon_main",
-  "sweep_gray",
-  "sweep_brand",
-  "alt_angle_white",
-  "shopify_hero",
-  "social_1x1",
-  "social_4x5",
-  "collection_thumb",
-];
-
-function heroRank(shotType: string): number {
-  const base = shotType.split(":")[0];
-  const index = HERO_ORDER.indexOf(base);
-  return index === -1 ? HERO_ORDER.length : index;
-}
-
-/** The asset to show as the hero, by shot type then creation order. */
-export function pickHeroAsset<T extends { shotType: string; createdAt: Date }>(assets: T[]): T | null {
-  if (assets.length === 0) {
-    return null;
-  }
-  return [...assets].sort((a, b) => heroRank(a.shotType) - heroRank(b.shotType) || a.createdAt.getTime() - b.createdAt.getTime())[0];
-}
+// The hero order lives in ./hero, which is client safe (this file imports
+// node:crypto), so the reveal on the job page can share it.
+export { allHeroCandidatesOriginal, HERO_ORDER, pickHeroAsset } from "./hero";
 
 /**
  * The file that shows a shot best on a web page: the most square one, then

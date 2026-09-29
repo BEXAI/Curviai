@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { brandStyleFor, buildGeneratePackInput, seoSlugFor } from "./payload";
+import { normalizeOutputOptions, resolveOutputOptions } from "@curvi/pipeline/output-options";
+import { brandStyleFor, buildGeneratePackInput, payloadOutputOf, seoSlugFor } from "./payload";
 
 describe("seoSlugFor", () => {
   it("slugifies titles into lowercase hyphenated names", () => {
@@ -177,5 +178,50 @@ describe("buildGeneratePackInput social badge", () => {
     expect(buildGeneratePackInput({ ...base, tier: "free" }).socialBadge).toBe(true);
     expect(buildGeneratePackInput({ ...base, tier: "starter" }).socialBadge).toBe(false);
     expect(buildGeneratePackInput({ ...base, tier: "agency" }).socialBadge).toBe(false);
+  });
+});
+
+describe("buildGeneratePackInput output options (PHASE_15 item 27)", () => {
+  const base = {
+    jobId: "job1",
+    workspaceId: "ws1",
+    tier: "starter" as const,
+    channels: ["amazon.main", "shopify.product"],
+    mode: "listing" as const,
+    creditBudget: 4,
+    product: { id: "p1", title: "Mug", mode: "listing" as const, amazonSku: null },
+    media: [
+      { r2Key: "ws/ws1/src/back.jpg", kind: "image" as const, angle: "back", width: 3000, height: 2000, reencoded: false },
+      { r2Key: "ws/ws1/src/front.jpg", kind: "image" as const, angle: "front", width: 4032, height: 3024, reencoded: true },
+      { r2Key: "ws/ws1/src/old.jpg", kind: "image" as const, width: null, height: 500, reencoded: null },
+    ],
+  };
+  const stored = resolveOutputOptions(normalizeOutputOptions({ background: "keep" }), {
+    colorHex: "#FFFFFF",
+    brandSweepHex: "#3A4556",
+    keepMediaIds: ["ws/ws1/src/front.jpg", "ws/ws1/src/back.jpg"],
+  });
+
+  it("passes each photo's size and re-encode flag through, and leaves out what is unknown", () => {
+    const input = buildGeneratePackInput(base);
+    expect(input.images).toEqual([
+      { mediaId: "ws/ws1/src/front.jpg", angle: "front", width: 4032, height: 3024, reencoded: true },
+      { mediaId: "ws/ws1/src/back.jpg", angle: "back", width: 3000, height: 2000, reencoded: false },
+      { mediaId: "ws/ws1/src/old.jpg" },
+    ]);
+  });
+
+  it("parses the stored options again and attaches them as output", () => {
+    const input = buildGeneratePackInput({ ...base, outputOptions: JSON.parse(JSON.stringify(stored)) });
+    expect(input.output).toEqual(stored);
+    expect(payloadOutputOf(null)).toBeUndefined();
+    expect(buildGeneratePackInput(base).output).toBeUndefined();
+  });
+
+  it("throws on stored options the schema refuses", () => {
+    expect(() => buildGeneratePackInput({ ...base, outputOptions: { ...stored, v: 2 } })).toThrow();
+    expect(() => buildGeneratePackInput({ ...base, outputOptions: { ...stored, colorHex: "red" } })).toThrow();
+    expect(() => buildGeneratePackInput({ ...base, outputOptions: { ...stored, extra: true } })).toThrow();
+    expect(() => payloadOutputOf("keep")).toThrow();
   });
 });

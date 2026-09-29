@@ -35,6 +35,13 @@ describe("pnpm db:seed platform settings", () => {
     expect(Number(fromSql.rows[0].free_signup_credits)).toBe(tierByKey("free").creditsOnce);
   });
 
+  it("seeds the output options kill switch on", async () => {
+    await loadPlatformSettings(db);
+    const rows = await created.db.select().from(platformSettings).where(eq(platformSettings.key, "output_options_enabled"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].value).toBe(true);
+  });
+
   it("settles nothing on a database without Supabase auth", async () => {
     expect(await grantPendingSignupCredits(db)).toBe(0);
   });

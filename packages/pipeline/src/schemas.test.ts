@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { IntakeResult, ProductProfile, QCVerdict, ShotList, strictToolSchema } from "./schemas";
+import {
+  DETERMINISTIC_ONLY_SHOT_TYPES,
+  IntakeResult,
+  LlmShot,
+  LlmShotList,
+  ProductProfile,
+  QCVerdict,
+  Shot,
+  ShotList,
+  strictToolSchema,
+} from "./schemas";
 
 const UNSUPPORTED = [
   "$schema",
@@ -120,5 +130,46 @@ describe("strictToolSchema", () => {
     expect(out.properties.kind.enum).toEqual(["a", "b"]);
     expect(out.properties.tags.minItems).toBe(1);
     expect(out.required).toEqual(["pattern", "kind", "tags"]);
+  });
+});
+
+describe("LlmShot and original_photo", () => {
+  // ShotList exactly as it stood before PHASE_15 added original_photo. The
+  // plan recipe's tool schema must stay byte for byte this one.
+  const PRE_PHASE_15_SHOT = z.object({
+    id: z.string(), type: z.enum(["amazon_main","alt_angle_white","cutout_png","sweep_gray","sweep_brand","lifestyle","infographic","dimensions","in_the_box","comparison","aplus_banner","shopify_hero","collection_thumb","social_1x1","social_4x5","social_9x16","social_2x3","video_spin","video_hero_6s","video_lifestyle_15s","video_ugc_hook"]),
+    sourceMediaId: z.string(), method: z.enum(["deterministic","composite_generate","edit_generate","template","video_generate","avatar"]),
+    channels: z.array(z.string()), stylePreset: z.string(), scene: z.string().max(400).optional(),
+    callouts: z.array(z.string().max(40)).max(5).optional(), credits: z.number(), priority: z.number().int()
+  });
+  const PRE_PHASE_15_SHOT_LIST = z.object({ shots: z.array(PRE_PHASE_15_SHOT).max(40), skipped: z.array(z.object({ type: z.string(), reason: z.string() })) });
+
+  const original = {
+    id: "o1",
+    type: "original_photo",
+    sourceMediaId: "ws/a/src/front.jpg",
+    method: "deterministic",
+    channels: ["amazon.secondary"],
+    stylePreset: "none",
+    credits: 0.5,
+    priority: 1,
+  };
+
+  it("keeps the plan recipe's strict tool schema byte for byte", () => {
+    expect(JSON.stringify(strictToolSchema(LlmShotList))).toBe(JSON.stringify(strictToolSchema(PRE_PHASE_15_SHOT_LIST)));
+    expect(JSON.stringify(z.toJSONSchema(LlmShotList))).toBe(JSON.stringify(z.toJSONSchema(PRE_PHASE_15_SHOT_LIST)));
+  });
+
+  it("accepts original_photo on Shot and rejects it on LlmShot", () => {
+    expect(Shot.safeParse(original).success).toBe(true);
+    expect(ShotList.safeParse({ shots: [original], skipped: [] }).success).toBe(true);
+    expect(LlmShot.safeParse(original).success).toBe(false);
+    expect(LlmShotList.safeParse({ shots: [original], skipped: [] }).success).toBe(false);
+    expect(LlmShot.safeParse({ ...original, type: "amazon_main" }).success).toBe(true);
+  });
+
+  it("leaves out exactly the deterministic only types", () => {
+    const llm: readonly string[] = LlmShot.shape.type.options;
+    expect(Shot.shape.type.options.filter((t) => !llm.includes(t))).toEqual([...DETERMINISTIC_ONLY_SHOT_TYPES]);
   });
 });

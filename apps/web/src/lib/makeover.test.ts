@@ -31,8 +31,8 @@ describe("revealShots", () => {
       shot({ shotId: "s05", status: "done", imageUrl: "https://r2/c.jpg", shotType: "lifestyle_kitchen" }),
     ];
     expect(revealShots(shots)).toEqual([
-      { shotId: "s01", shotType: "amazon_main", title: "Amazon main", imageUrl: "https://r2/a.jpg" },
-      { shotId: "s05", shotType: "lifestyle_kitchen", title: "Lifestyle kitchen", imageUrl: "https://r2/c.jpg" },
+      { shotId: "s01", shotType: "amazon_main", title: "Amazon main", imageUrl: "https://r2/a.jpg", channels: [] },
+      { shotId: "s05", shotType: "lifestyle_kitchen", title: "Lifestyle kitchen", imageUrl: "https://r2/c.jpg", channels: [] },
     ]);
   });
 });

@@ -123,6 +123,23 @@ export interface JobInventory {
   photos: JobInventoryPhoto[];
 }
 
+/** The seller's resolved output options for a job (0023,
+ * docs/phases/PHASE_15.md): look, background, badge, originals and the
+ * extras, with a schema version `v`. Typed structurally so the db package
+ * does not depend on the pipeline; web and trigger parse it with the shared
+ * ResolvedOutputOptions schema in @curvi/pipeline and fail closed when it
+ * does not parse. Null reads as the defaults. */
+export type JobOutputOptions = Record<string, unknown>;
+
+/** A product's saved output choices (0023), as the seller picked them
+ * (OutputOptionsInput in @curvi/pipeline), never the resolved hex. */
+export type ProductOutputDefaults = Record<string, unknown>;
+
+/** What the ingest check found in one uploaded photo (0023), such as its
+ * size and whether it was re encoded at upload (SourceMediaIngest in
+ * @curvi/pipeline). Null on rows from before 0023. */
+export type SourceMediaIngest = Record<string, unknown>;
+
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -186,10 +203,19 @@ export const products = pgTable(
     sku: text("sku"),
     boxContents: jsonb("box_contents").$type<string[]>(),
     comparisonFacts: jsonb("comparison_facts").$type<string[]>(),
+    // The seller's saved output choices for this product (0023), a JSON
+    // object when set. Null means the defaults.
+    outputDefaults: jsonb("output_defaults").$type<ProductOutputDefaults>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("products_workspace_id_idx").on(t.workspaceId)],
+  (t) => [
+    index("products_workspace_id_idx").on(t.workspaceId),
+    check(
+      "products_output_defaults_object",
+      sql`${t.outputDefaults} IS NULL OR jsonb_typeof(${t.outputDefaults}) = 'object'`,
+    ),
+  ],
 );
 
 export const sourceMedia = pgTable(
@@ -214,6 +240,9 @@ export const sourceMedia = pgTable(
      * 0..1 of the upright photo (migration 0020). Written by the product
      * chooser; null when the seller did not choose. */
     targetBox: jsonb("target_box").$type<SourceMediaTargetBox>(),
+    /** What the ingest check found in this photo (migration 0023), a JSON
+     * object when set; null on rows from before 0023. */
+    ingest: jsonb("ingest").$type<SourceMediaIngest>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -221,6 +250,7 @@ export const sourceMedia = pgTable(
       "source_media_angle_check",
       sql`${t.angle} is null or ${t.angle} in ('front', 'back', 'side', 'detail', 'in_the_box', 'scale')`,
     ),
+    check("source_media_ingest_object", sql`${t.ingest} IS NULL OR jsonb_typeof(${t.ingest}) = 'object'`),
     index("source_media_workspace_id_idx").on(t.workspaceId),
     index("source_media_product_id_idx").on(t.productId),
     // One row per uploaded object (Update.md 6.3): a retried pack submit
@@ -298,6 +328,10 @@ export const generationJobs = pgTable(
     // pack featured (0021). Null on jobs that ran no inventory (demo mode,
     // or from before 0021).
     inventory: jsonb("inventory").$type<JobInventory>(),
+    // The seller's resolved output options (0023), a JSON object when set.
+    // Null on jobs from before 0023 and reads as the defaults, so every
+    // older pack reads as Marketplace ready.
+    outputOptions: jsonb("output_options").$type<JobOutputOptions>(),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -309,6 +343,10 @@ export const generationJobs = pgTable(
     // The scheduled stale job sweep reads live jobs by status and age (0017).
     index("generation_jobs_status_updated_at_idx").on(t.status, t.updatedAt),
     uniqueIndex("generation_jobs_workspace_idempotency_key_uq").on(t.workspaceId, t.idempotencyKey),
+    check(
+      "generation_jobs_output_options_object",
+      sql`${t.outputOptions} IS NULL OR jsonb_typeof(${t.outputOptions}) = 'object'`,
+    ),
   ],
 );
 

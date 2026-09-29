@@ -196,7 +196,15 @@ function expectSweepColor(render: StillRender, hex: string): void {
 describe("renderDeterministicShot", () => {
   it("lists exactly the deterministic types it renders", () => {
     expect([...DETERMINISTIC_LIVE_TYPES].sort()).toEqual(
-      ["alt_angle_white", "amazon_main", "collection_thumb", "cutout_png", "sweep_brand", "sweep_gray"].sort(),
+      [
+        "alt_angle_white",
+        "amazon_main",
+        "collection_thumb",
+        "cutout_png",
+        "original_photo",
+        "sweep_brand",
+        "sweep_gray",
+      ].sort(),
     );
   });
 

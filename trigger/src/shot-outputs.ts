@@ -32,11 +32,13 @@ import {
   MIN_PASTE_AREA_SHARE,
   qcKindForSpec,
   rawToSharp,
+  type QcKind,
   type RawImage,
   type RawMask,
 } from "@curvi/pipeline";
-import { canvasDefaults } from "@curvi/pipeline/seed";
-import { dimensionBounds, type ChannelSpec } from "@curvi/specs";
+import { hexToRgb } from "@curvi/pipeline/output-options";
+import { canvasDefaults, stillStyle } from "@curvi/pipeline/seed";
+import { dimensionBounds, requiresWhiteBackground, type ChannelSpec } from "@curvi/specs";
 import { ShotUnavailableError } from "./errors";
 
 /** Matches the QC edge margin the runner passes to pixelChecks. */
@@ -151,6 +153,27 @@ export interface EncodeOptions {
   erodePx?: number;
   /** Try lossless PNG before the JPEG ladder when the spec takes PNG. */
   preferPng?: boolean;
+  /** The fidelity threshold row, when it is not the spec's own: "main" for
+   * a kept photo, whose pixels must hold the strict row on every spec
+   * (PHASE_15 fidelity section). */
+  fidelityKind?: QcKind;
+}
+
+/**
+ * The flat color a JPEG must keep exactly outside the QC edge margin, or null
+ * when the spec has no such rule: a solid spec's own color, and white for
+ * every white or transparent and white preferred spec (their white rule,
+ * PHASE_15 item 19), so codec ringing that dirties the white sends the file
+ * to PNG instead of failing the white check.
+ */
+export function exactBackgroundRgb(spec: ChannelSpec): readonly [number, number, number] | null {
+  if (spec.background?.type === "solid" && spec.background.rgb) {
+    return spec.background.rgb;
+  }
+  if (requiresWhiteBackground(spec)) {
+    return spec.background?.rgb ?? hexToRgb(stillStyle.whiteHex);
+  }
+  return null;
 }
 
 export interface EncodedOutput {
@@ -163,9 +186,10 @@ export interface EncodedOutput {
  * Pick an encoding the spec allows and that fits spec.maxBytes, and return it
  * with the pixels decoded from those exact bytes. PNG first when preferPng is
  * set; otherwise JPEG first (stepping quality down to fit), then lossless PNG.
- * For a solid background spec a JPEG is only kept when its decoded background
- * is still exactly the spec color outside the QC edge margin; codec ringing
- * that dirties it sends the shot to PNG. A JPEG is also only kept when its
+ * For a solid background spec, and a white or transparent or white preferred
+ * one, a JPEG is only kept when its decoded background is still exactly the
+ * spec color (white) outside the QC edge margin; codec ringing that dirties
+ * it sends the shot to PNG. A JPEG is also only kept when its
  * product pixels pass the same rule 3 fidelity check the runner applies. When
  * codec error pushes pixels past the limit, higher qualities are tried, then
  * PNG, instead of loosening the check. When nothing the spec accepts passes,
@@ -180,9 +204,9 @@ export async function encodeForSpec(
 ): Promise<EncodedOutput> {
   const maxBytes = spec.maxBytes ?? Number.POSITIVE_INFINITY;
   const allows = (f: string): boolean => !spec.formats || (spec.formats as readonly string[]).includes(f);
-  const solidRgb = spec.background?.type === "solid" ? spec.background.rgb : undefined;
+  const solidRgb = exactBackgroundRgb(spec) ?? undefined;
   const checkMask = solidRgb ? await dilate(mask, QC_EDGE_MARGIN_PX) : null;
-  const kind = qcKindForSpec(spec);
+  const kind = opts.fidelityKind ?? qcKindForSpec(spec);
   const fidelityOpts = { kind, ...(opts.erodePx !== undefined ? { erodePx: opts.erodePx } : {}) };
 
   const tryPng = async (): Promise<EncodedOutput | null> => {

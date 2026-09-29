@@ -6,6 +6,16 @@ import { expect, test } from "@playwright/test";
 
 test("a finished pack shows the before and after with a share panel", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  // The demo server is shared by every spec, so another test's pack can
+  // finish here and raise its notice over the buttons: dismiss it.
+  await page.addLocatorHandler(
+    page.getByTestId("pack-ready-notice").first(),
+    async () => {
+      const dismiss = page.getByTestId("pack-ready-notice").getByRole("button", { name: "Dismiss" });
+      while ((await dismiss.count()) > 0) await dismiss.first().click();
+    },
+    { noWaitAfter: true },
+  );
   await page.goto("/app/new");
   await page.getByTestId("create-pack").click();
   await page.waitForURL(/\/app\/jobs\//, { timeout: 15000 });

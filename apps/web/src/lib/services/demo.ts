@@ -7,10 +7,20 @@
  */
 
 import { createHash } from "node:crypto";
+import {
+  backgroundFor,
+  canvasSizeFor,
+  originalFitFor,
+  originalScale,
+  outputOptionsKey,
+  rgbToHex,
+  type ResolvedOutputOptions,
+} from "@curvi/pipeline/output-options";
 import type { Shot } from "@curvi/pipeline/schemas";
-import { tierByKey, type TierKey } from "@curvi/pipeline/seed";
+import { backgroundSwatches, entitlementsFor, stillStyle, tierByKey, type TierKey } from "@curvi/pipeline/seed";
 import { isAngleRole, printableSellerLines } from "@curvi/pipeline/seller-inputs";
-import { filenameFor, getSpec } from "@curvi/specs";
+import type { PackAssetTreatment } from "@curvi/pipeline/treatment";
+import { filenameFor, getSpec, requiresWhiteBackground } from "@curvi/specs";
 import { beforeDemoImage } from "@/components/marketing/demo-images";
 import {
   demoComplianceReport,
@@ -19,10 +29,18 @@ import {
   type ComplianceReportView,
 } from "@/lib/compliance-report";
 import { checkChannelEntitlements } from "@/lib/entitlements";
-import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
+import { CONCEPT_MODE_AVAILABLE, outputOptionsAvailable } from "@/lib/features";
+import { outputOptionsSummary } from "@/lib/job-copy";
 import { demoPreflight } from "@/lib/preflight/demo";
 import type { PreflightOutcome } from "@/lib/preflight/types";
+import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import { planDemoShots } from "./demo-plan";
+import {
+  INVALID_OPTIONS_MESSAGE,
+  outputEstimateInputs,
+  resolveJobOutput,
+  type OutputPhoto,
+} from "./output-options";
 import { cancelNotice } from "./shot-ops";
 import type {
   AddShotPhotoInput,
@@ -123,6 +141,10 @@ interface DemoJobRecord {
   createdAt: string;
   creditsReserved: number;
   shots: Shot[];
+  /** The pack's resolved output options, as db mode stores them. */
+  output: ResolvedOutputOptions;
+  /** Photos the pack ran on. */
+  photoCount: number;
   /** How many times getJob has observed this job. Drives the simulation. */
   polls: number;
   /** The poll count at which the seller canceled it; the simulation stops
@@ -162,9 +184,16 @@ export function getDemoStore(): DemoStore {
   return globalScope.__curviDemoStore;
 }
 
-function hashBody(input: Pick<CreateJobInput, "productId" | "channels" | "mode">): string {
+/** The request body a replay must match. The options count by their
+ * canonical key, so no options and explicit defaults are the same body, and
+ * a concept pack's options always read as the defaults. Throws on options
+ * the schema refuses. */
+export function hashBody(input: Pick<CreateJobInput, "productId" | "channels" | "mode" | "outputOptions">): string {
+  const options = outputOptionsKey(input.mode === "concept" ? null : (input.outputOptions ?? null));
   return createHash("sha256")
-    .update(JSON.stringify({ productId: input.productId, channels: [...input.channels].sort(), mode: input.mode }))
+    .update(
+      JSON.stringify({ productId: input.productId, channels: [...input.channels].sort(), mode: input.mode, options }),
+    )
     .digest("hex");
 }
 
@@ -255,7 +284,7 @@ function projectJob(record: DemoJobRecord, productTitle: string): JobView {
       compliance: shotStatus === "done" ? complianceFor(shot) : null,
       // The same inline drawing the files list previews, so the before and
       // after reveal works with zero stored files.
-      imageUrl: shotStatus === "done" ? demoShotImage(shot.type) : null,
+      imageUrl: shotStatus === "done" ? demoShotImage(shot.type, shot.channels[0], record.output) : null,
     };
   });
   return {
@@ -274,6 +303,7 @@ function projectJob(record: DemoJobRecord, productTitle: string): JobView {
     sourceImageUrl: status === "done" ? beforeDemoImage : null,
     canManage: true,
     followUpRunning: false,
+    outputOptions: outputOptionsSummary(record.output, { specIds: record.channels, photoCount: record.photoCount }),
   };
 }
 
@@ -332,7 +362,17 @@ export class DemoService implements Services {
   }
 
   async listProducts(_workspaceId: string): Promise<ProductSummary[]> {
-    return this.allProducts();
+    return this.allProducts().map((product) => ({
+      ...product,
+      storedPhotoCount: Math.min(this.storedPhotoCount(product.id), MAX_PACK_PHOTOS),
+    }));
+  }
+
+  /** Photos a product holds: fixture products stand for a product
+   * photographed once, plus what demo packs uploaded. */
+  private storedPhotoCount(productId: string): number {
+    const fixture = DEMO_PRODUCTS.some((p) => p.id === productId) ? 1 : 0;
+    return fixture + (this.store.photoCounts.get(productId) ?? 0);
   }
 
   async listProductLibrary(_workspaceId: string): Promise<ProductLibraryEntry[]> {
@@ -351,9 +391,7 @@ export class DemoService implements Services {
             creditsCharged: view.creditsCharged,
           };
         });
-      // Fixture products stand for a product photographed once.
-      const fixture = DEMO_PRODUCTS.some((p) => p.id === product.id) ? 1 : 0;
-      return { ...product, photoCount: fixture + (this.store.photoCounts.get(product.id) ?? 0), packs };
+      return { ...product, photoCount: this.storedPhotoCount(product.id), packs };
     });
   }
 
@@ -400,25 +438,28 @@ export class DemoService implements Services {
     const files: JobFileView[] = [];
     const counters = new Map<string, number>();
     const channels = new Set<string>();
+    // A real pack delivers one file per channel a shot is made for, so a
+    // shot shared by several channels lists one file for each of them.
     for (const shot of record.shots) {
-      const specId = shot.channels[0];
-      const spec = tryGetSpec(specId);
-      if (!spec) {
-        continue;
-      }
-      const channel = specId.split(".")[0];
-      channels.add(channel);
-      const n = (counters.get(specId) ?? 0) + 1;
-      counters.set(specId, n);
-      files.push({
-        id: `demo_${shot.id}`,
-        name: demoFileName(specId, n),
-        channel,
-        specId,
-        kind: "image",
-        bytes: null,
-        url: demoShotImage(shot.type),
-        downloadUrl: null,
+      shot.channels.forEach((specId, index) => {
+        const spec = tryGetSpec(specId);
+        if (!spec) {
+          return;
+        }
+        const channel = specId.split(".")[0];
+        channels.add(channel);
+        const n = (counters.get(specId) ?? 0) + 1;
+        counters.set(specId, n);
+        files.push({
+          id: demoFileId(shot.id, index),
+          name: demoFileName(specId, n),
+          channel,
+          specId,
+          kind: "image",
+          bytes: null,
+          url: demoShotImage(shot.type, specId, record.output),
+          downloadUrl: null,
+        });
       });
     }
     for (const channel of channels) {
@@ -465,9 +506,17 @@ export class DemoService implements Services {
       return unavailableComplianceReport(meta, REPORT_NOT_READY);
     }
     const images = view.files.filter((file) => file.kind === "image" && file.specId);
+    const shotsByFileId = new Map(
+      record.shots.flatMap((shot) => shot.channels.map((_, index) => [demoFileId(shot.id, index), shot] as const)),
+    );
     return demoComplianceReport(
       meta,
-      images.map((file) => ({ name: file.name, specId: file.specId as string })),
+      images.map((file) => {
+        const shot = shotsByFileId.get(file.id);
+        const specId = file.specId as string;
+        return { name: file.name, specId, treatment: shot ? demoTreatment(shot, specId, record.output) : null };
+      }),
+      { keptBackground: record.output.background === "keep" },
     );
   }
 
@@ -537,7 +586,12 @@ export class DemoService implements Services {
   async createJob(_workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
     // A replay must match the body as sent: "new" stays "new" in the hash,
     // so a retry of a new product pack replays instead of making another.
-    const bodyHash = hashBody(input);
+    let bodyHash: string;
+    try {
+      bodyHash = hashBody(input);
+    } catch {
+      return { outcome: "rejected", reason: "invalid_options", message: INVALID_OPTIONS_MESSAGE };
+    }
     const existingId = this.store.jobIdByIdempotencyKey.get(input.idempotencyKey);
     if (existingId) {
       const existing = this.store.jobs.get(existingId);
@@ -582,11 +636,32 @@ export class DemoService implements Services {
     };
     const photos = (input.uploads ?? []).filter((u) => u.kind === "image");
 
+    // The pack's photos as db mode merges them: this request's uploads, or
+    // the product's stored photos (synthetic ids here, since the demo
+    // stores none). Sizes are unknown, so every photo is taken to fit.
+    const storedCount = existingProduct ? Math.min(this.storedPhotoCount(existingProduct.id), MAX_PACK_PHOTOS) : 0;
+    const packPhotos: OutputPhoto[] =
+      photos.length > 0
+        ? photos.slice(0, MAX_PACK_PHOTOS).map((u) => ({ id: u.key, angle: isAngleRole(u.angle) ? u.angle : null }))
+        : Array.from({ length: storedCount }, (_, i) => ({ id: `demo_photo_${i + 1}` }));
+    const output = resolveJobOutput({
+      input: input.outputOptions,
+      mode: input.mode,
+      enabled: outputOptionsAvailable(),
+      brandColors: DEMO_BRAND_KIT.colors,
+      brandKitsAllowed: entitlementsFor(DEMO_TIER).brandKits > 0,
+      photos: packPhotos,
+    });
+    if (!output.ok) {
+      return { outcome: "rejected", reason: output.reason, message: output.message };
+    }
+
     const balance = this.balance();
     const shots = planDemoShots(input.channels, DEMO_TIER, input.mode, {
       angles: photos.flatMap((u) => (isAngleRole(u.angle) ? [u.angle] : [])),
       boxContents: sellerInputs.boxContents,
       comparisonFacts: sellerInputs.comparisonFacts,
+      output: outputEstimateInputs(output.resolved, packPhotos),
     });
     const creditsReserved = Math.ceil(shots.reduce((sum, shot) => sum + shot.credits, 0));
     if (creditsReserved <= 0 || creditsReserved > balance) {
@@ -622,6 +697,8 @@ export class DemoService implements Services {
       createdAt: this.now().toISOString(),
       creditsReserved,
       shots,
+      output: output.resolved,
+      photoCount: packPhotos.length,
       polls: 0,
     };
     this.store.jobs.set(record.id, record);
@@ -631,6 +708,11 @@ export class DemoService implements Services {
 
   async getBrandKit(_workspaceId: string): Promise<BrandKitView> {
     return DEMO_BRAND_KIT;
+  }
+
+  /** The demo has no platform_settings table, so the env flag decides. */
+  async outputOptionsEnabled(): Promise<boolean> {
+    return outputOptionsAvailable();
   }
 
   async saveBrandKit(_workspaceId: string, _kit: BrandKitView): Promise<SaveResult> {
@@ -658,6 +740,11 @@ function tryGetSpec(specId: string): ReturnType<typeof getSpec> | null {
   }
 }
 
+/** A demo file's id: the shot's first channel keeps the plain id. */
+function demoFileId(shotId: string, index: number): string {
+  return index === 0 ? `demo_${shotId}` : `demo_${shotId}_${index}`;
+}
+
 function demoFileName(specId: string, n: number): string {
   const spec = tryGetSpec(specId);
   if (spec?.naming) {
@@ -670,9 +757,99 @@ function demoFileName(specId: string, n: number): string {
   return `${specId.replaceAll(".", "_")}_${String(n).padStart(2, "0")}.jpg`;
 }
 
-/** Tiny inline SVG preview so the reveal works with zero stored files. */
-function demoShotImage(shotType: string): string {
+/** The photo a demo pack stands for: a 12 megapixel phone photo. */
+export const DEMO_PHOTO_SIZE = { width: 4032, height: 3024 } as const;
+
+/** Shot types drawn as the cut out product on the pack's background. */
+const ON_BACKGROUND_TYPES: ReadonlySet<string> = new Set(["amazon_main", "alt_angle_white", "collection_thumb"]);
+
+/** Long side of a demo preview, in SVG units. */
+const PREVIEW_LONG_SIDE = 400;
+
+/**
+ * What the demo says was done to a file, the way the packager records it:
+ * a kept photo resized (and padded on an exact size channel) from the demo
+ * photo, and a cut out product on the pack's color, or on white where the
+ * channel requires it. Null for everything else.
+ */
+export function demoTreatment(shot: Shot, specId: string, output: ResolvedOutputOptions): PackAssetTreatment | null {
+  const spec = tryGetSpec(specId);
+  if (!spec) {
+    return null;
+  }
+  if (shot.type === "original_photo") {
+    const fit = originalFitFor(spec, output);
+    const scale = originalScale(DEMO_PHOTO_SIZE, spec, output);
+    return {
+      kind: "original",
+      scale: scale.scale,
+      sourceWidth: DEMO_PHOTO_SIZE.width,
+      sourceHeight: DEMO_PHOTO_SIZE.height,
+      ...(fit === "pad" ? { padHex: rgbToHex(backgroundFor(spec, output).rgb) } : {}),
+    };
+  }
+  if (!ON_BACKGROUND_TYPES.has(shot.type)) {
+    return null;
+  }
+  const background = backgroundFor(spec, output);
+  // On a Keep pack the background of a white required file was removed
+  // for that file only, which is the white required note too.
+  const forcedWhite = background.forcedWhite || (output.background === "keep" && requiresWhiteBackground(spec));
+  return forcedWhite ? { kind: "background", forcedWhite: true } : { kind: "background", colorHex: rgbToHex(background.rgb) };
+}
+
+/** A preview canvas in the spec's aspect, long side PREVIEW_LONG_SIDE. */
+function previewSize(width: number, height: number): { w: number; h: number } {
+  const scale = PREVIEW_LONG_SIDE / Math.max(width, height, 1);
+  return { w: Math.max(1, Math.round(width * scale)), h: Math.max(1, Math.round(height * scale)) };
+}
+
+/** The product illustration, centered in a box. */
+function productArt(x: number, y: number, w: number, h: number, card: string): string {
+  const s = Math.min(w / 400, h / 400);
+  const ox = x + (w - 400 * s) / 2;
+  const oy = y + (h - 400 * s) / 2;
+  return `<g transform="translate(${ox.toFixed(1)} ${oy.toFixed(1)}) scale(${s.toFixed(4)})"><rect x="130" y="90" width="140" height="220" rx="14" fill="#64708c"/><rect x="150" y="150" width="100" height="90" rx="8" fill="${card}" stroke="#c5cbd8"/><rect x="162" y="166" width="76" height="10" rx="4" fill="#384153"/><rect x="162" y="186" width="58" height="7" rx="3" fill="#8494ad"/><rect x="162" y="206" width="66" height="7" rx="3" fill="#8494ad"/></g>`;
+}
+
+/**
+ * Tiny inline SVG preview so the reveal works with zero stored files. It is
+ * drawn in the spec's aspect: a kept photo in the demo photo's own shape
+ * (or padded with the pack's color where the channel's shape needs it), a
+ * cut out product on the pack's color (white where the channel requires
+ * it), and anything else on white.
+ */
+export function demoShotImage(shotType: string, specId?: string, output?: ResolvedOutputOptions | null): string {
   const label = shotType.replaceAll("_", " ");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400"><rect width="400" height="400" fill="#ffffff"/><rect x="130" y="90" width="140" height="220" rx="14" fill="#64708c"/><rect x="150" y="150" width="100" height="90" rx="8" fill="#ffffff" stroke="#c5cbd8"/><rect x="162" y="166" width="76" height="10" rx="4" fill="#384153"/><rect x="162" y="186" width="58" height="7" rx="3" fill="#8494ad"/><rect x="162" y="206" width="66" height="7" rx="3" fill="#8494ad"/><text x="200" y="360" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20" fill="#5b6474">${label}</text></svg>`;
+  const spec = specId ? tryGetSpec(specId) : null;
+  const white = stillStyle.whiteHex;
+  const card = white;
+  let body: string;
+  let size: { w: number; h: number };
+  if (shotType === "original_photo" && spec) {
+    // The seller's own photo: a scene backdrop, never a flat studio color.
+    const scene = backgroundSwatches.sand.hex;
+    const floor = backgroundSwatches.studio_gray.hex;
+    const photo = (x: number, y: number, w: number, h: number) =>
+      `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${scene}"/><rect x="${x}" y="${(y + h * 0.7).toFixed(1)}" width="${w}" height="${(h * 0.3).toFixed(1)}" fill="${floor}"/>${productArt(x, y, w, h, card)}`;
+    if (originalFitFor(spec, output) === "pad") {
+      const canvas = canvasSizeFor(spec);
+      size = previewSize(canvas.width, canvas.height);
+      const fit = Math.min(size.w / DEMO_PHOTO_SIZE.width, size.h / DEMO_PHOTO_SIZE.height);
+      const pw = Math.round(DEMO_PHOTO_SIZE.width * fit);
+      const ph = Math.round(DEMO_PHOTO_SIZE.height * fit);
+      const pad = rgbToHex(backgroundFor(spec, output).rgb);
+      body = `<rect width="${size.w}" height="${size.h}" fill="${pad}"/>${photo(Math.round((size.w - pw) / 2), Math.round((size.h - ph) / 2), pw, ph)}`;
+    } else {
+      size = previewSize(DEMO_PHOTO_SIZE.width, DEMO_PHOTO_SIZE.height);
+      body = photo(0, 0, size.w, size.h);
+    }
+  } else {
+    const canvas = spec ? canvasSizeFor(spec) : { width: PREVIEW_LONG_SIDE, height: PREVIEW_LONG_SIDE };
+    size = previewSize(canvas.width, canvas.height);
+    const fill = spec && ON_BACKGROUND_TYPES.has(shotType) ? rgbToHex(backgroundFor(spec, output).rgb) : white;
+    body = `<rect width="${size.w}" height="${size.h}" fill="${fill}"/>${productArt(0, 0, size.w, size.h * 0.85, card)}`;
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size.w}" height="${size.h}" viewBox="0 0 ${size.w} ${size.h}">${body}<text x="${Math.round(size.w / 2)}" y="${Math.round(size.h - 16)}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20" fill="#5b6474">${label}</text></svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }

@@ -22,6 +22,7 @@ import {
   type ShotContext,
   type ShotOutcome,
 } from "../pipeline-runner";
+import { buildR2Handoff } from "../r2";
 import { DEMO_MODE_NOTICE, optionalEnv } from "../runtime";
 import { generateShot } from "./generate-shot";
 
@@ -31,6 +32,7 @@ export const generatePack = task({
   retry: { maxAttempts: 1 },
   run: async (payload: GeneratePackInput): Promise<GeneratePackSummary & { notice?: string }> => {
     const deps = resolveRuntimeDeps();
+    const handoff = buildR2Handoff();
 
     const runShots = async (shots: Shot[], ctx: ShotContext): Promise<ShotOutcome[]> => {
       if (shots.length === 0) {
@@ -43,7 +45,9 @@ export const generatePack = task({
       // with its credits released; its siblings still ship (Update.md 3.3).
       return Promise.all(
         batch.runs.map((run, i) =>
-          run.ok ? deserializeShotOutcome(run.output, ctx) : recordShotFailure(deps.store, shots[i], ctx, run.error),
+          run.ok
+            ? deserializeShotOutcome(run.output, ctx, { handoff })
+            : recordShotFailure(deps.store, shots[i], ctx, run.error),
         ),
       );
     };

@@ -3,6 +3,7 @@
  * interleaved RGBA, masks are single channel where 255 means product.
  */
 import sharp from "sharp";
+import { stillStyle } from "./seed/templates";
 
 export interface RawImage {
   data: Buffer;
@@ -140,9 +141,13 @@ export async function prepareWorkingSource(buffer: Buffer, maxSide: number): Pro
     : working.jpeg({ quality: 95, chromaSubsampling: "4:4:4" }).toBuffer();
 }
 
-export async function encodeJpeg(img: RawImage, quality = 90): Promise<Buffer> {
-  // 4:4:4 keeps chroma blocks small so flat white regions stay exactly white.
-  return rawToSharp(img).flatten({ background: "#ffffff" }).jpeg({ quality, chromaSubsampling: "4:4:4" }).toBuffer();
+/**
+ * JPEG of a raw canvas. Any transparency is flattened onto flattenHex, seed
+ * white unless the caller placed the canvas on another color.
+ */
+export async function encodeJpeg(img: RawImage, quality = 90, flattenHex: string = stillStyle.whiteHex): Promise<Buffer> {
+  // 4:4:4 keeps chroma blocks small so flat regions stay exactly their color.
+  return rawToSharp(img).flatten({ background: flattenHex }).jpeg({ quality, chromaSubsampling: "4:4:4" }).toBuffer();
 }
 
 /**
@@ -154,7 +159,7 @@ export async function encodeVisionJpeg(bytes: Buffer, maxSide = 1568): Promise<B
   return sharp(bytes)
     .rotate()
     .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
-    .flatten({ background: "#ffffff" })
+    .flatten({ background: stillStyle.whiteHex })
     .jpeg({ quality: 85 })
     .toBuffer();
 }

@@ -18,11 +18,15 @@ import {
 import {
   decodeToRgba,
   deriveQcErodePx,
+  dilate,
   encodeJpeg,
   encodePng,
   erode,
   fidelityReport,
+  makeOriginalFit,
+  planShots,
   qcKindForSpec,
+  rawToSharp,
   solidCanvas,
   type HarmonizeInput,
   type ImageOutput,
@@ -30,12 +34,24 @@ import {
   type RawMask,
   type Shot,
 } from "@curvi/pipeline";
-import { CUTOUT_TASK, HARMONIZE_TASK, SCENE_PLATE_TASK } from "@curvi/pipeline/seed";
-import { getSpec } from "@curvi/specs";
+import {
+  hexToRgb,
+  normalizeOutputOptions,
+  planFlagsOf,
+  resolveColorHex,
+  resolveOutputOptions,
+  type OutputOptionsInput,
+  type ResolvedOutputOptions,
+} from "@curvi/pipeline/output-options";
+import { backgroundSwatches, CUTOUT_TASK, HARMONIZE_TASK, SCENE_PLATE_TASK } from "@curvi/pipeline/seed";
+import { getSpec, listSpecs } from "@curvi/specs";
+import { renderDeterministicShot, renderOnBackground } from "./live-deterministic";
+import { ORIGINAL_DRIFTED, renderOriginalShot } from "./live-original";
+import type { LiveProduct } from "./live-product";
 import { alphaMask, LiveShotGenerator, upscaleErodePx } from "./live-runtime";
 import { InMemoryJobStore, runShot, systemClock, type PipelineDeps, type ShotGeneration } from "./pipeline-runner";
-import { DemoLlmProvider, demoRoutingTable } from "./runtime";
-import { maskArea } from "./shot-outputs";
+import { DemoLlmProvider, demoProfile, demoRoutingTable } from "./runtime";
+import { encodeMaskPng, maskArea, QC_EDGE_MARGIN_PX } from "./shot-outputs";
 
 class FakeCutoutProvider implements Provider {
   readonly name = "fal-birefnet";
@@ -360,5 +376,197 @@ describe("lossy composites are checked as shipped (2.3)", () => {
       erodePx: generation.fidelityErodePx,
     });
     expect(atQ90.pass).toBe(false);
+  });
+});
+
+describe("kept photos and colored backgrounds keep the product pixels (PHASE_15)", () => {
+  const photoKey = "ws/ws-1/src/kept.jpg";
+  const photoSize = { width: 2400, height: 1800 };
+  const white = resolveColorHex({ kind: "swatch", key: "white" }, []) as string;
+  const optionsWith = (input: OutputOptionsInput, colorHex: string): ResolvedOutputOptions =>
+    resolveOutputOptions(normalizeOutputOptions(input), {
+      colorHex,
+      brandSweepHex: white,
+      keepMediaIds: input.background === "keep" ? [photoKey] : [],
+    });
+
+  let photoBytes: Promise<Buffer> | null = null;
+  /** A textured 2400 x 1800 JPEG, like a phone photo on a table. */
+  function keptPhoto(): Promise<Buffer> {
+    photoBytes ??= (async () => {
+      const { width, height } = photoSize;
+      const image = solidCanvas(width, height, 0, 0, 0);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const o = (y * width + x) * 4;
+          image.data[o] = 50 + Math.round((150 * x) / width) + ((x * 7 + y * 3) % 11);
+          image.data[o + 1] = 70 + Math.round((120 * y) / height) + ((x * 5 + y * 13) % 9);
+          image.data[o + 2] = 140 + ((x + y) % 60);
+        }
+      }
+      return encodeJpeg(image, 92);
+    })();
+    return photoBytes;
+  }
+
+  /** Every spec the front kept photo may ship on, as the planner routes it. */
+  function keptSpecIds(): string[] {
+    const output = optionsWith({ background: "keep" }, white);
+    const plan = planShots(demoProfile, {
+      channels: listSpecs().map((spec) => spec.id),
+      tier: "agency",
+      creditBudget: 1000,
+      primaryMediaId: photoKey,
+      output: planFlagsOf(output, [{ id: photoKey, ...photoSize }]),
+    });
+    const original = plan.shots.find((shot) => shot.type === "original_photo" && shot.sourceMediaId === photoKey);
+    return original?.channels ?? [];
+  }
+
+  const originalShot = (specId: string): Shot => ({
+    id: `original-${specId}`,
+    type: "original_photo",
+    sourceMediaId: photoKey,
+    method: "deterministic",
+    channels: [specId],
+    stylePreset: "none",
+    credits: 0.5,
+    priority: 1,
+  });
+
+  for (const fit of ["auto", "pad"] as const) {
+    it(`original_photo passes fidelity with kind main on every spec it may target, fit ${fit}`, async () => {
+      const photo = await keptPhoto();
+      const output = optionsWith({ background: "keep", fit, color: { kind: "swatch", key: "sand" } }, "#EADFCF");
+      const generator = new LiveShotGenerator({
+        ai: { registry: new ProviderRegistry(), routing: {}, meter: new InMemoryCostMeter(), breakerStore: new InMemoryBreakerStore() },
+        wiring: { llmLive: false, imageProviders: [], cutoutProviders: [], cutoutLive: false },
+        loadMedia: async (key) => (key === photoKey ? photo : null),
+      });
+      const specIds = keptSpecIds();
+      expect(specIds.length).toBeGreaterThan(3);
+      for (const specId of specIds) {
+        const generation = await generator.generate({
+          shot: originalShot(specId),
+          attempt: 1,
+          useFallbackProvider: false,
+          jobId: "job-kept",
+          workspaceId: "ws-1",
+          output,
+        });
+        expect(generation.fidelityKind, specId).toBe("main");
+        if (generation.passthrough) {
+          expect(generation.encoded.buffer.equals(photo), specId).toBe(true);
+          continue;
+        }
+        if (!generation.mask || !generation.productReference) {
+          throw new Error(`a rendered kept photo on ${specId} must carry its mask and reference`);
+        }
+        const shipped = await decodeToRgba(generation.encoded.buffer);
+        const report = await fidelityReport(generation.productReference, shipped, generation.mask, {
+          kind: "main",
+          erodePx: generation.fidelityErodePx,
+        });
+        expect(report.issues, specId).toEqual([]);
+        expect(report.maskArea, specId).toBeGreaterThan(0);
+      }
+    }, 120_000);
+  }
+
+  it("fails a render that sharpens, brightens or shifts the photo by one pixel", async () => {
+    const photo = await keptPhoto();
+    const spec = getSpec("amazon.secondary");
+    const mutate =
+      (change: (raw: RawImage) => Promise<RawImage>): typeof makeOriginalFit =>
+      async (bytes, s, opts) => {
+        const fitted = await makeOriginalFit(bytes, s, opts);
+        return fitted.raw ? { ...fitted, raw: await change(fitted.raw) } : fitted;
+      };
+    const viaSharp = (edit: (img: ReturnType<typeof rawToSharp>) => ReturnType<typeof rawToSharp>) => async (raw: RawImage) => {
+      const data = await edit(rawToSharp(raw)).ensureAlpha().raw().toBuffer();
+      return { ...raw, data };
+    };
+    const shiftRight = async (raw: RawImage): Promise<RawImage> => {
+      const data = Buffer.from(raw.data);
+      for (let y = 0; y < raw.height; y++) {
+        const row = y * raw.width * 4;
+        raw.data.copy(data, row + 4, row, row + (raw.width - 1) * 4);
+      }
+      return { ...raw, data };
+    };
+    const doubles = {
+      sharpen: mutate(viaSharp((img) => img.sharpen())),
+      brighten: mutate(viaSharp((img) => img.modulate({ brightness: 1.02 }))),
+      shift: mutate(shiftRight),
+    };
+    const honest = await renderOriginalShot({
+      shot: originalShot(spec.id),
+      spec,
+      workspaceId: "ws-1",
+      loadSource: async () => photo,
+    });
+    expect(honest.kind).toBe("rendered");
+    for (const [name, fitOriginal] of Object.entries(doubles)) {
+      await expect(
+        renderOriginalShot({ shot: originalShot(spec.id), spec, workspaceId: "ws-1", loadSource: async () => photo, fitOriginal }),
+        name,
+      ).rejects.toThrow(ORIGINAL_DRIFTED);
+    }
+  }, 60_000);
+
+  /** The textured cutout as the live generator hands it to the renderers. */
+  async function liveProduct(): Promise<LiveProduct> {
+    const productPng = await texturedCutout(480, 360);
+    const productRgba = await decodeToRgba(productPng);
+    const mask = alphaMask(productRgba);
+    return { productRgba, mask, productPng, maskPng: await encodeMaskPng(mask) };
+  }
+
+  it("renderOnBackground on #1F2A44 keeps the product pixels of the white render inside the eroded mask", async () => {
+    const product = await liveProduct();
+    const spec = getSpec("amazon.secondary");
+    const onWhite = await renderOnBackground(product, spec, { rgb: hexToRgb(white) });
+    const onNavy = await renderOnBackground(product, spec, { rgb: hexToRgb("#1F2A44") });
+    expect(onNavy.productReference.data.equals(onWhite.productReference.data)).toBe(true);
+    const erodePx = Math.max(onWhite.fidelityErosion?.erodePx ?? 0, onNavy.fidelityErosion?.erodePx ?? 0);
+    const mask = onWhite.mask as RawMask;
+    for (const render of [onWhite, onNavy]) {
+      const own = await fidelityReport(render.productReference, await decodeToRgba(render.encoded.buffer), mask, {
+        kind: "main",
+        erodePx,
+      });
+      expect(own.issues).toEqual([]);
+    }
+    const whitePixels = await decodeToRgba(onWhite.encoded.buffer);
+    const navyPixels = await decodeToRgba(onNavy.encoded.buffer);
+    const same = await fidelityReport(whitePixels, navyPixels, mask, { kind: "main", erodePx });
+    expect(same.issues).toEqual([]);
+    // The navy file really is navy outside the product.
+    expect(navyPixels.data[0]).toBeLessThan(80);
+  });
+
+  it("keeps amazon_main exactly 255 white under every color the seller can pick", async () => {
+    const product = await liveProduct();
+    const spec = getSpec("amazon.main");
+    const colors = [...Object.values(backgroundSwatches).map((swatch) => swatch.hex), "#1F2A44"];
+    for (const hex of colors) {
+      const output = optionsWith({ color: { kind: "custom", hex } }, hex);
+      const render = await renderDeterministicShot({
+        shot: shotOf("amazon_main", "deterministic", ["amazon.main"], { stylePreset: "none" }),
+        product,
+        output,
+      });
+      const shipped = await decodeToRgba(render.encoded.buffer);
+      const outside = await dilate(render.mask as RawMask, QC_EDGE_MARGIN_PX);
+      let offWhite = 0;
+      for (let i = 0; i < outside.data.length; i++) {
+        if (outside.data[i] !== 0) continue;
+        const o = i * 4;
+        if (shipped.data[o] !== 255 || shipped.data[o + 1] !== 255 || shipped.data[o + 2] !== 255) offWhite += 1;
+      }
+      expect(offWhite, hex).toBe(0);
+      expect(spec.background?.type).toBe("solid");
+      expect(render.treatment?.colorHex, hex).toBe(white);
+    }
   });
 });

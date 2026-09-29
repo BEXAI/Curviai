@@ -10,7 +10,7 @@ import {
   type RawMask,
 } from "@curvi/pipeline";
 import { canvasDefaults } from "@curvi/pipeline/seed";
-import { getSpec, type ChannelSpec } from "@curvi/specs";
+import { getSpec, listSpecs, requiresWhiteBackground, type ChannelSpec } from "@curvi/specs";
 import { ShotUnavailableError } from "./errors";
 import {
   canvasSizeFor,
@@ -23,6 +23,7 @@ import {
   qcErodeWithFloor,
   resizeCanvasTo,
   stillQcErosion,
+  exactBackgroundRgb,
 } from "./shot-outputs";
 
 function rectMask(width: number, height: number, box: { left: number; top: number; width: number; height: number }): RawMask {
@@ -185,5 +186,20 @@ describe("canvas sizes and re-framing (2.11)", () => {
     await expect(
       resizeCanvasTo(raw, mask, raw, { erodePx: 3, floorPx: 1 }, { width: 100, height: 400 }),
     ).rejects.toBeInstanceOf(ShotUnavailableError);
+  });
+});
+
+describe("exactBackgroundRgb (PHASE_15 item 19)", () => {
+  it("holds every white required spec to exact white and leaves open backgrounds alone", () => {
+    for (const spec of listSpecs()) {
+      const rgb = exactBackgroundRgb(spec);
+      if (requiresWhiteBackground(spec)) {
+        expect(rgb, spec.id).toEqual([255, 255, 255]);
+      } else if (spec.background?.type !== "solid") {
+        expect(rgb, spec.id).toBeNull();
+      }
+    }
+    expect(exactBackgroundRgb(getSpec("google.merchant.main"))).toEqual([255, 255, 255]);
+    expect(exactBackgroundRgb(getSpec("amazon.secondary"))).toBeNull();
   });
 });

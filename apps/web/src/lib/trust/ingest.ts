@@ -21,7 +21,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { detectFormat, ingestImage, readMovieDurationSeconds } from "@curvi/pipeline/ingest";
+import {
+  detectFormat,
+  ingestImage,
+  readMovieDurationSeconds,
+  sourceMediaIngestOf,
+  type SourceMediaIngest,
+} from "@curvi/pipeline/ingest";
 import { IMAGE_MAX_BYTES, VIDEO_MAX_BYTES, withinVideoDurationCap, type UploadKind } from "@/lib/upload-validation";
 import type { TrustStorage } from "./storage";
 
@@ -35,6 +41,10 @@ export type IngestOutcome =
       bytes: number;
       /** True when the stored object was rewritten without its metadata. */
       rewritten: boolean;
+      /** What source_media.ingest records for a photo (PHASE_15): whether
+       * this check decoded and wrote it again, and its uploaded format.
+       * Null for video. Optional so older doubles still type check. */
+      ingest?: SourceMediaIngest | null;
     }
   | { ok: false; retryable: boolean; notice: string };
 
@@ -89,6 +99,7 @@ export async function ingestUpload(storage: TrustStorage, key: string, kind: Upl
         height: result.height,
         bytes: result.bytes.length,
         rewritten: result.changed,
+        ingest: sourceMediaIngestOf(result),
       };
     }
 
@@ -109,7 +120,7 @@ export async function ingestUpload(storage: TrustStorage, key: string, kind: Upl
     if (!withinVideoDurationCap(seconds)) {
       return refuse(storage, key, INGEST_NOTICES.videoTooLong);
     }
-    return { ok: true, sha256: null, width: null, height: null, bytes: head.bytes, rewritten: false };
+    return { ok: true, sha256: null, width: null, height: null, bytes: head.bytes, rewritten: false, ingest: null };
   } catch (err) {
     console.error(`[ingest] could not check upload ${key}`, err);
     return { ok: false, retryable: true, notice: INGEST_NOTICES.unavailable };

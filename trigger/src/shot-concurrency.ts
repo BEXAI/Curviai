@@ -20,3 +20,28 @@ export function parseShotConcurrency(raw: string | undefined): number | undefine
   }
   return Math.min(SHOT_CONCURRENCY_RANGE.max, Math.max(SHOT_CONCURRENCY_RANGE.min, Number(value)));
 }
+
+/**
+ * Shot types whose channel outputs run one at a time per process (PHASE_15
+ * memory section): a kept photo output at the 16 megapixel cap holds its
+ * rendered RGBA, its reference and its shipped decode at once, so two in
+ * flight could run a 512 MB worker out of memory. Other shots keep the
+ * fan out width above.
+ */
+export const SERIAL_SHOT_TYPES: ReadonlySet<string> = new Set(["original_photo"]);
+
+let serialTail: Promise<unknown> = Promise.resolve();
+
+/**
+ * Runs fn in the shot concurrency class of its type: through one process
+ * wide queue for SERIAL_SHOT_TYPES, directly for every other type. A failed
+ * run never blocks the next one.
+ */
+export function withShotClassSlot<T>(shotType: string, fn: () => Promise<T>): Promise<T> {
+  if (!SERIAL_SHOT_TYPES.has(shotType)) {
+    return fn();
+  }
+  const run = serialTail.then(fn, fn);
+  serialTail = run.catch(() => undefined);
+  return run;
+}

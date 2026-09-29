@@ -16,17 +16,27 @@ import {
   brandKits,
   generationJobs,
   jobSteps,
+  platformSettings,
   products,
   sourceMedia,
+  uploadPreflights,
   workspaces,
   sql,
   eq,
   and,
   type SourceMediaTargetBox,
 } from "@curvi/db";
+import { outputOptionsKey, packNeedsCutout, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
+import type { IngestImageFormat, SourceMediaIngest } from "@curvi/pipeline/ingest";
 import type { Shot } from "@curvi/pipeline/schemas";
 import type { PackFollowUpInput, PackFollowUpReason } from "@curvi/trigger/follow-up";
-import { AUTO_STYLE_PRESET, presets, socialBadgeByTier, tierByKey } from "@curvi/pipeline/seed";
+import {
+  AUTO_STYLE_PRESET,
+  entitlementsFor,
+  presets,
+  socialBadgeByTier,
+  tierByKey,
+} from "@curvi/pipeline/seed";
 import { isAngleRole, printableSellerLines, type AngleRole } from "@curvi/pipeline/seller-inputs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
@@ -38,9 +48,16 @@ import {
 } from "@/lib/compliance-report";
 import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
-import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
+import {
+  CONCEPT_MODE_AVAILABLE,
+  OUTPUT_OPTIONS_SWITCH_KEY,
+  outputOptionsAvailable,
+  outputOptionsSwitchOn,
+} from "@/lib/features";
 import { inventoryView } from "@/lib/inventory-copy";
-import { publicJobError } from "@/lib/job-copy";
+import { outputOptionsSummary, publicJobError } from "@/lib/job-copy";
+import { OPTIONS_UNREADABLE_COPY } from "@/lib/output-options-copy";
+import { PACKS_PAUSED_COPY, providerPreflight, type PreflightVerdict } from "@/lib/provider-preflight";
 import { enqueueGeneratePack, enqueuePackFollowUp, settleJob } from "@/lib/jobs/enqueue";
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { brandStyleFor, buildGeneratePackInput, seoSlugFor, type PayloadBrandKit } from "@/lib/jobs/payload";
@@ -69,6 +86,14 @@ import { ingestUpload, type IngestOutcome } from "@/lib/trust/ingest";
 import { r2TrustStorage } from "@/lib/trust/storage";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
+import {
+  isNonDefaultOutput,
+  outputEstimateInputs,
+  parseStoredOutputOptions,
+  readStoredOutputOptions,
+  resolveJobOutput,
+  type OutputPhoto,
+} from "./output-options";
 import { looksStale, reconcileStaleJobs } from "./reconcile";
 import {
   angleLabel,
@@ -80,6 +105,7 @@ import {
   retryShotFor,
   storedShot,
   isRetryable,
+  withAddedPhoto,
 } from "./shot-ops";
 import type {
   AddShotPhotoInput,
@@ -141,6 +167,62 @@ export interface DbServiceDeps {
   /** Overrides for the preflight at upload (tests): the runner side run,
    * thumbnail storage and signing. Left out, the worker runtime and R2 run. */
   preflight?: Partial<Omit<PreflightServiceDeps, "db">>;
+  /** Overrides the output options gate (tests). Left out, the env flag and
+   * the platform_settings kill switch decide. */
+  outputOptionsEnabled?: () => Promise<boolean>;
+  /** Overrides the provider pause verdict createJob checks (tests). Left
+   * out, lib/provider-preflight decides. */
+  providerVerdict?: () => Promise<PreflightVerdict>;
+}
+
+/** A source_media.ingest record read back, or null when it is missing or
+ * not one (rows before PHASE_15 read as unknown). */
+export function ingestRecordOf(raw: unknown): SourceMediaIngest | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  return record.v === 1 && typeof record.reencoded === "boolean" && typeof record.sourceFormat === "string"
+    ? { v: 1, reencoded: record.reencoded, sourceFormat: record.sourceFormat as IngestImageFormat }
+    : null;
+}
+
+/**
+ * Two ingest records of one upload, oldest first. The first check that
+ * decoded and wrote the photo again is the one that knows: a later check
+ * reads the upright copy it wrote and reports nothing changed, and the
+ * upload's real format is gone with it.
+ */
+export function mergeIngestRecords(
+  earlier: SourceMediaIngest | null | undefined,
+  later: SourceMediaIngest | null | undefined,
+): SourceMediaIngest | null {
+  if (earlier?.reencoded) {
+    return earlier;
+  }
+  return later ?? earlier ?? null;
+}
+
+/** The source_media.ingest column value: the record, or SQL NULL (the
+ * column's check refuses a JSON null). */
+function ingestColumnOf(record: SourceMediaIngest | null | undefined): Record<string, unknown> | null {
+  return record ? { ...record } : null;
+}
+
+/** True when a request's options ask for anything but today's pack. Options
+ * the schema refuses count as asking, so they reach resolveJobOutput and get
+ * invalid_options there. */
+function isNonDefaultRequest(options: CreateJobInput["outputOptions"]): boolean {
+  try {
+    return isNonDefaultOutput(options ?? null);
+  } catch {
+    return true;
+  }
+}
+
+/** The ingest record the preflight at upload kept for a photo, if any. */
+function preflightIngestOf(row: UploadPreflight | undefined): SourceMediaIngest | null {
+  return ingestRecordOf((row?.result as { ingest?: unknown } | undefined)?.ingest);
 }
 
 /** Most photos a pack sends to the worker (MAX_PACK_PHOTOS). */
@@ -150,6 +232,26 @@ const MAX_PACK_MEDIA = MAX_PACK_PHOTOS;
 const MAX_LIBRARY_PRODUCTS = 100;
 
 type ProductRow = typeof products.$inferSelect;
+
+/**
+ * True when a stored job's options and a request's options are the same
+ * choices (PHASE_15 item 25): no options and explicit defaults match, a
+ * concept request always reads as the defaults, and anything unreadable on
+ * either side does not match, so the key gets the conflict answer.
+ */
+function sameOutputOptions(stored: unknown, input: Pick<CreateJobInput, "mode" | "outputOptions">): boolean {
+  try {
+    const storedKey = outputOptionsKey(parseStoredOutputOptions(stored));
+    const inputKey = outputOptionsKey(input.mode === "concept" ? null : (input.outputOptions ?? null));
+    return storedKey === inputKey;
+  } catch {
+    return false;
+  }
+}
+
+/** A follow up's worker payload: the runner's PackFollowUpInput, which
+ * carries the job's stored output options and re-encoded photos. */
+export type FollowUpPayload = PackFollowUpInput;
 
 /** The view of a product row, seller inputs included. */
 function productSummaryOf(row: ProductRow): ProductSummary {
@@ -254,6 +356,10 @@ export interface PackMedia {
   angle: AngleRole | null;
   /** The product the seller tapped in the chooser (source_media.target_box). */
   targetBox?: SourceMediaTargetBox | null;
+  /** Stored upright size and the upload's re-encode flag, when known. */
+  width?: number | null;
+  height?: number | null;
+  reencoded?: boolean | null;
 }
 
 /** The photos a pack runs on: this request's uploads when it sent any,
@@ -511,7 +617,35 @@ export class DbService implements Services {
       orderBy: (t, { desc }) => [desc(t.createdAt)],
       limit: 50,
     });
-    return rows.map(productSummaryOf);
+    if (rows.length === 0) {
+      return [];
+    }
+    // The photos a pack of each product would run on when it sends no new
+    // uploads (mergePackMedia): stored images in this workspace's source
+    // prefix, capped at the pack limit, so the form's Keep estimate counts
+    // the real photos.
+    const media = await this.db.query.sourceMedia.findMany({
+      columns: { productId: true, r2Key: true, kind: true },
+      where: (t, { and, eq, inArray, like }) =>
+        and(
+          eq(t.workspaceId, workspaceId),
+          inArray(
+            t.productId,
+            rows.map((row) => row.id),
+          ),
+          like(t.r2Key, `ws/${workspaceId}/src/%`),
+        ),
+    });
+    const photoCounts = new Map<string, number>();
+    for (const m of media) {
+      if (m.kind === "image" && isWorkspaceSourceKey(workspaceId, m.r2Key)) {
+        photoCounts.set(m.productId, (photoCounts.get(m.productId) ?? 0) + 1);
+      }
+    }
+    return rows.map((row) => ({
+      ...productSummaryOf(row),
+      storedPhotoCount: Math.min(photoCounts.get(row.id) ?? 0, MAX_PACK_MEDIA),
+    }));
   }
 
   /**
@@ -749,7 +883,98 @@ export class DbService implements Services {
       canManage: role !== null && role !== "client",
       followUpRunning: Boolean(report) && !["done", "failed", "canceled"].includes(current.status),
       inventory: inventoryView(current.inventory),
+      ...this.outputOptionsView(current),
     };
+  }
+
+  /** The "Your choices" card for a job row. A row with no options reads as
+   * today's pack; one the schema refuses shows no card and is logged. */
+  private outputOptionsView(job: typeof generationJobs.$inferSelect): Pick<JobView, "outputOptions"> {
+    const stored = readStoredOutputOptions(job.outputOptions);
+    if (stored === undefined) {
+      console.warn(`[jobs] job ${job.id} has output options that could not be read`);
+      return {};
+    }
+    return {
+      outputOptions: outputOptionsSummary(stored, {
+        specIds: job.channels ?? [],
+        photoCount: stored?.keepMediaIds.length ?? 0,
+      }),
+    };
+  }
+
+  /**
+   * An upload's source_media.ingest record: the one the preflight at upload
+   * kept when it re-encoded the photo, else this check's own. Best effort: a
+   * failed lookup keeps this check's record.
+   */
+  private async uploadIngestRecord(
+    workspaceId: string,
+    key: string,
+    current: SourceMediaIngest | null | undefined,
+  ): Promise<SourceMediaIngest | null> {
+    try {
+      const rows = await preflightRowsFor(this.db, workspaceId, [key]);
+      return mergeIngestRecords(preflightIngestOf(rows.get(key)), current);
+    } catch {
+      return current ?? null;
+    }
+  }
+
+  /**
+   * Keeps a re-encoded upload's ingest record on its preflight row, where
+   * createJob and registerSourceMedia find it: the preflight is often the
+   * first check, and every later check reads the upright copy it wrote. Only
+   * a re-encode needs keeping. Best effort.
+   */
+  private async keepPreflightIngest(workspaceId: string, key: string, record: SourceMediaIngest | null): Promise<void> {
+    if (!record?.reencoded) {
+      return;
+    }
+    try {
+      await this.db
+        .update(uploadPreflights)
+        .set({ result: sql`${uploadPreflights.result} || ${JSON.stringify({ ingest: record })}::jsonb` })
+        .where(and(eq(uploadPreflights.workspaceId, workspaceId), eq(uploadPreflights.r2Key, key)));
+    } catch (err) {
+      console.warn(`[preflight] could not keep the ingest record of an upload in workspace ${workspaceId}`, err);
+    }
+  }
+
+  /** The provider pause verdict (lib/provider-preflight), never throwing. */
+  private providerVerdict(): Promise<PreflightVerdict> {
+    return this.deps.providerVerdict ? this.deps.providerVerdict() : providerPreflight();
+  }
+
+  /** See Services.outputOptionsEnabled. */
+  async outputOptionsEnabled(): Promise<boolean> {
+    if (this.deps.outputOptionsEnabled) {
+      return this.deps.outputOptionsEnabled();
+    }
+    if (!outputOptionsAvailable()) {
+      return false;
+    }
+    return outputOptionsSwitchOn(async () => {
+      const [row] = await this.db
+        .select({ value: platformSettings.value })
+        .from(platformSettings)
+        .where(eq(platformSettings.key, OUTPUT_OPTIONS_SWITCH_KEY))
+        .limit(1);
+      return row?.value;
+    });
+  }
+
+  /** The job's stored options for a follow up, or a refusal when they
+   * cannot be read (the follow up would run as a different pack). */
+  private followUpOutput(
+    job: typeof generationJobs.$inferSelect,
+  ): { output: ResolvedOutputOptions | null } | { rejected: ShotOpResult } {
+    try {
+      return { output: parseStoredOutputOptions(job.outputOptions) };
+    } catch (err) {
+      console.error(`[jobs] job ${job.id} has output options that could not be read`, err);
+      return { rejected: { outcome: "rejected", reason: "unavailable", message: OPTIONS_UNREADABLE_COPY } };
+    }
   }
 
   /**
@@ -813,6 +1038,10 @@ export class DbService implements Services {
       return start.rejected;
     }
     const { job } = start;
+    const stored = this.followUpOutput(job);
+    if ("rejected" in stored) {
+      return stored.rejected;
+    }
     const assetRows = await this.db.query.assets.findMany({
       where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId)),
       orderBy: (t, { asc }) => [asc(t.createdAt)],
@@ -837,7 +1066,7 @@ export class DbService implements Services {
         message: "The channels this shot is for already have as many images as they allow.",
       };
     }
-    return this.startFollowUp(workspaceId, job, "retry", [shot], shot.type);
+    return this.startFollowUp(workspaceId, job, "retry", [shot], shot.type, stored.output);
   }
 
   /**
@@ -857,6 +1086,10 @@ export class DbService implements Services {
       return start.rejected;
     }
     const { job } = start;
+    const stored = this.followUpOutput(job);
+    if ("rejected" in stored) {
+      return stored.rejected;
+    }
     if (!isWorkspaceSourceKey(workspaceId, input.key)) {
       return { outcome: "rejected", reason: "foreign_key", message: "That upload does not belong to this workspace." };
     }
@@ -881,6 +1114,13 @@ export class DbService implements Services {
       return { outcome: "rejected", reason: "not_retryable", message: "This shot is not waiting for a photo." };
     }
     const workspace = await this.db.query.workspaces.findFirst({ where: (t, { eq }) => eq(t.id, workspaceId) });
+    const width = checked?.ok ? checked.width : null;
+    const height = checked?.ok ? checked.height : null;
+    // The pack's stored options decide what the photo becomes: a kept photo
+    // on a Keep pack, a cut out photo on the stored color otherwise. The
+    // follow up keeps the added photo too, since keepMediaIds is what the
+    // runner reads.
+    const output = stored.output ? withAddedPhoto(stored.output, input.key) : null;
     const shots = planAngleShots({
       angle,
       mediaKey: input.key,
@@ -888,6 +1128,8 @@ export class DbService implements Services {
       channels: job.channels ?? [],
       tier: tierKeyOf(workspace?.plan),
       existingFilesBySpec: await this.filesBySpec(workspaceId, job.id),
+      output,
+      photoSize: width && height ? { width, height } : null,
     });
     if (shots.length === 0) {
       return {
@@ -896,7 +1138,8 @@ export class DbService implements Services {
         message: `No channel in this pack has room for a ${angleLabel(angle)} photo.`,
       };
     }
-    return this.startFollowUp(workspaceId, job, "add_angle", shots, latest.stage ?? shots[0].type, async (tx) => {
+    const ingestRecord = checked?.ok ? (checked.ingest ?? null) : null;
+    return this.startFollowUp(workspaceId, job, "add_angle", shots, latest.stage ?? shots[0].type, output, async (tx) => {
       const inserted = await tx
         .insert(sourceMedia)
         .values({
@@ -905,8 +1148,9 @@ export class DbService implements Services {
           r2Key: input.key,
           kind: "image",
           sha256: (checked?.ok ? checked.sha256 : null) ?? input.sha256,
-          width: checked?.ok ? checked.width : null,
-          height: checked?.ok ? checked.height : null,
+          width,
+          height,
+          ingest: ingestColumnOf(ingestRecord),
         })
         .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
         .returning({ id: sourceMedia.id });
@@ -984,6 +1228,7 @@ export class DbService implements Services {
     reason: PackFollowUpReason,
     shots: Shot[],
     stage: string,
+    output: ResolvedOutputOptions | null,
     prepare?: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<void>,
   ): Promise<ShotOpResult> {
     const credits = followUpCredits(shots);
@@ -1062,6 +1307,7 @@ export class DbService implements Services {
         shots,
         credits,
         baseCostMicros,
+        output,
       });
       await enqueuePackFollowUp(payload);
     } catch (err) {
@@ -1087,8 +1333,15 @@ export class DbService implements Services {
   private async followUpPayload(
     workspaceId: string,
     job: typeof generationJobs.$inferSelect,
-    run: { runKey: string; reason: PackFollowUpReason; shots: Shot[]; credits: number; baseCostMicros: number },
-  ): Promise<PackFollowUpInput> {
+    run: {
+      runKey: string;
+      reason: PackFollowUpReason;
+      shots: Shot[];
+      credits: number;
+      baseCostMicros: number;
+      output: ResolvedOutputOptions | null;
+    },
+  ): Promise<FollowUpPayload> {
     const product = await this.db.query.products.findFirst({ where: (t, { eq }) => eq(t.id, job.productId) });
     const workspace = await this.db.query.workspaces.findFirst({ where: (t, { eq }) => eq(t.id, workspaceId) });
     const tier = tierKeyOf(workspace?.plan);
@@ -1106,6 +1359,14 @@ export class DbService implements Services {
       console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
     }
     const recipeVariants = job.recipeVariants && Object.keys(job.recipeVariants).length > 0 ? job.recipeVariants : null;
+    // Colors come from the job's snapshot, never the live kit: the brand
+    // sweep hex leads the list (the runner's sweep_brand takes the first
+    // valid color), so a kit edit after the pack never changes a retried
+    // file (PHASE_15 follow ups).
+    if (run.output) {
+      const sweep = run.output.brandSweepHex;
+      brandColors = [sweep, ...brandColors.filter((c) => c.toUpperCase() !== sweep)].slice(0, 6);
+    }
     return {
       kind: "follow_up",
       runKey: run.runKey,
@@ -1124,7 +1385,25 @@ export class DbService implements Services {
       socialBadge: socialBadgeByTier[tier] ?? false,
       existingFilesBySpec: await this.filesBySpec(workspaceId, job.id),
       baseCostMicros: run.baseCostMicros,
+      ...(run.output ? { output: run.output } : {}),
+      ...(await this.reencodedSources(workspaceId, run.shots)),
     };
+  }
+
+  /** The follow up shots' source photos whose stored copy was written again
+   * at upload (source_media.ingest), so the runner checks a kept photo
+   * against that copy (PHASE_15). */
+  private async reencodedSources(workspaceId: string, shots: Shot[]): Promise<{ reencoded?: string[] }> {
+    const keys = [...new Set(shots.map((s) => s.sourceMediaId).filter((k): k is string => typeof k === "string" && k.length > 0))];
+    if (keys.length === 0) {
+      return {};
+    }
+    const rows = await this.db.query.sourceMedia.findMany({
+      where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.r2Key, keys)),
+      columns: { r2Key: true, ingest: true },
+    });
+    const reencoded = rows.filter((r) => ingestRecordOf(r.ingest)?.reencoded === true).map((r) => r.r2Key);
+    return reencoded.length > 0 ? { reencoded } : {};
   }
 
   /** Undoes a follow up that could not be queued: returns its hold (the
@@ -1187,7 +1466,8 @@ export class DbService implements Services {
       (input.productId === "new" || existing.productId === input.productId) &&
       (existing.mode ?? input.mode) === input.mode &&
       JSON.stringify([...(existing.channels ?? input.channels)].sort()) ===
-        JSON.stringify([...input.channels].sort());
+        JSON.stringify([...input.channels].sort()) &&
+      sameOutputOptions(existing.outputOptions, input);
     if (sameBody) {
       const job = await this.getJob(workspaceId, existing.id);
       if (job) {
@@ -1266,7 +1546,10 @@ export class DbService implements Services {
     // Every upload is read back and checked before anything is written; the
     // stored hash and size are the server's, never the client's. One at a
     // time, so a pack of large photos never holds them all in memory.
-    const checked = new Map<string, { sha256: string; width: number | null; height: number | null }>();
+    const checked = new Map<
+      string,
+      { sha256: string; width: number | null; height: number | null; ingest: SourceMediaIngest | null }
+    >();
     for (const upload of uploadRows) {
       const outcome = await this.ingest(upload.key, upload.kind);
       if (outcome && !outcome.ok) {
@@ -1281,6 +1564,7 @@ export class DbService implements Services {
           sha256: outcome.sha256 ?? upload.sha256,
           width: outcome.width,
           height: outcome.height,
+          ingest: outcome.ingest ?? null,
         });
       }
     }
@@ -1289,6 +1573,8 @@ export class DbService implements Services {
       kind: u.kind,
       angle: u.angle ?? null,
       targetBox: u.targetBox ?? null,
+      width: checked.get(u.key)?.width ?? null,
+      height: checked.get(u.key)?.height ?? null,
     }));
     const storedMedia = existingProduct
       ? (
@@ -1310,10 +1596,13 @@ export class DbService implements Services {
               kind: m.kind,
               angle: isAngleRole(m.angle) ? m.angle : null,
               targetBox: m.targetBox ?? null,
+              width: m.width,
+              height: m.height,
+              reencoded: ingestRecordOf(m.ingest)?.reencoded ?? null,
             }),
           )
       : [];
-    const media = mergePackMedia(uploads, storedMedia);
+    const merged = mergePackMedia(uploads, storedMedia);
 
     // The preflight at upload (PHASE_14.md workstream 4): a photo it found a
     // blocking problem in never starts a pack, so nothing is held for it,
@@ -1323,11 +1612,20 @@ export class DbService implements Services {
     const preflights = await preflightRowsFor(
       this.db,
       workspaceId,
-      media.map((m) => m.r2Key),
+      merged.map((m) => m.r2Key),
     ).catch((err: unknown): Map<string, UploadPreflight> => {
       console.warn(`[jobs] could not read the preflights of workspace ${workspaceId}`, err);
       return new Map();
     });
+    // Each upload's source_media.ingest record: the preflight at upload
+    // checked it first, and a photo it turned upright reads as unchanged by
+    // the time this request checks it again.
+    const ingestByKey = new Map(
+      uploadRows.map((u) => [u.key, mergeIngestRecords(preflightIngestOf(preflights.get(u.key)), checked.get(u.key)?.ingest)]),
+    );
+    const media: PackMedia[] = merged.map((m) =>
+      ingestByKey.has(m.r2Key) ? { ...m, reencoded: ingestByKey.get(m.r2Key)?.reencoded ?? null } : m,
+    );
     const blocked = uploadRows
       .filter((u) => u.kind === "image")
       .map((u) => preflights.get(u.key))
@@ -1363,13 +1661,60 @@ export class DbService implements Services {
       };
     }
 
+    // The brand kit is read before the estimate, because a brand color is
+    // resolved and snapshotted from it. It stays optional styling: a failed
+    // read falls back to the default colors, unless the seller picked a
+    // brand color, which then cannot be resolved.
+    let brandColors: string[] = [];
+    let brandKit: PayloadBrandKit | null = null;
+    let brandKitRead = true;
+    try {
+      const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
+      brandColors = Array.isArray(kit?.colors) ? kit.colors.filter((c): c is string => typeof c === "string") : [];
+      brandKit = kit ? { fonts: kit.fonts ?? null, logoKey: kit.logoR2Key, stylePreset: kit.stylePreset } : null;
+    } catch (err) {
+      brandKitRead = false;
+      console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
+    }
+
+    // The seller's output options (PHASE_15 item 24), resolved against the
+    // flags, the plan and the kit. Kept photos are this pack's photos by R2
+    // key, with the stored sizes, so the hold knows which channels each one
+    // can reach.
+    const photos: OutputPhoto[] = media
+      .filter((m) => m.kind !== "video")
+      .map((m) => ({ id: m.r2Key, angle: m.angle, width: m.width ?? null, height: m.height ?? null }));
+    if (!brandKitRead && input.outputOptions?.color?.kind === "brand") {
+      return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
+    }
+    const wantsOptions = input.mode !== "concept" && isNonDefaultRequest(input.outputOptions);
+    const output = resolveJobOutput({
+      input: input.outputOptions,
+      mode: input.mode,
+      enabled: wantsOptions ? await this.outputOptionsEnabled() : true,
+      brandColors,
+      brandKitsAllowed: entitlementsFor(tier).brandKits > 0,
+      photos,
+    });
+    if (!output.ok) {
+      return { outcome: "rejected", reason: output.reason, message: output.message };
+    }
+
+    // While every cutout provider is down, only a pack that needs no cutout
+    // may start: a Keep pack with no white required channel and no extras.
+    if (packNeedsCutout(input.channels, output.flags) && (await this.providerVerdict()) === "packs_paused") {
+      return { outcome: "rejected", reason: "unavailable", message: PACKS_PAUSED_COPY };
+    }
+
     // Reservation is a seed cost estimate that leaves out shots production
     // cannot deliver; the worker's planner recomputes the exact plan and
-    // charge_credits bills only the assets that pass QC.
+    // charge_credits bills only the assets that pass QC. The same estimate
+    // inputs as the form and the demo (outputEstimateInputs).
     const creditsReserved = estimatePackCredits(input.channels, input.mode, tier, {
       angles: media.filter((m) => m.kind !== "video").flatMap((m) => (m.angle ? [m.angle] : [])),
       hasBoxContents: sellerInputs.boxContents.length > 0,
       hasComparisonFacts: sellerInputs.comparisonFacts.length > 0,
+      ...outputEstimateInputs(output.resolved, photos),
     }).total;
     if (creditsReserved <= 0) {
       return {
@@ -1448,6 +1793,7 @@ export class DbService implements Services {
                     angle: u.angle ?? null,
                     width: checked.get(u.key)?.width ?? null,
                     height: checked.get(u.key)?.height ?? null,
+                    ingest: ingestColumnOf(ingestByKey.get(u.key)),
                   })),
                 )
                 .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
@@ -1476,6 +1822,9 @@ export class DbService implements Services {
             // The seller's note as typed (0020), so follow ups and retries
             // keep it; the runner saves the intent it parses next to it.
             sellerNote: input.userDescription?.trim() ? input.userDescription : null,
+            // The resolved options with the color snapshot (0023), which
+            // the payload, the follow ups and the job page read back.
+            outputOptions: { ...output.resolved },
           })
           .returning({ id: generationJobs.id });
         try {
@@ -1513,18 +1862,6 @@ export class DbService implements Services {
     }
     const { product, jobId, insertedMediaIds } = created;
 
-    // The brand kit is optional styling: a failed lookup must never fail a
-    // job that already holds its credit reservation.
-    let brandColors: string[] = [];
-    let brandKit: PayloadBrandKit | null = null;
-    try {
-      const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
-      brandColors = Array.isArray(kit?.colors) ? kit.colors.filter((c): c is string => typeof c === "string") : [];
-      brandKit = kit ? { fonts: kit.fonts ?? null, logoKey: kit.logoR2Key, stylePreset: kit.stylePreset } : null;
-    } catch (err) {
-      console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
-    }
-
     try {
       await enqueueGeneratePack({
         ...buildGeneratePackInput({
@@ -1550,6 +1887,7 @@ export class DbService implements Services {
           userDescription: input.userDescription,
           brandColors,
           brandKit,
+          outputOptions: output.resolved,
         }),
         runKey,
       });
@@ -1670,6 +2008,7 @@ export class DbService implements Services {
     if (checked && !checked.ok) {
       return { ok: false, reason: checked.retryable ? "unavailable" : "invalid_upload", notice: checked.notice };
     }
+    const ingestRecord = checked?.ok ? await this.uploadIngestRecord(workspaceId, input.r2Key, checked.ingest) : null;
     // One row per uploaded object: registering the same upload again is a
     // no op, and an upload saved to another product stays there.
     const inserted = await this.db
@@ -1682,6 +2021,7 @@ export class DbService implements Services {
         width: checked?.ok ? checked.width : (input.width ?? null),
         height: checked?.ok ? checked.height : (input.height ?? null),
         sha256: (checked?.ok ? checked.sha256 : null) ?? input.sha256,
+        ingest: ingestColumnOf(ingestRecord),
       })
       .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
       .returning({ id: sourceMedia.id });
@@ -1714,6 +2054,7 @@ export class DbService implements Services {
     }
     const overrides = this.deps.preflight ?? {};
     const storage = isR2Configured();
+    const ingestRecord = checked?.ok ? await this.uploadIngestRecord(workspaceId, input.key, checked.ingest) : null;
     try {
       const preflight = await runPreflightUpload(
         {
@@ -1726,6 +2067,7 @@ export class DbService implements Services {
         workspaceId,
         input,
       );
+      await this.keepPreflightIngest(workspaceId, input.key, ingestRecord);
       return { ok: true, preflight };
     } catch (err) {
       console.error(`[preflight] could not check a photo in workspace ${workspaceId}`, err);
@@ -1891,7 +2233,10 @@ export class DbService implements Services {
     } catch {
       raw = null;
     }
-    const view = raw === null ? null : buildComplianceReportView(raw, meta);
+    // A Keep pack's white required files had their background removed for
+    // that file only, and the report says so.
+    const keptBackground = readStoredOutputOptions(job.outputOptions)?.background === "keep";
+    const view = raw === null ? null : buildComplianceReportView(raw, meta, { keptBackground });
     if (!view) {
       console.error(`[jobs] compliance report for job ${job.id} is missing or unreadable at ${row.r2Key}`);
       return unavailableComplianceReport(meta, REPORT_NOT_STORED);

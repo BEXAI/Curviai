@@ -123,6 +123,10 @@ describe("platform settings seed", () => {
     const row = platformSettingSeedRows.find((r) => r.key === "free_signup_credits");
     expect(row?.value).toBe(tierByKey("free").creditsOnce);
   });
+
+  it("seeds the output options kill switch on", () => {
+    expect(platformSettingSeedRows.find((r) => r.key === "output_options_enabled")?.value).toBe(true);
+  });
 });
 
 describe("planner tier gates follow the entitlements", () => {

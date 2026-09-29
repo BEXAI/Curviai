@@ -19,8 +19,20 @@ import {
   hasSpec,
   isSpecSelected,
   listSpecs,
-  type ChannelSpec,
+  requiresWhiteBackground,
 } from "@curvi/specs";
+import {
+  GALLERY_SLOTS,
+  SELLER_OFF_REASON,
+  SOURCE_TOO_SMALL_REASON,
+  extraFamilyOf,
+  originalScale,
+  specAcceptsImage,
+  whiteRequiredGallerySpecIds,
+  type OutputPlanFlags,
+  type PlanPhoto,
+  type PlannedImageKind,
+} from "../output-options";
 import { creditCosts, isEntitled, type TierKey } from "../seed/credits";
 import { ProductProfile, Shot, ShotList, type ShotMethod } from "../schemas";
 import { printableSellerLines } from "../seller-inputs";
@@ -55,6 +67,25 @@ export interface PlanOptions {
    * reason, since no plan and no photo gets them today.
    */
   undeliverableMethods?: readonly ShotMethod[];
+  /**
+   * The seller's output options as plan flags (PHASE_15). Absent means
+   * today's pack: every photo removed and every extra on. Kept photos
+   * (keepMediaIds) each plan one original_photo; extras that are off are
+   * skipped with SELLER_OFF_REASON before the channel limits.
+   */
+  output?: OutputPlanFlags;
+}
+
+/**
+ * A skipped entry as the planner builds it. A shot the seller turned off
+ * also records the picked specs it would have served, so coverSellerOffSpecs
+ * can tell a spec the seller emptied from one empty for another reason.
+ * ShotList.parse strips `channels`, so it never reaches a stored plan.
+ */
+export interface SkippedShot {
+  type: string;
+  reason: string;
+  channels?: string[];
 }
 
 type Angle = ProductProfile["photographedAngles"][number];
@@ -79,39 +110,10 @@ export const NO_BOX_CONTENTS_REASON = "seller did not list contents";
 /** Reason recorded for the comparison shot when the seller supplied no facts. */
 export const NO_COMPARISON_FACTS_REASON = "seller did not supply comparison facts";
 
-/**
- * What a planned image looks like, for matching it to a spec's rules:
- * - white: the product on pure white (main image, alternate angles).
- * - transparent: the cutout PNG, which keeps its alpha.
- * - colored: a studio sweep in a color other than white.
- * - text: a template with copy on a colored card (infographic, dimensions,
- *   in the box, comparison).
- * - generated: a composited scene from an image model.
- */
-export type PlannedImageKind = "white" | "transparent" | "colored" | "text" | "generated";
-
-interface GallerySlot {
-  family: string;
-  /** The spec the family's listing images ship on. */
-  specId: string;
-  /** Generated scenes (composite and edit methods) may ship here. The newer
-   * marketplaces get deterministic and template images only. */
-  generated: boolean;
-  /** The listing's first image comes from this same spec, so the white front
-   * image leads it. Amazon has its own amazon.main spec instead. */
-  leadsWithWhiteFront: boolean;
-}
-
-/** Listing image slots per marketplace family, in plan order. */
-const GALLERY_SLOTS: readonly GallerySlot[] = [
-  { family: "amazon", specId: "amazon.secondary", generated: true, leadsWithWhiteFront: false },
-  { family: "shopify", specId: "shopify.product", generated: true, leadsWithWhiteFront: false },
-  { family: "google", specId: "google.merchant.lifestyle", generated: true, leadsWithWhiteFront: false },
-  { family: "etsy", specId: "etsy.listing", generated: false, leadsWithWhiteFront: true },
-  { family: "ebay", specId: "ebay.listing", generated: false, leadsWithWhiteFront: true },
-  { family: "walmart", specId: "walmart.main", generated: false, leadsWithWhiteFront: true },
-  { family: "tiktokshop", specId: "tiktokshop.main", generated: false, leadsWithWhiteFront: true },
-];
+// PlannedImageKind, specAcceptsImage and the listing gallery slots live in
+// the client safe options module (PHASE_15), so the form, the estimate and
+// this planner read one definition.
+export { specAcceptsImage, type PlannedImageKind } from "../output-options";
 
 const PINTEREST_PIN_SPEC = "pinterest.pin";
 const AMAZON_MAIN_SPEC = "amazon.main";
@@ -124,42 +126,6 @@ const GOOGLE_MAIN_SPEC = "google.merchant.main";
 /** Channel family of a spec id or family string: "etsy.listing" is "etsy". */
 function familyOf(channel: string): string {
   return channel.split(".")[0] ?? channel;
-}
-
-function isPureWhite(rgb: readonly number[] | undefined): boolean {
-  return !!rgb && rgb[0] === 255 && rgb[1] === 255 && rgb[2] === 255;
-}
-
-/** True when the spec's background rule allows a backdrop other than white. */
-function allowsColoredBackground(spec: ChannelSpec): boolean {
-  const bg = spec.background?.type;
-  return bg === undefined || bg === "any" || bg === "consistent";
-}
-
-/**
- * Whether an image of this kind meets the spec's registry rules. Solid white
- * and white preferred specs take only white images. Text needs textAllowed
- * and a background rule that allows the template's card color. The cutout
- * needs PNG and a background rule that keeps transparency; a spec that does
- * not would get the front photo flattened onto white again, a duplicate of
- * the white front image.
- */
-export function specAcceptsImage(spec: ChannelSpec, kind: PlannedImageKind): boolean {
-  const bg = spec.background;
-  switch (kind) {
-    case "white":
-      return bg?.type !== "solid" || isPureWhite(bg.rgb);
-    case "transparent":
-      return (
-        (!spec.formats || spec.formats.includes("png")) &&
-        (bg === undefined || bg.type === "any" || bg.type === "consistent" || bg.type === "white_or_transparent")
-      );
-    case "colored":
-    case "generated":
-      return allowsColoredBackground(spec);
-    case "text":
-      return spec.textAllowed !== false && allowsColoredBackground(spec);
-  }
 }
 
 /** Longest label a Shot callout may carry (ShotList schema). */
@@ -199,8 +165,12 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     listSpecs().some((spec) => familyOf(spec.id) === family && specSelected(spec.id));
   const undeliverable = new Set<ShotMethod>(opts.undeliverableMethods ?? []);
 
+  const output = opts.output;
+  const keptIds = new Set(output?.keepMediaIds ?? []);
+  const offTypes = sellerOffShotTypes(output);
+
   const shots: Shot[] = [];
-  const skipped: ShotList["skipped"] = [];
+  const skipped: SkippedShot[] = [];
   let seq = 0;
   const nextId = (type: string): string => `s${String(++seq).padStart(2, "0")}_${type}`;
   /** Records a shot the plan leaves out. An undeliverable method wins over the given reason. */
@@ -210,7 +180,9 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   /**
    * Plans a shot on the specs the seller picked, or skips it: when its method
    * cannot ship, when the seller picked none of its specs ("channel not
-   * selected"), or when the shot has no spec at all (`noChannelReason`).
+   * selected"), when the shot has no spec at all (`noChannelReason`), or when
+   * its extra family is off (SELLER_OFF_REASON, with the picked specs it
+   * would have served).
    */
   const plan = (shot: Omit<Shot, "id">, noChannelReason: string = NO_COMPATIBLE_CHANNEL_REASON): void => {
     if (undeliverable.has(shot.method)) {
@@ -224,6 +196,10 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     const channels = [...new Set(shot.channels.filter(specSelected))];
     if (channels.length === 0) {
       skipped.push({ type: shot.type, reason: CHANNEL_NOT_SELECTED_REASON });
+      return;
+    }
+    if (offTypes.has(shot.type)) {
+      skipped.push({ type: shot.type, reason: SELLER_OFF_REASON, channels });
       return;
     }
     shots.push({ id: nextId(shot.type), ...shot, channels });
@@ -258,6 +234,13 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     ...gallery.filter((slot) => slot.leadsWithWhiteFront).map((slot) => slot.specId),
     ...(specSelected(GOOGLE_MAIN_SPEC) ? [GOOGLE_MAIN_SPEC] : []),
   ].filter((specId) => specAcceptsImage(getSpec(specId), "white"));
+  // A kept front photo ships as itself wherever a spec takes it, so the white
+  // front image is made only for the picked specs that require white.
+  const frontMedia = mediaFor("front");
+  const frontKept = keptIds.has(frontMedia);
+  const whiteLeads = frontKept
+    ? whiteFrontLeads.filter((specId) => requiresWhiteBackground(getSpec(specId)))
+    : whiteFrontLeads;
 
   // Rule 1: always amazon_main when amazon.main is selected, from the
   // sharpest front photo, method deterministic. The same white front image
@@ -269,7 +252,7 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
         type: "amazon_main",
         sourceMediaId: mediaFor("front"),
         method: "deterministic",
-        channels: [AMAZON_MAIN_SPEC, ...whiteFrontLeads],
+        channels: [AMAZON_MAIN_SPEC, ...whiteLeads],
         stylePreset: "none",
         ...(footwear ? { scene: "single shoe angled left" } : {}),
         credits: creditCosts.deterministic,
@@ -278,13 +261,13 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     } else {
       skip("amazon_main", "deterministic", "needs photo");
     }
-  } else if (whiteFrontLeads.length > 0) {
+  } else if (whiteLeads.length > 0) {
     if (frontUsable) {
       plan({
         type: "alt_angle_white",
         sourceMediaId: mediaFor("front"),
         method: "deterministic",
-        channels: whiteFrontLeads,
+        channels: whiteLeads,
         stylePreset: "none",
         scene: footwear ? "single shoe angled left" : "front angle on white",
         credits: creditCosts.deterministic,
@@ -295,9 +278,51 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     }
   }
 
-  // Default pack: alt_angle_white for each photographed angle.
+  // Each kept photo ships as itself: one original_photo, charged once however
+  // many specs it serves. The front photo takes every picked spec that
+  // accepts a kept photo; the others take the listing gallery only. Planned
+  // whatever usableForMain says, since it is the seller's own photo.
+  const originalSpecs = listSpecs()
+    .filter((spec) => ORIGINAL_TARGET_SPECS.has(spec.id) && specAcceptsImage(spec, "original"))
+    .map((spec) => spec.id);
+  for (const photo of keptPhotosOf(output)) {
+    const front = photo.id === frontMedia;
+    plan(
+      {
+        type: "original_photo",
+        sourceMediaId: photo.id,
+        method: "deterministic",
+        channels: front ? originalSpecs : galleryFor("original"),
+        stylePreset: "none",
+        credits: creditCosts.deterministic,
+        priority: front ? 1 : 2,
+      },
+      gallery.length === 0 ? CHANNEL_NOT_SELECTED_REASON : NO_COMPATIBLE_CHANNEL_REASON,
+    );
+  }
+
+  // Default pack: alt_angle_white for each photographed angle. A kept photo
+  // gets one only for the picked white required gallery specs (Walmart and
+  // TikTok Shop today), where it cannot ship as itself.
+  const whiteGallery = new Set(whiteRequiredGallerySpecIds());
   for (const angle of angles) {
     if (angle === "front") {
+      continue;
+    }
+    if (keptIds.has(mediaFor(angle))) {
+      const channels = galleryFor("white").filter((specId) => whiteGallery.has(specId));
+      if (channels.length > 0) {
+        plan({
+          type: "alt_angle_white",
+          sourceMediaId: mediaFor(angle),
+          method: "deterministic",
+          channels,
+          stylePreset: "none",
+          scene: `${angle} angle on white`,
+          credits: creditCosts.deterministic,
+          priority: 2,
+        });
+      }
       continue;
     }
     planGallery(
@@ -483,15 +508,18 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
       credits: creditCosts.generativeStill,
       priority: 6,
     });
-    plan({
-      type: "collection_thumb",
-      sourceMediaId: mediaFor("front"),
-      method: "deterministic",
-      channels: [SHOPIFY_PRODUCT_SPEC],
-      stylePreset: "none",
-      credits: creditCosts.deterministic,
-      priority: 6,
-    });
+    // A kept front photo already covers shopify.product as itself.
+    if (!frontKept) {
+      plan({
+        type: "collection_thumb",
+        sourceMediaId: mediaFor("front"),
+        method: "deterministic",
+        channels: [SHOPIFY_PRODUCT_SPEC],
+        stylePreset: "none",
+        credits: creditCosts.deterministic,
+        priority: 6,
+      });
+    }
   }
 
   for (const social of ["social_1x1", "social_4x5", "social_9x16"] as const) {
@@ -575,10 +603,16 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     skip("video_ugc_hook", "avatar", "Pro or Agency only");
   }
 
+  // Kept photos too small for a spec leave that spec, then a spec emptied
+  // only by the seller's switches gets the front image, before the limits
+  // and the trim see the plan.
+  const sized = applyOriginalSizes(shots, output, skipped);
+  const covered = coverSellerOffSpecs(sized, skipped, output, { frontMediaId: frontMedia, frontUsable });
+
   // Channel file limits (amazon.secondary takes 8, amazon.main takes 1) and
   // rule 6, the credit budget, which keeps a file for every picked spec it
   // can afford (trimToBudget).
-  const kept = fitLimitsAndBudget(shots, opts.creditBudget, skipped, specSelected);
+  const kept = fitLimitsAndBudget(covered, opts.creditBudget, skipped, specSelected, reservedSlotsFor(covered));
 
   // Schema cap: at most 40 shots.
   while (kept.length > 40) {
@@ -602,12 +636,13 @@ function fitLimitsAndBudget(
   budget: number,
   skipped: ShotList["skipped"],
   isSelected: (specId: string) => boolean,
+  reservations: ReadonlyArray<{ type: Shot["type"]; count: number }>,
 ): Shot[] {
   const trimmedRecords: ShotList["skipped"] = [];
   let pool = [...candidates];
   for (;;) {
     const limitRecords: ShotList["skipped"] = [];
-    const capped = capShotsPerChannel(pool, limitRecords);
+    const capped = capShotsPerChannel(pool, limitRecords, reservations);
     const trimRecords: ShotList["skipped"] = [];
     const kept = trimToBudget(capped, budget, trimRecords, isSelected);
     if (kept.length === capped.length) {
@@ -638,6 +673,249 @@ export const RESERVED_GALLERY_SLOTS: ReadonlyArray<{ type: Shot["type"]; count: 
   { type: "lifestyle", count: 2 },
   { type: "infographic", count: 1 },
 ];
+
+/**
+ * The channel file limit reservations for a plan: when it holds kept photos,
+ * each one keeps a slot ahead of RESERVED_GALLERY_SLOTS, so the seller's own
+ * photos keep amazon.secondary before generated extras (PHASE_15 item 3).
+ * The runner passes the same reservations to capShotsPerChannel.
+ */
+export function reservedSlotsFor(shots: readonly Shot[]): ReadonlyArray<{ type: Shot["type"]; count: number }> {
+  const originals = shots.filter((shot) => shot.type === "original_photo").length;
+  return originals > 0 ? [{ type: "original_photo", count: originals }, ...RESERVED_GALLERY_SLOTS] : RESERVED_GALLERY_SLOTS;
+}
+
+/**
+ * Specs a kept front photo may ship on: the still image specs this planner
+ * makes files for. Video specs and specs no pack fills yet (the A+ premium
+ * module) are left out.
+ */
+const ORIGINAL_TARGET_SPECS: ReadonlySet<string> = new Set([
+  AMAZON_MAIN_SPEC,
+  GOOGLE_MAIN_SPEC,
+  AMAZON_APLUS_SPEC,
+  SHOPIFY_HERO_SPEC,
+  SHOPIFY_PRODUCT_SPEC,
+  PINTEREST_PIN_SPEC,
+  ...GALLERY_SLOTS.map((slot) => slot.specId),
+  ...socialChannelFor("social_1x1"),
+  ...socialChannelFor("social_4x5"),
+  ...socialChannelFor("social_9x16"),
+]);
+
+/**
+ * The kept photos in photo order: every photo in keepMediaIds, with its size
+ * when the flags carry one. keepMediaIds is authoritative, so a kept id the
+ * photo list misses is still planned, without a size.
+ */
+export function keptPhotosOf(flags: OutputPlanFlags | undefined): PlanPhoto[] {
+  if (!flags) {
+    return [];
+  }
+  const kept = new Set(flags.keepMediaIds);
+  const listed = flags.photos.filter((photo) => kept.has(photo.id));
+  const unlisted = [...kept].filter((id) => !flags.photos.some((photo) => photo.id === id)).map((id) => ({ id }));
+  return [...listed, ...unlisted];
+}
+
+/** The shot types in extra families the seller turned off. Empty without flags. */
+export function sellerOffShotTypes(flags: OutputPlanFlags | undefined): Set<Shot["type"]> {
+  const off = new Set<Shot["type"]>();
+  if (!flags) {
+    return off;
+  }
+  for (const type of Shot.shape.type.options) {
+    const family = extraFamilyOf(type);
+    if (family !== null && !flags.extras[family]) {
+      off.add(type);
+    }
+  }
+  return off;
+}
+
+/**
+ * Removes the shots in extra families the seller turned off and records each
+ * with SELLER_OFF_REASON and the specs it targeted, so coverSellerOffSpecs
+ * can fill a spec left empty. For plans this planner did not make (the
+ * fitted LLM plan): the runner calls it before the channel limits, as
+ * fitShotsToChannels' excludeTypes step. Returns the other shots in order.
+ */
+export function skipSellerOffShots(
+  shots: readonly Shot[],
+  flags: OutputPlanFlags | undefined,
+  skipped: SkippedShot[],
+): Shot[] {
+  const off = sellerOffShotTypes(flags);
+  if (off.size === 0) {
+    return [...shots];
+  }
+  const out: Shot[] = [];
+  for (const shot of shots) {
+    if (off.has(shot.type)) {
+      skipped.push({ type: shot.type, reason: SELLER_OFF_REASON, channels: [...new Set(shot.channels)] });
+    } else {
+      out.push(shot);
+    }
+  }
+  return out;
+}
+
+/** The skipped type recorded for a kept photo too small for one spec. */
+export function originalTooSmallType(specId: string): string {
+  return `original_photo:${specId}`;
+}
+
+/**
+ * Leaves each original_photo off the specs its photo cannot reach within the
+ * enlarge cap (originalScale), recording `original_photo:{specId}` with
+ * SOURCE_TOO_SMALL_REASON per spec. A photo of unknown size is assumed to
+ * fit. An original left with no spec is dropped; its per spec records say
+ * why. Runs before seller off cover, the channel limits and the trim.
+ * Returns the shots in order; other shot types pass through untouched.
+ */
+export function applyOriginalSizes(
+  shots: readonly Shot[],
+  flags: OutputPlanFlags | undefined,
+  skipped: SkippedShot[],
+): Shot[] {
+  if (!flags) {
+    return [...shots];
+  }
+  const photos = new Map(flags.photos.map((photo) => [photo.id, photo]));
+  const out: Shot[] = [];
+  for (const shot of shots) {
+    const photo = shot.type === "original_photo" ? photos.get(shot.sourceMediaId) : undefined;
+    if (!photo || photo.width === undefined || photo.height === undefined) {
+      out.push(shot);
+      continue;
+    }
+    const size = { width: photo.width, height: photo.height };
+    const channels = shot.channels.filter((specId) => {
+      if (!hasSpec(specId) || !originalScale(size, getSpec(specId), flags).skip) {
+        return true;
+      }
+      skipped.push({ type: originalTooSmallType(specId), reason: SOURCE_TOO_SMALL_REASON });
+      return false;
+    });
+    if (channels.length > 0) {
+      out.push(channels.length === shot.channels.length ? shot : { ...shot, channels });
+    }
+  }
+  return out;
+}
+
+export interface SellerOffCoverContext {
+  /** The front photo's media id: the source of an added front image. */
+  frontMediaId?: string;
+  /** The front photo can lead a listing (photographed and usableForMain). */
+  frontUsable: boolean;
+}
+
+/** The specs a skipped entry names: its channels, or the spec of a too small original. */
+function specsOfSkipped(entry: SkippedShot): string[] {
+  if (entry.channels) {
+    return entry.channels;
+  }
+  const prefix = originalTooSmallType("");
+  return entry.type.startsWith(prefix) ? [entry.type.slice(prefix.length)] : [];
+}
+
+/**
+ * Seller off cover (PHASE_15 control 5): a picked spec whose every candidate
+ * shot the seller turned off gets the front image instead, so turning off
+ * cards never leaves meta.feed_4x5 without a file.
+ * - Only specs named by a SELLER_OFF_REASON entry are covered, and never one
+ *   another skipped entry names (a too small kept photo) or one a shot
+ *   already targets. A spec empty for any other reason stays empty.
+ * - Never a white required spec.
+ * - The spec first joins the existing front shot whose image it accepts
+ *   (amazon_main, the priority 1 alt_angle_white, then the front
+ *   original_photo) at no extra cost. Only when none exists, and the front
+ *   photo is usable, one front alt_angle_white on the chosen color is added
+ *   at creditCosts.deterministic for every spec still empty.
+ * Pure: returns a new list and never changes the shots it was given. The
+ * planner calls it before the channel limits; the runner calls it inside
+ * fitShotsToChannels next to the Google main fill.
+ */
+export function coverSellerOffSpecs(
+  shots: readonly Shot[],
+  skipped: readonly SkippedShot[],
+  flags: OutputPlanFlags | undefined,
+  context: SellerOffCoverContext,
+): Shot[] {
+  const out = [...shots];
+  if (!flags) {
+    return out;
+  }
+  const offSpecs: string[] = [];
+  const otherSpecs = new Set<string>();
+  for (const entry of skipped) {
+    for (const specId of specsOfSkipped(entry)) {
+      if (entry.reason === SELLER_OFF_REASON) {
+        if (!offSpecs.includes(specId)) offSpecs.push(specId);
+      } else {
+        otherSpecs.add(specId);
+      }
+    }
+  }
+  const targeted = new Set(out.flatMap((shot) => shot.channels));
+  const empty = offSpecs.filter(
+    (specId) =>
+      !targeted.has(specId) && !otherSpecs.has(specId) && hasSpec(specId) && !requiresWhiteBackground(getSpec(specId)),
+  );
+  const frontShotFor = (specId: string): number => {
+    const spec = getSpec(specId);
+    const white = specAcceptsImage(spec, "white");
+    const byType = [
+      out.findIndex((shot) => white && shot.type === "amazon_main"),
+      out.findIndex((shot) => white && shot.type === "alt_angle_white" && shot.priority === 1),
+      out.findIndex(
+        (shot) =>
+          shot.type === "original_photo" &&
+          shot.sourceMediaId === context.frontMediaId &&
+          specAcceptsImage(spec, "original"),
+      ),
+    ];
+    return byType.find((index) => index >= 0) ?? -1;
+  };
+  const unfilled: string[] = [];
+  for (const specId of empty) {
+    const index = frontShotFor(specId);
+    if (index >= 0) {
+      out[index] = { ...out[index], channels: [...out[index].channels, specId] };
+    } else if (specAcceptsImage(getSpec(specId), "white")) {
+      unfilled.push(specId);
+    }
+  }
+  if (unfilled.length > 0 && context.frontUsable && context.frontMediaId) {
+    out.push({
+      id: nextShotId(out, "alt_angle_white"),
+      type: "alt_angle_white",
+      sourceMediaId: context.frontMediaId,
+      method: "deterministic",
+      channels: unfilled,
+      stylePreset: "none",
+      scene: "front angle on white",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    });
+  }
+  return out;
+}
+
+/** An id after the planner's numbered ids ("s12_type"), unique in the list. */
+function nextShotId(shots: readonly Shot[], type: string): string {
+  let seq = 0;
+  for (const shot of shots) {
+    const match = /^s(\d+)_/.exec(shot.id);
+    if (match) seq = Math.max(seq, Number(match[1]));
+  }
+  let id = `s${String(seq + 1).padStart(2, "0")}_${type}`;
+  for (let n = 2; shots.some((shot) => shot.id === id); n++) {
+    id = `s${String(seq + 1).padStart(2, "0")}_${type}_${n}`;
+  }
+  return id;
+}
 
 export interface ChannelLimitViolation {
   specId: string;

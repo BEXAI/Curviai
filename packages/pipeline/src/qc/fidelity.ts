@@ -39,7 +39,8 @@ export type FidelityIssue =
   | "eroded_mask_empty"
   | "non_finite_delta_e"
   | "mean_delta_e_exceeded"
-  | "max_delta_e_exceeded";
+  | "max_delta_e_exceeded"
+  | "not_exact";
 
 export interface FidelityReport {
   /** Pixels compared, after erosion. */
@@ -74,6 +75,13 @@ export interface FidelityOptions {
   kind?: QcKind;
   /** Single pixel CIEDE2000 ceiling. Default DEFAULT_MAX_DELTA_E_LIMIT. */
   maxDeltaELimit?: number;
+  /**
+   * Require every compared pixel to match byte for byte. For a render whose
+   * reference went through the same operations before any encoding (a kept
+   * photo, PHASE_15), any difference at all is drift: a 2 percent
+   * brightness change stays under the deltaE rows but fails here.
+   */
+  exact?: boolean;
 }
 
 export async function fidelityReport(
@@ -181,6 +189,9 @@ export async function fidelityReport(
     }
     if (maxDeltaE > maxDeltaELimit) {
       issues.push("max_delta_e_exceeded");
+    }
+    if (opts.exact && exact !== area) {
+      issues.push("not_exact");
     }
   }
 

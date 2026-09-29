@@ -13,6 +13,7 @@
 import { type Db, galleryItems, shareLinks, sql, eq, and } from "@curvi/db";
 import { isWorkspaceKey, isWorkspaceSourceKey } from "@/lib/r2";
 import { isUuid } from "@/lib/validation/ids";
+import { allHeroCandidatesOriginal } from "./hero";
 import { isShareSlug, newShareSlug, pickDisplayVariant, pickHeroAsset, shotLabel } from "./pick";
 import {
   canPublishShares,
@@ -331,7 +332,9 @@ export class DbShareStore implements ShareStore {
     }
     const title = share.title ?? DEFAULT_SHARE_TITLE;
     const image = (file: { asset: AssetRow; variant: VariantRow }): PublicShareImage => shareImage(slug, title, file);
-    const hasBefore = (await this.beforeKey(share)) !== null;
+    // A kept photo hero would show the same photo as its before (PHASE_15
+    // item 34), so such a page shows the result alone.
+    const hasBefore = !allHeroCandidatesOriginal([heroFile.asset]) && (await this.beforeKey(share)) !== null;
     const [gallery, product] = await Promise.all([
       this.db.query.galleryItems.findFirst({
         where: (t, { and, eq }) => and(eq(t.shareSlug, share.slug), eq(t.published, true)),
@@ -478,6 +481,7 @@ export class DbShareStore implements ShareStore {
       const title = share.title ?? DEFAULT_SHARE_TITLE;
       const before = share.beforeMediaId ? media.get(share.beforeMediaId) : undefined;
       const hasBefore =
+        !allHeroCandidatesOriginal([heroFile.asset]) &&
         before !== undefined &&
         before.workspaceId === share.workspaceId &&
         isWorkspaceSourceKey(share.workspaceId, before.r2Key);

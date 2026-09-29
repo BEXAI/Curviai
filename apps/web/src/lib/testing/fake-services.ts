@@ -54,6 +54,7 @@ export function createFakeServices(role: WorkspaceRole | null = "owner"): Servic
       stylePreset: "minimal_studio",
       hasLogo: false,
     })),
+    outputOptionsEnabled: vi.fn(async () => true),
     saveBrandKit: vi.fn(async () => ({ ok: true, notice: "Brand kit saved." })),
     listMembers: vi.fn(async () => []),
     listIntegrations: vi.fn(async () => []),

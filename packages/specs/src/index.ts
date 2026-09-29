@@ -41,6 +41,11 @@ export const ChannelSpec = z.object({
   textAllowed: z.boolean().optional(),
   propsAllowed: z.boolean().optional(),
   overlaysAllowed: z.boolean().optional(),
+  /**
+   * False when the channel refuses added borders or flat added space around
+   * the photo (eBay, TikTok Shop). Absent means added space is accepted.
+   */
+  bordersAllowed: z.boolean().optional(),
   badgeAllowed: z.boolean().optional(),
   iptcDigitalSourceTypeRequiredIfAI: z.boolean().optional(),
   naming: z.string().optional(),
@@ -219,4 +224,42 @@ export function channelFileLimit(spec: ChannelSpec): number | null {
     return 1;
   }
   return null;
+}
+
+/**
+ * True when the spec's background rule asks for white: a solid pure white
+ * fill, white or transparent, or white preferred (TikTok Shop's policy asks
+ * for a pure white main image). Derived from the registry rule, never from a
+ * list of ids, so a new registry entry is covered by its rule alone.
+ */
+export function requiresWhiteBackground(spec: ChannelSpec): boolean {
+  const rule = spec.background;
+  if (!rule) {
+    return false;
+  }
+  switch (rule.type) {
+    case "solid":
+      return rule.rgb !== undefined && rule.rgb.every((channel) => channel === 255);
+    case "white_or_transparent":
+    case "white_preferred":
+      return true;
+    case "any":
+    case "consistent":
+      return false;
+  }
+}
+
+/** True when width by height is the only size the spec accepts. */
+export function isExactSize(spec: ChannelSpec): boolean {
+  return spec.exactSize === true;
+}
+
+/** False when the channel refuses added borders or flat added space. */
+export function allowsAddedBorders(spec: ChannelSpec): boolean {
+  return spec.bordersAllowed !== false;
+}
+
+/** True when the channel refuses added text or overlays on the image. */
+export function refusesOverlays(spec: ChannelSpec): boolean {
+  return spec.textAllowed === false || spec.overlaysAllowed === false;
 }

@@ -7,7 +7,21 @@
  * detail stays in the database and the server logs.
  */
 
-import { isFeatureLive, shotMethodFeatures, type TierFeature } from "@curvi/pipeline/seed";
+import {
+  DEFAULT_OUTPUT_OPTIONS,
+  EXTRA_FAMILY_KEYS,
+  originalFitFor,
+  SELLER_OFF_REASON,
+  SOURCE_TOO_SMALL_REASON,
+  specAcceptsImage,
+  type Look,
+  type ResolvedOutputOptions,
+} from "@curvi/pipeline/output-options";
+import { backgroundSwatches, isFeatureLive, shotMethodFeatures, stillStyle, type TierFeature } from "@curvi/pipeline/seed";
+import { getSpec, hasSpec, requiresWhiteBackground } from "@curvi/specs";
+import { specDisplayName } from "@/components/marketing/spec-slug";
+import { EXTRA_FAMILY_NAMES, upscaleLimitText } from "@/lib/output-options-copy";
+import { familyName } from "@/lib/preflight/copy";
 
 export interface SkippedCopy {
   /** Chip text on the card. */
@@ -43,6 +57,18 @@ function isComingSoonShot(shotType: string | null | undefined): boolean {
   return features !== undefined && !features.some((feature) => isFeatureLive(feature));
 }
 
+/** A shot in an extra family the seller turned off (PHASE_15 control 5). */
+export const SELLER_OFF_COPY: SkippedCopy = {
+  label: "Turned off",
+  note: "You turned this off for this pack. Not charged.",
+};
+
+/** A kept photo too small for a channel within the enlarge limit (PHASE_15
+ * control 6), with the limit read from MAX_SOURCE_UPSCALE. */
+function tooSmallSentence(): string {
+  return `Your photo is too small for this channel without enlarging it more than ${upscaleLimitText()} times. Upload the original from your camera, or untick this channel.`;
+}
+
 /**
  * Copy for a shot the planner left out, keyed on its stored reason. A video
  * or avatar shot that no plan delivers yet reads Coming soon whatever the
@@ -55,6 +81,14 @@ export function skippedCopy(reason: string | null | undefined, shotType?: string
     return COMING_SOON;
   }
   const r = (reason ?? "").toLowerCase();
+  // PHASE_15 reasons first, so "source too small" never reads as a photo
+  // or plan problem.
+  if (r.includes(SELLER_OFF_REASON)) {
+    return SELLER_OFF_COPY;
+  }
+  if (r.includes(SOURCE_TOO_SMALL_REASON)) {
+    return { label: "Needs a larger photo", note: `${tooSmallSentence()} Not charged.` };
+  }
   if (r.includes("needs photo")) {
     return { label: "Needs photo", note: `Add a photo of this angle to get this shot. ${NO_CHARGE}` };
   }
@@ -118,7 +152,13 @@ export const SCENE_PAUSED_NOTE = "Paused, the scene service is unavailable, so t
 export function needsReviewNote(hint: string | null | undefined): string {
   const h = (hint ?? "").toLowerCase();
   let reason = "It did not meet our quality bar, so we held it back.";
-  if (h.includes("as many images as it allows")) {
+  if (h.includes(SOURCE_TOO_SMALL_REASON)) {
+    // live-original.ts: the last guard for a kept photo too small for the
+    // channel (PHASE_15 control 6). Matched before "source photo".
+    reason = tooSmallSentence();
+  } else if (h.includes(SELLER_OFF_REASON)) {
+    reason = "You turned this off for this pack.";
+  } else if (h.includes("as many images as it allows")) {
     // SHOT_CHANNEL_FULL: passed QC, dropped by the packager over the limit.
     reason = "It passed our checks, but this channel already has as many images as it allows, so it was left out of the pack.";
   } else if (h.includes("could not be added to the pack")) {
@@ -511,4 +551,71 @@ export function packSummaryLine(tally: PackTally): string {
   const credits = Number.isInteger(tally.creditsCharged) ? tally.creditsCharged : tally.creditsCharged.toFixed(1);
   parts.push(`${credits} ${tally.creditsCharged === 1 ? "credit" : "credits"} charged.`);
   return parts.join(" ");
+}
+
+/** What outputOptionsSummary needs besides the stored options. */
+export interface OutputOptionsSummaryContext {
+  /** The spec ids the pack was made for. */
+  specIds: readonly string[];
+  /** Photos in the pack, for a Keep pack whose stored keep list is empty. */
+  photoCount: number;
+}
+
+/** The job page's "Your choices" card (PHASE_15 JobView.outputOptions). */
+export interface OutputOptionsSummary {
+  look: Look;
+  lines: string[];
+}
+
+/** The chosen color in words: "warm white", "brand color 1, #1F2A44" or "#1F2A44". */
+export function outputColorName(resolved: Pick<ResolvedOutputOptions, "color" | "colorHex">): string {
+  switch (resolved.color.kind) {
+    case "swatch":
+      return backgroundSwatches[resolved.color.key].label.toLowerCase();
+    case "brand":
+      return `brand color ${resolved.color.index + 1}, ${resolved.colorHex.toUpperCase()}`;
+    case "custom":
+      return resolved.colorHex.toUpperCase();
+  }
+}
+
+/**
+ * The lines of the "Your choices" card, for example "Background kept as you
+ * took it, on 3 photos.", "Amazon main image: background removed, because
+ * Amazon requires white.", "Added space: white." and "Turned off: lifestyle
+ * scenes, studio backdrops, transparent PNG, graphics." A job with no stored
+ * options (every pack before PHASE_15) reads as Marketplace ready on white.
+ */
+export function outputOptionsSummary(
+  stored: ResolvedOutputOptions | null | undefined,
+  context: OutputOptionsSummaryContext,
+): OutputOptionsSummary {
+  const resolved = stored ?? { ...DEFAULT_OUTPUT_OPTIONS, look: "marketplace" as const, colorHex: stillStyle.whiteHex };
+  const keep = resolved.background === "keep";
+  const color = outputColorName(resolved);
+  const specs = context.specIds.filter(hasSpec).map(getSpec);
+  const lines: string[] = [];
+  if (keep) {
+    const photos = stored?.keepMediaIds.length || context.photoCount;
+    lines.push(`Background kept as you took it, on ${plural(photos, "photo", "photos")}.`);
+  } else {
+    lines.push(`Background removed, on ${color}.`);
+  }
+  const colorIsWhite = resolved.colorHex.toUpperCase() === stillStyle.whiteHex.toUpperCase();
+  for (const spec of specs.filter(requiresWhiteBackground)) {
+    const family = familyName(spec.id);
+    if (keep) {
+      lines.push(`${specDisplayName(spec.id)}: background removed, because ${family} requires white.`);
+    } else if (!colorIsWhite) {
+      lines.push(`${specDisplayName(spec.id)}: pure white, because ${family} requires white.`);
+    }
+  }
+  if (keep && specs.some((spec) => specAcceptsImage(spec, "original") && originalFitFor(spec, resolved) === "pad")) {
+    lines.push(`Added space: ${color}.`);
+  }
+  const off = EXTRA_FAMILY_KEYS.filter((family) => !resolved.extras[family]).map((family) => EXTRA_FAMILY_NAMES[family]);
+  if (off.length > 0) {
+    lines.push(`Turned off: ${off.join(", ")}.`);
+  }
+  return { look: stored?.look ?? "marketplace", lines };
 }

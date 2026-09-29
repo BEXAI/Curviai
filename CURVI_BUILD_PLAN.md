@@ -343,6 +343,8 @@ export const QCVerdict = z.object({
 });
 ```
 
+Note (Phase 15, docs/phases/PHASE_15.md): `Shot.type` in packages/pipeline/src/schemas.ts also accepts `social_2x3` and `original_photo`. `original_photo` is a kept seller photo, only resized for each channel, planned by the deterministic planner alone. The plan recipe's tool schema and validateLlmShotList use `LlmShot` and `LlmShotList`, which are `Shot` and `ShotList` without `original_photo`, so the LLM tool schema is unchanged and the LLM can never emit it.
+
 ### 5.3 System prompts (verbatim; stored as recipe version 1 in the `recipes` table)
 
 **Intake normalizer**

@@ -15,13 +15,19 @@
  * the same list the worker skips) cost nothing: when a video channel is
  * picked on a plan that includes it, they show as coming soon at 0 credits,
  * so a pack never holds credits for output it cannot ship.
+ *
+ * The hold follows the seller's output options (PHASE_15): with `output` the
+ * planner plans the pack's real photo count, one original_photo per kept
+ * photo, and leaves out the extras the seller turned off, so the form, the
+ * createJob hold and the demo plan agree with the runner.
  */
 
-import { planShots } from "@curvi/pipeline/planner";
+import { keepMediaIdsFor, type OutputPlanFlags, type PlanPhoto } from "@curvi/pipeline/output-options";
+import { planShots, type PlanOptions } from "@curvi/pipeline/planner";
 import type { ProductProfile, Shot } from "@curvi/pipeline/schemas";
-import { withSellerAngles, type AngleRole } from "@curvi/pipeline/seller-inputs";
-import { isShotMethodDeliverable, type TierKey } from "@curvi/pipeline/seed";
-import { isMarketplaceChannel } from "@curvi/specs";
+import { planAngleKey, withSellerAngles, type AngleRole } from "@curvi/pipeline/seller-inputs";
+import { isShotMethodDeliverable, stillStyle, type TierKey } from "@curvi/pipeline/seed";
+import { getSpec, hasSpec, isMarketplaceChannel, requiresWhiteBackground } from "@curvi/specs";
 
 export type EstimateMode = "listing" | "concept";
 
@@ -79,6 +85,91 @@ export interface EstimateSellerInputs {
   angles?: readonly AngleRole[];
   hasBoxContents?: boolean;
   hasComparisonFacts?: boolean;
+  /**
+   * The seller's output options as plan flags. Absent means today's pack.
+   * Its keepMediaIds are matched to the estimate's photos by position when
+   * output.photos has the same count; otherwise every photo follows
+   * `background`.
+   */
+  output?: OutputPlanFlags;
+  /**
+   * The pack's photos in order: the form's uploads (or the product's stored
+   * photo count), or createJob's merged media with their sizes. Absent, the
+   * count is output.photos, then the reference product's three angles. A
+   * photo of unknown size is treated as fitting every spec, so the form's
+   * figure is an upper bound.
+   */
+  photos?: readonly EstimatePhoto[];
+  /** The resolved background color, for the line labels only. Absent means white. */
+  colorHex?: string;
+}
+
+/** One photo as the estimate knows it. */
+export interface EstimatePhoto {
+  /** The role the seller gave the photo, when known. */
+  angle?: AngleRole | null;
+  width?: number;
+  height?: number;
+}
+
+/** Synthetic media id of the estimate's photo at this 1 based position. */
+export function referencePhotoId(position: number): string {
+  return `reference_photo_${position}`;
+}
+
+interface EstimatePlan {
+  output: OutputPlanFlags;
+  mediaIdsByAngle: Partial<Record<string, string>>;
+}
+
+/**
+ * The plan flags for the estimate's synthetic photos: ids reference_photo_1
+ * to n, except the front photo, whose id is primaryMediaId; angles from the
+ * seller's roles, then the reference product's other angles in order; the
+ * kept set carried over from the flags.
+ */
+function estimatePlanFor(
+  profile: ProductProfile,
+  inputs: EstimateSellerInputs,
+  output: OutputPlanFlags,
+  primaryMediaId: string,
+): EstimatePlan {
+  const given: ReadonlyArray<{ angle?: string; width?: number; height?: number }> = inputs.photos
+    ? inputs.photos.map((photo) => ({
+        ...(photo.angle ? { angle: planAngleKey(photo.angle) } : {}),
+        ...(photo.width !== undefined ? { width: photo.width } : {}),
+        ...(photo.height !== undefined ? { height: photo.height } : {}),
+      }))
+    : output.photos;
+  const count = given.length > 0 ? given.length : profile.photographedAngles.length;
+  const claimed = new Set(given.map((photo) => photo.angle).filter((angle): angle is string => !!angle));
+  const spare = profile.photographedAngles.filter((angle) => !claimed.has(angle));
+  const angles = Array.from({ length: count }, (_, i) => given[i]?.angle ?? spare.shift());
+  const frontIndex = Math.max(0, angles.indexOf("front"));
+  const photos: PlanPhoto[] = angles.map((angle, i) => ({
+    id: i === frontIndex ? primaryMediaId : referencePhotoId(i + 1),
+    ...(angle !== undefined ? { angle } : {}),
+    ...(given[i]?.width !== undefined ? { width: given[i].width } : {}),
+    ...(given[i]?.height !== undefined ? { height: given[i].height } : {}),
+  }));
+  const ids = photos.map((photo) => photo.id);
+  const keepMediaIds =
+    output.photos.length === count
+      ? ids.filter((_, i) => output.keepMediaIds.includes(output.photos[i].id))
+      : keepMediaIdsFor(output, ids);
+  const mediaIdsByAngle: Partial<Record<string, string>> = {};
+  for (const photo of photos) {
+    if (photo.angle !== undefined) {
+      mediaIdsByAngle[photo.angle] ??= photo.id;
+    }
+  }
+  return { output: { ...output, keepMediaIds, photos }, mediaIdsByAngle };
+}
+
+interface ReferencePack {
+  shots: Shot[];
+  /** Media ids of the kept photos. */
+  kept: ReadonlySet<string>;
 }
 
 function referenceProductFor(inputs: EstimateSellerInputs | undefined): ProductProfile {
@@ -101,18 +192,32 @@ export function referencePackShots(
   primaryMediaId: string = REFERENCE_MEDIA_ID,
   inputs?: EstimateSellerInputs,
 ): Shot[] {
+  return referencePack(channels, mode, tier, primaryMediaId, inputs).shots;
+}
+
+function referencePack(
+  channels: readonly string[],
+  mode: EstimateMode,
+  tier: TierKey,
+  primaryMediaId: string,
+  inputs: EstimateSellerInputs | undefined,
+): ReferencePack {
   const picked = mode === "concept" ? channels.filter((c) => !isMarketplaceChannel(c)) : [...channels];
   if (picked.length === 0) {
-    return [];
+    return { shots: [], kept: new Set() };
   }
-  return planShots(referenceProductFor(inputs), {
+  const profile = referenceProductFor(inputs);
+  const plan = inputs?.output ? estimatePlanFor(profile, inputs, inputs.output, primaryMediaId) : null;
+  const options: PlanOptions = {
     channels: picked,
     tier,
     creditBudget: Number.MAX_SAFE_INTEGER,
     primaryMediaId,
     hasBoxContents: inputs?.hasBoxContents === true,
     hasComparisonFacts: inputs?.hasComparisonFacts === true,
-  }).shots;
+    ...(plan ? { output: plan.output, mediaIdsByAngle: plan.mediaIdsByAngle } : {}),
+  };
+  return { shots: planShots(profile, options).shots, kept: new Set(plan?.output.keepMediaIds ?? []) };
 }
 
 interface LineName {
@@ -121,15 +226,53 @@ interface LineName {
   many?: (count: number) => string;
 }
 
+/** What the line labels need to know beyond the shot. */
+interface LineContext {
+  /** Media ids of the kept photos. */
+  kept: ReadonlySet<string>;
+  /** The pack's background color is white. */
+  colorIsWhite: boolean;
+}
+
+const MADE_WHITE_LINE: { key: string; name: LineName } = {
+  key: "made_white",
+  name: {
+    one: "Made white for channels that require it",
+    many: (n) => `Made white for channels that require it, ${n}`,
+  },
+};
+
+/** True when the shot lands on the seller's color on some spec it targets. */
+function onSellerColor(shot: Shot, context: LineContext): boolean {
+  return (
+    !context.colorIsWhite &&
+    shot.channels.some((specId) => hasSpec(specId) && !requiresWhiteBackground(getSpec(specId)))
+  );
+}
+
 /** Summary line per shot type; shot types that share a key share a line. */
-function lineFor(shot: Shot): { key: string; name: LineName } {
+function lineFor(shot: Shot, context: LineContext): { key: string; name: LineName } {
   switch (shot.type) {
     case "amazon_main":
-      return { key: "amazon_main", name: { one: "Amazon main image" } };
+      // A kept photo's white file is made only for the channels that require it.
+      return context.kept.has(shot.sourceMediaId)
+        ? MADE_WHITE_LINE
+        : { key: "amazon_main", name: { one: "Amazon main image" } };
     case "alt_angle_white":
+      if (context.kept.has(shot.sourceMediaId)) {
+        return MADE_WHITE_LINE;
+      }
       // Priority 1 is the white front image that leads a listing other than Amazon's.
-      return shot.priority === 1
-        ? { key: "white_front", name: { one: "White front image" } }
+      if (shot.priority === 1) {
+        return onSellerColor(shot, context)
+          ? { key: "color_front", name: { one: "Front image on your background" } }
+          : { key: "white_front", name: { one: "White front image" } };
+      }
+      return onSellerColor(shot, context)
+        ? {
+            key: "alt_angle_color",
+            name: { one: "Other angle on your background", many: (n) => `Other angles on your background, ${n}` },
+          }
         : {
             key: "alt_angle_white",
             name: { one: "Alternate angle on white", many: (n) => `Alternate angles on white, ${n}` },
@@ -169,6 +312,11 @@ function lineFor(shot: Shot): { key: string; name: LineName } {
       return { key: "video_lifestyle_15s", name: { one: "Lifestyle clip, 15 seconds" } };
     case "video_ugc_hook":
       return { key: "video_ugc_hook", name: { one: "UGC hook ad" } };
+    case "original_photo":
+      return {
+        key: "original_photo",
+        name: { one: "Your photo, resized for each channel", many: (n) => `Your photos, resized for each channel, ${n}` },
+      };
   }
 }
 
@@ -179,8 +327,14 @@ export function estimatePackCredits(
   inputs?: EstimateSellerInputs,
 ): PackEstimate {
   const groups = new Map<string, { name: LineName; count: number; credits: number; deliverable: boolean }>();
-  for (const shot of referencePackShots(channels, mode, tier, REFERENCE_MEDIA_ID, inputs)) {
-    const { key, name } = lineFor(shot);
+  const pack = referencePack(channels, mode, tier, REFERENCE_MEDIA_ID, inputs);
+  const white = stillStyle.whiteHex.toUpperCase();
+  const context: LineContext = {
+    kept: pack.kept,
+    colorIsWhite: (inputs?.colorHex ?? white).toUpperCase() === white,
+  };
+  for (const shot of pack.shots) {
+    const { key, name } = lineFor(shot, context);
     const deliverable = isShotMethodDeliverable(shot.method);
     const group = groups.get(key) ?? { name, count: 0, credits: 0, deliverable };
     group.count += 1;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   Registry,
+  allowsAddedBorders,
   channelFileLimit,
   dimensionBounds,
   filenameFor,
@@ -8,16 +9,19 @@ import {
   hasSpec,
   isMarketplaceChannel,
   isMarketplaceSpec,
+  isExactSize,
   isSpecSelected,
   listSpecs,
   loadRegistry,
+  refusesOverlays,
+  requiresWhiteBackground,
   selectedSpecIds,
 } from "./index.js";
 
 describe("channel spec registry", () => {
   it("parses and validates the bundled registry", () => {
     const registry = loadRegistry();
-    expect(registry.version).toBe(1);
+    expect(registry.version).toBe(2);
     expect(registry.specs.length).toBe(18);
   });
 
@@ -239,5 +243,76 @@ describe("isSpecSelected, the one channel selection rule (Update.md 2.11)", () =
     expect(isMarketplaceChannel("meta.feed_1x1")).toBe(false);
     expect(isMarketplaceChannel("pinterest.pin")).toBe(false);
     expect(isMarketplaceChannel("myspace")).toBe(false);
+  });
+});
+
+describe("background and layout helpers", () => {
+  it("requires white on exactly the four white rule specs", () => {
+    const white = listSpecs()
+      .filter(requiresWhiteBackground)
+      .map((spec) => spec.id);
+    expect(white).toEqual(["amazon.main", "google.merchant.main", "walmart.main", "tiktokshop.main"]);
+  });
+
+  it("reads white from the background rule, not the spec id", () => {
+    const base = { id: "test.spec", verified: false };
+    expect(requiresWhiteBackground({ ...base, background: { type: "solid", rgb: [255, 255, 255] } })).toBe(true);
+    expect(requiresWhiteBackground({ ...base, background: { type: "solid", rgb: [250, 250, 250] } })).toBe(false);
+    expect(requiresWhiteBackground({ ...base, background: { type: "solid" } })).toBe(false);
+    expect(requiresWhiteBackground({ ...base, background: { type: "white_or_transparent" } })).toBe(true);
+    expect(requiresWhiteBackground({ ...base, background: { type: "white_preferred" } })).toBe(true);
+    expect(requiresWhiteBackground({ ...base, background: { type: "any" } })).toBe(false);
+    expect(requiresWhiteBackground({ ...base, background: { type: "consistent" } })).toBe(false);
+    expect(requiresWhiteBackground(base)).toBe(false);
+  });
+
+  it("matches isExactSize to the registry's exactSize specs", () => {
+    const exact = listSpecs()
+      .filter(isExactSize)
+      .map((spec) => spec.id);
+    expect(exact).toEqual(listSpecs().filter((spec) => spec.exactSize === true).map((spec) => spec.id));
+    expect(exact).toEqual([
+      "amazon.aplus.basic_header",
+      "amazon.aplus.premium_full",
+      "shopify.hero_banner",
+      "meta.feed_1x1",
+      "meta.feed_4x5",
+      "meta.story_9x16",
+      "pinterest.pin",
+    ]);
+  });
+
+  it("parses the added border and overlay flags", () => {
+    expect(getSpec("ebay.listing").bordersAllowed).toBe(false);
+    expect(getSpec("tiktokshop.main").bordersAllowed).toBe(false);
+    expect(getSpec("ebay.listing").overlaysAllowed).toBe(false);
+    expect(getSpec("google.merchant.lifestyle").overlaysAllowed).toBe(false);
+    expect(getSpec("google.merchant.main").bordersAllowed).toBe(false);
+    expect(getSpec("google.merchant.lifestyle").bordersAllowed).toBe(false);
+    expect(
+      listSpecs()
+        .filter((spec) => !allowsAddedBorders(spec))
+        .map((spec) => spec.id),
+    ).toEqual(["google.merchant.main", "google.merchant.lifestyle", "ebay.listing", "tiktokshop.main"]);
+    expect(() => Registry.parse({ version: 1, specs: [{ id: "x.y", verified: false, bordersAllowed: "no" }] })).toThrow();
+  });
+
+  it("carries the published Google Merchant image limits on both google specs", () => {
+    for (const id of ["google.merchant.main", "google.merchant.lifestyle"]) {
+      const spec = getSpec(id);
+      expect(spec.maxMegapixels, id).toBe(64);
+      expect(spec.maxBytes, id).toBe(16000000);
+      expect(spec.maxWidth, id).toBeUndefined();
+      expect(spec.maxHeight, id).toBeUndefined();
+    }
+  });
+
+  it("refuses overlays where text or overlays are not allowed", () => {
+    for (const id of ["amazon.main", "google.merchant.main", "google.merchant.lifestyle", "ebay.listing", "walmart.main", "tiktokshop.main"]) {
+      expect(refusesOverlays(getSpec(id)), id).toBe(true);
+    }
+    for (const id of ["amazon.secondary", "shopify.product", "etsy.listing", "meta.feed_1x1", "pinterest.pin"]) {
+      expect(refusesOverlays(getSpec(id)), id).toBe(false);
+    }
   });
 });

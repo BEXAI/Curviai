@@ -11,6 +11,7 @@ import { z } from "zod";
 import {
   AUTO_STYLE_PRESET,
   DEFAULT_TEMPLATE_FONT,
+  MAX_BRAND_COLORS,
   isTemplateFontKey,
   presets,
   templateFonts,
@@ -22,7 +23,8 @@ const presetKeys = Object.keys(presets) as [PresetKey, ...PresetKey[]];
 // No control characters or angle brackets in names that end up in templates.
 const SAFE_TEXT = /^[^\u0000-\u001F\u007F<>]*$/;
 
-export const MAX_BRAND_COLORS = 6;
+// The limit lives in the seed so the output options schema shares it.
+export { MAX_BRAND_COLORS };
 
 const UNKNOWN_FONT = "unknown_font";
 

@@ -46,6 +46,24 @@ export function chosenItem(view: PreflightView, chosen: number | null | undefine
   return number == null ? null : (view.items.find((item) => item.number === number) ?? null);
 }
 
+/**
+ * How the pack uses this photo (docs/phases/PHASE_15.md item 31). Absent
+ * means today's pack: the background is removed and a cutout is made from
+ * the photo.
+ */
+export interface PhotoOutputContext {
+  /** The seller keeps this photo's background. */
+  kept: boolean;
+  /** Some planned shot cuts the product out of this photo (@curvi/pipeline
+   * output-options cutoutMediaIds). */
+  feedsCutout: boolean;
+}
+
+/** A kept photo that shows other items and feeds no cutout (PHASE_15
+ * "Several products in one photo"). */
+export const OTHER_ITEMS_KEPT_COPY =
+  "This photo shows other items. With the background kept, they stay in your images. Turn on Remove the background to show only your product.";
+
 export interface SizeShortfall {
   specId: string;
   measure: "product" | "photo";
@@ -53,18 +71,25 @@ export interface SizeShortfall {
   has: number;
 }
 
-/** The selected channels this photo is too small for. */
+/**
+ * The selected channels this photo is too small for. A kept photo that feeds
+ * no cutout has no product region to measure, so only needs on the whole
+ * photo count for it.
+ */
 export function sizeShortfalls(
   view: PreflightView,
   selected: readonly string[],
   chosen?: number | null,
+  output?: PhotoOutputContext,
 ): SizeShortfall[] {
   if (!view.photo) return [];
+  const photoOnly = output !== undefined && output.kept && !output.feedsCutout;
   const photoLong = Math.max(view.photo.width, view.photo.height);
   const productLong = chosenItem(view, chosen)?.longSide ?? view.productLongSide ?? null;
   const shortfalls: SizeShortfall[] = [];
   for (const need of view.sizes) {
     if (!selected.includes(need.specId)) continue;
+    if (photoOnly && need.measure === "product") continue;
     const has = Math.round(need.measure === "product" ? (productLong ?? photoLong) : photoLong);
     if (has < need.needs) {
       shortfalls.push({ specId: need.specId, measure: need.measure, needs: need.needs, has });
@@ -96,26 +121,68 @@ export function readyLine(view: PreflightView, selected: readonly string[], chos
   return families.length > 0 ? `${found} Ready for ${joinNames(families)}.` : found;
 }
 
-/** Why this photo cannot start a pack right now, or null when it can. A
+export interface PreflightBlockOptions {
+  /** The photo's role shows several items on purpose (in the box). */
+  multiItem?: boolean;
+  /** How the pack uses the photo; absent means removed, as today. */
+  output?: PhotoOutputContext;
+}
+
+/**
+ * Why this photo cannot start a pack right now, or null when it can. A
  * photo whose role shows several items on purpose (in the box) needs no
- * choice. */
+ * choice, and neither does one that feeds no cutout: its other items stay
+ * in the picture (keptPhotoHeadsUp says so). A kept photo never blocks on
+ * size; where it is too small it is left out of that channel at plan time.
+ * A removed photo keeps today's rules.
+ */
 export function preflightBlockReason(
   view: PreflightView,
   selected: readonly string[],
   chosen: number | null | undefined,
-  opts: { multiItem?: boolean } = {},
+  opts: PreflightBlockOptions = {},
 ): string | null {
   if (view.status === "blocked" && view.problem) {
     return `${view.problem.title} ${view.problem.fix}`;
   }
-  if (view.status === "choose" && !opts.multiItem && !chosenItem(view, chosen)) {
+  const feedsCutout = opts.output === undefined || opts.output.feedsCutout;
+  if (view.status === "choose" && !opts.multiItem && feedsCutout && !chosenItem(view, chosen)) {
     return "Tap the product this pack is for.";
   }
-  const short = sizeShortfalls(view, selected, chosen);
+  if (opts.output?.kept) {
+    return null;
+  }
+  const short = sizeShortfalls(view, selected, chosen, opts.output);
   if (short.length > 0) {
     return `This photo is too small for ${joinNames(short.map((s) => specName(s.specId)))}. Untick ${short.length === 1 ? "it" : "them"} or upload a larger photo.`;
   }
   return null;
+}
+
+/**
+ * What the form says under a kept photo instead of blocking: its other
+ * items stay in the picture, and the channels it may be too small for. Empty
+ * for a removed photo. The exact pixel numbers per channel come from the
+ * conflicts (output-options-copy.ts tooSmallLine).
+ */
+export function keptPhotoHeadsUp(
+  view: PreflightView,
+  selected: readonly string[],
+  chosen: number | null | undefined,
+  output: PhotoOutputContext | undefined,
+): string[] {
+  if (!output?.kept) return [];
+  const lines: string[] = [];
+  if (view.status === "choose" && !output.feedsCutout) {
+    lines.push(OTHER_ITEMS_KEPT_COPY);
+  }
+  const short = sizeShortfalls(view, selected, chosen, output);
+  if (short.length > 0) {
+    lines.push(
+      `This photo may be too small for ${joinNames(short.map((s) => specName(s.specId)))}, so it will be left out where it is too small. Upload the original from your camera to include it.`,
+    );
+  }
+  return lines;
 }
 
 /** Tips for a photo with no product we could find (PHASE_14.md 3.3). */
