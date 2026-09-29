@@ -20,7 +20,6 @@ import {
   GeminiImageProvider,
   OPENAI_API_KEY_ENV,
   OpenaiImageProvider,
-  FAL_API_KEY_ENV,
   FalCutoutProvider,
   type Provider,
 } from "@curvi/ai";
@@ -120,12 +119,12 @@ export function liveProviderTargets(readEnv: ReadEnv = readEnvDefault, fetchFn?:
   // Cutouts run on fal (BiRefNet). fal has no free key probe, so the
   // provider is listed as skipped by the probe route; breaker state and
   // quota warnings cover it (docs/phases/PHASE_14.md 1.2, 1.5).
-  const falKey = readEnv(FAL_API_KEY_ENV);
   for (const row of cutoutModelSeedRows) {
+    const falKey = readEnv(row.keyEnv);
     targets.push({
       name: row.providerName,
       kind: "cutout",
-      envVar: FAL_API_KEY_ENV,
+      envVar: row.keyEnv,
       stages: [CUTOUT_TASK],
       configured: Boolean(falKey),
       provider: falKey

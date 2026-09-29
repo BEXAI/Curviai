@@ -70,9 +70,11 @@ import {
   significantComponents,
   trimToBudget,
   withSellerAngles,
+  IntakeAnswer,
   IntakeResult,
   IntakeToolResult,
   ProductProfile,
+  ProductProfileAnswer,
   QCVerdict,
   LlmShotList,
   ShotList,
@@ -133,6 +135,7 @@ import {
   recipeSeedRows,
   SCENE_PLATE_TASK,
   sceneCountOptions,
+  type RecipeModelOptions,
   type RecipeRow,
   type TierKey,
 } from "@curvi/pipeline/seed";
@@ -1155,6 +1158,9 @@ export interface LlmTaskInput {
   toolChoice?: unknown;
   /** Output token budget from the recipe body; the adapter default otherwise. */
   maxTokens?: number;
+  /** Thinking and effort per model id from the recipe body; each provider
+   * in the chain sends only its own model's entry. */
+  modelOptions?: Record<string, RecipeModelOptions>;
 }
 
 function sniffImageMime(bytes: Buffer): string {
@@ -1802,6 +1808,9 @@ export async function llmJson<T>(
   if (recipe.maxTokens !== undefined) {
     input.maxTokens = recipe.maxTokens;
   }
+  if (recipe.modelOptions !== undefined) {
+    input.modelOptions = recipe.modelOptions;
+  }
   const call = (strict: boolean) => {
     if (outputSchema) {
       // Forced tool call per plan 5.2. With strict tool use the API
@@ -1826,6 +1835,7 @@ export async function llmJson<T>(
       {
         task: recipe.key,
         input,
+        ...(recipe.timeoutMs !== undefined ? { timeoutMs: recipe.timeoutMs } : {}),
         workspaceId: ctx.workspaceId,
         jobId: ctx.jobId,
         stepId: ctx.stepId,
@@ -3628,7 +3638,7 @@ export async function runGeneratePack(
           llmJson<IntakeResult>(
             deps.ai,
             intakeRecipe,
-            IntakeResult,
+            IntakeAnswer,
             { images: promptImages(judgedImages), userDescription: wrapUserDescription(input.userDescription) },
             { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "intake" },
             photos,
@@ -3797,7 +3807,7 @@ export async function runGeneratePack(
       llmJson<ProductProfile>(
         deps.ai,
         recipeFor(recipes, "analyze"),
-        ProductProfile,
+        ProductProfileAnswer,
         { images: promptImages(images), userDescription: wrapUserDescription(input.userDescription) },
         { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "analyze" },
         cameraPhotos,
