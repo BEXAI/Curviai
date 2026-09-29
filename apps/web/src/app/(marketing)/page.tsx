@@ -111,7 +111,7 @@ export default function HomePage() {
             {homeHero.eyebrow}
           </p>
           <h1 className="font-display text-4xl font-bold uppercase leading-tight tracking-tight text-white sm:text-5xl">
-            Shot once. <span className="text-brand-gradient block">Ready everywhere.</span>
+            Shot once. <span className="block text-[#b03a5b]">Ready everywhere.</span>
           </h1>
           <p className="mt-4 text-lg text-ink-300">{homeHero.lead}</p>
           <p className="mt-3 text-base font-medium text-ink-200">{homeHero.proof}</p>
