@@ -704,10 +704,12 @@ describe("memory on an 80 MP photo", () => {
     expect(result.width * result.height).toBeLessThanOrEqual(originalFit.maxMegapixels * 1_000_000);
   });
 
-  // Runs in its own process so the peak is this render's alone. Set
-  // CURVI_RSS_TEST=1 to run it; it takes several seconds.
-  it.runIf(process.env.CURVI_RSS_TEST === "1")(
-    "keeps peak RSS under the worker budget",
+  // Runs in its own process so the peak is this output's alone: the source, the render,
+  // the rule 3 reference, the encode and the shipped decode, all held at
+  // once as the runner holds them. It takes a few seconds; CURVI_RSS_TEST=0
+  // skips it.
+  it.skipIf(process.env.CURVI_RSS_TEST === "0")(
+    "keeps peak RSS under the seeded worker budget",
     async () => {
       const dir = await mkdtemp(path.join(tmpdir(), "curvi-rss-"));
       const here = path.dirname(fileURLToPath(import.meta.url));
@@ -727,23 +729,34 @@ import sharp from ${JSON.stringify(resolve("sharp"))};
 import { getSpec } from ${JSON.stringify(resolve("@curvi/specs"))};
 import { makeOriginalFit } from ${JSON.stringify(path.join(here, "original.ts"))};
 import { buildProductReferenceFromEncoded } from ${JSON.stringify(path.join(here, "whiten.ts"))};
+import { decodeToRgba, encodeJpeg } from ${JSON.stringify(path.join(here, "..", "raw.ts"))};
+import { fidelityReport } from ${JSON.stringify(path.join(here, "..", "qc", "fidelity.ts"))};
 // As on Render: no operation cache, one libvips thread (glibc without jemalloc).
 sharp.cache(false);
 sharp.concurrency(1);
-const bytes = await readFile(${JSON.stringify(photo)});
-const before = process.resourceUsage().maxRSS;
+// The process at rest (its peak so far, the loader included), before the
+// source is loaded: everything above it is this output's.
+const rest = process.resourceUsage().maxRSS / 1024;
 const started = Date.now();
-const result = await makeOriginalFit(bytes, getSpec("google.merchant.lifestyle"), { fit: "auto", padRgb: [255, 255, 255], maxUpscale: 1.5, maxMegapixels: 16 });
+const bytes = await readFile(${JSON.stringify(photo)});
+const result = await makeOriginalFit(bytes, getSpec("google.merchant.lifestyle"), { fit: "auto", padRgb: [255, 255, 255], maxUpscale: ${MAX_SOURCE_UPSCALE}, maxMegapixels: ${originalFit.maxMegapixels} });
 if (result.passthrough) throw new Error("expected a render");
 const reference = await buildProductReferenceFromEncoded(bytes, result.placement, { width: result.width, height: result.height });
-console.log(JSON.stringify({ before: before / 1024, peak: process.resourceUsage().maxRSS / 1024, ms: Date.now() - started, bytes: bytes.length, out: [result.width, result.height], ref: reference.width }));
+const exact = await fidelityReport(reference, result.raw, result.mask, { kind: "main", exact: true, erodePx: 0 });
+const encoded = await encodeJpeg(result.raw, 90);
+const shipped = await decodeToRgba(encoded);
+// Pure noise never passes a JPEG fidelity row; this is here for its memory, as the runner runs it.
+const after = await fidelityReport(reference, shipped, result.mask, { kind: "main" });
+if (!exact.pass || after.maskArea === 0 || shipped.width !== result.width) throw new Error("the 80 MP render did not prove out");
+const peak = process.resourceUsage().maxRSS / 1024;
+console.log(JSON.stringify({ rest, peak, added: peak - rest, ms: Date.now() - started, bytes: bytes.length, out: [result.width, result.height], shipped: encoded.length }));
 `,
       );
       try {
         const { stdout } = await execFileAsync("npx", ["tsx", script], { cwd: path.join(here, "..", ".."), maxBuffer: 1 << 20 });
-        const facts = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { peak: number; ms: number };
+        const facts = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { added: number; ms: number };
         console.log(`80 MP render: ${stdout.trim()}`);
-        expect(facts.peak).toBeLessThan(RSS_LIMIT_MB);
+        expect(facts.added).toBeLessThan(originalFit.peakRssAddedMb);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
@@ -751,6 +764,3 @@ console.log(JSON.stringify({ before: before / 1024, peak: process.resourceUsage(
     300_000,
   );
 });
-
-/** The 512 MB worker budget less headroom for the runner's own heap. */
-const RSS_LIMIT_MB = 448;
