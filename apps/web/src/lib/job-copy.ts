@@ -58,7 +58,7 @@ function isComingSoonShot(shotType: string | null | undefined): boolean {
 }
 
 /** A shot in an extra family the seller turned off (PHASE_15 control 5). */
-const SELLER_OFF_COPY: SkippedCopy = {
+export const SELLER_OFF_COPY: SkippedCopy = {
   label: "Turned off",
   note: "You turned this off for this pack. Not charged.",
 };

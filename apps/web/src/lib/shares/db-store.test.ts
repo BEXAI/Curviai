@@ -106,6 +106,35 @@ describe("publishing", () => {
     expect(JSON.stringify(page)).not.toContain(f.jobId);
   });
 
+  it("shows a pack of only kept photos without a before, since it would be the same photo", async () => {
+    const f = await makePack();
+    // Replace the made shots with the seller's kept photo (PHASE_15 item 34).
+    await db.delete(assetVariants).where(eq(assetVariants.workspaceId, f.ws.id));
+    await db.delete(assets).where(eq(assets.jobId, f.jobId));
+    const [kept] = await db
+      .insert(assets)
+      .values({ workspaceId: f.ws.id, jobId: f.jobId, shotType: "original_photo" })
+      .returning();
+    const [keptVariant] = await db
+      .insert(assetVariants)
+      .values({
+        workspaceId: f.ws.id,
+        assetId: kept.id,
+        channelSpecId: "etsy.listing",
+        r2Key: `ws/${f.ws.id}/out/${f.jobId}/kept.jpg`,
+        filename: "kept.jpg",
+        width: 2000,
+        height: 1500,
+      })
+      .returning();
+    const result = await store.publish(f.ws, f.jobId, { kind: "before_after", gallery: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const page = await store.getPublic(result.status.slug!);
+    expect(page?.after?.ref).toBe(`v_${keptVariant.id}`);
+    expect(page?.before).toBeNull();
+  });
+
   it("refuses editors and clients, and packs with nothing delivered", async () => {
     const f = await makePack();
     for (const role of ["editor", "client"] as const) {

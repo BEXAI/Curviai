@@ -23,6 +23,8 @@ export interface RevealShot {
   shotType: string;
   title: string;
   imageUrl: string;
+  /** The spec ids the shot shipped on, for the preview box shape. */
+  channels: string[];
 }
 
 /** "Amazon main" from "amazon_main". Matches the shot card titles. */
@@ -36,7 +38,13 @@ export function shotTitle(shotType: string): string {
 export function revealShots(shots: readonly JobShotView[]): RevealShot[] {
   return shots
     .filter((s): s is JobShotView & { imageUrl: string } => s.status === "done" && typeof s.imageUrl === "string" && s.imageUrl.length > 0)
-    .map((s) => ({ shotId: s.shotId, shotType: s.shotType, title: shotTitle(s.shotType), imageUrl: s.imageUrl }));
+    .map((s) => ({
+      shotId: s.shotId,
+      shotType: s.shotType,
+      title: shotTitle(s.shotType),
+      imageUrl: s.imageUrl,
+      channels: [...s.channels],
+    }));
 }
 
 /** True when the board should show the reveal: a finished pack with the
