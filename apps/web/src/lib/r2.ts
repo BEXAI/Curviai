@@ -18,6 +18,12 @@ export function sourceUploadKey(workspaceId: string): string {
   return `ws/${workspaceId}/src/${randomUUID()}`;
 }
 
+/** The source key of a photo sent through the public API: named after its
+ * sha256, so the same photo in a retried request lands on the same key. */
+export function apiSourceKey(workspaceId: string, sha256: string): string {
+  return `ws/${workspaceId}/src/api-${sha256}`;
+}
+
 export function r2Client(): S3Client {
   const accountId = requireEnv("R2_ACCOUNT_ID");
   return new S3Client({
@@ -101,9 +107,18 @@ export function privateBucket(): string {
 
 /** Writes a photo the server fetched for the workspace (a product link
  * import) under the same ws/{workspaceId}/src/ prefix a browser upload
- * uses, and returns its key. */
-export async function putSourceObject(workspaceId: string, body: Buffer, contentType: string): Promise<string> {
-  const key = sourceUploadKey(workspaceId);
+ * uses, and returns its key. The public API passes a key named after the
+ * photo's sha256 (apiSourceKey), so a retried request stores the same object
+ * under the same key and replays instead of conflicting. */
+export async function putSourceObject(
+  workspaceId: string,
+  body: Buffer,
+  contentType: string,
+  key: string = sourceUploadKey(workspaceId),
+): Promise<string> {
+  if (!isWorkspaceSourceKey(workspaceId, key)) {
+    throw new Error("putSourceObject: the key is outside the workspace source prefix");
+  }
   await r2Client().send(
     new PutObjectCommand({ Bucket: privateBucket(), Key: key, Body: body, ContentType: contentType }),
   );

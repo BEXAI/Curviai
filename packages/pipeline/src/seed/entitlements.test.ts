@@ -42,6 +42,7 @@ describe("tier entitlements (plan 9.1)", () => {
       clientWorkspaces: "agency",
       clientReviewLinks: "agency",
       whiteLabelShare: "agency",
+      apiAccess: "growth",
     };
     for (const [feature, firstTier] of Object.entries(matrix) as Array<[TierFeature, TierKey]>) {
       const first = TIER_ORDER.indexOf(firstTier);

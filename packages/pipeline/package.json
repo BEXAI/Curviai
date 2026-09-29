@@ -13,6 +13,7 @@
     "./edge": "./src/deterministic/edge.ts",
     "./ingest": "./src/ingest/index.ts",
     "./output-options": "./src/output-options.ts",
+    "./pixels": "./src/pixels.ts",
     "./planner": "./src/planner/deterministic.ts",
     "./questions": "./src/questions.ts",
     "./reveal": "./src/reveal/side-by-side.ts",
