@@ -7,7 +7,7 @@
 
 import Stripe from "stripe";
 import { optionalEnv } from "@/lib/env";
-import type { StripeLookup } from "./stripe-webhook";
+import type { DuplicateRefund, StripeBillingActions, StripeLookup, StripeSubscriptionSummary } from "./stripe-webhook";
 
 export const STRIPE_API_VERSION = "2025-08-27.basil" as const;
 
@@ -82,6 +82,104 @@ export function createStripeLookup(stripe: Stripe): StripeLookup {
       } catch (error) {
         if (isStripeMissingResource(error)) {
           return null;
+        }
+        throw error;
+      }
+    },
+  };
+}
+
+/** The Stripe error code for a refund of a payment already refunded in full. */
+export function isAlreadyRefunded(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "charge_already_refunded");
+}
+
+/** Idempotency key of the refund for a duplicate subscription's payment. */
+export function duplicateRefundKey(subscriptionId: string, index = 0): string {
+  return index === 0 ? `curvi-dup-refund-${subscriptionId}` : `curvi-dup-refund-${subscriptionId}-${index}`;
+}
+
+function idOf(value: string | { id?: string } | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  return typeof value === "string" ? value : (value.id ?? null);
+}
+
+/**
+ * The writes the webhook makes to retire a duplicate subscription: list a
+ * customer's subscriptions, refund the duplicate's latest invoice and cancel
+ * it. Every call is bounded like the lookups; a failure fails the delivery
+ * and Stripe's retry runs it again, which the refund idempotency key and the
+ * already refunded check make safe.
+ */
+export function createStripeBillingActions(stripe: Stripe): StripeBillingActions {
+  return {
+    async listCustomerSubscriptions(customerId: string): Promise<StripeSubscriptionSummary[]> {
+      const list = await stripe.subscriptions.list(
+        { customer: customerId, status: "all", limit: 20 },
+        { ...STRIPE_LOOKUP_OPTIONS },
+      );
+      return list.data.map((subscription) => ({
+        id: subscription.id,
+        status: subscription.status,
+        created: subscription.created,
+        customerId: idOf(subscription.customer),
+        latestInvoiceId: idOf(subscription.latest_invoice),
+      }));
+    },
+
+    async refundInvoice(subscriptionId: string, invoiceId: string): Promise<DuplicateRefund> {
+      // Since 2025-03-31.basil an invoice names its payments through
+      // InvoicePayment objects instead of invoice.payment_intent or charge.
+      const payments = await stripe.invoicePayments.list(
+        { invoice: invoiceId, status: "paid", limit: 10 },
+        { ...STRIPE_LOOKUP_OPTIONS },
+      );
+      const refund: DuplicateRefund = { amount: 0, currency: null, refundIds: [] };
+      let index = 0;
+      for (const payment of payments.data) {
+        const paymentIntent = idOf(payment.payment?.payment_intent);
+        const charge = idOf(payment.payment?.charge);
+        if (!paymentIntent && !charge) {
+          continue;
+        }
+        const key = duplicateRefundKey(subscriptionId, index);
+        index += 1;
+        refund.currency = payment.currency ?? refund.currency;
+        try {
+          const created = await stripe.refunds.create(
+            {
+              ...(paymentIntent ? { payment_intent: paymentIntent } : { charge: charge ?? undefined }),
+              reason: "duplicate",
+              metadata: { subscriptionId, invoiceId, curviReason: "duplicate_subscription" },
+            },
+            { ...STRIPE_LOOKUP_OPTIONS, idempotencyKey: key },
+          );
+          refund.amount += created.amount;
+          refund.refundIds.push(created.id);
+        } catch (error) {
+          if (!isAlreadyRefunded(error)) {
+            throw error;
+          }
+          // Refunded by an earlier delivery whose idempotency key has been
+          // pruned, or by hand in the Dashboard.
+          refund.amount += payment.amount_paid ?? 0;
+        }
+      }
+      return refund;
+    },
+
+    async cancelSubscription(subscriptionId: string): Promise<void> {
+      try {
+        await stripe.subscriptions.cancel(
+          subscriptionId,
+          { invoice_now: false, prorate: false },
+          { ...STRIPE_LOOKUP_OPTIONS },
+        );
+      } catch (error) {
+        if (isStripeMissingResource(error)) {
+          return;
         }
         throw error;
       }

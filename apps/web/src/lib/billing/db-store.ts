@@ -35,8 +35,10 @@ import { isPaidTierKey } from "./plans";
 import { acceptsSubscriptionStatus, keepsPaidPlan, SUPERSEDED_STATUS } from "./subscription-status";
 import {
   disputeKey,
+  DUPLICATE_SUBSCRIPTION_EVENT,
   roundCredits,
   UnroutableBillingEventError,
+  type BillingLink,
   type BillingNote,
   type BillingStore,
   type ClawbackOutcome,
@@ -44,6 +46,7 @@ import {
   type CreditDebit,
   type CreditGrant,
   type DebitOutcome,
+  type DuplicateSubscriptionRecord,
   type RestoreOutcome,
   type SubscriptionState,
   type SubscriptionSyncOutcome,
@@ -195,11 +198,62 @@ export class DbBillingStore implements BillingStore {
     });
   }
 
+  /** Stores the customer only when the workspace has none yet. A workspace
+   * that already has another customer keeps it (the portal and the cancel
+   * flow find its subscription through it) and the conflict is logged. */
   async linkCustomer(workspaceId: string, stripeCustomerId: string): Promise<void> {
-    await this.db
-      .update(workspaces)
-      .set({ stripeCustomerId, updatedAt: new Date() })
-      .where(eq(workspaces.id, workspaceId));
+    const stored = await claimStripeCustomer(this.db, workspaceId, stripeCustomerId);
+    if (stored && stored !== stripeCustomerId) {
+      console.warn(
+        JSON.stringify({
+          msg: "billing: workspace already has another Stripe customer, kept the first",
+          workspaceId,
+          kept: stored,
+          ignored: stripeCustomerId,
+        }),
+      );
+    }
+  }
+
+  async billingLink(workspaceId: string | null, stripeCustomerId: string | null): Promise<BillingLink | null> {
+    const resolved = await this.resolveWorkspaceId(workspaceId, stripeCustomerId);
+    if (!resolved) {
+      return null;
+    }
+    const [row] = await this.db
+      .select({ stripeCustomerId: workspaces.stripeCustomerId })
+      .from(workspaces)
+      .where(eq(workspaces.id, resolved))
+      .limit(1);
+    return row ? { workspaceId: resolved, stripeCustomerId: row.stripeCustomerId ?? null } : null;
+  }
+
+  async duplicateRetired(subscriptionId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: events.id })
+      .from(events)
+      .where(
+        sql`${events.name} = ${DUPLICATE_SUBSCRIPTION_EVENT}
+          and ${events.props}->>'duplicateSubscriptionId' = ${subscriptionId}`,
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async recordDuplicateRetired(record: DuplicateSubscriptionRecord): Promise<void> {
+    await this.db.insert(events).values({
+      workspaceId: record.workspaceId,
+      name: DUPLICATE_SUBSCRIPTION_EVENT,
+      props: {
+        workspaceId: record.workspaceId,
+        keptSubscriptionId: record.keptSubscriptionId,
+        duplicateSubscriptionId: record.duplicateSubscriptionId,
+        stripeCustomerId: record.stripeCustomerId,
+        amount: record.amount,
+        currency: record.currency,
+        refundIds: record.refundIds,
+      },
+    });
   }
 
   /** The subscription row's workspace and version. xmin changes on every
@@ -241,7 +295,7 @@ export class DbBillingStore implements BillingStore {
       // Without a Stripe read the payload is all there is, and the status
       // rules alone keep an older payload from winning.
       const expected = update.refresh ? (seen?.version ?? null) : undefined;
-      const outcome = await this.writeSubscription(update.externalId, workspaceId, incoming, expected);
+      const outcome = await this.writeSubscription(update.externalId, workspaceId, incoming, expected, update.stillBilled);
       if (outcome !== CHANGED_DURING_READ) {
         return outcome;
       }
@@ -257,13 +311,15 @@ export class DbBillingStore implements BillingStore {
    * sets workspaces.plan. `expected` is the row version seen before the
    * Stripe read began (null when there was no row); if the row has another
    * version under the lock, another handler wrote in between, possibly with
-   * a newer state, and nothing is written.
+   * a newer state, and nothing is written. `stillBilled` lists the other
+   * subscriptions Stripe still bills (undefined without Stripe).
    */
   private async writeSubscription(
     externalId: string,
     workspaceId: string,
     incoming: SubscriptionState,
     expected: string | null | undefined,
+    stillBilled: string[] | undefined,
   ): Promise<SubscriptionSyncOutcome | typeof CHANGED_DURING_READ> {
     return this.db.transaction(async (tx): Promise<SubscriptionSyncOutcome | typeof CHANGED_DURING_READ> => {
       await this.advisoryLock(tx, `subscription:${externalId}`);
@@ -307,15 +363,30 @@ export class DbBillingStore implements BillingStore {
       }
 
       if (incoming.status === "active") {
-        // A second active subscription would break the one active row index
-        // and fail every retry. Checkout sends existing subscribers to the
-        // portal, so this only happens for subscriptions made by hand; the
-        // newest one wins and the older row is retired.
+        // A second active row would break the one active row index and fail
+        // every retry. With Stripe configured the webhook has already
+        // refunded and canceled every newer duplicate in Stripe (checked live,
+        // not from these rows), so an older active row here is one Stripe no
+        // longer bills, and retiring it is safe. A row for a subscription
+        // Stripe still bills is never superseded: that can only follow a race
+        // the duplicate check lost, so the delivery fails and Stripe retries.
+        // Without Stripe (payload only mode) nothing can be checked and the
+        // newest row wins, as before, with a louder log.
+        const billed = rows.find(
+          (row) => row.externalId !== externalId && row.status === "active" && row.externalId !== null && stillBilled?.includes(row.externalId),
+        );
+        if (billed) {
+          throw new Error(
+            `Subscription ${externalId} became active while Stripe still bills ${billed.externalId}; Stripe will retry the event.`,
+          );
+        }
         for (const row of rows) {
           if (row.externalId !== externalId && row.status === "active") {
             console.warn(
               JSON.stringify({
-                msg: "billing: second active subscription, retiring the older row",
+                msg: stillBilled
+                  ? "billing: second active subscription, retiring the older row Stripe no longer bills"
+                  : "billing: second active subscription in payload only mode, retiring the older row without a Stripe check",
                 workspaceId,
                 retired: row.externalId,
                 active: externalId,
@@ -656,6 +727,28 @@ export class DbBillingStore implements BillingStore {
       })
       .onConflictDoNothing();
   }
+}
+
+/**
+ * Stores a Stripe customer on a workspace only while it has none, then
+ * reads back what is stored. Two requests racing to link different
+ * customers both end up using the first one written.
+ */
+export async function claimStripeCustomer(
+  db: Pick<Db, "update" | "select">,
+  workspaceId: string,
+  stripeCustomerId: string,
+): Promise<string | null> {
+  await db
+    .update(workspaces)
+    .set({ stripeCustomerId, updatedAt: new Date() })
+    .where(sql`${workspaces.id} = ${workspaceId} and ${workspaces.stripeCustomerId} is null`);
+  const [row] = await db
+    .select({ stripeCustomerId: workspaces.stripeCustomerId })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  return row?.stripeCustomerId ?? null;
 }
 
 /** Ledger step key shared by every reversal of one grant, so a later

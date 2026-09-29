@@ -17,10 +17,18 @@ const state: {
 };
 
 const stripeMock = {
-  checkout: { sessions: { create: vi.fn(async (_params: unknown) => ({ url: "https://checkout.stripe.test/session" })) } },
+  customers: { create: vi.fn(async (_params: unknown, _opts?: unknown) => ({ id: "cus_created" })) },
+  checkout: {
+    sessions: {
+      create: vi.fn(async (_params: unknown, _opts?: unknown) => ({ url: "https://checkout.stripe.test/session" })),
+      list: vi.fn(async (_params: unknown, _opts?: unknown): Promise<{ data: Array<{ id: string; mode: string }> }> => ({ data: [] })),
+      expire: vi.fn(async (_id: string, _params?: unknown, _opts?: unknown) => ({})),
+    },
+  },
   billingPortal: { sessions: { create: vi.fn(async (_params: unknown) => ({ url: "https://billing.stripe.test/portal" })) } },
   subscriptions: {
     retrieve: vi.fn(async () => ({ items: { data: [{ id: "si_1", price: { id: "price_growth_monthly" } }] } })),
+    list: vi.fn(async (_params: unknown, _opts?: unknown): Promise<{ data: Array<{ id: string; status: string }> }> => ({ data: [] })),
   },
 };
 
@@ -48,7 +56,8 @@ vi.mock("@/lib/billing/account", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/billing/stripe", () => ({
+vi.mock("@/lib/billing/stripe", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./stripe")>()),
   getStripe: () => stripeMock,
   isStripeTaxEnabled: () => false,
   createStripeLookup: () => ({ invoiceIdForPaymentIntent: async () => null }),
@@ -81,9 +90,13 @@ beforeEach(() => {
   vi.stubEnv("STRIPE_PRICE_GROWTH_ANNUAL", "price_growth_annual");
   vi.stubEnv("STRIPE_PRICE_TOPUP_100", "price_topup_100");
   vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://curvi.ai");
+  stripeMock.customers.create.mockClear();
   stripeMock.checkout.sessions.create.mockClear();
+  stripeMock.checkout.sessions.list.mockClear();
+  stripeMock.checkout.sessions.expire.mockClear();
   stripeMock.billingPortal.sessions.create.mockClear();
   stripeMock.subscriptions.retrieve.mockClear();
+  stripeMock.subscriptions.list.mockClear();
 });
 
 afterEach(() => {
@@ -134,7 +147,7 @@ describe("POST /api/billing/checkout", () => {
     expect(await response.json()).toMatchObject({ error: "billing_not_configured" });
   });
 
-  it("maps annual Growth to STRIPE_PRICE_GROWTH_ANNUAL with the signed in email", async () => {
+  it("maps annual Growth to STRIPE_PRICE_GROWTH_ANNUAL", async () => {
     const response = await checkout(jsonRequest(growthAnnual));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ url: "https://checkout.stripe.test/session", via: "checkout" });
@@ -153,6 +166,64 @@ describe("POST /api/billing/checkout", () => {
     const params = stripeMock.checkout.sessions.create.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(params).toMatchObject({ customer: "cus_saved", mode: "payment" });
     expect(params.customer_email).toBeUndefined();
+    expect(stripeMock.customers.create).not.toHaveBeenCalled();
+  });
+
+  it("creates the workspace's customer before Checkout and never lets Checkout make another", async () => {
+    for (const body of [growthAnnual, { kind: "topup", credits: 100 }]) {
+      stripeMock.customers.create.mockClear();
+      stripeMock.checkout.sessions.create.mockClear();
+      const response = await checkout(jsonRequest(body));
+      expect(response.status).toBe(200);
+      const [customerParams, customerOptions] = stripeMock.customers.create.mock.calls[0] ?? [];
+      expect(customerParams).toMatchObject({ metadata: { workspaceId: "ws_1" } });
+      expect(customerOptions).toMatchObject({ idempotencyKey: "curvi-customer-ws_1" });
+      const params = stripeMock.checkout.sessions.create.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+      expect(params.customer).toBe("cus_created");
+      expect(params.customer_email).toBeUndefined();
+      expect(params.customer_creation).toBeUndefined();
+    }
+  });
+
+  it("answers 502 when the customer cannot be created", async () => {
+    stripeMock.customers.create.mockRejectedValueOnce(new Error("Stripe is down"));
+    const response = await checkout(jsonRequest(growthAnnual));
+    expect(response.status).toBe(502);
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("sends a buyer to the portal when Stripe has a subscription our row does not show yet", async () => {
+    state.account = { stripeCustomerId: "cus_saved", subscription: null };
+    stripeMock.subscriptions.list.mockResolvedValueOnce({ data: [{ id: "sub_from_other_tab", status: "active" }] });
+    const response = await checkout(jsonRequest(growthAnnual));
+    expect(await response.json()).toEqual({ url: "https://billing.stripe.test/portal", via: "portal" });
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+    const params = stripeMock.billingPortal.sessions.create.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(params).toMatchObject({
+      customer: "cus_saved",
+      flow_data: { subscription_update_confirm: { subscription: "sub_from_other_tab" } },
+    });
+  });
+
+  it("expires the other tab's open tier session before opening a new one", async () => {
+    state.account = { stripeCustomerId: "cus_saved", subscription: null };
+    stripeMock.checkout.sessions.list.mockResolvedValueOnce({
+      data: [
+        { id: "cs_other_tab", mode: "subscription" },
+        { id: "cs_topup", mode: "payment" },
+      ],
+    });
+    const response = await checkout(jsonRequest(growthAnnual));
+    expect(await response.json()).toMatchObject({ via: "checkout" });
+    expect(stripeMock.checkout.sessions.list.mock.calls[0]?.[0]).toEqual({ customer: "cus_saved", status: "open", limit: 100 });
+    expect(stripeMock.checkout.sessions.expire.mock.calls.map((call) => call[0])).toEqual(["cs_other_tab"]);
+  });
+
+  it("does not check subscriptions or expire sessions for a top up", async () => {
+    state.account = { stripeCustomerId: "cus_saved", subscription: null };
+    await checkout(jsonRequest({ kind: "topup", credits: 100 }));
+    expect(stripeMock.subscriptions.list).not.toHaveBeenCalled();
+    expect(stripeMock.checkout.sessions.list).not.toHaveBeenCalled();
   });
 
   it("sends an existing subscriber to the portal instead of a second subscription", async () => {

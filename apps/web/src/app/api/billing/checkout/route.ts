@@ -4,6 +4,10 @@
  * up, or, for a workspace that already has a subscription, opens the Customer
  * Portal on the plan change so no second subscription is ever created.
  *
+ * The workspace's Stripe customer is created and stored before Checkout, and
+ * a tier purchase checks Stripe itself and expires older open tier sessions
+ * under a per workspace lock (lib/billing/checkout-guard.ts).
+ *
  * Answers:
  * - 401 signed out, 403 for the client role (plan 4.3, Update.md 4.4).
  * - 503 billing_not_configured when Stripe has no keys; the billing page
@@ -18,6 +22,13 @@ import { isStripeConfigured, siteUrl } from "@/lib/env";
 import { BILLING_FORBIDDEN_NOTICE, canManageBilling } from "@/lib/billing/access";
 import { hasOpenSubscription, loadBillingAccount } from "@/lib/billing/account";
 import { buildCheckoutParams, createPlanChangePortalSession, type CheckoutPurchase } from "@/lib/billing/checkout";
+import {
+  ensureStripeCustomer,
+  openTierCheckout,
+  STRIPE_CHECKOUT_OPTIONS,
+  withCheckoutLock,
+} from "@/lib/billing/checkout-guard";
+import { claimStripeCustomer } from "@/lib/billing/db-store";
 import { CHECKOUT_SOURCES } from "@/lib/billing/intent";
 import { isPaidTierKey, type PaidTierKey } from "@/lib/billing/plans";
 import { priceIdForTier, priceIdForTopUp } from "@/lib/billing/price-table";
@@ -26,6 +37,7 @@ import { readJsonCapped } from "@/lib/http/json-body";
 import { sameOriginOrRefuse } from "@/lib/http/same-origin";
 import { resolveSignedIn } from "@/lib/http/services";
 import { isDbMode } from "@/lib/services";
+import { getDb } from "@/lib/services/db";
 import { getSessionUser } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -131,20 +143,40 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
   }
 
-  const email = account.stripeCustomerId || !isDbMode() ? null : ((await getSessionUser())?.email ?? null);
+  const dbMode = isDbMode();
+  let customerId: string;
+  try {
+    const email = account.stripeCustomerId || !dbMode ? null : ((await getSessionUser())?.email ?? null);
+    customerId = await ensureStripeCustomer(stripe, {
+      workspaceId: workspace.id,
+      email,
+      storedCustomerId: account.stripeCustomerId,
+      claim: dbMode ? (id) => claimStripeCustomer(getDb(), workspace.id, id) : async (id) => id,
+      reread: dbMode ? async () => (await loadBillingAccount(workspace.id)).stripeCustomerId : async () => null,
+    });
+  } catch (error) {
+    console.error(JSON.stringify({ msg: "billing: customer create failed", workspaceId: workspace.id, error: String(error) }));
+    return NextResponse.json({ error: "stripe_error", notice: STRIPE_ERROR_NOTICE }, { status: 502 });
+  }
+
   const params = buildCheckoutParams({
     purchase,
     priceId,
     workspaceId: workspace.id,
     siteUrl: siteUrl(),
     source: data.source,
-    customerId: account.stripeCustomerId,
-    customerEmail: email,
+    customerId,
     taxEnabled: isStripeTaxEnabled(),
   });
 
   try {
-    const session = await stripe.checkout.sessions.create(params);
+    if (purchase.kind === "tier") {
+      const result = await withCheckoutLock(dbMode ? getDb() : null, workspace.id, () =>
+        openTierCheckout(stripe, { customerId, priceId, returnUrl: `${siteUrl()}/app/billing`, params }),
+      );
+      return NextResponse.json(result);
+    }
+    const session = await stripe.checkout.sessions.create(params, { ...STRIPE_CHECKOUT_OPTIONS });
     return NextResponse.json({ url: session.url, via: "checkout" });
   } catch (error) {
     console.error(JSON.stringify({ msg: "billing: checkout session failed", workspaceId: workspace.id, error: String(error) }));
