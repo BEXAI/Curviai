@@ -830,7 +830,7 @@ export interface BundleEstimateArgs {
   mode: EstimateMode;
   tier: TierKey;
   /** What the seller told us, as the pack's own estimate gets it. */
-  seller: Pick<EstimateSellerInputs, "angles" | "hasBoxContents" | "hasComparisonFacts">;
+  seller: Pick<EstimateSellerInputs, "angles" | "hasBoxContents" | "hasComparisonFacts" | "hasEndorsements">;
   /** The seller's current choices; each card swaps in its bundle. */
   state: OutputFormState;
   brandColors: readonly string[];

@@ -27,7 +27,13 @@ import { RESTARTING_MESSAGE } from "@/lib/services/errors";
 import type { CreateJobResult } from "@/lib/services/types";
 import { RETRY_AFTER_SECONDS } from "@/lib/services/workspace-response";
 import { productIdSchema } from "@/lib/validation/ids";
-import { angleRoleSchema, sellerLinesSchema, skuSchema, targetBoxSchema } from "@/lib/validation/seller-inputs";
+import {
+  angleRoleSchema,
+  endorsementLinesSchema,
+  sellerLinesSchema,
+  skuSchema,
+  targetBoxSchema,
+} from "@/lib/validation/seller-inputs";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +64,9 @@ const JobRequest = z.object({
   sku: skuSchema.optional(),
   boxContents: sellerLinesSchema.optional(),
   comparisonFacts: sellerLinesSchema.optional(),
+  // Press quotes or awards the A+ endorsement module prints as typed; never
+  // written by a model (PHASE_16 workstream 2).
+  endorsements: endorsementLinesSchema.optional(),
   // The seller's output options (PHASE_15), strict: an unknown key, a bad
   // hex, a brand index out of range or a value only a later release honors
   // is a 400. The service resolves them against the brand kit, the plan and

@@ -44,7 +44,7 @@ import {
   socialBadgeByTier,
   tierByKey,
 } from "@curvi/pipeline/seed";
-import { isAngleRole, printableSellerLines, type AngleRole } from "@curvi/pipeline/seller-inputs";
+import { isAngleRole, printableEndorsements, printableSellerLines, type AngleRole } from "@curvi/pipeline/seller-inputs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   buildComplianceReportView,
@@ -309,6 +309,7 @@ function productSummaryOf(row: ProductRow): ProductSummary {
     sku: row.sku ?? null,
     boxContents: printableSellerLines(row.boxContents),
     comparisonFacts: printableSellerLines(row.comparisonFacts),
+    endorsements: printableEndorsements(row.endorsements),
   };
 }
 
@@ -317,9 +318,10 @@ function productSummaryOf(row: ProductRow): ProductSummary {
  * request carries. An empty SKU clears it; an empty list clears the list.
  */
 function sellerInputUpdates(
-  input: Pick<CreateJobInput, "sku" | "boxContents" | "comparisonFacts">,
-): Partial<Pick<ProductRow, "sku" | "boxContents" | "comparisonFacts">> {
+  input: Pick<CreateJobInput, "sku" | "boxContents" | "comparisonFacts" | "endorsements">,
+): Partial<Pick<ProductRow, "sku" | "boxContents" | "comparisonFacts" | "endorsements">> {
   return {
+    ...(input.endorsements !== undefined ? { endorsements: printableEndorsements(input.endorsements) } : {}),
     ...(input.sku !== undefined ? { sku: input.sku.trim() || null } : {}),
     ...(input.boxContents !== undefined ? { boxContents: printableSellerLines(input.boxContents) } : {}),
     ...(input.comparisonFacts !== undefined ? { comparisonFacts: printableSellerLines(input.comparisonFacts) } : {}),
@@ -1824,6 +1826,7 @@ export class DbService implements Services {
     const sellerInputs = {
       boxContents: sellerUpdates.boxContents ?? printableSellerLines(existingProduct?.boxContents),
       comparisonFacts: sellerUpdates.comparisonFacts ?? printableSellerLines(existingProduct?.comparisonFacts),
+      endorsements: sellerUpdates.endorsements ?? printableEndorsements(existingProduct?.endorsements),
     };
 
     // Plan 2.7: Listing Mode requires at least one real photo. Angles that
@@ -1893,6 +1896,7 @@ export class DbService implements Services {
       angles: media.filter((m) => m.kind !== "video").flatMap((m) => (m.angle ? [m.angle] : [])),
       hasBoxContents: sellerInputs.boxContents.length > 0,
       hasComparisonFacts: sellerInputs.comparisonFacts.length > 0,
+      hasEndorsements: sellerInputs.endorsements.length > 0,
       ...outputEstimateInputs(output.resolved, photos),
     }).total;
     if (creditsReserved <= 0) {
@@ -2061,6 +2065,7 @@ export class DbService implements Services {
             sku: product.sku,
             boxContents: product.boxContents,
             comparisonFacts: product.comparisonFacts,
+            endorsements: product.endorsements,
           },
           media: media.map((m) => ({
             ...m,

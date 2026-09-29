@@ -19,6 +19,7 @@ import {
   QC_THRESHOLDS,
   qcKindForSpec,
   solidCanvas,
+  type AplusCopyResult,
   type ProductProfile,
   type RawImage,
   type RawMask,
@@ -73,6 +74,34 @@ export const demoProfile: ProductProfile = {
   imageQuality: { usableForMain: true, issues: [] },
 };
 
+/** The demo copy_generator answer: A+ module copy for demoProfile, only
+ * facts the profile holds, so it passes the claims guard. */
+export const demoAplusCopy: AplusCopyResult = {
+  modules: [
+    {
+      type: "aplus_features",
+      headline: "Made for your daily coffee",
+      lines: ["Dishwasher safe ceramic", "Easy grip handle", "Fits most cup holders"],
+    },
+    {
+      type: "aplus_pain_points",
+      headline: "No more cold coffee",
+      lines: ["Keeps drinks warm longer", "Handle stays easy to hold", "Travels in your cup holder"],
+    },
+    {
+      type: "aplus_how_to",
+      headline: "How to use it",
+      lines: ["Pour in your drink", "Hold it by the handle", "Rinse or run it in the dishwasher"],
+    },
+    { type: "aplus_ingredients", headline: "What it is made of", lines: ["Ceramic body", "Glazed finish"] },
+    {
+      type: "aplus_results",
+      headline: "Every morning, sorted",
+      lines: ["Warm drinks at your desk", "A steady grip on busy days", "Easy cleanup after"],
+    },
+  ],
+};
+
 /**
  * Demo LLM provider answering every seeded recipe task with a fixture. The
  * shot planner answer is intentionally not a valid ShotList so the pipeline
@@ -123,6 +152,9 @@ export class DemoLlmProvider implements CostAwareProvider {
     }
     if (task === activeRecipe("qc").key) {
       return { pass: true, fidelity: 0.96, issues: [], repairHint: "" };
+    }
+    if (task === activeRecipe("copy").key) {
+      return demoAplusCopy;
     }
     return { note: `No demo fixture for task ${task}` };
   }

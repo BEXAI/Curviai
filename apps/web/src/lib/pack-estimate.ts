@@ -85,6 +85,8 @@ export interface EstimateSellerInputs {
   angles?: readonly AngleRole[];
   hasBoxContents?: boolean;
   hasComparisonFacts?: boolean;
+  /** Press quotes or awards for the A+ endorsement module (PHASE_16). */
+  hasEndorsements?: boolean;
   /**
    * The seller's output options as plan flags. Absent means today's pack.
    * Its keepMediaIds are matched to the estimate's photos by position when
@@ -215,6 +217,7 @@ function referencePack(
     primaryMediaId,
     hasBoxContents: inputs?.hasBoxContents === true,
     hasComparisonFacts: inputs?.hasComparisonFacts === true,
+    hasEndorsements: inputs?.hasEndorsements === true,
     ...(plan ? { output: plan.output, mediaIdsByAngle: plan.mediaIdsByAngle } : {}),
   };
   return { shots: planShots(profile, options).shots, kept: new Set(plan?.output.keepMediaIds ?? []) };
@@ -294,6 +297,18 @@ function lineFor(shot: Shot, context: LineContext): { key: string; name: LineNam
       return { key: "comparison", name: { one: "Comparison image" } };
     case "aplus_banner":
       return { key: "aplus_banner", name: { one: "A plus banner", many: (n) => `A plus banners, ${n}` } };
+    case "aplus_pain_points":
+      return { key: "aplus_pain_points", name: { one: "A plus problems solved module" } };
+    case "aplus_features":
+      return { key: "aplus_features", name: { one: "A plus features module" } };
+    case "aplus_ingredients":
+      return { key: "aplus_ingredients", name: { one: "A plus materials module" } };
+    case "aplus_results":
+      return { key: "aplus_results", name: { one: "A plus results module" } };
+    case "aplus_how_to":
+      return { key: "aplus_how_to", name: { one: "A plus how to use module" } };
+    case "aplus_endorsement":
+      return { key: "aplus_endorsement", name: { one: "A plus reviews and awards module" } };
     case "shopify_hero":
       return { key: "shopify_hero", name: { one: "Shopify hero" } };
     case "collection_thumb":

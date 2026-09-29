@@ -9,6 +9,7 @@ import type { TierKey } from "@curvi/pipeline/seed";
 import { OutOfCreditsDialog } from "@/components/app/paywall";
 import {
   ANGLE_ROLES,
+  MAX_ENDORSEMENTS,
   MAX_SELLER_LINE_CHARS,
   MAX_SELLER_LINES,
   MAX_SKU_CHARS,
@@ -121,6 +122,8 @@ export interface ProductOption {
   sku?: string | null;
   boxContents?: string[];
   comparisonFacts?: string[];
+  /** Press quotes or awards for the A+ endorsement module. */
+  endorsements?: string[];
   /** Photos already stored for the product (capped at MAX_PACK_PHOTOS), for
    * the estimate when the seller adds none. */
   storedPhotoCount?: number;
@@ -246,7 +249,12 @@ export function nextAngle(taken: readonly AngleRole[]): AngleRole {
  * they can be sent. Mirrors the API's checks so a seller sees the fix here
  * instead of a refused pack.
  */
-export function sellerDetailsProblem(sku: string, boxContents: string[], comparisonFacts: string[]): string | null {
+export function sellerDetailsProblem(
+  sku: string,
+  boxContents: string[],
+  comparisonFacts: string[],
+  endorsements: string[] = [],
+): string | null {
   const trimmedSku = sku.trim();
   if (trimmedSku.length > MAX_SKU_CHARS) {
     return `Keep the SKU to ${MAX_SKU_CHARS} characters.`;
@@ -265,6 +273,13 @@ export function sellerDetailsProblem(sku: string, boxContents: string[], compari
     if (long) {
       return `Keep each line of ${label} to ${MAX_SELLER_LINE_CHARS} characters so it prints whole. This one is too long: ${long}`;
     }
+  }
+  if (endorsements.length > MAX_ENDORSEMENTS) {
+    return `List at most ${MAX_ENDORSEMENTS} quotes or awards.`;
+  }
+  const longEndorsement = endorsements.find((line) => line.length > MAX_SELLER_LINE_CHARS);
+  if (longEndorsement) {
+    return `Keep each quote or award to ${MAX_SELLER_LINE_CHARS} characters so it prints whole. This one is too long: ${longEndorsement}`;
   }
   return null;
 }
@@ -410,6 +425,7 @@ export function NewPackForm({
   const [sku, setSku] = useState(initialProduct?.sku ?? "");
   const [boxText, setBoxText] = useState((initialProduct?.boxContents ?? []).join("\n"));
   const [comparisonText, setComparisonText] = useState((initialProduct?.comparisonFacts ?? []).join("\n"));
+  const [endorsementText, setEndorsementText] = useState((initialProduct?.endorsements ?? []).join("\n"));
   const [selected, setSelected] = useState<string[]>(
     DEFAULT_CHANNELS.filter((id) => channels.some((c) => c.id === id && isPickable(c))),
   );
@@ -425,6 +441,7 @@ export function NewPackForm({
   const effectiveMode: EstimateMode = CONCEPT_MODE_AVAILABLE ? mode : "listing";
   const boxContents = useMemo(() => sellerLinesFromText(boxText), [boxText]);
   const comparisonFacts = useMemo(() => sellerLinesFromText(comparisonText), [comparisonText]);
+  const endorsements = useMemo(() => sellerLinesFromText(endorsementText), [endorsementText]);
   const photoAngles = photos.filter((p) => p.kind === "image" && p.phase !== "error").map((p) => p.angle);
   const anglesKey = photoAngles.join(",");
   const selectedProduct = products.find((p) => p.id === productId) ?? null;
@@ -482,9 +499,10 @@ export function NewPackForm({
         angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
         hasBoxContents: boxContents.length > 0,
         hasComparisonFacts: comparisonFacts.length > 0,
+        hasEndorsements: endorsements.length > 0,
         ...(optionsOn ? output.estimateInputs : {}),
       }),
-    [selected, effectiveMode, tier, anglesKey, boxContents, comparisonFacts, optionsOn, output],
+    [selected, effectiveMode, tier, anglesKey, boxContents, comparisonFacts, endorsements, optionsOn, output],
   );
   // The difference between looks, for the summary: this pack as Keep my
   // photo and as Marketplace ready, both with the pack's bundle (PHASE_16).
@@ -495,6 +513,7 @@ export function NewPackForm({
       angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
       hasBoxContents: boxContents.length > 0,
       hasComparisonFacts: comparisonFacts.length > 0,
+      hasEndorsements: endorsements.length > 0,
     };
     const totalFor = (look: "keep_photo" | "marketplace") => {
       const resolved = resolveFormOutput({
@@ -515,7 +534,7 @@ export function NewPackForm({
           ? estimatePackCredits(selected, effectiveMode, tier, base).total
           : totalFor("marketplace"),
     };
-  }, [optionsOn, bundle, anglesKey, boxContents, comparisonFacts, scenesPausedNote, usableBrand, brandKitsAllowed, output, selected, effectiveMode, tier]);
+  }, [optionsOn, bundle, anglesKey, boxContents, comparisonFacts, endorsements, scenesPausedNote, usableBrand, brandKitsAllowed, output, selected, effectiveMode, tier]);
   // Each bundle card's figure for this pack (PHASE_16 workstream 1).
   const bundleTotals = useMemo(
     () =>
@@ -528,6 +547,7 @@ export function NewPackForm({
               angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
               hasBoxContents: boxContents.length > 0,
               hasComparisonFacts: comparisonFacts.length > 0,
+              hasEndorsements: endorsements.length > 0,
             },
             state: outputForm,
             brandColors: usableBrand,
@@ -538,7 +558,7 @@ export function NewPackForm({
             context: { scenesPaused: scenesPausedNote !== null },
           })
         : null,
-    [optionsOn, effectiveMode, selected, tier, anglesKey, boxContents, comparisonFacts, outputForm, usableBrand, brandKitsAllowed, output, photos, scenesPausedNote],
+    [optionsOn, effectiveMode, selected, tier, anglesKey, boxContents, comparisonFacts, endorsements, outputForm, usableBrand, brandKitsAllowed, output, photos, scenesPausedNote],
   );
 
   const conflicts = optionsOn && effectiveMode !== "concept" ? formConflicts(selected, output.current.resolved, output.planned) : [];
@@ -551,7 +571,7 @@ export function NewPackForm({
   // Concept packs are normalized to today's pack by the server, so they send none.
   const sendsOptions = optionsOn && effectiveMode === "listing";
 
-  const detailsProblem = sellerDetailsProblem(sku, boxContents, comparisonFacts);
+  const detailsProblem = sellerDetailsProblem(sku, boxContents, comparisonFacts, endorsements);
   const uploading = photos.some((p) => p.phase === "uploading");
   const checking = photos.some((p) => p.phase === "uploaded" && p.preflightPhase === "checking");
   const blockReason =
@@ -568,6 +588,7 @@ export function NewPackForm({
     setSku(product?.sku ?? "");
     setBoxText((product?.boxContents ?? []).join("\n"));
     setComparisonText((product?.comparisonFacts ?? []).join("\n"));
+    setEndorsementText((product?.endorsements ?? []).join("\n"));
     // Its remembered choices prefill the options, like the SKU (PHASE_15
     // P1). A product without them, after one with them, starts over from
     // Marketplace ready so one product's choices never carry to another.
@@ -917,7 +938,7 @@ export function NewPackForm({
         ...(sendsOptions && p.kind === "image" ? uploadBackgroundField(p.background) : {}),
       };
     });
-    const details = { sku: sku.trim(), boxContents, comparisonFacts };
+    const details = { sku: sku.trim(), boxContents, comparisonFacts, endorsements };
     const intent = intentFor(
       intentRef.current,
       {
@@ -1333,10 +1354,10 @@ export function NewPackForm({
             <h3 className="text-sm font-semibold text-ink-900">Details for more images</h3>
             <p className="mt-1 text-xs text-ink-500">
               Optional, and saved with the product. What is in the box adds an In the box image. Comparison facts
-              add a Comparison image. Both print exactly what you type, one line each, up to {MAX_SELLER_LINES}{" "}
-              lines of {MAX_SELLER_LINE_CHARS} characters.
+              add a Comparison image. Press quotes or awards add an A+ module for Amazon. Each prints exactly what you
+              type, one line each, up to {MAX_SELLER_LINES} lines of {MAX_SELLER_LINE_CHARS} characters.
             </p>
-            <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div>
                 <Label htmlFor="product-sku">SKU</Label>
                 <Input
@@ -1369,6 +1390,21 @@ export function NewPackForm({
                   className="mt-1"
                 />
                 <p className="mt-1 text-xs text-ink-400">Only facts you can back up.</p>
+              </div>
+              <div>
+                <Label htmlFor="endorsements">Press quotes or awards</Label>
+                <Textarea
+                  id="endorsements"
+                  value={endorsementText}
+                  onChange={(event) => setEndorsementText(event.target.value)}
+                  placeholder={"Great for the trail, Outdoor Weekly\nGift Guide pick, Home Journal 2026"}
+                  className="mt-1"
+                />
+                <p className="mt-1 text-xs text-ink-400">
+                  Amazon takes quotes from a known publication or public figure with the source, and awards from
+                  the last 2 years with who gave them and when. Customer reviews are not allowed. Up to{" "}
+                  {MAX_ENDORSEMENTS}, printed as you type them; we never write one for you.
+                </p>
               </div>
             </div>
             {detailsProblem ? (

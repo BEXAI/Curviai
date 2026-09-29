@@ -39,8 +39,16 @@ import {
 import { createHash } from "node:crypto";
 import {
   applyAddedOverlays,
+  applyAplusCopy,
   applyOriginalSizes,
+  aplusCopyRequest,
+  AplusCopyResult,
   badgeEligible,
+  capAplusModules,
+  isAplusModuleType,
+  needsAplusCopy,
+  NO_ENDORSEMENT_REASON,
+  printableEndorsements,
   applyBrandStylePreset,
   buildPack,
   capSceneCount,
@@ -127,6 +135,7 @@ import {
   type OutputPlanFlags,
 } from "@curvi/pipeline/output-options";
 import {
+  aplusCopyRecipe,
   creditCosts,
   HARMONIZE_TASK,
   qcJudgePolicy,
@@ -152,6 +161,7 @@ import { isWorkspaceObjectKey } from "./object-keys";
 import {
   llmModelProviderName,
   recipeFor,
+  seedRecipe,
   recipeVariantsOf,
   seedJobRecipes,
   type JobRecipes,
@@ -1085,6 +1095,10 @@ export interface GeneratePackInput {
   /** Comparison facts the seller can back up, printed on the comparison
    * image; a non empty list implies hasComparisonFacts. */
   comparisonFacts?: string[];
+  /** Press quotes or awards the seller typed for the A+ endorsement module
+   * (PHASE_16 workstream 2), one per line, printed exactly as typed. Without
+   * one the module is skipped; a model never writes one. */
+  endorsements?: string[];
   hasVideoSource?: boolean;
   /** Workspace brand kit colors (hex), for brand colored stills. */
   brandColors?: string[];
@@ -3220,6 +3234,7 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
     shots.push({ ...shot, channels: kept });
   }
   shots = skipSellerOffShots(shots, opts.output, skipped);
+  shots = capAplusModules(shots, skipped);
   shots = capSceneCount(shots, opts.output, skipped);
   shots = applyOriginalSizes(shots, opts.output, skipped);
   shots = applyAddedOverlays(shots, opts.output, skipped);
@@ -3311,17 +3326,31 @@ export function deterministicPlan(profile: ProductProfile, options: RunnerPlanOp
   return fitShotsToChannels(planShots(profile, everything), fit);
 }
 
-/** The seller's printable lines for the in_the_box and comparison images. */
+/** The seller's printable lines for the in_the_box, comparison and A+
+ * endorsement images. */
 export interface SellerCopy {
   boxContents: string[];
   comparisonFacts: string[];
+  endorsements: string[];
 }
 
-export function sellerCopyOf(input: Pick<GeneratePackInput, "boxContents" | "comparisonFacts">): SellerCopy {
+export function sellerCopyOf(
+  input: Pick<GeneratePackInput, "boxContents" | "comparisonFacts" | "endorsements">,
+): SellerCopy {
   return {
     boxContents: printableSellerLines(input.boxContents),
     comparisonFacts: printableSellerLines(input.comparisonFacts),
+    endorsements: printableEndorsements(input.endorsements),
   };
+}
+
+/** Reason withSellerCopy records for a seller line shot without lines. */
+function noSellerLinesReason(type: Shot["type"]): string {
+  return type === "in_the_box"
+    ? NO_BOX_CONTENTS_REASON
+    : type === "comparison"
+      ? NO_COMPARISON_FACTS_REASON
+      : NO_ENDORSEMENT_REASON;
 }
 
 /**
@@ -3337,19 +3366,75 @@ export function withSellerCopy(plan: ShotList, copy: SellerCopy): ShotList {
   const shots: Shot[] = [];
   for (const shot of plan.shots) {
     const lines =
-      shot.type === "in_the_box" ? copy.boxContents : shot.type === "comparison" ? copy.comparisonFacts : null;
+      shot.type === "in_the_box"
+        ? copy.boxContents
+        : shot.type === "comparison"
+          ? copy.comparisonFacts
+          : shot.type === "aplus_endorsement"
+            ? copy.endorsements
+            : null;
     if (lines === null) {
       shots.push(shot);
     } else if (lines.length > 0) {
       shots.push({ ...shot, callouts: [...lines] });
     } else {
-      skipped.push({
-        type: shot.type,
-        reason: shot.type === "in_the_box" ? NO_BOX_CONTENTS_REASON : NO_COMPARISON_FACTS_REASON,
-      });
+      skipped.push({ type: shot.type, reason: noSellerLinesReason(shot.type) });
     }
   }
   return { shots, skipped };
+}
+
+/**
+ * Adds the deterministic plan's A+ module shots to an LLM plan (PHASE_16
+ * workstream 2): the shot planner recipe never plans modules (LlmShot leaves
+ * them out), so without this an LLM plan would never carry one and a pack's
+ * modules would depend on which planner ran. The modules go right after the plan's first
+ * A+ banner, so the page's module cap (capAplusModules) drops a second
+ * banner before a module; a plan with no banner gets them at the end. The
+ * fallback's skipped module entries come along, so the board says why a
+ * module is missing. fitShotsToChannels makes the ids unique. Pure.
+ */
+export function withAplusModules(plan: RunnerPlan, fallback: ShotList | null): RunnerPlan {
+  if (!fallback) {
+    return plan;
+  }
+  const modules = fallback.shots.filter((shot) => isAplusModuleType(shot.type));
+  const moduleSkips = fallback.skipped.filter((entry) => isAplusModuleType(entry.type));
+  if (modules.length === 0 && moduleSkips.length === 0) {
+    return plan;
+  }
+  const banner = plan.shots.findIndex((shot) => shot.type === "aplus_banner");
+  const at = banner >= 0 ? banner + 1 : plan.shots.length;
+  return {
+    shots: [...plan.shots.slice(0, at), ...modules.map((shot) => ({ ...shot })), ...plan.shots.slice(at)],
+    skipped: [...plan.skipped, ...moduleSkips],
+  };
+}
+
+/**
+ * The copy_generator recipe the A+ copy step runs: the job's assignment
+ * when it is version 2 or later (aplusCopyRecipe), else the compiled seed,
+ * so a worker ahead of the re-seed never sends module slots to the
+ * version 1 prompt.
+ */
+export function aplusCopyRecipeFor(recipes: JobRecipes | undefined): ResolvedRecipe {
+  const assigned = recipeFor(recipes, "copy");
+  return assigned.key === aplusCopyRecipe.key && assigned.version >= aplusCopyRecipe.minVersion
+    ? assigned
+    : seedRecipe("copy");
+}
+
+/** Every string the seller typed for this pack: the claims guard allows a
+ * figure or a claim word in generated copy only when it appears here. */
+export function sellerTextOf(
+  input: Pick<GeneratePackInput, "userDescription" | "boxContents" | "comparisonFacts" | "endorsements">,
+): string[] {
+  return [
+    input.userDescription ?? "",
+    ...(input.boxContents ?? []),
+    ...(input.comparisonFacts ?? []),
+    ...(input.endorsements ?? []),
+  ].filter((text) => text.trim().length > 0);
 }
 
 /** Default wait before the one delayed retry of transiently failed shots. */
@@ -3900,7 +3985,7 @@ export async function runGeneratePack(
       : { ok: false, reason: KEPT_PHOTO_PLAN_REJECTION };
     let chosen: ShotList | null = null;
     if (check.ok) {
-      const fitted = fitShotsToChannels(fillSceneCount(check.shotList, profile, flags), fit);
+      const fitted = fitShotsToChannels(fillSceneCount(withAplusModules(check.shotList, fallback), profile, flags), fit);
       const fittedSpecs = coveredSpecs(fitted.shots);
       const uncovered = fallback ? [...coveredSpecs(fallback.shots)].filter((specId) => !fittedSpecs.has(specId)) : [];
       if (uncovered.length === 0) {
@@ -3929,10 +4014,41 @@ export async function runGeneratePack(
     // The seller's scene style for this pack, else the brand kit's style
     // preset, replaces the planner's category pick on every shot that uses a
     // preset (PHASE_15 P1).
-    const shotList: ShotList = withSellerCopy(
+    let shotList: ShotList = withSellerCopy(
       applyBrandStylePreset(chosen, input.brand?.stylePreset, profile, output?.scenePreset),
       sellerCopy,
     );
+    // A+ module copy (PHASE_16 workstream 2): one copy_generator call writes
+    // every module the plan holds, then the claims guard keeps only lines
+    // with no figure or claim word the seller did not type. A failed or
+    // refused call never fails the pack: a module falls back to the
+    // planner's own lines, or is skipped and never charged.
+    if (needsAplusCopy(shotList.shots)) {
+      await assertLive();
+      let copy: AplusCopyResult | null = null;
+      try {
+        const answer = await bookedLlm(
+          llmJson<AplusCopyResult>(
+            deps.ai,
+            aplusCopyRecipeFor(recipes),
+            AplusCopyResult,
+            aplusCopyRequest(
+              profile,
+              shotList.shots.map((shot) => shot.type).filter(isAplusModuleType),
+              wrapUserDescription(input.userDescription),
+            ),
+            { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "copy" },
+            undefined,
+            AplusCopyResult,
+          ),
+        );
+        copy = answer.value;
+      } catch (copyErr) {
+        console.warn(`[runner] job ${input.jobId} A+ copy call failed; modules use the planner's lines`, copyErr);
+      }
+      const applied = applyAplusCopy(shotList.shots, copy, { sellerText: sellerTextOf(input) });
+      shotList = { shots: applied.shots, skipped: [...shotList.skipped, ...applied.skipped] };
+    }
     plannedShots = shotList.shots.length;
     skipped = [
       ...conceptExcluded.map((channel) => ({

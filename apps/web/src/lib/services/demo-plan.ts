@@ -32,6 +32,7 @@ export function planDemoShots(
     angles?: AngleRole[];
     boxContents?: string[];
     comparisonFacts?: string[];
+    endorsements?: string[];
     /** The pack's output options as estimate inputs (outputEstimateInputs),
      * the same ones the form and createJob pass, so the three agree. */
     output?: Pick<EstimateSellerInputs, "output" | "photos" | "colorHex">;
@@ -41,6 +42,7 @@ export function planDemoShots(
     angles: seller.angles,
     hasBoxContents: (seller.boxContents?.length ?? 0) > 0,
     hasComparisonFacts: (seller.comparisonFacts?.length ?? 0) > 0,
+    hasEndorsements: (seller.endorsements?.length ?? 0) > 0,
     ...(seller.output ?? {}),
   }).filter((shot) => isShotMethodDeliverable(shot.method));
   // Validate against the source of truth schema before handing the plan out.

@@ -212,6 +212,11 @@ export const products = pgTable(
     sku: text("sku"),
     boxContents: jsonb("box_contents").$type<string[]>(),
     comparisonFacts: jsonb("comparison_facts").$type<string[]>(),
+    // Press quotes or awards the seller typed for the A+ endorsement module
+    // (migration 0025, PHASE_16 workstream 2), one printable line each, as
+    // typed. Null or empty means the module is skipped; a model never
+    // writes one.
+    endorsements: jsonb("endorsements").$type<string[]>(),
     // The seller's saved output choices for this product (0023), a JSON
     // object when set. Null means the defaults.
     outputDefaults: jsonb("output_defaults").$type<ProductOutputDefaults>(),
@@ -224,6 +229,7 @@ export const products = pgTable(
       "products_output_defaults_object",
       sql`${t.outputDefaults} IS NULL OR jsonb_typeof(${t.outputDefaults}) = 'object'`,
     ),
+    check("products_endorsements_array", sql`${t.endorsements} IS NULL OR jsonb_typeof(${t.endorsements}) = 'array'`),
   ],
 );
 

@@ -65,6 +65,9 @@ export interface ProductSummary {
   boxContents: string[];
   /** Comparison facts the seller can back up, one printable line each. */
   comparisonFacts: string[];
+  /** Press quotes or awards for the A+ endorsement module, one printable line
+   * each (PHASE_16 workstream 2). Absent reads as none. */
+  endorsements?: string[];
   /** Stored photos a pack of this product would run on, capped at
    * MAX_PACK_PHOTOS. Set by listProducts, so the form can estimate a Keep
    * pack that sends no new uploads. */
@@ -234,6 +237,8 @@ export interface CreateJobInput {
   sku?: string;
   boxContents?: string[];
   comparisonFacts?: string[];
+  /** Press quotes or awards the A+ endorsement module prints as typed. */
+  endorsements?: string[];
   /** The seller's output options (PHASE_15). Absent means today's pack. */
   outputOptions?: OutputOptionsInput;
 }

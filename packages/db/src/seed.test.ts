@@ -21,11 +21,11 @@ afterAll(async () => {
 });
 
 describe("loadChannelSpecs", () => {
-  it("writes all 18 registry specs", async () => {
+  it("writes every registry spec", async () => {
     const written = await loadChannelSpecs(db as unknown as Db);
-    expect(written).toBe(18);
+    expect(written).toBe(loadRegistry().specs.length);
     const rows = await db.select().from(channelSpecs);
-    expect(rows).toHaveLength(18);
+    expect(rows).toHaveLength(loadRegistry().specs.length);
     const ids = rows.map((r) => r.id).sort();
     const registryIds = loadRegistry()
       .specs.map((s) => s.id)
@@ -35,9 +35,9 @@ describe("loadChannelSpecs", () => {
 
   it("is idempotent on a second run", async () => {
     const written = await loadChannelSpecs(db as unknown as Db);
-    expect(written).toBe(18);
+    expect(written).toBe(loadRegistry().specs.length);
     const rows = await db.select().from(channelSpecs);
-    expect(rows).toHaveLength(18);
+    expect(rows).toHaveLength(loadRegistry().specs.length);
     const [main] = await db
       .select()
       .from(channelSpecs)

@@ -42,9 +42,16 @@ import {
   type PlannedImageKind,
 } from "../output-options";
 import { creditCosts, isEntitled, type TierKey } from "../seed/credits";
-import { lifestyleFallbackScenes, sceneCountOptions } from "../seed/templates";
+import {
+  aplusModules,
+  lifestyleFallbackScenes,
+  sceneCountOptions,
+  type AplusModuleKey,
+  type AplusModuleSeed,
+} from "../seed/templates";
+import { capAplusModules, moduleSkipReason, plannedModuleLines } from "../aplus-copy";
 import { ProductProfile, Shot, ShotList, type ShotMethod } from "../schemas";
-import { printableSellerLines } from "../seller-inputs";
+import { printableEndorsements, printableSellerLines } from "../seller-inputs";
 
 export interface PlanOptions {
   /** Selected channels or channel families, e.g. ["amazon", "shopify.product"]. */
@@ -61,6 +68,12 @@ export interface PlanOptions {
   /** Comparison facts the seller can back up, printed as the comparison
    * shot's callouts. A non empty list also counts as hasComparisonFacts. */
   comparisonFacts?: readonly string[];
+  /** Seller added press quotes or awards for the A+ endorsement module. */
+  hasEndorsements?: boolean;
+  /** The seller's press quotes or awards, one per line, printed as the
+   * endorsement module's lines exactly as typed. A non empty list also
+   * counts as hasEndorsements. */
+  endorsements?: readonly string[];
   /** Seller uploaded a video. */
   hasVideoSource?: boolean;
   /** Media id per photographed angle. Falls back to primaryMediaId. */
@@ -520,7 +533,7 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   }
 
   if (familyPicked("amazon")) {
-    for (let i = 0; i < 2; i++) {
+    const planBanner = (): void =>
       plan({
         type: "aplus_banner",
         sourceMediaId: mediaFor("front"),
@@ -530,7 +543,37 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
         credits: creditCosts.deterministic,
         priority: 6,
       });
+    // The hero banner leads the A+ page, then the modules the product's
+    // facts and the seller's input support (PHASE_16 workstream 2), then the
+    // second banner, which the page's module cap drops first.
+    planBanner();
+    const endorsements = printableEndorsements(opts.endorsements);
+    const hasEndorsements = opts.hasEndorsements === true || endorsements.length > 0;
+    for (const type of Object.keys(aplusModules) as AplusModuleKey[]) {
+      const seed: AplusModuleSeed = aplusModules[type];
+      // A module is only considered when its A+ spec is picked, so a pack
+      // for the main image alone does not list six modules as left out.
+      if (!specSelected(seed.specId)) {
+        continue;
+      }
+      const reason = moduleSkipReason(type, profile, hasEndorsements);
+      if (reason) {
+        skip(type, "template", reason);
+        continue;
+      }
+      const lines = plannedModuleLines(type, profile, endorsements);
+      plan({
+        type,
+        sourceMediaId: mediaFor("front"),
+        method: "template",
+        channels: [seed.specId],
+        stylePreset: basePreset,
+        ...(lines.length > 0 ? { callouts: lines } : {}),
+        credits: creditCosts.deterministic,
+        priority: 6,
+      });
     }
+    planBanner();
   }
   if (familyPicked("shopify")) {
     plan({
@@ -641,7 +684,7 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   // refuses it, leave that spec, then a spec emptied only by the seller's
   // switches gets the front image, before the limits and the trim see the
   // plan.
-  const sized = applyAddedOverlays(applyOriginalSizes(shots, output, skipped), output, skipped);
+  const sized = applyAddedOverlays(applyOriginalSizes(capAplusModules(shots, skipped), output, skipped), output, skipped);
   const covered = coverSellerOffSpecs(sized, skipped, output, { frontMediaId: frontMedia, frontUsable });
 
   // Channel file limits (amazon.secondary takes 8, amazon.main takes 1) and

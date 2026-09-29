@@ -156,11 +156,77 @@ exports[`planner bundles > plans the aplus bundle for every channel preset 1`] =
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s03_aplus_banner",
+          "id": "s03_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s04_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s05_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s06_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s07_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s08_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -220,6 +286,10 @@ exports[`planner bundles > plans the aplus bundle for every channel preset 1`] =
         {
           "reason": "not in the chosen set",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "channel not selected",
@@ -1169,11 +1239,77 @@ exports[`planner bundles > plans the aplus bundle for every channel preset 1`] =
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s03_aplus_banner",
+          "id": "s03_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s04_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s05_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s06_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s07_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s08_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -1185,7 +1321,7 @@ exports[`planner bundles > plans the aplus bundle for every channel preset 1`] =
             "shopify.product",
           ],
           "credits": 0.5,
-          "id": "s04_collection_thumb",
+          "id": "s09_collection_thumb",
           "method": "deterministic",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -1245,6 +1381,10 @@ exports[`planner bundles > plans the aplus bundle for every channel preset 1`] =
         {
           "reason": "not in the chosen set",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "not in the chosen set",
@@ -1667,11 +1807,77 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s14_aplus_banner",
+          "id": "s14_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s15_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s16_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s17_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s19_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -1687,6 +1893,10 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
         {
           "reason": "seller did not supply comparison facts",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "channel not selected",
@@ -3199,11 +3409,77 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s14_aplus_banner",
+          "id": "s14_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s15_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s16_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s17_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s19_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -3215,7 +3491,7 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
             "shopify.hero_banner",
           ],
           "credits": 1,
-          "id": "s15_shopify_hero",
+          "id": "s20_shopify_hero",
           "method": "composite_generate",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -3227,7 +3503,7 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
             "shopify.product",
           ],
           "credits": 0.5,
-          "id": "s16_collection_thumb",
+          "id": "s21_collection_thumb",
           "method": "deterministic",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -3239,7 +3515,7 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
             "meta.feed_1x1",
           ],
           "credits": 0.5,
-          "id": "s17_social_1x1",
+          "id": "s22_social_1x1",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -3251,7 +3527,7 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
             "meta.feed_4x5",
           ],
           "credits": 0.5,
-          "id": "s18_social_4x5",
+          "id": "s23_social_4x5",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -3263,7 +3539,7 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
             "meta.story_9x16",
           ],
           "credits": 0.5,
-          "id": "s19_social_9x16",
+          "id": "s24_social_9x16",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -3275,7 +3551,7 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
             "pinterest.pin",
           ],
           "credits": 0.5,
-          "id": "s20_social_2x3",
+          "id": "s25_social_2x3",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -3287,7 +3563,7 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
             "video.social_9x16",
           ],
           "credits": 6,
-          "id": "s21_video_hero_6s",
+          "id": "s26_video_hero_6s",
           "method": "video_generate",
           "priority": 9,
           "sourceMediaId": "m_front",
@@ -3303,6 +3579,10 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
         {
           "reason": "seller did not supply comparison facts",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "needs photo",
@@ -3693,6 +3973,30 @@ exports[`planner bundles > plans the listing bundle for every channel preset 1`]
         {
           "reason": "not in the chosen set",
           "type": "aplus_banner",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_features",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_pain_points",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_how_to",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_ingredients",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_results",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "not in the chosen set",
@@ -5173,6 +5477,30 @@ exports[`planner bundles > plans the listing bundle for every channel preset 1`]
         },
         {
           "reason": "not in the chosen set",
+          "type": "aplus_features",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_pain_points",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_how_to",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_ingredients",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_results",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_endorsement",
+        },
+        {
+          "reason": "not in the chosen set",
           "type": "aplus_banner",
         },
         {
@@ -5417,6 +5745,30 @@ exports[`planner bundles > plans the main bundle for every channel preset 1`] = 
         {
           "reason": "not in the chosen set",
           "type": "aplus_banner",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_features",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_pain_points",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_how_to",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_ingredients",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_results",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "not in the chosen set",
@@ -6426,6 +6778,30 @@ exports[`planner bundles > plans the main bundle for every channel preset 1`] = 
         {
           "reason": "not in the chosen set",
           "type": "aplus_banner",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_features",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_pain_points",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_how_to",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_ingredients",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_results",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "not in the chosen set",

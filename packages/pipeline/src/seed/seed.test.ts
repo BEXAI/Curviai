@@ -19,8 +19,9 @@ describe("recipe seed rows", () => {
     for (const row of recipeSeedRows) {
       expect(() => RecipeRow.parse(row)).not.toThrow();
     }
-    // Seven stages plus the retired intake versions 1 to 4 and analyzer version 1.
-    expect(recipeSeedRows).toHaveLength(12);
+    // Seven stages plus the retired intake versions 1 to 4, analyzer
+    // version 1 and copy_generator version 1.
+    expect(recipeSeedRows).toHaveLength(13);
   });
 
   it("covers the seven stages with the section 5.1 models", () => {
@@ -41,7 +42,12 @@ describe("recipe seed rows", () => {
     expect(byKey.get("intake_normalizer")?.model).toBe("claude-haiku-4-5-20251001");
     expect(byKey.get("product_analyzer")?.model).toBe("claude-sonnet-5");
     expect(byKey.get("shot_planner")?.model).toBe("claude-sonnet-5");
-    expect(byKey.get("copy_generator")?.model).toBe("claude-haiku-4-5-20251001");
+    expect(byKey.get("copy_generator")).toMatchObject({
+      stage: "copy",
+      version: 2,
+      model: "claude-haiku-4-5-20251001",
+      fallbackModels: ["claude-sonnet-5"],
+    });
     expect(byKey.get("qc_judge")?.body.escalation).toEqual([
       "claude-haiku-4-5-20251001",
       "claude-sonnet-5",
