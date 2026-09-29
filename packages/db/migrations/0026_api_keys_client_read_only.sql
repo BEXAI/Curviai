@@ -12,6 +12,9 @@
 -- write grants as a second layer. With RLS on and no insert, update or delete
 -- policy, a client role cannot write a row even if a grant comes back.
 -- Owners and admins keep api_keys_select_owner_admin for reading.
+-- 0024 itself no longer creates the two write policies (it was fixed in place
+-- before shipping), so the drops use IF EXISTS and only matter for a database
+-- that applied an earlier draft of 0024.
 DROP POLICY IF EXISTS "api_keys_insert_owner_admin" ON "api_keys";--> statement-breakpoint
 DROP POLICY IF EXISTS "api_keys_update_owner_admin" ON "api_keys";--> statement-breakpoint
 

@@ -268,6 +268,29 @@ describe("0024 api_keys", () => {
     expect(k.scopes).toEqual([]);
   });
 
+  it("refuses an admin rewriting created_by, key_hash, prefix or scopes on their own key", async () => {
+    const [own] = await db
+      .insert(apiKeys)
+      .values({ workspaceId: wsA, name: "Admin", prefix: "cv_live_adm1", keyHash: "m".repeat(64), createdBy: ADMIN_A })
+      .returning();
+    for (const act of [actAs, actAsAuthenticated]) {
+      await act(client, ADMIN_A);
+      await client.query("update api_keys set created_by = $1 where id = $2", [OWNER_A, own.id]).catch(() => undefined);
+      await client
+        .query("update api_keys set key_hash = 'known', prefix = 'cv_live_mine' where id = $1", [own.id])
+        .catch(() => undefined);
+      await client
+        .query("update api_keys set scopes = '{packs:write,packs:read,admin}' where id = $1", [own.id])
+        .catch(() => undefined);
+    }
+    await actAsSuperuser(client);
+    const [o] = await db.select().from(apiKeys).where(eq(apiKeys.id, own.id));
+    expect(o.createdBy).toBe(ADMIN_A);
+    expect(o.keyHash).toBe("m".repeat(64));
+    expect(o.prefix).toBe("cv_live_adm1");
+    expect(o.scopes).toEqual([]);
+  });
+
   it("refuses an owner or admin un-revoking a revoked key", async () => {
     const [revoked] = await db
       .insert(apiKeys)
