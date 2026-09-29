@@ -35,10 +35,13 @@ import {
   backgroundSwatches,
   canvasDefaults,
   originalFit,
+  packBundles,
   presets,
   sceneCountOptions,
   stillStyle,
   type BackgroundSwatchKey,
+  type PackBundle,
+  type PackBundleKey,
   type PresetKey,
 } from "./seed/templates";
 
@@ -107,7 +110,66 @@ export function extraFamilyOf(type: Shot["type"]): ExtraFamily | null {
   return null;
 }
 
-export const LOOK_KEYS = ["marketplace", "keep_photo", "brand"] as const;
+// ---------------------------------------------------------------------------
+// Pack bundles (PHASE_16 workstream 1): how much a pack makes.
+
+/** Reason recorded in skipped for a shot outside the seller's pack bundle.
+ * The copy lives in apps/web/src/lib/job-copy.ts (rule 9). */
+export const BUNDLE_OFF_REASON = "not in the chosen set";
+
+/** Seeded bundle keys, in card order. */
+export const BUNDLE_KEYS = Object.keys(packBundles) as [PackBundleKey, ...PackBundleKey[]];
+export type BundleKey = PackBundleKey;
+
+/** The bundle a pack uses unless the seller picks another: today's pack. */
+export const DEFAULT_BUNDLE: BundleKey = "everything";
+
+/** The pack's bundle; absent (every row before PHASE_16) is today's pack. */
+export function bundleOf(options?: { bundle?: BundleKey } | null): BundleKey {
+  return options?.bundle ?? DEFAULT_BUNDLE;
+}
+
+/** Every shot type the bundle may plan: its shotTypes and its A+ modules. */
+export function bundleShotTypes(bundle: BundleKey): ReadonlySet<Shot["type"]> {
+  const entry: PackBundle = packBundles[bundle];
+  return new Set([...entry.shotTypes, ...(entry.aplusModules ?? [])]);
+}
+
+/** True when the bundle holds any shot type of this extra family, so its
+ * Extra images switch can be on. */
+export function bundleHoldsFamily(bundle: BundleKey, family: ExtraFamily): boolean {
+  const types = bundleShotTypes(bundle);
+  return EXTRA_FAMILIES[family].some((type) => types.has(type));
+}
+
+/** The Extra images switches a bundle starts from: its seeded extras with
+ * Remove, every extra off with Keep. */
+export function bundleExtrasFor(bundle: BundleKey, background: "remove" | "keep"): OutputExtras {
+  const seeded = packBundles[bundle].extras;
+  const out = {} as OutputExtras;
+  for (const family of EXTRA_FAMILY_KEYS) {
+    out[family] = background === "remove" && seeded[family] && bundleHoldsFamily(bundle, family);
+  }
+  return out;
+}
+
+/** The most other angle images the bundle plans, or null for no cap. */
+export function bundleMaxSecondary(bundle: BundleKey): number | null {
+  const entry: PackBundle = packBundles[bundle];
+  return entry.maxSecondary ?? null;
+}
+
+/** Shot types that count against a bundle's maxSecondary when they are not
+ * the front image (priority above 1): a white alternate angle, a kept photo. */
+const SECONDARY_SHOT_TYPES: ReadonlySet<Shot["type"]> = new Set<Shot["type"]>(["alt_angle_white", "original_photo"]);
+
+/** True for an other angle image: a white alternate angle or a kept photo
+ * that does not lead a listing (the planner gives the front image priority 1). */
+export function isSecondaryShot(shot: Pick<Shot, "type" | "priority">): boolean {
+  return SECONDARY_SHOT_TYPES.has(shot.type) && shot.priority > 1;
+}
+
+export const LOOK_KEYS =["marketplace", "keep_photo", "brand"] as const;
 export type LookKey = (typeof LOOK_KEYS)[number];
 /** A look the server derives: a preset key, or custom when no preset matches. */
 export type Look = LookKey | "custom";
@@ -180,6 +242,9 @@ const Extras = z
   .strict();
 export type OutputExtras = z.infer<typeof Extras>;
 
+/** A seeded pack bundle key. */
+const Bundle = z.enum(BUNDLE_KEYS);
+
 /**
  * What a request may send, strict: an unknown key or an out of range value
  * is refused.
@@ -198,6 +263,8 @@ export const OutputOptionsInput = z
     productSize: ProductSize.default(P1_DEFAULTS.productSize),
     enlarge: z.boolean().default(P1_DEFAULTS.enlarge),
     graphicsColor: z.boolean().default(P1_DEFAULTS.graphicsColor),
+    /** How much the pack makes (PHASE_16 workstream 1); today's pack by default. */
+    bundle: Bundle.default(DEFAULT_BUNDLE),
   })
   .strict();
 /** The request shape, before defaults. */
@@ -211,9 +278,13 @@ export interface NormalizedOutputOptions extends OutputP1Choices {
   color: ColorChoice;
   fit: OutputFit;
   extras: OutputExtras;
+  /** The pack bundle (PHASE_16); absent is today's pack (DEFAULT_BUNDLE), so
+   * a pack that keeps the default reads exactly as before. Read it with bundleOf. */
+  bundle?: BundleKey;
 }
 
-/** The choices a look fixes: normalized options without lookBase. */
+/** The choices a look fixes: normalized options without lookBase. The
+ * bundle rides along; a look never sets it (lookOf reads it). */
 export type OutputChoices = Omit<NormalizedOutputOptions, "lookBase">;
 
 function allExtras(on: boolean): OutputExtras {
@@ -222,13 +293,19 @@ function allExtras(on: boolean): OutputExtras {
 
 /**
  * Parses and fills a request's options. Missing extras follow the
- * background: all on with remove, all off with keep. An absent options
- * object normalizes to today's pack exactly. Throws a ZodError on anything
- * the P0 schema refuses.
+ * background and the bundle: the bundle's seeded extras with remove (all on
+ * for today's pack), all off with keep. A family the bundle holds no shot
+ * type of is always off. An absent options object normalizes to today's
+ * pack exactly, and bundle is left out when it is the default. Throws a
+ * ZodError on anything the P0 schema refuses.
  */
 export function normalizeOutputOptions(input?: OutputOptionsInput | null): NormalizedOutputOptions {
   const parsed = OutputOptionsInput.parse(input ?? {});
-  const extras = { ...allExtras(parsed.background === "remove"), ...parsed.extras };
+  const bundle = parsed.bundle;
+  const extras = { ...bundleExtrasFor(bundle, parsed.background), ...parsed.extras };
+  for (const family of EXTRA_FAMILY_KEYS) {
+    extras[family] &&= bundleHoldsFamily(bundle, family);
+  }
   return {
     v: 1,
     ...(parsed.lookBase !== undefined ? { lookBase: parsed.lookBase } : {}),
@@ -242,6 +319,7 @@ export function normalizeOutputOptions(input?: OutputOptionsInput | null): Norma
     productSize: parsed.productSize,
     enlarge: parsed.enlarge,
     graphicsColor: parsed.graphicsColor,
+    ...(bundle !== DEFAULT_BUNDLE ? { bundle } : {}),
   };
 }
 
@@ -303,14 +381,33 @@ function choicesOf(options: NormalizedOutputOptions | OutputChoices): OutputChoi
     productSize: options.productSize,
     enlarge: options.enlarge,
     graphicsColor: options.graphicsColor,
+    ...(bundleOf(options) !== DEFAULT_BUNDLE ? { bundle: bundleOf(options) } : {}),
   };
 }
 
-/** The look the choices amount to: the preset key on an exact match, otherwise custom. */
+/**
+ * A look's preset for a bundle: the look's choices with the Extra images
+ * switches the bundle starts from (bundleExtrasFor). With today's pack it is
+ * LOOK_PRESETS[look] exactly. The form's look cards, Reset and the Custom
+ * chip start from this, so picking a bundle never reads as Custom.
+ */
+export function lookPresetFor(look: LookKey, bundle: BundleKey = DEFAULT_BUNDLE): OutputChoices {
+  const preset = LOOK_PRESETS[look];
+  return {
+    ...preset,
+    color: { ...preset.color },
+    extras: bundle === DEFAULT_BUNDLE ? { ...preset.extras } : bundleExtrasFor(bundle, preset.background),
+    ...(bundle !== DEFAULT_BUNDLE ? { bundle } : {}),
+  };
+}
+
+/** The look the choices amount to: the preset key on an exact match with
+ * that look's preset for the same bundle, otherwise custom. */
 export function lookOf(options: NormalizedOutputOptions | OutputChoices): Look {
   const key = canonicalJson(choicesOf(options));
+  const bundle = bundleOf(options);
   for (const look of LOOK_KEYS) {
-    if (canonicalJson(LOOK_PRESETS[look]) === key) {
+    if (canonicalJson(choicesOf(lookPresetFor(look, bundle))) === key) {
       return look;
     }
   }
@@ -366,6 +463,8 @@ export const ResolvedOutputOptions = z
     productSize: ProductSize.optional(),
     enlarge: z.boolean().optional(),
     graphicsColor: z.boolean().optional(),
+    /** The pack bundle (PHASE_16); absent is today's pack. Read with bundleOf. */
+    bundle: Bundle.optional(),
   })
   .strict();
 export type ResolvedOutputOptions = z.infer<typeof ResolvedOutputOptions>;
@@ -502,14 +601,19 @@ export interface OutputPlanFlags {
   sceneCount?: number;
   /** False with Never enlarge my photo (P1): kept photos cap at 1. */
   enlarge?: boolean;
+  /** The pack bundle (PHASE_16): shot types outside it, and other angle
+   * images past its maxSecondary, are skipped with BUNDLE_OFF_REASON. Absent
+   * is today's pack. */
+  bundle?: BundleKey;
 }
 
 /** The plan flags for resolved options and the pack's photos. No hex, no free text. */
 export function planFlagsOf(
   resolved: Pick<ResolvedOutputOptions, "background" | "keepMediaIds" | "extras" | "fit"> &
-    Pick<P1Fields, "sceneCount" | "enlarge">,
+    Pick<P1Fields, "sceneCount" | "enlarge"> & { bundle?: BundleKey },
   photos: readonly PlanPhoto[],
 ): OutputPlanFlags {
+  const bundle = bundleOf(resolved);
   return {
     background: resolved.background,
     keepMediaIds: [...resolved.keepMediaIds],
@@ -517,6 +621,7 @@ export function planFlagsOf(
     fit: resolved.fit,
     sceneCount: sceneCountOf(resolved),
     enlarge: resolved.enlarge ?? P1_DEFAULTS.enlarge,
+    ...(bundle !== DEFAULT_BUNDLE ? { bundle } : {}),
     photos: photos.map((photo) => ({
       id: photo.id,
       ...(photo.angle !== undefined ? { angle: photo.angle } : {}),

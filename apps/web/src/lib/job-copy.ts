@@ -9,6 +9,10 @@
 
 import {
   ADDED_OVERLAYS_REASON,
+  BUNDLE_OFF_REASON,
+  bundleHoldsFamily,
+  bundleOf,
+  DEFAULT_BUNDLE,
   DEFAULT_OUTPUT_OPTIONS,
   EXTRA_FAMILY_KEYS,
   keptMaxUpscale,
@@ -22,7 +26,7 @@ import {
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
 import { SCENE_COUNT_REASON } from "@curvi/pipeline/planner";
-import { backgroundSwatches, isFeatureLive, shotMethodFeatures, stillStyle, type TierFeature } from "@curvi/pipeline/seed";
+import { backgroundSwatches, isFeatureLive, packBundles, shotMethodFeatures, stillStyle, type TierFeature } from "@curvi/pipeline/seed";
 import { getSpec, hasSpec, requiresWhiteBackground } from "@curvi/specs";
 import { specDisplayName } from "@/components/marketing/spec-slug";
 import { enlargeLimitClause, EXTRA_FAMILY_NAMES } from "@/lib/output-options-copy";
@@ -66,6 +70,12 @@ function isComingSoonShot(shotType: string | null | undefined): boolean {
 export const SELLER_OFF_COPY: SkippedCopy = {
   label: "Turned off",
   note: "You turned this off for this pack. Not charged.",
+};
+
+/** A shot outside the pack bundle the seller picked (PHASE_16 workstream 1). */
+export const BUNDLE_OFF_COPY: SkippedCopy = {
+  label: "Not in your set",
+  note: "Not in the set you picked. Not charged.",
 };
 
 /** What the shot copy knows about the pack's own stored choices. */
@@ -130,6 +140,9 @@ export function skippedCopy(
   const r = (reason ?? "").toLowerCase();
   // PHASE_15 reasons first, so "source too small" never reads as a photo
   // or plan problem.
+  if (r.includes(BUNDLE_OFF_REASON)) {
+    return BUNDLE_OFF_COPY;
+  }
   if (r.includes(SELLER_OFF_REASON)) {
     return SELLER_OFF_COPY;
   }
@@ -680,7 +693,15 @@ export function outputOptionsSummary(
   if (keep && specs.some((spec) => specAcceptsImage(spec, "original") && originalFitFor(spec, resolved) === "pad")) {
     lines.push(`Added space: ${color}.`);
   }
-  const off = EXTRA_FAMILY_KEYS.filter((family) => !resolved.extras[family]).map((family) => EXTRA_FAMILY_NAMES[family]);
+  // A family outside the pack's bundle was never on, so only the ones the
+  // set holds read as turned off.
+  const bundle = bundleOf(stored);
+  if (bundle !== DEFAULT_BUNDLE) {
+    lines.push(`Set: ${packBundles[bundle].label}.`);
+  }
+  const off = EXTRA_FAMILY_KEYS.filter((family) => bundleHoldsFamily(bundle, family) && !resolved.extras[family]).map(
+    (family) => EXTRA_FAMILY_NAMES[family],
+  );
   if (off.length > 0) {
     lines.push(`Turned off: ${off.join(", ")}.`);
   }

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useReducer, useRef, useState, type FocusEvent } fro
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, Card, CardContent, Input, Label, Select, Textarea, cn } from "@curvi/ui";
-import { LOOK_PRESETS, type OutputPlanFlags } from "@curvi/pipeline/output-options";
+import { DEFAULT_BUNDLE, lookPresetFor, type OutputPlanFlags } from "@curvi/pipeline/output-options";
 import type { TierKey } from "@curvi/pipeline/seed";
 import { OutOfCreditsDialog } from "@/components/app/paywall";
 import {
@@ -48,7 +48,9 @@ import {
   type OutputFormState,
   type PhotoBackground,
   backgroundSummaryLine,
+  bundleEstimates,
   conflictContextOf,
+  currentBundle,
   effectiveChoices,
   formConflicts,
   formPhotos,
@@ -83,6 +85,7 @@ import {
 } from "@/lib/preflight/copy";
 import type { PreflightBox, PreflightView } from "@/lib/preflight/types";
 import { OutputOptionsPanel } from "./output-options-panel";
+import { PackBundleCards } from "./pack-bundle-cards";
 import { PreflightResult } from "./preflight-result";
 import { ProductLinkImport } from "./product-link-import";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
@@ -483,7 +486,9 @@ export function NewPackForm({
       }),
     [selected, effectiveMode, tier, anglesKey, boxContents, comparisonFacts, optionsOn, output],
   );
-  // The difference between looks, for the summary: this pack as Keep my photo and as Marketplace ready.
+  // The difference between looks, for the summary: this pack as Keep my
+  // photo and as Marketplace ready, both with the pack's bundle (PHASE_16).
+  const bundle = currentBundle(outputForm);
   const lookTotals = useMemo(() => {
     if (!optionsOn) return null;
     const base = {
@@ -491,20 +496,50 @@ export function NewPackForm({
       hasBoxContents: boxContents.length > 0,
       hasComparisonFacts: comparisonFacts.length > 0,
     };
-    const keep = resolveFormOutput({
-      choices: effectiveChoices(LOOK_PRESETS.keep_photo, { scenesPaused: scenesPausedNote !== null }),
-      brandColors: usableBrand,
-      brandKitsAllowed,
-      photos: output.planned,
-    });
-    return {
-      keep: estimatePackCredits(selected, effectiveMode, tier, {
+    const totalFor = (look: "keep_photo" | "marketplace") => {
+      const resolved = resolveFormOutput({
+        choices: effectiveChoices(lookPresetFor(look, bundle), { scenesPaused: scenesPausedNote !== null }),
+        brandColors: usableBrand,
+        brandKitsAllowed,
+        photos: output.planned,
+      });
+      return estimatePackCredits(selected, effectiveMode, tier, {
         ...base,
-        ...outputEstimateInputs(keep.resolved, output.parsed),
-      }).total,
-      marketplace: estimatePackCredits(selected, effectiveMode, tier, base).total,
+        ...outputEstimateInputs(resolved.resolved, output.parsed),
+      }).total;
     };
-  }, [optionsOn, anglesKey, boxContents, comparisonFacts, scenesPausedNote, usableBrand, brandKitsAllowed, output, selected, effectiveMode, tier]);
+    return {
+      keep: totalFor("keep_photo"),
+      marketplace:
+        bundle === DEFAULT_BUNDLE
+          ? estimatePackCredits(selected, effectiveMode, tier, base).total
+          : totalFor("marketplace"),
+    };
+  }, [optionsOn, bundle, anglesKey, boxContents, comparisonFacts, scenesPausedNote, usableBrand, brandKitsAllowed, output, selected, effectiveMode, tier]);
+  // Each bundle card's figure for this pack (PHASE_16 workstream 1).
+  const bundleTotals = useMemo(
+    () =>
+      optionsOn && effectiveMode === "listing"
+        ? bundleEstimates({
+            channels: selected,
+            mode: effectiveMode,
+            tier,
+            seller: {
+              angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
+              hasBoxContents: boxContents.length > 0,
+              hasComparisonFacts: comparisonFacts.length > 0,
+            },
+            state: outputForm,
+            brandColors: usableBrand,
+            brandKitsAllowed,
+            photos: output.parsed,
+            planned: output.planned,
+            photoBackgrounds: photoBackgroundsOf(photos),
+            context: { scenesPaused: scenesPausedNote !== null },
+          })
+        : null,
+    [optionsOn, effectiveMode, selected, tier, anglesKey, boxContents, comparisonFacts, outputForm, usableBrand, brandKitsAllowed, output, photos, scenesPausedNote],
+  );
 
   const conflicts = optionsOn && effectiveMode !== "concept" ? formConflicts(selected, output.current.resolved, output.planned) : [];
   const conflictContext = conflictContextOf(choices.background, output.planned, output.current.resolved);
@@ -1346,6 +1381,13 @@ export function NewPackForm({
 
         <section>
           <h2 className="text-lg font-semibold text-ink-950">2. Pick your channels</h2>
+          {bundleTotals ? (
+            <PackBundleCards
+              bundle={bundle}
+              onPick={(next) => applyOutput({ type: "bundle", bundle: next })}
+              estimates={bundleTotals}
+            />
+          ) : null}
           <div className="mt-3 grid gap-6 sm:grid-cols-2">
             <div>
               <h3 className="text-sm font-semibold text-ink-700">Marketplaces</h3>

@@ -41,6 +41,13 @@ Higgsfield's marketplace cards send the seller's photo through a generative imag
 
 **Tests.** Planner snapshot per bundle; the parity property test gains bundles; `everything` equals today's default snapshot; route strictness.
 
+**Implementation notes (built 2026-09-29, founder default: Everything).**
+- `packBundles` holds `shotTypes`, `aplusModules`, `extras` and `maxSecondary`; `everything` takes `Shot.shape.type.options`, so new shot types join it without a seed edit. Workstream 2 adds its module types to `aplus.aplusModules`.
+- The bundle is intersected with the Extra images switches: a shot type outside the bundle is skipped with `BUNDLE_OFF_REASON` whatever its switch says, and normalization turns off a family the bundle holds nothing of. `maxSecondary` caps other angle images (`alt_angle_white` or `original_photo` above priority 1).
+- `bundle` is left out of the normalized options, the resolved row and the plan flags when it is `everything`, so today's packs, keys and snapshots are byte identical. Read it with `bundleOf`.
+- Seller off cover never fills a spec the bundle emptied. `skipSellerOffShots` runs `skipBundleOffShots` first, so the runner's `fitShotsToChannels` applies bundles to LLM plans with no runner edit.
+- Looks are bundle aware (`lookPresetFor(look, bundle)`), so picking a bundle never shows the Custom chip; changing an extra afterwards does.
+
 ## 2. More A+ modules
 
 **What the seller gets.** Seven A+ modules built from templates around the real product photo: hero banner (today's aplus_banner), pain points, features, ingredients or materials, results, how to use, endorsement (reviews or badges the seller supplies).

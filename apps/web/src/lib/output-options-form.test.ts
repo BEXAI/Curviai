@@ -488,6 +488,7 @@ describe("analytics", () => {
       extras_off: 5,
       kept_photos: 3,
       fit: "auto",
+      bundle: "everything",
     });
     expect(JSON.stringify(props)).not.toMatch(/#[0-9A-F]{6}/i);
     // The caller counts kept photos after each photo's own background, so a

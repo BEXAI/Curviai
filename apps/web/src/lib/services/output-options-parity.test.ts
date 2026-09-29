@@ -4,7 +4,8 @@
  * createJob uses, the form's estimate, the createJob hold and the demo plan
  * agree, and the deterministic planner fits the hold with no credit budget
  * skip. The form and the demo build their estimate inputs with the same
- * outputEstimateInputs createJob uses.
+ * outputEstimateInputs createJob uses. Pack bundles (PHASE_16 workstream 1)
+ * join the random options and reach the planner through planFlagsOf.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,7 +21,7 @@ import {
 } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, loadChannelSpecs, type Db } from "@curvi/db";
-import { EXTRA_FAMILY_KEYS, SWATCH_KEYS, type OutputOptionsInput } from "@curvi/pipeline/output-options";
+import { BUNDLE_KEYS, EXTRA_FAMILY_KEYS, SWATCH_KEYS, type OutputOptionsInput } from "@curvi/pipeline/output-options";
 import { CREDIT_BUDGET_REASON, planShots } from "@curvi/pipeline/planner";
 import { undeliverableShotMethods, type TierKey } from "@curvi/pipeline/seed";
 import type { AngleRole } from "@curvi/pipeline/seller-inputs";
@@ -69,6 +70,12 @@ function pick<T>(next: () => number, items: readonly T[]): T {
   return items[Math.floor(next() * items.length)] as T;
 }
 
+/** A pack bundle for most runs (PHASE_16), drawn from its own stream so the
+ * option draws above stay as they were. */
+function randomBundle(next: () => number): Pick<OutputOptionsInput, "bundle"> {
+  return next() < 0.75 ? { bundle: pick(next, BUNDLE_KEYS) } : {};
+}
+
 function randomOptions(next: () => number): OutputOptionsInput {
   const extras: Record<string, boolean> = {};
   for (const family of EXTRA_FAMILY_KEYS) {
@@ -109,15 +116,17 @@ beforeEach(() => {
 describe("form estimate, createJob hold and demo plan parity", () => {
   it("agree for random option sets on the same photos", async () => {
     const next = random(15);
+    const nextBundle = random(16);
     let compared = 0;
     let keptRuns = 0;
-    for (let run = 0; run < 12; run++) {
+    const bundles = new Set<string>();
+    for (let run = 0; run < 16; run++) {
       const channels = ALL_CHANNELS.filter(() => next() < 0.5);
       if (channels.length === 0) {
         channels.push("shopify.product");
       }
       const photoCount = 1 + Math.floor(next() * 4);
-      const options = randomOptions(next);
+      const options = { ...randomOptions(next), ...randomBundle(nextBundle) };
 
       const [w] = await db.insert(workspaces).values({ name: `parity ${run}`, plan: TIER }).returning();
       await db.insert(members).values({ workspaceId: w.id, userId: OWNER, role: "owner" });
@@ -185,6 +194,7 @@ describe("form estimate, createJob hold and demo plan parity", () => {
       expect(created.outcome, context).toBe("created");
       compared += 1;
       keptRuns += resolved.resolved.keepMediaIds.length > 0 ? 1 : 0;
+      bundles.add(options.bundle ?? "everything");
       const [row] = await db.select().from(generationJobs).where(eq(generationJobs.workspaceId, w.id));
       expect(row.creditsReserved, context).toBe(estimate);
 
@@ -210,5 +220,7 @@ describe("form estimate, createJob hold and demo plan parity", () => {
     // The seed must reach real packs, Keep ones among them.
     expect(compared).toBeGreaterThanOrEqual(8);
     expect(keptRuns).toBeGreaterThanOrEqual(3);
+    // And packs of several bundles, not only today's.
+    expect(bundles.size).toBeGreaterThanOrEqual(3);
   });
 });

@@ -202,7 +202,7 @@ export function readStoredOutputOptions(stored: unknown): ResolvedOutputOptions 
 export function outputEstimateInputs(
   resolved:
     | (Pick<ResolvedOutputOptions, "background" | "keepMediaIds" | "extras" | "fit" | "color" | "colorHex"> &
-        Partial<Pick<ResolvedOutputOptions, "sceneCount" | "scenePreset" | "logo" | "productSize" | "enlarge" | "graphicsColor">>)
+        Partial<Pick<ResolvedOutputOptions, "sceneCount" | "scenePreset" | "logo" | "productSize" | "enlarge" | "graphicsColor" | "bundle">>)
     | null
     | undefined,
   photos: readonly OutputPhoto[],
@@ -221,6 +221,7 @@ export function outputEstimateInputs(
         ...(resolved.productSize !== undefined ? { productSize: resolved.productSize } : {}),
         ...(resolved.enlarge !== undefined ? { enlarge: resolved.enlarge } : {}),
         ...(resolved.graphicsColor !== undefined ? { graphicsColor: resolved.graphicsColor } : {}),
+        ...(resolved.bundle !== undefined ? { bundle: resolved.bundle } : {}),
       }
     : null;
   if (!resolved || (!perPhotoKeep && !isNonDefaultOutput(choices))) {
