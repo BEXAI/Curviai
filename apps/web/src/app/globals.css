@@ -30,6 +30,16 @@
   --color-teal-brand: #2dd4bf;
   --color-violet-brand: #8b5cf6;
   --color-night: #07080d;
+  /* Wine, the burgundy family of the call to action and the home headline.
+   * 700 is the solid call to action and 600 its hover; 500 is the headline
+   * line; 300 is the light wine for focus rings and tints, at least 3:1 on
+   * night and on white. */
+  --color-wine-300: #d0587a;
+  --color-wine-500: #b03a5b;
+  --color-wine-600: #8f2749;
+  --color-wine-700: #7a1f3d;
+  --color-wine-900: #4a1226;
+  --color-wine-950: #3b1a26;
 
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display: var(--font-grotesk), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
@@ -45,6 +55,18 @@
   --animate-shimmer: shimmer 2.4s linear infinite;
   --animate-fade-in-up: fade-in-up 0.5s cubic-bezier(0.33, 1, 0.68, 1) both;
   --animate-pulse-dot: pulse-dot 1.4s ease-in-out infinite;
+  /* Moves only, never fades: text using it is visible in the server HTML,
+   * without JavaScript and at the moment the browser measures LCP. */
+  --animate-rise-in: rise-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+
+  @keyframes rise-in {
+    from {
+      transform: translateY(1.5rem);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
 
   @keyframes shimmer {
     from {
@@ -165,6 +187,27 @@
   --color-accent-600: #db2777;
   --color-accent-700: #be185d;
   --color-accent-800: #9d174d;
+  /* Tailwind's own status tints, so white cards inside a theme-base scope
+   * (the example compliance report on the home page) read as designed. */
+  --color-red-50: oklch(97.1% 0.013 17.38);
+  --color-red-100: oklch(93.6% 0.032 17.717);
+  --color-red-200: oklch(88.5% 0.062 18.334);
+  --color-red-600: oklch(57.7% 0.245 27.325);
+  --color-red-700: oklch(50.5% 0.213 27.518);
+  --color-red-800: oklch(44.4% 0.177 26.899);
+  --color-red-900: oklch(39.6% 0.141 25.723);
+  --color-amber-50: oklch(98.7% 0.022 95.277);
+  --color-amber-100: oklch(96.2% 0.059 95.617);
+  --color-amber-200: oklch(92.4% 0.12 95.746);
+  --color-amber-700: oklch(55.5% 0.163 48.998);
+  --color-amber-800: oklch(47.3% 0.137 46.201);
+  --color-amber-900: oklch(41.4% 0.112 45.904);
+  --color-emerald-50: oklch(97.9% 0.021 166.113);
+  --color-emerald-100: oklch(95% 0.052 163.051);
+  --color-emerald-200: oklch(90.5% 0.093 164.15);
+  --color-emerald-700: oklch(50.8% 0.118 165.612);
+  --color-emerald-800: oklch(43.2% 0.095 166.913);
+  --color-emerald-900: oklch(37.8% 0.077 168.94);
   --shadow-card: 0 1px 2px 0 rgb(19 24 38 / 0.06), inset 0 1px 0 0 rgb(255 255 255 / 0.7);
 }
 
@@ -247,6 +290,147 @@ body.theme-dark > * {
 
 .bg-brand-gradient {
   background-image: linear-gradient(100deg, var(--color-teal-brand), var(--color-violet-brand) 50%, var(--color-accent-500));
+}
+
+/*
+ * Liquid metal, drawn in CSS. The home hero shows it until the WebGL shader
+ * has drawn, and keeps it for good under reduced motion, without WebGL2 and
+ * on phones and tablets. The final call to action reuses it, so the page is
+ * bookended by metal with a single WebGL context. Like the shader, it is
+ * chrome tubes (dark, silver and wine bands) sweeping across night, lit wine
+ * from the top right and teal from the lower left. No filter: the gradient
+ * stops are soft enough, and a static blur would only cost a paint.
+ */
+.hero-metal-fallback {
+  overflow: hidden;
+  background-color: var(--color-night);
+  background-image:
+    radial-gradient(48rem 28rem at 85% 0%, color-mix(in srgb, var(--color-wine-500) 35%, transparent), transparent 70%),
+    radial-gradient(40rem 26rem at 10% 80%, rgb(45 212 191 / 0.14), transparent 70%);
+}
+
+.hero-metal-fallback::before {
+  content: "";
+  position: absolute;
+  inset: -5%;
+  background-image:
+    radial-gradient(
+      ellipse 95% 105% at 108% 128%,
+      transparent 84%,
+      #12070c 86%,
+      var(--color-wine-700) 88%,
+      #e3e6ec 91%,
+      #9aa0ad 93%,
+      #1a0c12 96%,
+      transparent 98%
+    ),
+    radial-gradient(
+      ellipse 122% 132% at 108% 128%,
+      transparent 86%,
+      #0b0c12 88%,
+      #b8bec9 91%,
+      var(--color-wine-950) 94%,
+      var(--color-wine-500) 96%,
+      transparent 98%
+    ),
+    radial-gradient(
+      ellipse 70% 80% at -8% -18%,
+      transparent 82%,
+      #1a2a2e 85%,
+      #d9dce3 89%,
+      var(--color-wine-700) 92%,
+      #0b0c12 95%,
+      transparent 97%
+    );
+}
+
+/*
+ * Scrims between the metal and the hero text. The fade to night at the
+ * bottom is the top layer, so the hero's bottom edge is pure night and meets
+ * the next section with no seam. Under it, a pool of night keeps the text
+ * readable over the brightest chrome, and the wine and teal glows sit under
+ * the pool, so they light the metal around the text and never tint it.
+ *
+ * Measured on the rendered page (docs/phases/HOME_LIQUID_METAL.md, and
+ * e2e/home-hero.spec.ts checks it): the wine headline line stays above 3:1
+ * and all other hero text above 4.5:1 at the brightest point behind it.
+ *
+ * Phones (under 40rem): the hero is one text column, so the pool is banded
+ * down the page instead of an ellipse. The text block sits between about 9
+ * and 64 percent of the hero's height on every phone size, with the
+ * headline between 13 and 30 percent; the headline band is densest, the rest
+ * of the text sits on a lighter band, and the metal shows fully above the
+ * badge and around the feature card.
+ */
+.hero-metal-scrim {
+  background-image:
+    linear-gradient(to bottom, transparent 84%, var(--color-night) 99%),
+    linear-gradient(
+      to bottom,
+      rgb(7 8 13 / 0.1),
+      rgb(7 8 13 / 0.8) 9%,
+      rgb(7 8 13 / 0.95) 13%,
+      rgb(7 8 13 / 0.95) 30%,
+      rgb(7 8 13 / 0.78) 36%,
+      rgb(7 8 13 / 0.78) 63%,
+      rgb(7 8 13 / 0.35) 72%
+    ),
+    radial-gradient(48rem 28rem at 85% 0%, color-mix(in srgb, var(--color-wine-500) 25%, transparent), transparent 70%),
+    radial-gradient(40rem 24rem at 10% 80%, rgb(45 212 191 / 0.12), transparent 70%);
+}
+
+@media (min-width: 40rem) {
+  .hero-metal-scrim {
+    background-image:
+      linear-gradient(to bottom, transparent 70%, var(--color-night) 97%),
+      radial-gradient(
+        ellipse 56rem 30rem at 50% 44%,
+        rgb(7 8 13 / 0.96) 0 62%,
+        rgb(7 8 13 / 0.5) 85%,
+        rgb(7 8 13 / 0.25)
+      ),
+      radial-gradient(48rem 28rem at 85% 0%, color-mix(in srgb, var(--color-wine-500) 25%, transparent), transparent 70%),
+      radial-gradient(40rem 24rem at 10% 80%, rgb(45 212 191 / 0.12), transparent 70%);
+  }
+}
+
+/*
+ * The closing section's scrim: the static metal shows at the edges and a
+ * pool of night sits behind the heading, the email form and the small print.
+ */
+.closing-metal-scrim {
+  background-image:
+    radial-gradient(ellipse 44rem 20rem at 50% 50%, rgb(7 8 13 / 0.94) 0 60%, rgb(7 8 13 / 0.6) 85%, transparent),
+    linear-gradient(rgb(7 8 13 / 0.6), rgb(7 8 13 / 0.6));
+}
+
+/*
+ * Scroll reveal for sections below the fold, with no JavaScript. Browsers
+ * without scroll driven animations and visitors who prefer reduced motion
+ * simply see the content at rest. It never starts fully transparent, so
+ * content is never hidden from a reader or a test.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .reveal {
+      animation: reveal-up linear both;
+      animation-timeline: view();
+      /* Done once 30 percent of the element is in view, so nothing on screen
+       * stays dim for long. Tall blocks that hold body text do not use it. */
+      animation-range: entry 0% entry 30%;
+    }
+
+    @keyframes reveal-up {
+      from {
+        opacity: 0.001;
+        transform: translateY(1.5rem);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+  }
 }
 
 /* A hairline that picks up the brand light at the top edge of a card. */

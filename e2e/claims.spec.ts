@@ -15,7 +15,17 @@ test("home labels features on the way and drawings as illustrations", async ({ p
   await expect(body).not.toContainText("40 to 60");
   await expect(body).not.toContainText("Publish straight to Shopify");
   await expect(page.getByTestId("home-pack-size")).toContainText(/about \d+ credits/);
-  await expect(page.getByTestId("hero-upload-box")).toContainText("Nothing is uploaded from this page");
+  // The hero states the free grant and that no card is needed; nothing on the page takes a file.
+  await expect(page.getByTestId("liquid-metal-hero")).toContainText(/No card needed\. Start with \d+ free credits\./);
+  await expect(page.locator('input[type="file"]')).toHaveCount(0);
+  // Every pack tile is a file Curvi makes today, or carries the Coming soon label.
+  const tiles = page.getByTestId("pack-tile");
+  await expect(tiles.first()).toBeVisible();
+  for (const tile of await tiles.all()) {
+    const soon = (await tile.getAttribute("data-status")) === "coming_soon";
+    await expect(tile.getByTestId("coming-soon")).toHaveCount(soon ? 1 : 0);
+    await expect(tile).not.toContainText(/\b0 credits?\b/);
+  }
 });
 
 test("help marks the Fresh Creative Drop as coming soon", async ({ page }) => {

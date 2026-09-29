@@ -17,12 +17,26 @@ import { channelPageCopy } from "./channel-copy";
 import { complianceDemoRows } from "./compliance-badge-demo";
 import { helpArticles, helpClosing, structuredHelpArticles } from "./help-articles";
 import {
+  homeChannelTiles,
+  homeChannels,
   homeClosing,
+  homeClosingAlt,
+  homeFaqAside,
   homeFaqs,
   homeFeatures,
   homeFeaturesIntro,
+  homeGuides,
   homeHero,
+  homeHeroCtas,
+  homeHeroFeatures,
+  homeHeroNote,
+  homeHowItWorks,
+  homePack,
+  homePricing,
+  homeProof,
+  homeReport,
   homeSteps,
+  homeTools,
 } from "./home-copy";
 import { pillarPageTexts, pillarPages } from "./pillar-copy";
 import { signupLead } from "./signup-copy";
@@ -54,6 +68,24 @@ function whatCurviDoes(): string[] {
 function liveCopy(): { where: string; text: string }[] {
   return [
     ...Object.entries(homeHero).map(([key, text]) => ({ where: `home hero ${key}`, text })),
+    ...Object.values(homeHeroCtas).map((cta) => ({ where: `home hero call to action ${cta.href}`, text: cta.label })),
+    { where: "home hero note", text: homeHeroNote },
+    ...homeHeroFeatures.map((feature) => ({ where: `home hero feature ${feature.key}`, text: feature.label })),
+    ...(
+      [
+        ["home proof", homeProof],
+        ["home how it works", homeHowItWorks],
+        ["home pack", homePack],
+        ["home report", homeReport],
+        ["home channels", homeChannels],
+        ["home pricing", homePricing],
+        ["home FAQ aside", homeFaqAside],
+        ["home guides", homeGuides],
+      ] as const
+    ).flatMap(([where, copy]) => Object.entries(copy).map(([key, text]) => ({ where: `${where} ${key}`, text }))),
+    ...homeChannelTiles.map((tile) => ({ where: `home channel ${tile.name}`, text: `${tile.name}. ${tile.files}.` })),
+    ...homeTools.map((tool) => ({ where: `home tool ${tool.href}`, text: `${tool.name}. ${tool.body}` })),
+    { where: "home closing alternative", text: `${homeClosingAlt.before} ${homeClosingAlt.link}${homeClosingAlt.after}` },
     ...homeSteps.map((step) => ({ where: `home step ${step.title}`, text: `${step.title}. ${step.body}` })),
     ...homeFeatures
       .filter((feature) => feature.status === "live")
@@ -229,10 +261,13 @@ const OWNED_SOURCES = [
   "./compliance-badge-demo.tsx",
   "./before-after-slider.tsx",
   "./demo-images.ts",
-  "./upload-box.tsx",
   "./site-header.tsx",
   "./site-footer.tsx",
   "./home-copy.ts",
+  "./home-parts.tsx",
+  "../ui/liquid-metal-hero.tsx",
+  "../ui/liquid-metal-backdrop.tsx",
+  "../ui/liquid-metal-canvas.tsx",
   "./help-articles.ts",
   "./coming-soon-badge.tsx",
   "./channel-copy.ts",

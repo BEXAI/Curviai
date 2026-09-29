@@ -7,8 +7,9 @@ import { useSignedIn } from "./signed-in";
 
 /**
  * The right side of the marketing header. Signed out visitors get Log in
- * and Get started; a visitor who is already signed in gets one Open app
- * link instead of being sent through signup again.
+ * and Start free (the same label as the home hero and the pricing cards); a
+ * visitor who is already signed in gets one Open app link instead of being
+ * sent through signup again.
  */
 export function HeaderActionsView({ signedIn, links }: { signedIn: boolean; links: MobileMenuLink[] }) {
   if (signedIn) {
@@ -27,7 +28,7 @@ export function HeaderActionsView({ signedIn, links }: { signedIn: boolean; link
         Log in
       </Link>
       <Link href="/signup" className={buttonVariants({ variant: "secondary" })}>
-        Get started
+        Start free
       </Link>
       <MobileMenu links={[...links, { href: "/login", label: "Log in" }]} />
     </div>

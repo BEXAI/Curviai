@@ -154,23 +154,45 @@ describe("compliance badge demo", () => {
   });
 });
 
-describe("hero upload box", () => {
-  it("says the photo is not uploaded from the page and states the free grant", async () => {
-    const { UploadBox } = await import("./upload-box");
-    const html = render(React.createElement(UploadBox, { freeCredits: freeCredits() }));
-    expect(html).toContain("Nothing is uploaded from this page");
-    expect(html).toContain(`free account with ${freeCredits()} credits`);
-    expect(html).not.toMatch(/see your pack/i);
-    expect(html).not.toContain('type="file"');
-    expect(html).toContain('href="/signup"');
-    expect(html).toContain('href="/tools/main-image-checker"');
-  });
-});
-
 describe("coming soon badge", () => {
   it("renders the shared label", async () => {
     const { ComingSoonBadge } = await import("./coming-soon-badge");
     expect(render(React.createElement(ComingSoonBadge))).toContain("Coming soon");
+  });
+});
+
+describe("home pack tiles", () => {
+  it("title each file by name and show the count as a chip", async () => {
+    const { PackTile } = await import("./home-parts");
+    const html = render(React.createElement(PackTile, { line: { label: "Background sweeps, 2", credits: 1 } }));
+    expect(html).toMatch(/<h3[^>]*>Background sweeps<\/h3>/);
+    expect(html).toContain(">2 files<");
+    expect(html).toContain("1 credit");
+    expect(html).toContain('data-status="live"');
+    expect(html).not.toContain('data-testid="coming-soon"');
+  });
+
+  it("give a file that is not delivered yet the Coming soon label instead of credits", async () => {
+    const { PackTile } = await import("./home-parts");
+    const html = render(
+      React.createElement(PackTile, { line: { label: "Infographic, coming soon", credits: 0, comingSoon: true } }),
+    );
+    expect(html).toMatch(/<h3[^>]*>Infographic<\/h3>/);
+    expect(html).toContain('data-testid="coming-soon"');
+    expect(html).toContain('data-status="coming_soon"');
+    expect(html).toContain("border-dashed");
+    expect(html).not.toMatch(/\b0 credits?\b/);
+  });
+
+  it("render every line of the typical pack as live or coming soon", async () => {
+    const { typicalPackLines } = await import("@/lib/marketing-facts");
+    const { PackTile } = await import("./home-parts");
+    for (const line of typicalPackLines()) {
+      const html = render(React.createElement(PackTile, { line }));
+      const labelled = html.includes('data-testid="coming-soon"');
+      expect(labelled, line.label).toBe(line.comingSoon === true);
+      expect(html, line.label).not.toContain(", coming soon");
+    }
   });
 });
 
@@ -403,7 +425,7 @@ describe("site header", () => {
     const html = render(React.createElement(SiteHeader));
     expect(html).toContain('href="/login"');
     expect(html).toContain('href="/signup"');
-    expect(html).toContain("Get started");
+    expect(html).toContain(">Start free<");
     expect(html).not.toContain("Open app");
   });
 
@@ -415,7 +437,7 @@ describe("site header", () => {
     expect(html).toContain('href="/app"');
     expect(html).toContain("Open app");
     expect(html).toContain('href="/pricing"');
-    expect(html).not.toContain("Get started");
+    expect(html).not.toContain("Start free");
     expect(html).not.toContain('href="/signup"');
     expect(html).not.toContain('href="/login"');
   });
