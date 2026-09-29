@@ -90,7 +90,14 @@ export default function HomePage() {
   const soonFeatures = homeFeatures.filter((feature) => feature.status === "coming_soon");
 
   return (
-    <div className="theme-base bg-night text-ink-100">
+    <div className="theme-base relative overflow-hidden bg-night text-ink-100">
+      {/* One background for the top of the page: the pink light at the top
+          right and the teal glow running down the left behind the hero and
+          How it works as a single layer, so there is no seam between them. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 top-0 h-[110rem] bg-[radial-gradient(64rem_36rem_at_75%_-8rem,rgb(236_72_153/0.2),transparent),radial-gradient(40rem_60rem_at_0%_48rem,rgb(45_212_191/0.15),transparent_70%),radial-gradient(36rem_24rem_at_45%_20rem,rgb(139_92_246/0.08),transparent)]"
+      />
       <JsonLd
         data={jsonLdGraph([
           organizationJsonLd(),
@@ -99,11 +106,7 @@ export default function HomePage() {
           faqPageJsonLd(homeFaqs.map((faq) => ({ question: faq.q, answer: faq.a }))),
         ])}
       />
-      <section className="relative overflow-hidden">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(64rem_36rem_at_75%_-20%,rgb(236_72_153/0.2),transparent),radial-gradient(44rem_28rem_at_0%_100%,rgb(45_212_191/0.14),transparent),radial-gradient(36rem_24rem_at_45%_40%,rgb(139_92_246/0.08),transparent)]"
-        />
+      <section className="relative">
         <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-6 pb-20 pt-16 lg:grid-cols-2 lg:pt-24">
         <div className="animate-fade-in-up">
           <Wordmark className="mb-8 block h-14 sm:h-16" />
@@ -126,13 +129,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="relative overflow-hidden">
-        {/* Continues the hero's teal glow from its bottom left corner, so the
-            two sections read as one surface with no seam between them. */}
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(44rem_28rem_at_0%_0%,rgb(45_212_191/0.14),transparent_70%)]"
-        />
+      <section className="relative">
         <div className="relative mx-auto max-w-6xl px-6 py-16">
           <h2 className="text-center font-display text-3xl font-bold uppercase tracking-tight text-white">How it works</h2>
           <div className="mt-10 grid gap-8 md:grid-cols-3">
