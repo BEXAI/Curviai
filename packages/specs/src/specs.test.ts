@@ -287,12 +287,24 @@ describe("background and layout helpers", () => {
     expect(getSpec("tiktokshop.main").bordersAllowed).toBe(false);
     expect(getSpec("ebay.listing").overlaysAllowed).toBe(false);
     expect(getSpec("google.merchant.lifestyle").overlaysAllowed).toBe(false);
+    expect(getSpec("google.merchant.main").bordersAllowed).toBe(false);
+    expect(getSpec("google.merchant.lifestyle").bordersAllowed).toBe(false);
     expect(
       listSpecs()
         .filter((spec) => !allowsAddedBorders(spec))
         .map((spec) => spec.id),
-    ).toEqual(["ebay.listing", "tiktokshop.main"]);
+    ).toEqual(["google.merchant.main", "google.merchant.lifestyle", "ebay.listing", "tiktokshop.main"]);
     expect(() => Registry.parse({ version: 1, specs: [{ id: "x.y", verified: false, bordersAllowed: "no" }] })).toThrow();
+  });
+
+  it("carries the published Google Merchant image limits on both google specs", () => {
+    for (const id of ["google.merchant.main", "google.merchant.lifestyle"]) {
+      const spec = getSpec(id);
+      expect(spec.maxMegapixels, id).toBe(64);
+      expect(spec.maxBytes, id).toBe(16000000);
+      expect(spec.maxWidth, id).toBeUndefined();
+      expect(spec.maxHeight, id).toBeUndefined();
+    }
   });
 
   it("refuses overlays where text or overlays are not allowed", () => {

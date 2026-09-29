@@ -83,10 +83,12 @@
       "minHeight": 500,
       "formats": ["jpg", "png", "webp"],
       "maxBytes": 16000000,
+      "maxMegapixels": 64,
       "background": { "type": "white_or_transparent" },
       "fill": { "min": 0.75, "max": 0.9 },
       "textAllowed": false,
       "overlaysAllowed": false,
+      "bordersAllowed": false,
       "iptcDigitalSourceTypeRequiredIfAI": true
     },
     {
@@ -95,8 +97,11 @@
       "minWidth": 500,
       "minHeight": 500,
       "formats": ["jpg", "png"],
+      "maxBytes": 16000000,
+      "maxMegapixels": 64,
       "textAllowed": false,
       "overlaysAllowed": false,
+      "bordersAllowed": false,
       "iptcDigitalSourceTypeRequiredIfAI": true
     },
     {
