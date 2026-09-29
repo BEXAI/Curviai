@@ -63,7 +63,10 @@ export function FeatureIcon({ feature, className }: { feature: HomeFeatureKey; c
   );
 }
 
-/** Eyebrow, two tone H2 and lead, shared by every section below the hero. */
+/**
+ * Optional eyebrow, two tone H2 and lead, shared by every section below the
+ * hero. Give an eyebrow only when it adds something the H2 does not say.
+ */
 export function SectionHeader({
   id,
   eyebrow,
@@ -74,7 +77,7 @@ export function SectionHeader({
   className,
 }: {
   id?: string;
-  eyebrow: string;
+  eyebrow?: string;
   title: string;
   titleMuted?: string;
   lead?: ReactNode;
@@ -83,10 +86,12 @@ export function SectionHeader({
 }) {
   return (
     <div className={cn(align === "center" ? "mx-auto max-w-3xl text-center" : "max-w-2xl", className)}>
-      <p className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-teal-brand">{eyebrow}</p>
+      {eyebrow ? (
+        <p className="mb-4 font-mono text-xs font-semibold uppercase tracking-[0.2em] text-teal-brand">{eyebrow}</p>
+      ) : null}
       <h2
         id={id}
-        className="mt-4 text-balance font-display text-3xl font-bold uppercase tracking-tight text-white sm:text-4xl lg:text-5xl"
+        className="text-balance font-display text-3xl font-bold uppercase tracking-tight text-white sm:text-4xl lg:text-5xl"
       >
         {title}
         {titleMuted ? (
@@ -105,15 +110,31 @@ export function SectionHeader({
   );
 }
 
-/** Glass tile treatment shared by the home page cards. */
+/**
+ * Glass tile treatment shared by the home page cards. No backdrop blur: the
+ * tiles sit on near uniform night, where a blur shows nothing and still costs
+ * a filter pass per tile while scrolling.
+ */
 export const glassTile =
-  "rounded-2xl border-white/10 bg-white/[0.04] shadow-sheen backdrop-blur-sm transition-[border-color,box-shadow] duration-200 hover:border-white/20 hover:shadow-[0_20px_50px_-24px_rgb(176_58_91/0.35)]";
+  "rounded-2xl border-white/10 bg-white/[0.04] shadow-sheen transition-[border-color,box-shadow] duration-200 hover:border-white/20 hover:shadow-[0_20px_50px_-24px_color-mix(in_srgb,var(--color-wine-500)_35%,transparent)]";
+
+/** The dashed, muted treatment of anything that is not live yet. */
+const comingSoonTile = "border-dashed border-white/15 bg-transparent shadow-none hover:shadow-none";
 
 /**
  * One home feature, by key. Coming soon features get the dashed muted
  * treatment and the shared Coming soon label; live ones never do.
  */
-export function FeatureTile({ featureKey, className }: { featureKey: HomeFeatureKey; className?: string }) {
+export function FeatureTile({
+  featureKey,
+  body,
+  className,
+}: {
+  featureKey: HomeFeatureKey;
+  /** A shorter body for a spot where the full one would repeat what is next to it. */
+  body?: string;
+  className?: string;
+}) {
   const feature = homeFeatures.find((entry) => entry.key === featureKey);
   if (!feature) {
     return null;
@@ -122,12 +143,7 @@ export function FeatureTile({ featureKey, className }: { featureKey: HomeFeature
   return (
     <Card
       data-testid={`feature-${feature.key}`}
-      className={cn(
-        glassTile,
-        "p-6",
-        soon ? "border-dashed border-white/15 bg-transparent shadow-none hover:shadow-none" : null,
-        className,
-      )}
+      className={cn(glassTile, "p-6", soon ? comingSoonTile : null, className)}
     >
       <div className="flex items-start gap-4">
         <span
@@ -143,7 +159,7 @@ export function FeatureTile({ featureKey, className }: { featureKey: HomeFeature
             <h3 className={cn("text-base font-semibold", soon ? "text-ink-200" : "text-white")}>{feature.title}</h3>
             {soon ? <ComingSoonBadge tone="dark" /> : null}
           </div>
-          <p className={cn("mt-2 text-sm", soon ? "text-ink-400" : "text-ink-300")}>{feature.body}</p>
+          <p className={cn("mt-2 text-sm", soon ? "text-ink-400" : "text-ink-300")}>{body ?? feature.body}</p>
         </div>
       </div>
     </Card>
@@ -155,8 +171,8 @@ function ProductGlyph({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 40 56" className={cn("h-auto", className)} aria-hidden="true">
       <rect x="11" y="2" width="18" height="8" rx="2" fill="#1d2433" />
-      <rect x="6" y="10" width="28" height="44" rx="6" fill="#9b3052" />
-      <rect x="6" y="10" width="10" height="44" rx="5" fill="#d0587a" opacity="0.55" />
+      <rect x="6" y="10" width="28" height="44" rx="6" className="fill-wine-600" />
+      <rect x="6" y="10" width="10" height="44" rx="5" className="fill-wine-300" opacity="0.55" />
       <rect x="11" y="24" width="18" height="14" rx="2" fill="#fdf2f8" opacity="0.9" />
     </svg>
   );
@@ -239,7 +255,7 @@ function PackDrawing({ visual }: { visual: PackVisual }) {
           <Swatch className="aspect-square w-11 bg-gradient-to-b from-[#f1f2f5] to-[#b9bec9] sm:w-14">
             <ProductGlyph className="w-5" />
           </Swatch>
-          <Swatch className="aspect-square w-11 bg-gradient-to-b from-[#b03a5b] to-[#4a1226] sm:w-14">
+          <Swatch className="aspect-square w-11 bg-gradient-to-b from-wine-500 to-wine-900 sm:w-14">
             <ProductGlyph className="w-5" />
           </Swatch>
         </span>
@@ -247,7 +263,7 @@ function PackDrawing({ visual }: { visual: PackVisual }) {
     case "lifestyle":
       return (
         <span className="grid w-full grid-cols-2 gap-2">
-          <Swatch className="aspect-[4/3] bg-[radial-gradient(circle_at_30%_30%,#f6d9b8,#a8674a_60%,#3b1a26)]">
+          <Swatch className="aspect-[4/3] bg-[radial-gradient(circle_at_30%_30%,#f6d9b8,#a8674a_60%,var(--color-wine-950))]">
             <ProductGlyph className="w-[22%]" />
           </Swatch>
           <Swatch className="aspect-[4/3] bg-[radial-gradient(circle_at_70%_20%,#c8f1ea,#2f8f84_55%,#0f2a2e)]">
@@ -278,7 +294,7 @@ function PackDrawing({ visual }: { visual: PackVisual }) {
       );
     case "social":
       return (
-        <Swatch className="aspect-square w-16 bg-[linear-gradient(135deg,#3b1a26,#7a1f3d_55%,#2dd4bf)]">
+        <Swatch className="aspect-square w-16 bg-[linear-gradient(135deg,var(--color-wine-950),var(--color-wine-700)_55%,var(--color-teal-brand))]">
           <ProductGlyph className="w-6" />
         </Swatch>
       );
@@ -287,9 +303,26 @@ function PackDrawing({ visual }: { visual: PackVisual }) {
   }
 }
 
-/** One file of the typical pack: a drawing, its name and its credits. */
+const COMING_SOON_SUFFIX = /, coming soon$/;
+const COUNT_SUFFIX = /^(.*), (\d+)$/;
+
+/**
+ * A pack estimate line as a tile shows it. The estimate labels read like rows
+ * ("Background sweeps, 2", "Infographic, coming soon"); the tile title is the
+ * name alone, the count becomes a chip and a line that is not delivered yet
+ * gets the shared Coming soon label instead of its (zero) credits.
+ */
+export function packTileParts(line: EstimateLine): { name: string; count?: number; comingSoon: boolean } {
+  const comingSoon = line.comingSoon === true;
+  const label = line.label.replace(COMING_SOON_SUFFIX, "");
+  const match = COUNT_SUFFIX.exec(label);
+  return match ? { name: match[1] ?? label, count: Number(match[2]), comingSoon } : { name: label, comingSoon };
+}
+
+/** One file of the typical pack: a drawing, its name, how many and its credits. */
 export function PackTile({ line, className }: { line: EstimateLine; className?: string }) {
-  const visual = visualFor(line.label);
+  const { name, count, comingSoon } = packTileParts(line);
+  const visual = visualFor(name);
   const main = visual === "main";
   const rules = amazonMainRules();
   const caption = main
@@ -302,15 +335,20 @@ export function PackTile({ line, className }: { line: EstimateLine; className?: 
 
   return (
     <Card
+      data-testid="pack-tile"
+      data-status={comingSoon ? "coming_soon" : "live"}
       className={cn(
         glassTile,
         "flex flex-col gap-4 p-4 sm:p-5",
         main ? "col-span-2 lg:row-span-2" : null,
         visual === "lifestyle" ? "col-span-2" : null,
+        comingSoon ? comingSoonTile : null,
         className,
       )}
     >
-      <div className={cn("flex flex-1 items-center justify-center", main ? "py-4" : "min-h-20")}>
+      <div
+        className={cn("flex flex-1 items-center justify-center", main ? "py-4" : "min-h-20", comingSoon ? "opacity-60" : null)}
+      >
         <PackDrawing visual={visual} />
       </div>
       <div>
@@ -320,8 +358,17 @@ export function PackTile({ line, className }: { line: EstimateLine; className?: 
             main ? "items-baseline justify-between" : "flex-col sm:flex-row sm:items-baseline sm:justify-between",
           )}
         >
-          <h3 className={cn("font-semibold text-white", main ? "text-lg" : "text-sm")}>{line.label}</h3>
-          <span className="shrink-0 font-mono text-xs text-teal-brand">{formatCredits(line.credits)}</span>
+          <h3 className={cn("font-semibold", comingSoon ? "text-ink-200" : "text-white", main ? "text-lg" : "text-sm")}>
+            {name}
+          </h3>
+          <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
+            {count !== undefined ? <span className="font-mono text-xs text-ink-400">{count} files</span> : null}
+            {comingSoon ? (
+              <ComingSoonBadge tone="dark" />
+            ) : (
+              <span className="font-mono text-xs text-teal-brand">{formatCredits(line.credits)}</span>
+            )}
+          </span>
         </div>
         {caption ? <p className="mt-1 text-xs text-ink-400">{caption}</p> : null}
       </div>

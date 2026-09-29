@@ -261,7 +261,6 @@ const OWNED_SOURCES = [
   "./compliance-badge-demo.tsx",
   "./before-after-slider.tsx",
   "./demo-images.ts",
-  "./upload-box.tsx",
   "./site-header.tsx",
   "./site-footer.tsx",
   "./home-copy.ts",

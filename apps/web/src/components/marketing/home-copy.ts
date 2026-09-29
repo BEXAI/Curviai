@@ -25,7 +25,9 @@ import { answerFaqs } from "./pillar-copy";
 
 export const homeHero = {
   eyebrow: "AI product images for e-commerce",
-  lead: `AI product images for ${liveChannelShortList()}, from one photo, without changing your product.`,
+  // Keeps the exact phrase "AI product images for Amazon, Shopify" for search,
+  // without opening on the same words as the badge above it.
+  lead: `Turn one photo into AI product images for ${liveChannelShortList()}, without changing your product.`,
   proof:
     "Every file is measured against the channel rules before you download it. We keep your real product pixels and generate only the light, shadow and setting around them, so labels never warp.",
   sliderCaption: "Illustration, not a customer photo. Drag the divider: the product stays, the background changes.",
@@ -53,12 +55,11 @@ export const homeHeroFeatures: { key: HomeFeatureKey; label: string }[] = [
 export const homeProof = {
   eyebrow: "Before and after",
   title: "Your product stays.",
-  titleMuted: "The scene changes.",
+  titleMuted: "The background changes.",
   galleryLink: "See more before and after examples",
 };
 
 export const homeHowItWorks = {
-  eyebrow: "Three steps",
   title: "How it works",
 };
 
@@ -67,7 +68,7 @@ export const homePack = {
   eyebrow: "What a pack contains",
   title: "Everything a listing needs,",
   titleMuted: "nothing you have to prompt",
-  intro: `A typical pack for ${typicalPackChannelNames()} holds these files and uses about ${typicalPackCredits()} credits. You pick the channels for each pack, and every file is sized for its channel.`,
+  intro: `A typical pack for ${typicalPackChannelNames()} holds these files. You pick the channels for each pack, and every file is sized for its channel.`,
   summary: `About ${typicalPackCredits()} credits for this pack. You are only charged for files that pass their checks.`,
   lifestyleCaption: "Scenes built around your real product photo.",
   sweepCaption: "Gray, and your first brand kit color.",
@@ -83,21 +84,25 @@ export const homeReport = {
 };
 
 export const homeChannels = {
-  eyebrow: "Channels",
   title: "One photo.",
   titleMuted: `${liveChannelNames().length} channels.`,
+  /** The channel ready files tile beside the heading; the tiles below already name every channel. */
+  tileBody: `Every file comes at the right size for its channel and is checked against that channel's rules. ${comingSoonFilesSentence()}`.trim(),
   linkLabel: "Read the rules",
 };
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 /** One tile per channel a pack makes files for, linking to its requirements page. */
 export const homeChannelTiles = liveChannels().map((channel) => ({
   name: channel.name,
-  files: joinList(channel.files),
+  files: capitalize(joinList(channel.files)),
   specId: channel.firstSpecId,
 }));
 
 export const homePricing = {
-  eyebrow: "Pricing",
   title: "Simple credit pricing",
   freeTitle: "Free",
   freeBody: `${freeCredits()} credits once, ${freeCreditsReach()}.`,
@@ -107,7 +112,6 @@ export const homePricing = {
 };
 
 export const homeFaqAside = {
-  eyebrow: "FAQ",
   title: "Questions, answered",
   body: "Something else? The help center has more answers.",
   link: "Visit the help center",

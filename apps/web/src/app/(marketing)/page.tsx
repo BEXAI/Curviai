@@ -29,13 +29,10 @@ import {
 } from "@/components/marketing/home-copy";
 import { FeatureIcon, FeatureTile, PackTile, SectionHeader, glassTile } from "@/components/marketing/home-parts";
 import { pillarPages } from "@/components/marketing/pillar-copy";
-import { Wordmark } from "@/components/marketing/site-header";
 import { specSlug } from "@/components/marketing/spec-slug";
-import { UploadBox } from "@/components/marketing/upload-box";
 import { LiquidMetalHero } from "@/components/ui/liquid-metal-hero";
 import { isStripeConfigured } from "@/lib/env";
 import {
-  freeCredits,
   packsForCredits,
   paidTiers,
   tierDisplayName,
@@ -67,13 +64,14 @@ const sectionSpace = "py-16 sm:py-24";
 const linkTile =
   "group flex h-full flex-col rounded-2xl bg-white/[0.04] p-6 shadow-sheen ring-1 ring-inset ring-white/10 transition-[box-shadow,background-color] duration-200 hover:bg-white/[0.06] hover:ring-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white";
 
-/** A secondary action on night: glass, so the burgundy stays the one solid call to action per screen. */
-const glassButton = buttonVariants({
-  variant: "outline",
-  size: "lg",
-  className:
-    "border-white/25 bg-white/5 text-white backdrop-blur-sm hover:border-white/40 hover:bg-white/10 focus-visible:outline-white",
-});
+/**
+ * The headline's wine line keeps a tight night halo, so it stays above 3:1
+ * even where the metal shows through the scrim around it. The halo is static
+ * text paint: no per frame cost over the shader. The lighter option still
+ * open for the founder is one class away: text-wine-300.
+ */
+const headlineWine =
+  "block text-wine-500 [text-shadow:0_0_0.15rem_var(--color-night),0_0_0.35rem_var(--color-night),0_0_0.75rem_var(--color-night),0_0_1.5rem_rgb(7_8_13/0.9)]";
 
 export default function HomePage() {
   const paid = paidTiers();
@@ -83,7 +81,10 @@ export default function HomePage() {
   const packLines = typicalPackLines();
 
   return (
-    <div className="theme-base relative overflow-hidden bg-night text-ink-100">
+    // overflow-x-clip, not overflow-hidden: it clips the wide glow layers
+    // without making this div a scroll container, which would stop the
+    // .reveal view() timelines and the sticky FAQ aside from tracking the page.
+    <div className="theme-base relative overflow-x-clip bg-night text-ink-100">
       <JsonLd
         data={jsonLdGraph([
           organizationJsonLd(),
@@ -100,7 +101,7 @@ export default function HomePage() {
         title={
           <>
             <span className="block">Shot once.</span>{" "}
-            <span className="block text-[#b03a5b]">Ready everywhere.</span>
+            <span className={headlineWine}>Ready everywhere.</span>
           </>
         }
         subtitle={homeHero.lead}
@@ -119,21 +120,23 @@ export default function HomePage() {
       <div className="relative">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(40rem_60rem_at_0%_24rem,rgb(45_212_191/0.12),transparent_70%),radial-gradient(56rem_36rem_at_100%_70rem,rgb(236_72_153/0.1),transparent_70%),radial-gradient(36rem_24rem_at_45%_110rem,rgb(139_92_246/0.07),transparent)]"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(40rem_60rem_at_0%_36rem,rgb(45_212_191/0.12),transparent_70%),radial-gradient(56rem_36rem_at_100%_70rem,rgb(236_72_153/0.1),transparent_70%),radial-gradient(36rem_24rem_at_45%_110rem,rgb(139_92_246/0.07),transparent)]"
         />
 
         {/* 2. Before and after: the product promise in the first scroll. */}
         <section aria-labelledby="home-proof-title" className="relative">
-          {/* Phones read header, slider, then the upload box. On desktop the slider
-              spans four rows and the header and upload box sit centered beside it. */}
+          {/* Phones read the header, then the slider. On desktop the slider spans
+              three rows and the header sits centered beside it. The hero above
+              already carries both calls to action, so this section only proves
+              the promise. The slider column holds body text, so it never fades. */}
           <div
             className={cn(
               container,
               sectionSpace,
-              "grid gap-10 lg:grid-cols-12 lg:grid-rows-[1fr_auto_auto_1fr] lg:gap-x-12 lg:gap-y-8",
+              "grid grid-cols-1 gap-10 lg:grid-cols-12 lg:grid-rows-[1fr_auto_1fr] lg:gap-x-12 lg:gap-y-8",
             )}
           >
-            <div className="lg:col-span-5 lg:col-start-8 lg:row-start-2">
+            <div className="min-w-0 lg:col-span-5 lg:col-start-8 lg:row-start-2">
               <SectionHeader
                 id="home-proof-title"
                 align="left"
@@ -142,21 +145,18 @@ export default function HomePage() {
                 titleMuted={homeProof.titleMuted}
                 lead={homeHero.proof}
               />
+              <p className="mt-6 text-sm">
+                <Link href="/gallery" className="font-medium text-teal-brand underline-offset-4 hover:underline">
+                  {homeProof.galleryLink}
+                </Link>
+              </p>
             </div>
-            <div className="reveal lg:col-span-7 lg:col-start-1 lg:row-span-4 lg:row-start-1">
+            <div className="min-w-0 lg:col-span-7 lg:col-start-1 lg:row-span-3 lg:row-start-1">
               <div className="rounded-3xl bg-white/[0.04] p-2 shadow-[0_2.5rem_7.5rem_-2.5rem_rgb(45_212_191/0.35)] ring-1 ring-inset ring-white/10">
                 <BeforeAfterSlider beforeSrc={beforeDemoImage} afterSrc={afterDemoImage} />
               </div>
               <p className="mt-3 text-center font-mono text-xs text-ink-400">{homeHero.sliderCaption}</p>
               <FeatureTile featureKey="fidelity" className="mt-6" />
-            </div>
-            <div className="lg:col-span-5 lg:col-start-8 lg:row-start-3">
-              <UploadBox freeCredits={freeCredits()} />
-              <p className="mt-4 text-center text-sm lg:text-left">
-                <Link href="/gallery" className="font-medium text-teal-brand underline-offset-4 hover:underline">
-                  {homeProof.galleryLink}
-                </Link>
-              </p>
             </div>
           </div>
         </section>
@@ -166,7 +166,6 @@ export default function HomePage() {
           <div className={cn(container, sectionSpace)}>
             <SectionHeader
               id="home-how-title"
-              eyebrow={homeHowItWorks.eyebrow}
               title={homeHowItWorks.title}
               lead={homeFeaturesIntro}
             />
@@ -213,9 +212,9 @@ export default function HomePage() {
               </div>
             </div>
             <div className="mt-14">
-              <h3 className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-ink-400">
+              <p className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-ink-400">
                 {homePack.onTheWay}
-              </h3>
+              </p>
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <FeatureTile featureKey="freshCreativeDrop" />
                 <FeatureTile featureKey="directPublishing" />
@@ -227,8 +226,10 @@ export default function HomePage() {
 
       {/* 5. Proof on every file: the compliance report. */}
       <section aria-labelledby="home-report-title" className="border-y border-white/10 bg-white/[0.02]">
-        <div className={cn(container, sectionSpace, "grid gap-12 lg:grid-cols-12 lg:items-center")}>
-          <div className="lg:col-span-5">
+        {/* grid-cols-1, not the implicit auto column: a track that grows to the
+            example report's min-content width would overflow a phone. */}
+        <div className={cn(container, sectionSpace, "grid grid-cols-1 gap-12 lg:grid-cols-12 lg:items-center")}>
+          <div className="min-w-0 lg:col-span-5">
             <SectionHeader
               id="home-report-title"
               align="left"
@@ -240,7 +241,7 @@ export default function HomePage() {
             <FeatureTile featureKey="compliance" className="mt-8" />
             <p className="mt-6 text-sm text-ink-300">{homeReport.note}</p>
           </div>
-          <div className="reveal lg:col-span-7">
+          <div className="min-w-0 lg:col-span-7">
             <div className="rounded-3xl bg-white/[0.04] p-3 shadow-[0_2.5rem_7.5rem_-2.5rem_rgb(45_212_191/0.3)] ring-1 ring-inset ring-white/10 sm:p-4">
               <ComplianceBadgeDemo />
             </div>
@@ -251,20 +252,20 @@ export default function HomePage() {
       {/* 6. Channels, each linking to its requirements page. */}
       <section aria-labelledby="home-channels-title">
         <div className={cn(container, sectionSpace)}>
-          <div className="grid gap-10 lg:grid-cols-12 lg:items-end">
+          <div className="grid grid-cols-1 gap-10 lg:grid-cols-12 lg:items-end">
             <SectionHeader
               id="home-channels-title"
               align="left"
               className="lg:col-span-7"
-              eyebrow={homeChannels.eyebrow}
               title={homeChannels.title}
               titleMuted={homeChannels.titleMuted}
             />
-            <FeatureTile featureKey="channels" className="lg:col-span-5" />
+            <FeatureTile featureKey="channels" body={homeChannels.tileBody} className="lg:col-span-5" />
           </div>
+          {/* The first channel spans both columns on phones, so nine tiles fill five full rows. */}
           <ul className="mt-12 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
-            {homeChannelTiles.map((tile) => (
-              <li key={tile.name} className="reveal">
+            {homeChannelTiles.map((tile, index) => (
+              <li key={tile.name} className={cn("reveal", index === 0 ? "col-span-2 lg:col-span-1" : null)}>
                 <Link
                   href={`/channels/${specSlug(tile.specId)}/image-requirements`}
                   className={cn(linkTile, "p-4 sm:p-6")}
@@ -284,7 +285,7 @@ export default function HomePage() {
       {/* 7. Pricing, from the seed tiers. */}
       <section aria-labelledby="home-pricing-title" className="border-y border-white/10 bg-white/[0.02]">
         <div className={cn(container, sectionSpace)}>
-          <SectionHeader id="home-pricing-title" eyebrow={homePricing.eyebrow} title={homePricing.title} />
+          <SectionHeader id="home-pricing-title" title={homePricing.title} />
           <p className="mx-auto mt-4 max-w-2xl text-center text-base text-ink-300 sm:text-lg" data-testid="home-pack-size">
             {lowest && highest ? `Plans from $${lowest.monthlyUsd} to $${highest.monthlyUsd} per month. ` : null}
             A typical listing pack of still images uses about {packCredits} credits.
@@ -298,7 +299,7 @@ export default function HomePage() {
             <Card
               className={cn(
                 glassTile,
-                "reveal flex flex-col p-8 ring-1 ring-inset ring-[#7a1f3d]/60 sm:col-span-2 lg:col-span-2 lg:row-span-2",
+                "reveal flex flex-col p-8 ring-1 ring-inset ring-wine-700/60 sm:col-span-2 lg:col-span-2 lg:row-span-2",
               )}
             >
               <p className="font-mono text-xs font-semibold uppercase tracking-wider text-ink-400">
@@ -330,7 +331,7 @@ export default function HomePage() {
           </div>
           <div className="mt-10 flex flex-col items-center gap-4 text-center">
             <p className="text-sm text-ink-400">{homePricing.unusedCredits}</p>
-            <Link href="/pricing" className={glassButton}>
+            <Link href="/pricing" className={buttonVariants({ variant: "glass", size: "lg" })}>
               {homePricing.fullPricing}
             </Link>
           </div>
@@ -339,13 +340,12 @@ export default function HomePage() {
 
       {/* 8. FAQ. The same questions feed the FAQPage JSON-LD above, in order. */}
       <section aria-labelledby="home-faq-title">
-        <div className={cn(container, sectionSpace, "grid gap-10 lg:grid-cols-12")}>
-          <div className="lg:col-span-4">
+        <div className={cn(container, sectionSpace, "grid grid-cols-1 gap-10 lg:grid-cols-12")}>
+          <div className="min-w-0 lg:col-span-4">
             <div className="lg:sticky lg:top-24">
               <SectionHeader
                 id="home-faq-title"
                 align="left"
-                eyebrow={homeFaqAside.eyebrow}
                 title={homeFaqAside.title}
                 lead={homeFaqAside.body}
               />
@@ -357,7 +357,7 @@ export default function HomePage() {
               </Link>
             </div>
           </div>
-          <div className="space-y-3 lg:col-span-8">
+          <div className="min-w-0 space-y-3 lg:col-span-8">
             {homeFaqs.map((faq) => (
               <details
                 key={faq.q}
@@ -418,12 +418,13 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* 10. Closing call to action, bookended by the static CSS metal (no second WebGL context). */}
+      {/* 10. Closing call to action, bookended by the static CSS metal (no second
+          WebGL context). The metal shows at the edges; a pool of night sits
+          behind the text so it keeps its contrast. */}
       <section aria-labelledby="home-closing-title" className="relative isolate overflow-hidden border-t border-white/10">
         <div aria-hidden="true" className="hero-metal-fallback absolute inset-0 -z-10" />
-        <div aria-hidden="true" className="absolute inset-0 -z-10 bg-night/85" />
+        <div aria-hidden="true" className="closing-metal-scrim absolute inset-0 -z-10" />
         <div className="reveal mx-auto max-w-3xl px-6 py-24 text-center sm:py-32">
-          <Wordmark className="mx-auto mb-8 block h-12" />
           <h2
             id="home-closing-title"
             className="text-balance font-display text-3xl font-bold uppercase tracking-tight text-white sm:text-4xl lg:text-5xl"

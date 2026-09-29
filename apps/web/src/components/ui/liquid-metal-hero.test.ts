@@ -91,18 +91,34 @@ describe("liquid metal hero", () => {
     expect(html).not.toMatch(/data-testid="feature-/);
   });
 
-  it("keeps the original component's props working", async () => {
+  it("renders both calls to action as links, never as buttons without a target", async () => {
     const html = await renderHero({
       title: "Title",
       subtitle: "Subtitle",
       primaryCtaLabel: "Primary",
+      primaryCtaHref: "/one",
       secondaryCtaLabel: "Secondary",
+      secondaryCtaHref: "/two",
       features: ["One", "Two", "Three"],
     });
-    // Without an href a call to action is a button, for click handlers.
-    expect(html.match(/<button type="button"/g)?.length).toBe(2);
-    expect(html).not.toContain("<a ");
+    expect(html).toMatch(/<a href="\/one"[^>]*>Primary<\/a>/);
+    expect(html).toMatch(/<a href="\/two"[^>]*>Secondary<\/a>/);
+    // The motion toggle renders only once the shader runs, never on the server.
+    expect(html).not.toContain("<button");
     expect(html).toContain(">Three<");
+  });
+
+  it("animates the entrance only for visitors without a reduced motion preference", async () => {
+    const html = await renderHero(homeProps);
+    const classes = [...html.matchAll(/class="([^"]*)"/g)].flatMap((match) => (match[1] ?? "").split(/\s+/));
+    const entrance = classes.filter((name) => /animate-(fade-in-up|rise-in)|animation-delay/.test(name));
+    expect(entrance.length).toBeGreaterThan(0);
+    expect(entrance.filter((name) => !name.startsWith("motion-safe:"))).toEqual([]);
+  });
+
+  it("keeps backdrop blur off the hero, where it would repaint over the moving metal", async () => {
+    const html = await renderHero(homeProps);
+    expect(html).not.toMatch(/backdrop-blur/);
   });
 });
 

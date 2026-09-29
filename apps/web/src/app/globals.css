@@ -30,6 +30,16 @@
   --color-teal-brand: #2dd4bf;
   --color-violet-brand: #8b5cf6;
   --color-night: #07080d;
+  /* Wine, the burgundy family of the call to action and the home headline.
+   * 700 is the solid call to action and 600 its hover; 500 is the headline
+   * line; 300 is the light wine for focus rings and tints, at least 3:1 on
+   * night and on white. */
+  --color-wine-300: #d0587a;
+  --color-wine-500: #b03a5b;
+  --color-wine-600: #8f2749;
+  --color-wine-700: #7a1f3d;
+  --color-wine-900: #4a1226;
+  --color-wine-950: #3b1a26;
 
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display: var(--font-grotesk), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
@@ -284,74 +294,114 @@ body.theme-dark > * {
 
 /*
  * Liquid metal, drawn in CSS. The home hero shows it until the WebGL shader
- * has painted, and keeps it for good under reduced motion, without WebGL2
- * and on phones. The final call to action reuses it, so the page is
- * bookended by metal with a single WebGL context. Brushed chrome is a
- * blurred conic sweep of night, wine and silver, lit burgundy from the top
- * right and teal from the bottom left.
+ * has drawn, and keeps it for good under reduced motion, without WebGL2 and
+ * on phones and tablets. The final call to action reuses it, so the page is
+ * bookended by metal with a single WebGL context. Like the shader, it is
+ * chrome tubes (dark, silver and wine bands) sweeping across night, lit wine
+ * from the top right and teal from the lower left. No filter: the gradient
+ * stops are soft enough, and a static blur would only cost a paint.
  */
 .hero-metal-fallback {
   overflow: hidden;
   background-color: var(--color-night);
   background-image:
-    radial-gradient(48rem 28rem at 85% 0%, rgb(176 58 91 / 0.35), transparent 70%),
-    radial-gradient(40rem 26rem at 10% 100%, rgb(45 212 191 / 0.14), transparent 70%);
+    radial-gradient(48rem 28rem at 85% 0%, color-mix(in srgb, var(--color-wine-500) 35%, transparent), transparent 70%),
+    radial-gradient(40rem 26rem at 10% 80%, rgb(45 212 191 / 0.14), transparent 70%);
 }
 
 .hero-metal-fallback::before {
   content: "";
   position: absolute;
-  inset: -10%;
-  filter: blur(3rem);
-  opacity: 0.85;
-  background-image: conic-gradient(
-    from 210deg at 50% 60%,
-    #0b0c12,
-    #3b1a26 40deg,
-    #c9ccd4 62deg,
-    #2a1119 80deg,
-    #0b0c12 130deg,
-    #1a2a2e 200deg,
-    #9aa0ad 228deg,
-    #0f1016 250deg,
-    #0b0c12
-  );
+  inset: -5%;
+  background-image:
+    radial-gradient(
+      ellipse 95% 105% at 108% 128%,
+      transparent 84%,
+      #12070c 86%,
+      var(--color-wine-700) 88%,
+      #e3e6ec 91%,
+      #9aa0ad 93%,
+      #1a0c12 96%,
+      transparent 98%
+    ),
+    radial-gradient(
+      ellipse 122% 132% at 108% 128%,
+      transparent 86%,
+      #0b0c12 88%,
+      #b8bec9 91%,
+      var(--color-wine-950) 94%,
+      var(--color-wine-500) 96%,
+      transparent 98%
+    ),
+    radial-gradient(
+      ellipse 70% 80% at -8% -18%,
+      transparent 82%,
+      #1a2a2e 85%,
+      #d9dce3 89%,
+      var(--color-wine-700) 92%,
+      #0b0c12 95%,
+      transparent 97%
+    );
 }
 
 /*
- * Scrims between the metal and the hero text. A pool of night sits behind
- * the headline block so white text stays at least 4.5:1 and the burgundy
- * headline line keeps its contrast over the brightest chrome (the pool core
- * is 94 percent night; the math is in docs/phases/HOME_LIQUID_METAL.md). The
- * metal flows around it at the flanks, top and bottom, and a fade to night
- * at the bottom lets the hero melt into the page.
+ * Scrims between the metal and the hero text. The fade to night at the
+ * bottom is the top layer, so the hero's bottom edge is pure night and meets
+ * the next section with no seam. Under it, a pool of night keeps the text
+ * readable over the brightest chrome, and the wine and teal glows sit under
+ * the pool, so they light the metal around the text and never tint it.
+ *
+ * Measured on the rendered page (docs/phases/HOME_LIQUID_METAL.md, and
+ * e2e/home-hero.spec.ts checks it): the wine headline line stays above 3:1
+ * and all other hero text above 4.5:1 at the brightest point behind it.
+ *
+ * Phones (under 40rem): the hero is one text column, so the pool is banded
+ * down the page instead of an ellipse. The text block sits between about 9
+ * and 64 percent of the hero's height on every phone size, with the
+ * headline between 13 and 30 percent; the headline band is densest, the rest
+ * of the text sits on a lighter band, and the metal shows fully above the
+ * badge and around the feature card.
  */
 .hero-metal-scrim {
   background-image:
-    radial-gradient(48rem 28rem at 85% 0%, rgb(176 58 91 / 0.25), transparent 70%),
-    radial-gradient(40rem 24rem at 10% 100%, rgb(45 212 191 / 0.12), transparent 70%),
-    linear-gradient(to bottom, transparent 60%, var(--color-night)),
-    radial-gradient(
-      ellipse 140% 60% at 50% 45%,
-      rgb(7 8 13 / 0.94) 0 62%,
-      rgb(7 8 13 / 0.5) 85%,
-      rgb(7 8 13 / 0.25)
-    );
+    linear-gradient(to bottom, transparent 84%, var(--color-night) 99%),
+    linear-gradient(
+      to bottom,
+      rgb(7 8 13 / 0.1),
+      rgb(7 8 13 / 0.8) 9%,
+      rgb(7 8 13 / 0.95) 13%,
+      rgb(7 8 13 / 0.95) 30%,
+      rgb(7 8 13 / 0.78) 36%,
+      rgb(7 8 13 / 0.78) 63%,
+      rgb(7 8 13 / 0.35) 72%
+    ),
+    radial-gradient(48rem 28rem at 85% 0%, color-mix(in srgb, var(--color-wine-500) 25%, transparent), transparent 70%),
+    radial-gradient(40rem 24rem at 10% 80%, rgb(45 212 191 / 0.12), transparent 70%);
 }
 
 @media (min-width: 40rem) {
   .hero-metal-scrim {
     background-image:
-      radial-gradient(48rem 28rem at 85% 0%, rgb(176 58 91 / 0.25), transparent 70%),
-      radial-gradient(40rem 24rem at 10% 100%, rgb(45 212 191 / 0.12), transparent 70%),
-      linear-gradient(to bottom, transparent 60%, var(--color-night)),
+      linear-gradient(to bottom, transparent 70%, var(--color-night) 97%),
       radial-gradient(
         ellipse 56rem 30rem at 50% 44%,
-        rgb(7 8 13 / 0.94) 0 62%,
+        rgb(7 8 13 / 0.96) 0 62%,
         rgb(7 8 13 / 0.5) 85%,
         rgb(7 8 13 / 0.25)
-      );
+      ),
+      radial-gradient(48rem 28rem at 85% 0%, color-mix(in srgb, var(--color-wine-500) 25%, transparent), transparent 70%),
+      radial-gradient(40rem 24rem at 10% 80%, rgb(45 212 191 / 0.12), transparent 70%);
   }
+}
+
+/*
+ * The closing section's scrim: the static metal shows at the edges and a
+ * pool of night sits behind the heading, the email form and the small print.
+ */
+.closing-metal-scrim {
+  background-image:
+    radial-gradient(ellipse 44rem 20rem at 50% 50%, rgb(7 8 13 / 0.94) 0 60%, rgb(7 8 13 / 0.6) 85%, transparent),
+    linear-gradient(rgb(7 8 13 / 0.6), rgb(7 8 13 / 0.6));
 }
 
 /*
@@ -365,8 +415,9 @@ body.theme-dark > * {
     .reveal {
       animation: reveal-up linear both;
       animation-timeline: view();
-      /* Done once 60 percent of the element is in view, so nothing on screen stays dim. */
-      animation-range: entry 0% entry 60%;
+      /* Done once 30 percent of the element is in view, so nothing on screen
+       * stays dim for long. Tall blocks that hold body text do not use it. */
+      animation-range: entry 0% entry 30%;
     }
 
     @keyframes reveal-up {
