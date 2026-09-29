@@ -165,7 +165,7 @@ import {
 } from "./shot-outputs";
 import { isTerminal, JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 import { DEFAULT_SHOT_CONCURRENCY, withShotClassSlot } from "./shot-concurrency";
-import { reusablePreflightIntake, type PreflightIntake } from "./preflight-intake";
+import { reusablePreflightIntake, trustedIntakeAnswer, type PreflightIntake } from "./preflight-intake";
 
 export type { JobState } from "./state";
 export { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
@@ -2760,15 +2760,17 @@ export function shotFailureOutcome(
   };
 }
 
-/** Records a failed shot on the board (best effort) and returns its outcome. */
+/** Records a failed shot on the board (best effort) and returns its outcome.
+ * The reason is what the card says; provider trouble unless told. */
 export async function recordShotFailure(
   store: JobStore,
   shot: Shot,
   ctx: ShotContext,
   err: unknown,
+  reason: string = SHOT_PROVIDER_TROUBLE,
 ): Promise<ShotOutcome> {
   console.error(`[runner] shot ${shot.id} failed outside its QC loop`, err);
-  const outcome = shotFailureOutcome(shot, ctx, SHOT_PROVIDER_TROUBLE, errorDetail(err));
+  const outcome = shotFailureOutcome(shot, ctx, reason, errorDetail(err));
   try {
     await storeForRun(store, ctx.runKey).saveAsset(toStoredAsset(outcome, ctx, shot));
   } catch (saveErr) {
@@ -3628,8 +3630,14 @@ export async function runGeneratePack(
     // is never the product, so it is never kept either.
     // A kept photo intake saw added text on is left out of the specs that
     // refuse it (applyAddedOverlays).
+    // Only an intake recipe that asks for the flag is trusted with it
+    // (trustedIntakeAnswer), so a worker ahead of the re-seed ships as before.
     const flags = output
-      ? runPlanFlags(output, images, addedOverlayMediaIds(intake.value, judged, input.jobId))
+      ? runPlanFlags(
+          output,
+          images,
+          addedOverlayMediaIds(trustedIntakeAnswer(intake.value, intakeRecipe), judged, input.jobId),
+        )
       : undefined;
     const keptIds = flags?.keepMediaIds ?? [];
     // The photos a cutout shot needs; the others (kept photos no shot cuts

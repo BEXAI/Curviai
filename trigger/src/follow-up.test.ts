@@ -16,8 +16,14 @@ import { assetVariants, assets, creditLedger, generationJobs, packFiles, product
 import { endExiftool, type PackFileReport, type Shot } from "@curvi/pipeline";
 import { DbJobStore } from "./db-store";
 import { ShotUnavailableError } from "./errors";
-import { numberFollowUpFiles, runPackFollowUp, type PackFollowUpInput } from "./follow-up";
 import {
+  followUpShotsWithoutOverlays,
+  numberFollowUpFiles,
+  runPackFollowUp,
+  type PackFollowUpInput,
+} from "./follow-up";
+import {
+  ADDED_OVERLAYS_REASON,
   normalizeOutputOptions,
   resolveColorHex,
   resolveOutputOptions,
@@ -97,6 +103,44 @@ describe("numberFollowUpFiles", () => {
   });
 });
 
+describe("followUpShotsWithoutOverlays", () => {
+  const keep = resolveOutputOptions(normalizeOutputOptions({ background: "keep" }), {
+    colorHex: "#FFFFFF",
+    brandSweepHex: "#FFFFFF",
+    keepMediaIds: ["m1", "m2"],
+  });
+  const original = (id: string, sourceMediaId: string, channels: string[]): Shot => ({
+    id,
+    type: "original_photo",
+    sourceMediaId,
+    method: "deterministic",
+    channels,
+    stylePreset: "none",
+    credits: 0.5,
+    priority: 2,
+  });
+
+  it("leaves a flagged kept photo off the specs that refuse added text and drops a shot left with none", () => {
+    const shots = [
+      original("a", "m1", ["amazon.secondary", "ebay.listing"]),
+      original("b", "m1", ["ebay.listing"]),
+      original("c", "m2", ["ebay.listing"]),
+    ];
+    const { run, refused } = followUpShotsWithoutOverlays(shots, keep, ["m1"]);
+    expect(run.map((s) => [s.id, s.channels])).toEqual([
+      ["a", ["amazon.secondary"]],
+      ["c", ["ebay.listing"]],
+    ]);
+    expect(refused.map((s) => s.id)).toEqual(["b"]);
+  });
+
+  it("passes every shot through without flags or options", () => {
+    const shots = [original("b", "m1", ["ebay.listing"])];
+    expect(followUpShotsWithoutOverlays(shots, keep, undefined)).toEqual({ run: shots, refused: [] });
+    expect(followUpShotsWithoutOverlays(shots, null, ["m1"])).toEqual({ run: shots, refused: [] });
+  });
+});
+
 describe("runPackFollowUp with an in memory store", () => {
   const shot: Shot = {
     id: "s04_alt_angle_white",
@@ -170,6 +214,33 @@ describe("runPackFollowUp with an in memory store", () => {
     expect(seen).toHaveLength(0);
     expect(stopped.chargedCredits).toBe(0);
     expect(stopped.releasedCredits).toBe(0.5);
+  });
+
+  it("never runs a kept photo with added text on a spec that refuses it, and returns its credits", async () => {
+    const output = resolveOutputOptions(normalizeOutputOptions({ background: "keep" }), {
+      colorHex: "#FFFFFF",
+      brandSweepHex: "#FFFFFF",
+      keepMediaIds: ["m1"],
+    });
+    const kept: Shot = { ...shot, id: "s09_original_photo", type: "original_photo", channels: ["ebay.listing"] };
+    const seen: ShotGenerateArgs[] = [];
+    const base = buildRuntimeDeps();
+    const store = new InMemoryJobStore();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const summary = await runPackFollowUp(input({ shots: [kept], output, addedOverlays: ["m1"] }), {
+      ...base,
+      store,
+      generator: {
+        generate: async (args) => {
+          seen.push(args);
+          return base.generator.generate(args);
+        },
+      },
+    });
+    expect(seen).toHaveLength(0);
+    expect(summary).toMatchObject({ state: "done", passed: 0, needsReview: 1, chargedCredits: 0, releasedCredits: 0.5 });
+    expect(store.assets.at(-1)).toMatchObject({ shotId: kept.id, status: "needs_review" });
+    expect(JSON.stringify(store.assets.at(-1)?.verdict)).toContain(ADDED_OVERLAYS_REASON);
   });
 
   it("releases a shot that needs review again and charges nothing", async () => {

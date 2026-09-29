@@ -194,6 +194,19 @@ describe("planAngleShots", () => {
       expect(amazonOnly).toEqual([]);
     });
 
+    it("leaves a kept photo with added text off the channels that refuse it", () => {
+      const args = {
+        ...base,
+        channels: ["amazon.secondary", "ebay.listing"],
+        angle: "back" as const,
+        output: withAddedPhoto(keep, base.mediaKey),
+      };
+      const clean = planAngleShots(args);
+      expect(clean.find((s) => s.type === "original_photo")?.channels).toContain("ebay.listing");
+      const flagged = planAngleShots({ ...args, addedOverlays: true });
+      expect(flagged.flatMap((s) => (s.type === "original_photo" ? s.channels : []))).toEqual(["amazon.secondary"]);
+    });
+
     it("keeps the added photo only on a Keep pack", () => {
       expect(withAddedPhoto(keep, base.mediaKey).keepMediaIds).toEqual(["ws/w/src/front.jpg", base.mediaKey]);
       expect(withAddedPhoto(withAddedPhoto(keep, base.mediaKey), base.mediaKey).keepMediaIds).toHaveLength(2);

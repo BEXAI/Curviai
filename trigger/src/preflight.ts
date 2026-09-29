@@ -45,7 +45,7 @@ import {
   wrapUserDescription,
   type PipelineDeps,
 } from "./pipeline-runner";
-import { noteKey, type PreflightIntake } from "./preflight-intake";
+import { noteKey, trustedIntakeAnswer, type PreflightIntake } from "./preflight-intake";
 import { recipeFor, seedJobRecipes, type JobRecipes } from "./recipes";
 
 export { noteKey, PREFLIGHT_FRESH_MS, preflightFresh, type PreflightIntake } from "./preflight-intake";
@@ -169,7 +169,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
       IntakeToolResult,
     );
     run.costMicros += answer.costMicros;
-    intake = answer.value && answer.value.images.length === 1 ? answer.value : null;
+    intake = answer.value && answer.value.images.length === 1 ? trustedIntakeAnswer(answer.value, recipe) : null;
   } catch (err) {
     run.costMicros += failureSpendMicros(err);
     console.warn(`[preflight] intake failed for ${preflightId}`, err instanceof Error ? err.message : err);

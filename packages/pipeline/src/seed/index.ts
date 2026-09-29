@@ -1,4 +1,4 @@
-export { RecipeRow, qcJudgePolicy, recipeSeedRows } from "./recipes";
+export { RecipeRow, addedOverlaysIntake, qcJudgePolicy, recipeSeedRows } from "./recipes";
 export {
   CUTOUT_TASK,
   HARMONIZE_TASK,
