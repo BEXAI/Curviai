@@ -159,7 +159,7 @@ describe("shader gate", () => {
     expect(shaderAllowed({ ...capable, webgl2: () => false })).toBe(false);
   });
 
-  it("never probes WebGL for reduced motion visitors or phones", () => {
+  it("never probes WebGL for reduced motion visitors or tiny screens", () => {
     const webgl2 = vi.fn(() => true);
     shaderAllowed({ ...capable, reducedMotion: true, webgl2 });
     shaderAllowed({ ...capable, wideScreen: false, webgl2 });

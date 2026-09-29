@@ -12,9 +12,8 @@ import { cn } from "@curvi/ui";
  * drawn its first frame.
  *
  * The shader never runs when the visitor prefers reduced motion (it stops
- * live if they switch the setting on), on screens under 48rem wide or 30rem
- * tall, on touch devices without a fine hovering pointer (phones in either
- * orientation and tablets), with Save-Data on, on devices reporting under
+ * live if they switch the setting on), on screens under 20rem in
+ * either direction, with Save-Data on, on devices reporting under
  * 4 GB of memory or under 4 cores, or without WebGL2. The cheap checks run
  * right after hydration; the WebGL2 probe creates a context, so it waits for
  * the idle callback. WebGL2 is probed at all because the library throws
@@ -35,8 +34,8 @@ const LiquidMetalCanvas = dynamic(() => import("./liquid-metal-canvas"), {
 });
 
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
-/** A desktop sized screen with a mouse or trackpad: not a phone in landscape, not a tablet. */
-const DESKTOP_SCREEN = "(min-width: 48rem) and (min-height: 30rem) and (hover: hover) and (pointer: fine)";
+/** Any real screen, phones and tablets included: the metal moves on every capable device. */
+const DESKTOP_SCREEN = "(min-width: 20rem) and (min-height: 20rem)";
 const MIN_DEVICE_MEMORY_GB = 4;
 const MIN_CPU_CORES = 4;
 const IDLE_TIMEOUT_MS = 2000;

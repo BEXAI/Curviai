@@ -30,7 +30,7 @@ function shaderSpeed(page: Page) {
 function shaderCapable(page: Page) {
   return page.evaluate(() => {
     const nav = navigator as Navigator & { deviceMemory?: number };
-    const desktop = matchMedia("(min-width: 48rem) and (min-height: 30rem) and (hover: hover) and (pointer: fine)").matches;
+    const desktop = matchMedia("(min-width: 20rem) and (min-height: 20rem)").matches;
     const memory = typeof nav.deviceMemory !== "number" || nav.deviceMemory >= 4;
     const cores = !(nav.hardwareConcurrency > 0) || nav.hardwareConcurrency >= 4;
     const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -207,7 +207,13 @@ test.describe("phones and tablets", () => {
     { width: 844, height: 390, name: "a phone in landscape" },
     { width: 1024, height: 768, name: "a tablet in landscape" },
   ]) {
-    test(`${viewport.name} gets the static metal, not the shader`, async ({ browser }) => {
+    test(`${viewport.name} gets the same moving metal rule as a desktop`, async ({ browser }) => {
+      const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const desktopPage = await desktop.newPage();
+      await desktopPage.goto("/");
+      await desktopPage.waitForTimeout(2500);
+      const expected = await backdrop(desktopPage).getAttribute("data-shader");
+      await desktop.close();
       const context = await browser.newContext({
         viewport: { width: viewport.width, height: viewport.height },
         isMobile: true,
@@ -216,8 +222,7 @@ test.describe("phones and tablets", () => {
       const page = await context.newPage();
       await page.goto("/");
       await page.waitForTimeout(2500);
-      await expect(backdrop(page)).toHaveAttribute("data-shader", "off");
-      await expect(heroCanvas(page)).toHaveCount(0);
+      await expect(backdrop(page)).toHaveAttribute("data-shader", expected ?? "off");
       await expect(page.getByRole("heading", { level: 1, name: HEADLINE })).toBeVisible();
       await context.close();
     });
