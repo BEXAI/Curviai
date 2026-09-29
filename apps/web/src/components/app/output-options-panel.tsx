@@ -254,7 +254,7 @@ export function OutputOptionsPanel({
               // A family the chosen set holds nothing of (PHASE_16 bundles) stays off.
               const outside = !extraInBundle(state, row.family);
               const disabled = paused || outside;
-              const checked = !disabled && choices.extras[row.family];
+              const checked = !disabled && choices.extras[row.family] === true;
               return (
                 <label
                   key={row.family}

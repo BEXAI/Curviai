@@ -32,6 +32,17 @@ function safeSegment(value: string): string {
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "file" : cleaned;
 }
 
+/** A stored file name that may hold folders (a carousel slide is
+ * carousel/01.jpg, an ad ads/feed_4x5/v1.jpg, PHASE_16 workstream 3), each
+ * segment kept safe; parent references and empty segments are dropped. */
+function safePath(value: string): string {
+  const segments = value
+    .split(/[\\/]/)
+    .map((segment) => segment.replace(/[\x00-\x1f\x7f]/g, "").trim())
+    .filter((segment) => segment !== "" && segment !== "." && segment !== "..");
+  return segments.length > 0 ? segments.join("/") : "file";
+}
+
 export function channelOfSpec(specId: string): string {
   return specId.split(".")[0] ?? specId;
 }
@@ -44,7 +55,7 @@ export function packZipEntries(variants: ZipVariant[], report: ZipReport | null)
   );
   for (const variant of sorted) {
     const folder = safeSegment(channelOfSpec(variant.channelSpecId));
-    const base = safeSegment(variant.filename);
+    const base = safePath(variant.filename);
     let name = `${folder}/${base}`;
     // Two specs of one channel can share a file name; never overwrite.
     for (let n = 2; used.has(name); n += 1) {
