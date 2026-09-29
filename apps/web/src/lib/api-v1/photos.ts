@@ -5,11 +5,16 @@
  * the 25 MB cap and the 80 megapixel cap). Stored photos land under the
  * workspace's source prefix, named after their sha256 (apiSourceKey), so a
  * retried request sends the same keys and replays. The pack's server side
- * ingest then checks each photo again, as it does a browser upload.
+ * ingest then checks each photo again, as it does a browser upload, and
+ * writes the cleaned bytes back to the same key. A photo is therefore only
+ * written when its key is empty (putSourceObjectIfAbsent): a retry, or a
+ * later pack sending the same photo, never puts the raw upload with its
+ * EXIF back over the cleaned copy.
  */
 
 import { createHash } from "node:crypto";
-import { apiSourceKey, putSourceObject } from "@/lib/r2";
+import { apiSourceKey, putSourceObjectIfAbsent } from "@/lib/r2";
+import { r2TrustStorage } from "@/lib/trust/storage";
 import { IMAGE_MAX_BYTES, PIXEL_CAP_MEGAPIXELS, withinPixelCap } from "@/lib/upload-validation";
 import { imageDimensions, importPhoto, sniffImageType, type ImportedPhoto, type PhotoImportResult } from "@/lib/url-import/image";
 import type { PhotoAngle } from "@/lib/services/types";
@@ -79,8 +84,12 @@ export interface PhotoSource {
 export interface PhotoDeps {
   /** Fetches a photo link. Defaults to the SSRF safe product photo import. */
   fetchPhoto?: (url: string) => Promise<PhotoImportResult>;
-  /** Stores the bytes and returns the key. Defaults to R2. */
-  put?: (workspaceId: string, photo: ImportedPhoto, key: string) => Promise<string>;
+  /** Stores the bytes under the key unless something is already stored
+   * there. True when this call created the object. Defaults to R2. */
+  put?: (workspaceId: string, photo: ImportedPhoto, key: string) => Promise<boolean>;
+  /** Deletes stored photos and returns the keys it could not delete.
+   * Defaults to R2. */
+  remove?: (keys: string[]) => Promise<string[]>;
 }
 
 /** Reads one photo from a link or from base64. */
@@ -99,7 +108,13 @@ export interface PackUpload {
 }
 
 export type StorePhotosResult =
-  | { ok: true; uploads: PackUpload[] }
+  | {
+      ok: true;
+      uploads: PackUpload[];
+      /** Keys this call wrote (they were empty before), so a refused
+       * request can take them back with discardStoredPhotos. */
+      created: string[];
+    }
   | { ok: false; status: number; reason: string; message: string };
 
 /**
@@ -114,15 +129,20 @@ export async function storePackPhotos(
   options: { store: boolean } & PhotoDeps,
 ): Promise<StorePhotosResult> {
   const uploads: PackUpload[] = [];
+  const created: string[] = [];
+  const fail = async (result: Extract<StorePhotosResult, { ok: false }>): Promise<StorePhotosResult> => {
+    await discardStoredPhotos(created, options);
+    return result;
+  };
   for (const [index, source] of photos.entries()) {
     const read = await readPhoto(source, options);
     if (!read.ok) {
-      return {
+      return fail({
         ok: false,
         status: PHOTO_FAILURE_STATUS[read.reason],
         reason: read.reason,
         message: `Photo ${index + 1}: ${read.message}`,
-      };
+      });
     }
     const key = apiSourceKey(workspaceId, read.photo.sha256);
     if (uploads.some((upload) => upload.key === key)) {
@@ -131,19 +151,20 @@ export async function storePackPhotos(
     }
     if (options.store) {
       try {
-        await (options.put ?? ((ws, photo, k) => putSourceObject(ws, photo.body, photo.contentType, k)))(
-          workspaceId,
-          read.photo,
-          key,
-        );
+        const wrote = await (
+          options.put ?? ((ws, photo, k) => putSourceObjectIfAbsent(ws, photo.body, photo.contentType, k))
+        )(workspaceId, read.photo, key);
+        if (wrote) {
+          created.push(key);
+        }
       } catch (err) {
         console.error("[api/v1] storing a photo failed", err);
-        return {
+        return fail({
           ok: false,
           status: 503,
           reason: "storage",
           message: "We could not save a photo. Try again in a moment.",
-        };
+        });
       }
     }
     uploads.push({
@@ -153,5 +174,26 @@ export async function storePackPhotos(
       ...(source.angle ? { angle: source.angle } : {}),
     });
   }
-  return { ok: true, uploads };
+  return { ok: true, uploads, created };
+}
+
+/**
+ * Takes back photos a refused request wrote, so a request refused for its
+ * role, plan, credits or product leaves no raw, never ingested bytes under
+ * src/. Only keys the request itself created are passed in: a key that was
+ * already stored belongs to an earlier pack. Best effort; a failure is
+ * logged, never thrown.
+ */
+export async function discardStoredPhotos(keys: readonly string[], deps: PhotoDeps = {}): Promise<void> {
+  if (keys.length === 0) {
+    return;
+  }
+  try {
+    const failed = await (deps.remove ?? ((k: string[]) => r2TrustStorage().deleteMany(k)))([...keys]);
+    if (failed.length > 0) {
+      console.warn(`[api/v1] could not delete ${failed.length} photo(s) of a refused request`);
+    }
+  } catch (err) {
+    console.warn("[api/v1] could not delete the photos of a refused request", err);
+  }
 }

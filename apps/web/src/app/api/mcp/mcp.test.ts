@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setApiKeyBackendForTests } from "@/lib/api-keys/backend";
-import { JSONRPC, MCP_TOOLS, PROTOCOL_VERSION_META, SUPPORTED_PROTOCOL_VERSIONS } from "@/lib/api-v1/mcp";
+import { API_PHOTO_BODY_MAX_BYTES } from "@/lib/api-v1/http";
+import {
+  JSONRPC,
+  MCP_TOOLS,
+  MCP_UNKEYED_BODY_MAX_BYTES,
+  PROTOCOL_VERSION_META,
+  SUPPORTED_PROTOCOL_VERSIONS,
+  mcpBodyCap,
+} from "@/lib/api-v1/mcp";
 import { MainImageCheckResponse, PackResponse } from "@/lib/api-v1/schemas";
 import { DEMO_KEY_ID, demoApiFixture, mainImagePng, type DemoApiFixture } from "@/lib/api-v1/test-fixtures";
 import { MemoryRateLimitStore, setRateLimitStoreForTests } from "@/lib/rate-limit";
@@ -89,6 +97,16 @@ describe("transport", () => {
     expect(((await bad.json()) as { error: { code: number } }).error.code).toBe(JSONRPC.parseError);
     const batch = await POST(new Request("https://curvi.ai/api/mcp", { method: "POST", body: JSON.stringify([{ jsonrpc: "2.0", id: 1, method: "ping" }]) }));
     expect(batch.status).toBe(400);
+  });
+
+  it("caps the body of a request without a well formed key before reading it as a photo body", async () => {
+    const big = { name: "check_main_image", arguments: { data: "A".repeat(MCP_UNKEYED_BODY_MAX_BYTES + 1) } };
+    expect((await POST(rpc("tools/call", big, { key: null }))).status).toBe(413);
+    expect((await POST(rpc("tools/call", big, { key: "not-a-key" }))).status).toBe(413);
+    // A well formed key gets the photo cap; the key is then checked per tool.
+    expect((await POST(rpc("tools/call", big))).status).not.toBe(413);
+    expect(mcpBodyCap(new Headers({ authorization: `Bearer ${fixture.key}` }))).toBe(API_PHOTO_BODY_MAX_BYTES);
+    expect(mcpBodyCap(new Headers())).toBe(MCP_UNKEYED_BODY_MAX_BYTES);
   });
 
   it("checks the mirrored headers against the body (HeaderMismatch)", async () => {

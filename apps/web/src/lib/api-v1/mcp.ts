@@ -20,7 +20,7 @@
 
 import { z } from "zod";
 import { authenticateApiKey, type ApiAuthResult } from "@/lib/api-keys/auth";
-import type { ApiScope } from "@/lib/api-keys/format";
+import { bearerKeyOf, prefixOf, type ApiScope } from "@/lib/api-keys/format";
 import { isSameOrigin } from "@/lib/http/same-origin";
 import { readBodyLimited } from "@/lib/http/read-body";
 import { checkMainImage, createPack, getPack, listChannels, listPackFiles, type ApiContext, type ApiResult } from "./actions";
@@ -357,12 +357,27 @@ async function callTool(
   return rpcResponse(parsed.id, { result: { ...complete, ...toolResult(result) } });
 }
 
+/** Body cap for a request without a well formed API key. Discovery
+ * (initialize, server/discover, tools/list, ping) needs no key and is
+ * small; only a keyed tools/call may carry base64 photos, so an anonymous
+ * client cannot make the server buffer and parse a photo sized body before
+ * any key is checked. */
+export const MCP_UNKEYED_BODY_MAX_BYTES = 64_000;
+
+/** The body cap for a request: the photo cap only when the Authorization
+ * header holds a well formed key. The key itself is checked later, per
+ * tool, with that tool's scope. */
+export function mcpBodyCap(headers: Headers): number {
+  const key = bearerKeyOf(headers);
+  return key !== null && prefixOf(key) !== null ? API_PHOTO_BODY_MAX_BYTES : MCP_UNKEYED_BODY_MAX_BYTES;
+}
+
 /** POST /api/mcp. */
 export async function handleMcpPost(request: Request, deps: McpDeps = {}): Promise<Response> {
   if (!isSameOrigin(request)) {
     return rpcError(null, { code: JSONRPC.invalidRequest, message: "This request came from another site, so it was refused." }, 403);
   }
-  const body = await readBodyLimited(request, API_PHOTO_BODY_MAX_BYTES);
+  const body = await readBodyLimited(request, mcpBodyCap(request.headers));
   if (!body.ok) {
     return rpcError(
       null,

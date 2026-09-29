@@ -16,6 +16,7 @@ import {
 import { DEMO_KEY_ID, demoApiFixture, mainImagePng, type DemoApiFixture } from "@/lib/api-v1/test-fixtures";
 import { MemoryRateLimitStore, setRateLimitStoreForTests } from "@/lib/rate-limit";
 import { DEMO_WORKSPACE_ID } from "@/lib/services/demo";
+import type { JobView } from "@/lib/services/types";
 import { createFakeServices, OTHER_WORKSPACE_ID } from "@/lib/testing/fake-services";
 
 // Contract tests for the public API v1 (docs/phases/PHASE_16.md workstream
@@ -196,7 +197,8 @@ describe("POST /api/v1/packs", () => {
       ok: true as const,
       photo: { body: png, contentType: "image/png" as const, sha256: "a".repeat(64), width: 300, height: 300 },
     }));
-    const put = vi.fn(async (_ws: string, _photo: unknown, key: string) => key);
+    const put = vi.fn(async (_ws: string, _photo: unknown, _key: string) => true);
+    const remove = vi.fn(async (_keys: string[]) => [] as string[]);
     const services = createFakeServices("owner");
     vi.mocked(services.createJob).mockResolvedValue({ outcome: "conflict" });
     vi.stubEnv("R2_ACCOUNT_ID", "acct");
@@ -213,7 +215,7 @@ describe("POST /api/v1/packs", () => {
         rateSubject: "user:u",
       },
       headers: new Headers(),
-      photos: { fetchPhoto, put },
+      photos: { fetchPhoto, put, remove },
     };
     await createPack(ctx, { channels: ["amazon.main"], photos: [{ url: "https://shop.example/p.png", angle: "back" }] }, "k1");
     vi.unstubAllEnvs();
@@ -229,6 +231,68 @@ describe("POST /api/v1/packs", () => {
         uploads: [{ key, sha256: "a".repeat(64), kind: "image", angle: "back" }],
       }),
     );
+    // The key made no new pack (a conflict), so the photo this request
+    // wrote is taken back.
+    expect(remove).toHaveBeenCalledWith([key]);
+  });
+
+  it("never writes over a stored photo and only takes back what a refused request wrote", async () => {
+    const png = await mainImagePng(300, 0.8);
+    const photoOf = (sha: string) => ({
+      ok: true as const,
+      photo: { body: png, contentType: "image/png" as const, sha256: sha, width: 300, height: 300 },
+    });
+    const fetchPhoto = vi.fn(async (url: string) => photoOf(url.endsWith("old.png") ? "b".repeat(64) : "c".repeat(64)));
+    // The old photo is already stored (and cleaned by ingest): the
+    // conditional put reports it was there and writes nothing.
+    const put = vi.fn(async (_ws: string, _photo: unknown, key: string) => !key.endsWith("b".repeat(64)));
+    const remove = vi.fn(async (_keys: string[]) => [] as string[]);
+    const services = createFakeServices("owner");
+    vi.stubEnv("R2_ACCOUNT_ID", "acct");
+    vi.stubEnv("R2_ACCESS_KEY_ID", "id");
+    vi.stubEnv("R2_SECRET_ACCESS_KEY", "secret");
+    vi.stubEnv("R2_BUCKET_PRIVATE", "bucket");
+    const ctx: ApiContext = {
+      caller: {
+        keyId: DEMO_KEY_ID,
+        prefix: "cv_live_000000000000",
+        scopes: ["packs:write"],
+        principal: { workspaceId: OTHER_WORKSPACE_ID, workspaceName: "W", plan: "growth", role: "owner", userId: "u" },
+        services,
+        rateSubject: "user:u",
+      },
+      headers: new Headers(),
+      photos: { fetchPhoto, put, remove },
+    };
+    const body = { channels: ["amazon.main"], photos: [{ url: "https://shop.example/old.png" }, { url: "https://shop.example/new.png" }] };
+    vi.mocked(services.createJob).mockResolvedValueOnce({
+      outcome: "rejected",
+      reason: "insufficient_credits",
+      message: "Not enough credits.",
+    });
+    const refused = await createPack(ctx, body, "k3");
+    const newKey = `ws/${OTHER_WORKSPACE_ID}/src/api-${"c".repeat(64)}`;
+    expect(refused.status).toBe(402);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith([newKey]);
+
+    remove.mockClear();
+    const job: JobView = {
+      id: "00000000-0000-4000-8000-000000000999",
+      productId: "3f2e1d0c-9b8a-4765-8432-10fedcba9876",
+      productTitle: "Mug",
+      status: "queued",
+      mode: "listing",
+      channels: ["amazon.main"],
+      creditsReserved: 1,
+      creditsCharged: 0,
+      createdAt: new Date(0).toISOString(),
+      shots: [],
+    };
+    vi.mocked(services.createJob).mockResolvedValueOnce({ outcome: "created", job });
+    expect((await createPack(ctx, body, "k4")).status).toBe(201);
+    vi.unstubAllEnvs();
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it("refuses a key whose maker holds a client seat before fetching any photo", async () => {

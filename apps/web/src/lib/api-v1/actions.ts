@@ -37,7 +37,7 @@ import type { CreateJobInput, CreateJobResult, JobView } from "@/lib/services/ty
 import { RETRY_AFTER_SECONDS } from "@/lib/services/workspace-response";
 import { checkRows, flattenOnWhite, measurePixels, summaryLine } from "@/lib/tools/main-image-analysis";
 import { isUuid } from "@/lib/validation/ids";
-import { readPhoto, storePackPhotos, type PhotoDeps } from "./photos";
+import { discardStoredPhotos, readPhoto, storePackPhotos, type PhotoDeps } from "./photos";
 import {
   CreatePackRequest,
   MainImageCheckRequest,
@@ -281,6 +281,7 @@ export async function createPack(ctx: ApiContext, rawBody: unknown, idempotencyK
     return errorResult(403, "role_forbidden", "Client seats can review assets but cannot start packs or spend credits.");
   }
   let uploads: CreateJobInput["uploads"];
+  let created: string[] = [];
   const photos = request.photos ?? [];
   if (photos.length > 0) {
     const store = caller.services.mode === "db";
@@ -298,6 +299,7 @@ export async function createPack(ctx: ApiContext, rawBody: unknown, idempotencyK
       return errorResult(stored.status, stored.reason, stored.message);
     }
     uploads = stored.uploads;
+    created = stored.created;
   }
 
   let result: CreateJobResult;
@@ -317,10 +319,17 @@ export async function createPack(ctx: ApiContext, rawBody: unknown, idempotencyK
       ...(request.outputOptions !== undefined ? { outputOptions: request.outputOptions } : {}),
     });
   } catch (err) {
+    await discardStoredPhotos(created, ctx.photos);
     if (err instanceof InlineRunnerClosedError) {
       return errorResult(503, "unavailable", RESTARTING_MESSAGE);
     }
     throw err;
+  }
+  if (result.outcome !== "created") {
+    // Only a new pack uses the photos this request wrote: a replay or a
+    // conflict answers with the pack the key already made, and a refusal
+    // makes none. Photos that were already stored are never in `created`.
+    await discardStoredPhotos(created, ctx.photos);
   }
 
   switch (result.outcome) {

@@ -588,3 +588,11 @@ Not verified: MCP directory listing requirements (the skill and the directory en
 | Node.js runs TypeScript files with no flag from v22.18.0 (type stripping unflagged; release notes, commit 8d1f5df313) and from v23.6.0 on the current lines. Relative imports must name the `.ts` file; enums, runtime namespaces, parameter properties, import aliases and decorators are refused (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX). Node does not strip types in files under node_modules. | `packages/cli/bin/curvi.js` imports `src/main.ts` directly; `packages/cli/tsconfig.json` sets `allowImportingTsExtensions` and `erasableSyntaxOnly`; `engines.node` is `>=22.18` | nodejs.org/en/blog/release/v22.18.0, nodejs.org/api/typescript.html | Implementer (p16/cli), 2026-09-29 |
 
 Not verified yet: the higgsfield-ai/skills SKILL.md front matter fields beyond name, description and license (the skill uses only those three, which the Agent Skills format requires); skill directory listing requirements (none exist until the curvi-ai GitHub org does, founder decision 6).
+
+## PHASE_16 review fix: conditional source writes for API photos (checked 2026-09-29)
+
+| Fact used | Where | Source | Checked by |
+|---|---|---|---|
+| R2 PutObject supports the conditional headers If-Match, If-None-Match, If-Modified-Since and If-Unmodified-Since. The AWS SDK's `PutObjectCommand` takes `IfNoneMatch` (present in the workspace's @aws-sdk/client-s3 types). A put with `If-None-Match: *` on an existing key fails its precondition, answered as S3's 412 PreconditionFailed, which the code reads as "already stored". | apps/web/src/lib/r2.ts `putSourceObjectIfAbsent`, used by lib/api-v1/photos.ts `storePackPhotos` | developers.cloudflare.com/r2/api/s3/api/ (PutObject row, fetched 2026-09-29); the R2 page does not state the failure status, so 412 is the S3 convention, also matched by error name `PreconditionFailed` | Implementer (p16/fix-other), 2026-09-29 |
+
+Not verified: the exact status R2 returns for a failed PutObject precondition against a live bucket (no production access in this pass); a different status would surface as a 503 "could not save a photo" on retry rather than an overwrite.
