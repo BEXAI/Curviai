@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { channelFileLimit, dimensionBounds, getSpec, isSpecSelected, listSpecs } from "@curvi/specs";
-import { undeliverableShotMethods } from "../seed/credits";
+import {
+  channelFileLimit,
+  dimensionBounds,
+  getSpec,
+  isSpecSelected,
+  listSpecs,
+  requiresWhiteBackground,
+} from "@curvi/specs";
+import {
+  EXTRA_FAMILIES,
+  SELLER_OFF_REASON,
+  SOURCE_TOO_SMALL_REASON,
+  type OutputExtras,
+  type OutputPlanFlags,
+  type PlanPhoto,
+} from "../output-options";
+import { creditCosts, undeliverableShotMethods } from "../seed/credits";
 import { ShotList, type ProductProfile, type Shot } from "../schemas";
 import {
   CHANNEL_LIMIT_REASON,
@@ -9,12 +24,18 @@ import {
   NO_COMPATIBLE_CHANNEL_REASON,
   RESERVED_GALLERY_SLOTS,
   UNDELIVERABLE_METHOD_REASON,
+  applyOriginalSizes,
   capShotsPerChannel,
   channelLimitViolations,
+  coverSellerOffSpecs,
   planShots,
   printableDimensions,
+  reservedSlotsFor,
+  skipSellerOffShots,
   specAcceptsImage,
   trimToBudget,
+  type PlanOptions,
+  type SkippedShot,
 } from "./deterministic";
 
 function profile(overrides: Partial<ProductProfile> = {}): ProductProfile {
@@ -907,5 +928,348 @@ describe("trimToBudget keeps a file for every picked spec it can afford", () => 
     ];
     const kept = trimToBudget(shots, 1, []);
     expect(kept.map((s) => s.id)).toEqual(["sweep", "pin"]);
+  });
+});
+
+describe("planShots with output options (PHASE_15 item 3)", () => {
+  const DEFAULT_CHANNELS = ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"];
+  const ALL_ON: OutputExtras = { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: true };
+  const ALL_OFF: OutputExtras = { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: false };
+  const threePhotos: PlanPhoto[] = [
+    { id: "m_front", angle: "front", width: 3000, height: 3000 },
+    { id: "m_45", angle: "45", width: 3000, height: 3000 },
+    { id: "m_back", angle: "back", width: 3000, height: 3000 },
+  ];
+  const mediaIdsByAngle = { front: "m_front", "45": "m_45", back: "m_back" };
+  const product = profile({ photographedAngles: ["front", "45", "back"], missingAnglesNeeded: [] });
+
+  function flags(
+    background: "remove" | "keep",
+    extras: Partial<OutputExtras> = {},
+    photos: PlanPhoto[] = threePhotos,
+    fit: "auto" | "pad" = "auto",
+  ): OutputPlanFlags {
+    return {
+      background,
+      keepMediaIds: background === "keep" ? photos.map((p) => p.id) : [],
+      extras: { ...(background === "keep" ? ALL_OFF : ALL_ON), ...extras },
+      fit,
+      photos,
+    };
+  }
+  const opts = (channels: string[], output?: OutputPlanFlags, extra: Partial<PlanOptions> = {}): PlanOptions => ({
+    channels,
+    tier: "starter",
+    creditBudget: 100,
+    primaryMediaId: "m_front",
+    mediaIdsByAngle,
+    hasBoxContents: true,
+    hasComparisonFacts: true,
+    ...(output ? { output } : {}),
+    ...extra,
+  });
+  const originals = (list: ShotList) => list.shots.filter((s) => s.type === "original_photo");
+  const sorted = (values: readonly string[]) => [...values].sort();
+
+  it("plans Keep on the default channels as a white Amazon main plus one original per photo", () => {
+    const list = planShots(product, opts(DEFAULT_CHANNELS, flags("keep")));
+    expect(sorted(list.shots.map((s) => s.type))).toEqual([
+      "amazon_main",
+      "original_photo",
+      "original_photo",
+      "original_photo",
+    ]);
+    expect(list.shots.find((s) => s.type === "amazon_main")!.channels).toEqual(["amazon.main"]);
+    const [front, ...others] = originals(list);
+    expect(front).toMatchObject({
+      sourceMediaId: "m_front",
+      method: "deterministic",
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    });
+    expect(sorted(front.channels)).toEqual(["amazon.secondary", "meta.feed_1x1", "shopify.product"]);
+    expect(others.map((s) => s.sourceMediaId)).toEqual(["m_45", "m_back"]);
+    for (const other of others) {
+      expect(other.priority).toBe(2);
+      expect(sorted(other.channels)).toEqual(["amazon.secondary", "shopify.product"]);
+    }
+    for (const type of [
+      "alt_angle_white",
+      "sweep_gray",
+      "sweep_brand",
+      "cutout_png",
+      "lifestyle",
+      "collection_thumb",
+      "social_1x1",
+    ]) {
+      expect(list.shots.some((s) => s.type === type), type).toBe(false);
+    }
+    const off = list.skipped.filter((s) => s.reason === SELLER_OFF_REASON).map((s) => s.type);
+    expect(off).toEqual(
+      expect.arrayContaining(["cutout_png", "sweep_gray", "sweep_brand", "lifestyle", "infographic", "social_1x1"]),
+    );
+    // The originals replace collection_thumb and the white angles; neither is listed as left out.
+    expect(list.skipped.some((s) => s.type === "collection_thumb" || s.type.startsWith("alt_angle_white"))).toBe(false);
+    // The stored plan never carries the planner's internal skipped channels.
+    expect(list.skipped.every((s) => sorted(Object.keys(s)).join() === "reason,type")).toBe(true);
+  });
+
+  it("plans the kept originals whatever usableForMain says", () => {
+    const blurry = profile({
+      photographedAngles: ["front", "45", "back"],
+      missingAnglesNeeded: [],
+      imageQuality: { usableForMain: false, issues: ["blur"] },
+    });
+    const list = planShots(blurry, opts(DEFAULT_CHANNELS, flags("keep")));
+    expect(originals(list)).toHaveLength(3);
+    expect(list.skipped).toContainEqual({ type: "amazon_main", reason: "needs photo" });
+  });
+
+  it("narrows the white front and the alternate angles to the white required specs with Keep", () => {
+    const channels = [
+      "amazon.main",
+      "walmart.main",
+      "tiktokshop.main",
+      "google.merchant.main",
+      "etsy.listing",
+      "ebay.listing",
+    ];
+    const list = planShots(product, opts(channels, flags("keep")));
+    const main = list.shots.find((s) => s.type === "amazon_main")!;
+    expect(sorted(main.channels)).toEqual(["amazon.main", "google.merchant.main", "tiktokshop.main", "walmart.main"]);
+    const angles = list.shots.filter((s) => s.type === "alt_angle_white");
+    expect(angles.map((s) => s.sourceMediaId)).toEqual(["m_45", "m_back"]);
+    for (const shot of angles) {
+      expect(sorted(shot.channels)).toEqual(["tiktokshop.main", "walmart.main"]);
+    }
+    expect(originals(list)).toHaveLength(3);
+    for (const shot of originals(list)) {
+      expect(sorted(shot.channels)).toEqual(["ebay.listing", "etsy.listing"]);
+    }
+    expect(list.shots).toHaveLength(6);
+  });
+
+  it("plans the white front image only for white required specs when Amazon main is not picked", () => {
+    const list = planShots(product, opts(["etsy.listing", "google.merchant.main"], flags("keep")));
+    const front = list.shots.find((s) => s.type === "alt_angle_white" && s.priority === 1)!;
+    expect(front.channels).toEqual(["google.merchant.main"]);
+    expect(originals(list).find((s) => s.priority === 1)!.channels).toEqual(["etsy.listing"]);
+    const etsyOnly = planShots(product, opts(["etsy.listing"], flags("keep")));
+    expect(etsyOnly.shots.map((s) => s.type)).toEqual(["original_photo", "original_photo", "original_photo"]);
+  });
+
+  it("never aims an original at a white required spec, for every option combination", () => {
+    const families = Object.keys(ALL_ON) as Array<keyof OutputExtras>;
+    const channelSets = [
+      DEFAULT_CHANNELS,
+      ["amazon", "shopify", "google", "etsy", "ebay", "walmart", "tiktokshop", "meta", "pinterest", "video"],
+      ["walmart.main", "tiktokshop.main", "google.merchant.main"],
+    ];
+    for (let mask = 0; mask < 1 << families.length; mask++) {
+      const extras = Object.fromEntries(families.map((f, i) => [f, (mask & (1 << i)) !== 0])) as OutputExtras;
+      for (const background of ["remove", "keep"] as const) {
+        for (const fit of ["auto", "pad"] as const) {
+          for (const channels of channelSets) {
+            const list = planShots(product, opts(channels, flags(background, extras, threePhotos, fit)));
+            for (const shot of originals(list)) {
+              for (const specId of shot.channels) {
+                expect(requiresWhiteBackground(getSpec(specId)), `${specId} ${background} ${mask}`).toBe(false);
+                expect(specAcceptsImage(getSpec(specId), "original")).toBe(true);
+                expect(specId.startsWith("video.")).toBe(false);
+              }
+            }
+            if (background === "remove") {
+              expect(originals(list)).toEqual([]);
+            }
+            expect(channelLimitViolations(list.shots)).toEqual([]);
+          }
+        }
+      }
+    }
+  });
+
+  it("removes exactly each extra family when it is off, and the family holds no slot", () => {
+    const channels = ["amazon", "shopify", "google", "meta", "pinterest"];
+    const all = planShots(product, opts(channels, flags("remove")));
+    for (const family of Object.keys(EXTRA_FAMILIES) as Array<keyof OutputExtras>) {
+      const types = EXTRA_FAMILIES[family];
+      const list = planShots(product, opts(channels, flags("remove", { [family]: false })));
+      expect(list.shots.filter((s) => types.includes(s.type)), family).toEqual([]);
+      const rest = (l: ShotList) =>
+        l.shots.filter((s) => !types.includes(s.type)).map((s) => `${s.type}:${s.sourceMediaId}`);
+      expect(rest(list), family).toEqual(rest(all));
+      const off = list.skipped.filter((s) => s.reason === SELLER_OFF_REASON).map((s) => s.type);
+      expect(new Set(off), family).toEqual(new Set(all.shots.filter((s) => types.includes(s.type)).map((s) => s.type)));
+      expect(list.skipped.some((s) => s.reason === CHANNEL_LIMIT_REASON || s.reason === CREDIT_BUDGET_REASON)).toBe(
+        false,
+      );
+    }
+  });
+
+  it("covers a spec the seller emptied with the front image", () => {
+    const list = planShots(product, opts(["amazon.main", "meta.feed_4x5"], flags("remove", { cards: false })));
+    expect(list.shots.map((s) => s.type)).toEqual(["amazon_main"]);
+    expect(list.shots[0].channels).toEqual(["amazon.main", "meta.feed_4x5"]);
+    // With no front shot to join, one front image is added at the deterministic price.
+    const alone = planShots(product, opts(["meta.feed_4x5"], flags("remove", { cards: false })));
+    expect(alone.shots).toHaveLength(1);
+    expect(alone.shots[0]).toMatchObject({
+      type: "alt_angle_white",
+      sourceMediaId: "m_front",
+      channels: ["meta.feed_4x5"],
+      credits: creditCosts.deterministic,
+      priority: 1,
+    });
+    // With Keep, the front original already serves it.
+    const kept = planShots(product, opts(["meta.feed_4x5"], flags("keep")));
+    expect(kept.shots.map((s) => s.type)).toEqual(["original_photo"]);
+    expect(kept.shots[0].channels).toEqual(["meta.feed_4x5"]);
+  });
+
+  it("never covers a spec empty for another reason", () => {
+    const noFront = profile({
+      photographedAngles: ["45", "back"],
+      missingAnglesNeeded: [],
+      imageQuality: { usableForMain: false, issues: ["blur"] },
+    });
+    expect(planShots(noFront, opts(["meta.feed_4x5"], flags("remove", { cards: false }))).shots).toEqual([]);
+    // A spec the kept photo is too small for stays empty, even with its extras off.
+    const tiny: PlanPhoto[] = [{ id: "m_front", angle: "front", width: 500, height: 500 }];
+    const small = planShots(
+      profile({ photographedAngles: ["front"], missingAnglesNeeded: [] }),
+      opts(["amazon.secondary"], flags("keep", {}, tiny), { mediaIdsByAngle: { front: "m_front" } }),
+    );
+    expect(small.shots).toEqual([]);
+    expect(small.skipped).toContainEqual({ type: "original_photo:amazon.secondary", reason: SOURCE_TOO_SMALL_REASON });
+  });
+
+  it("coverSellerOffSpecs never covers a white required spec and never changes its input", () => {
+    const skipped: SkippedShot[] = [
+      { type: "social_4x5", reason: SELLER_OFF_REASON, channels: ["meta.feed_4x5"] },
+      { type: "sweep_gray", reason: SELLER_OFF_REASON, channels: ["walmart.main"] },
+    ];
+    const main: Shot = {
+      id: "s01_amazon_main",
+      type: "amazon_main",
+      sourceMediaId: "m_front",
+      method: "deterministic",
+      channels: ["amazon.main"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    };
+    const cardsOff = flags("remove", { cards: false });
+    const out = coverSellerOffSpecs([main], skipped, cardsOff, { frontMediaId: "m_front", frontUsable: true });
+    expect(out).toHaveLength(1);
+    expect(out[0].channels).toEqual(["amazon.main", "meta.feed_4x5"]);
+    expect(main.channels).toEqual(["amazon.main"]);
+    const added = coverSellerOffSpecs([], skipped, cardsOff, { frontMediaId: "m_front", frontUsable: true });
+    expect(added.map((s) => s.channels)).toEqual([["meta.feed_4x5"]]);
+    // With Remove and no usable front photo nothing is added.
+    expect(coverSellerOffSpecs([], skipped, cardsOff, { frontMediaId: "m_front", frontUsable: false })).toEqual([]);
+    // Without options nothing changes.
+    expect(coverSellerOffSpecs([main], skipped, undefined, { frontMediaId: "m_front", frontUsable: true })).toEqual([
+      main,
+    ]);
+  });
+
+  it("keeps all 6 originals on amazon.secondary with every extra on", () => {
+    const angles = ["front", "45", "back", "top", "side", "detail"] as ProductProfile["photographedAngles"];
+    const photos: PlanPhoto[] = angles.map((angle) => ({ id: `m_${angle}`, angle, width: 3000, height: 3000 }));
+    const many = profile({ photographedAngles: angles, missingAnglesNeeded: [] });
+    const list = planShots(
+      many,
+      opts(["amazon.main", "amazon.secondary"], flags("keep", ALL_ON, photos), {
+        mediaIdsByAngle: Object.fromEntries(angles.map((a) => [a, `m_${a}`])),
+      }),
+    );
+    const onSecondary = list.shots.filter((s) => s.channels.includes("amazon.secondary"));
+    expect(onSecondary).toHaveLength(channelFileLimit(getSpec("amazon.secondary"))!);
+    expect(onSecondary.filter((s) => s.type === "original_photo")).toHaveLength(6);
+    expect(channelLimitViolations(list.shots)).toEqual([]);
+  });
+
+  it("leaves a kept photo off only the specs it is too small for", () => {
+    const photos: PlanPhoto[] = [
+      { id: "m_front", angle: "front", width: 1000, height: 800 },
+      { id: "m_45", angle: "45", width: 3000, height: 3000 },
+    ];
+    const list = planShots(
+      profile({ photographedAngles: ["front", "45"], missingAnglesNeeded: [] }),
+      opts(["amazon.secondary", "etsy.listing", "meta.feed_1x1"], flags("keep", {}, photos), {
+        mediaIdsByAngle: { front: "m_front", "45": "m_45" },
+      }),
+    );
+    const front = originals(list).find((s) => s.sourceMediaId === "m_front")!;
+    // 1000 px is under 1600 / MAX_SOURCE_UPSCALE, so amazon.secondary is left out.
+    expect(sorted(front.channels)).toEqual(["etsy.listing", "meta.feed_1x1"]);
+    expect(list.skipped).toContainEqual({ type: "original_photo:amazon.secondary", reason: SOURCE_TOO_SMALL_REASON });
+    const other = originals(list).find((s) => s.sourceMediaId === "m_45")!;
+    expect(sorted(other.channels)).toEqual(["amazon.secondary", "etsy.listing"]);
+  });
+
+  it("applyOriginalSizes treats a photo of unknown size as fitting", () => {
+    const shot: Shot = {
+      id: "s01_original_photo",
+      type: "original_photo",
+      sourceMediaId: "m_front",
+      method: "deterministic",
+      channels: ["amazon.secondary"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    };
+    const skipped: SkippedShot[] = [];
+    expect(applyOriginalSizes([shot], flags("keep", {}, [{ id: "m_front" }]), skipped)).toEqual([shot]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("reserves a slot per original ahead of the gallery reservations", () => {
+    const original = { type: "original_photo" } as Shot;
+    expect(reservedSlotsFor([original, original])).toEqual([
+      { type: "original_photo", count: 2 },
+      ...RESERVED_GALLERY_SLOTS,
+    ]);
+    expect(reservedSlotsFor([])).toBe(RESERVED_GALLERY_SLOTS);
+  });
+
+  it("skipSellerOffShots filters a plan it did not make and records the specs", () => {
+    const social: Shot = {
+      id: "x1",
+      type: "social_1x1",
+      sourceMediaId: "m_front",
+      method: "template",
+      channels: ["meta.feed_1x1"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 7,
+    };
+    const skipped: SkippedShot[] = [];
+    expect(skipSellerOffShots([social], flags("remove", { cards: false }), skipped)).toEqual([]);
+    expect(skipped).toEqual([{ type: "social_1x1", reason: SELLER_OFF_REASON, channels: ["meta.feed_1x1"] }]);
+    expect(skipSellerOffShots([social], undefined, skipped)).toEqual([social]);
+  });
+
+  it("uses reason strings the skipped copy does not already match", () => {
+    const keywords = [
+      "needs photo",
+      "plan tier",
+      "pro or agency",
+      "provider not enabled",
+      "concept mode",
+      "shot cap",
+      "credit budget",
+      "channel image limit",
+      "benefits",
+      "dimensions",
+      "contents",
+      "comparison",
+    ];
+    for (const reason of [SELLER_OFF_REASON, SOURCE_TOO_SMALL_REASON]) {
+      for (const keyword of keywords) {
+        expect(reason.toLowerCase().includes(keyword), `${reason} ${keyword}`).toBe(false);
+      }
+    }
   });
 });
