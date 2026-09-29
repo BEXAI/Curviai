@@ -46,6 +46,7 @@ export function createFakeServices(role: WorkspaceRole | null = "owner"): Servic
       comparisonFacts: [],
     })),
     registerSourceMedia: vi.fn(async () => ({ ok: true, notice: "Photo saved to this product." })),
+    preflightUpload: vi.fn(async () => ({ ok: false as const, reason: "unavailable" as const, message: "Not configured." })),
     getBrandKit: vi.fn(async () => ({
       name: "Default",
       colors: [],

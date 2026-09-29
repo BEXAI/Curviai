@@ -14,6 +14,7 @@
     "./seed": "./src/seed/index.ts",
     "./seller-inputs": "./src/seller-inputs.ts",
     "./share-image": "./src/share-image.ts",
+    "./size-gate": "./src/size-gate.ts",
     "./testing": "./src/qc/testing.ts"
   },
   "scripts": {

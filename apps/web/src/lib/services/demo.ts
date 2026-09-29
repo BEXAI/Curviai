@@ -20,6 +20,8 @@ import {
 } from "@/lib/compliance-report";
 import { checkChannelEntitlements } from "@/lib/entitlements";
 import { CONCEPT_MODE_AVAILABLE } from "@/lib/features";
+import { demoPreflight } from "@/lib/preflight/demo";
+import type { PreflightOutcome } from "@/lib/preflight/types";
 import { planDemoShots } from "./demo-plan";
 import { cancelNotice } from "./shot-ops";
 import type {
@@ -40,6 +42,7 @@ import type {
   MemberView,
   ProductLibraryEntry,
   ProductSummary,
+  PreflightUploadInput,
   RegisterSourceMediaInput,
   SaveResult,
   Services,
@@ -371,6 +374,11 @@ export class DemoService implements Services {
     };
     this.store.extraProducts.unshift(product);
     return product;
+  }
+
+  /** A simulated preflight: no provider is called and nothing is stored. */
+  async preflightUpload(_workspaceId: string, input: PreflightUploadInput): Promise<PreflightOutcome> {
+    return { ok: true, preflight: demoPreflight(input.key, input.note) };
   }
 
   async registerSourceMedia(_workspaceId: string, _input: RegisterSourceMediaInput): Promise<SaveResult> {

@@ -203,3 +203,58 @@ export async function renderContactSheet(
     .toBuffer();
   return { buffer: await encodeVisionJpeg(png), width, height, digits: font ? "font" : "segments", cells };
 }
+
+export interface PieceThumbnailOptions {
+  /** Square side of each thumbnail, in pixels. */
+  size?: number;
+  /** Margin around each piece's box, as a share of its longer side. */
+  margin?: number;
+  /** Thumbnail background, #RRGGBB. */
+  backgroundHex?: string;
+}
+
+/**
+ * One small JPEG per piece for the product chooser at upload (docs/phases/
+ * PHASE_14.md 3.2): the piece cropped from the cutout with the contact
+ * sheet's margin, only its own pixels, fitted on a plain background. Shown
+ * to the seller only, never used as listing output.
+ */
+export async function renderPieceThumbnails(
+  cutout: RawImage,
+  pieces: readonly BBox[],
+  opts: PieceThumbnailOptions = {},
+): Promise<Buffer[]> {
+  if (pieces.length === 0) {
+    return [];
+  }
+  const size = Math.max(32, Math.round(opts.size ?? 256));
+  const marginShare = Math.max(0, opts.margin ?? 0.06);
+  const background = hexToRgb(opts.backgroundHex && HEX.test(opts.backgroundHex) ? opts.backgroundHex : "#f4f4f5");
+  const alpha = Buffer.alloc(cutout.width * cutout.height);
+  for (let i = 0; i < alpha.length; i++) alpha[i] = cutout.data[i * 4 + 3];
+  const { labels, components } = maskComponents({ data: alpha, width: cutout.width, height: cutout.height }, CUTOUT_ALPHA_THRESHOLD);
+  const out: Buffer[] = [];
+  for (const box of pieces) {
+    const component = components.find((c) => sameBox(c.bbox, box));
+    const crop = cropPiece(cutout, labels, component ? component.label : null, box, marginShare);
+    const fitted = await sharp(crop.data, { raw: { width: crop.width, height: crop.height, channels: 4 } })
+      .resize(size, size, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .png()
+      .toBuffer();
+    out.push(
+      await sharp({ create: { width: size, height: size, channels: 3, background } })
+        .composite([{ input: fitted, left: 0, top: 0 }])
+        .jpeg({ quality: 82 })
+        .toBuffer(),
+    );
+  }
+  return out;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  return {
+    r: Number.parseInt(hex.slice(1, 3), 16),
+    g: Number.parseInt(hex.slice(3, 5), 16),
+    b: Number.parseInt(hex.slice(5, 7), 16),
+  };
+}

@@ -38,6 +38,7 @@ const EXPECTED_TABLES = [
   "leads",
   "terms_acceptances",
   "cancel_flows",
+  "upload_preflights",
 ];
 
 const USER_A = "00000000-0000-4000-8000-00000000000a";

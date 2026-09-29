@@ -98,6 +98,21 @@ export async function normalizeOrientation(buffer: Buffer): Promise<Buffer> {
     : upright.jpeg({ quality: 95, chromaSubsampling: "4:4:4" }).toBuffer();
 }
 
+/** A photo's size once turned upright per EXIF (orientations 5 to 8 swap
+ * width and height), or null when the bytes cannot be read. */
+export async function uprightSize(buffer: Buffer): Promise<{ width: number; height: number } | null> {
+  try {
+    const meta = await sharp(buffer).metadata();
+    if (!meta.width || !meta.height) {
+      return null;
+    }
+    const swapped = (meta.orientation ?? 1) >= 5;
+    return swapped ? { width: meta.height, height: meta.width } : { width: meta.width, height: meta.height };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The source photo at working size: upright per EXIF and downscaled so its
  * long edge is at most maxSide. Phone cameras shoot 12 to 48 megapixels, and

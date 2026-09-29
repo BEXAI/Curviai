@@ -16,7 +16,9 @@
     "./db-store": "./src/db-store.ts",
     "./state": "./src/state.ts",
     "./provider-probes": "./src/provider-probes.ts",
-    "./shot-concurrency": "./src/shot-concurrency.ts"
+    "./shot-concurrency": "./src/shot-concurrency.ts",
+    "./preflight": "./src/preflight.ts",
+    "./preflight-intake": "./src/preflight-intake.ts"
   },
   "scripts": {
     "dev": "trigger.dev dev",

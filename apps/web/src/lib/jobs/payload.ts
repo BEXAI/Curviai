@@ -5,6 +5,7 @@
  */
 
 import type { BrandStyle, GeneratePackInput } from "@curvi/trigger/runner";
+import type { PreflightIntake } from "@curvi/trigger/preflight-intake";
 import { isTemplateFontKey, presets, socialBadgeByTier, type TierKey } from "@curvi/pipeline/seed";
 import { isAngleRole, printableSellerLines } from "@curvi/pipeline/seller-inputs";
 
@@ -25,6 +26,24 @@ export interface PayloadMedia {
   kind: "image" | "video" | "frame" | null;
   /** The role the seller gave the photo, when they gave one. */
   angle?: string | null;
+  /** The product the seller tapped in the chooser (source_media.target_box). */
+  targetBox?: { x: number; y: number; width: number; height: number } | null;
+  /** The preflight's intake answer, for the runner to reuse when fresh. */
+  preflight?: PreflightIntake;
+}
+
+/** A box the runner can use: every side inside the photo. */
+function validBox(box: PayloadMedia["targetBox"]): box is NonNullable<PayloadMedia["targetBox"]> {
+  return (
+    !!box &&
+    [box.x, box.y, box.width, box.height].every((n) => typeof n === "number" && Number.isFinite(n)) &&
+    box.x >= 0 &&
+    box.y >= 0 &&
+    box.width > 0 &&
+    box.height > 0 &&
+    box.x + box.width <= 1.0001 &&
+    box.y + box.height <= 1.0001
+  );
 }
 
 export function seoSlugFor(title: string | null): string {
@@ -98,7 +117,12 @@ export function buildGeneratePackInput(args: {
     // as the primary one, and the analyzer looks at the first few.
     images: args.media
       .filter((m) => m.kind !== "video")
-      .map((m) => (isAngleRole(m.angle) ? { mediaId: m.r2Key, angle: m.angle } : { mediaId: m.r2Key }))
+      .map((m) => ({
+        mediaId: m.r2Key,
+        ...(isAngleRole(m.angle) ? { angle: m.angle } : {}),
+        ...(validBox(m.targetBox) ? { targetBox: m.targetBox } : {}),
+        ...(m.preflight ? { preflight: m.preflight } : {}),
+      }))
       .sort((a, b) => Number(b.angle === "front") - Number(a.angle === "front")),
     userDescription: args.userDescription,
     brandColors: (Array.isArray(args.brandColors) ? args.brandColors : [])

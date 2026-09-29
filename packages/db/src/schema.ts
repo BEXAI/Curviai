@@ -729,7 +729,49 @@ export const termsAcceptances = pgTable(
   ],
 );
 
+/** A preflight's status: ready to pack, a product to choose, a problem that
+ * stops the pack, or a check that could not run. */
+export type UploadPreflightStatus = "ready" | "choose" | "blocked" | "unavailable";
+
+/**
+ * The preflight of one uploaded photo (migration 0022, docs/phases/
+ * PHASE_14.md workstream 4): what intake, moderation, the product inventory
+ * and the size gate said about it before any pack was started, cached per
+ * upload key so the form can show it again and the pack can reuse the
+ * intake answer instead of paying for it twice. note_key is a sha256 of the
+ * seller's note the intake answer was given for; result is the seller facing
+ * verdict (thumbnail object keys, never signed urls); intake is the per
+ * photo intake answer and its recipe version; cost_micros is the provider
+ * spend of every preflight of this photo, booked on the workspace and never
+ * charged in credits. Tenant table: members read, only the owner connection
+ * writes (the 0011 pattern).
+ */
+export const uploadPreflights = pgTable(
+  "upload_preflights",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    r2Key: text("r2_key").notNull(),
+    noteKey: text("note_key").notNull(),
+    status: text("status").$type<UploadPreflightStatus>().notNull(),
+    result: jsonb("result").$type<Record<string, unknown>>().notNull(),
+    intake: jsonb("intake").$type<Record<string, unknown>>(),
+    costMicros: bigint("cost_micros", { mode: "number" }).notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("upload_preflights_status_check", sql`${t.status} in ('ready', 'choose', 'blocked', 'unavailable')`),
+    uniqueIndex("upload_preflights_workspace_r2_key_uq").on(t.workspaceId, t.r2Key),
+    index("upload_preflights_workspace_id_idx").on(t.workspaceId),
+  ],
+);
+
 // Inferred row types.
+export type UploadPreflight = typeof uploadPreflights.$inferSelect;
+export type NewUploadPreflight = typeof uploadPreflights.$inferInsert;
 export type Workspace = typeof workspaces.$inferSelect;
 export type NewWorkspace = typeof workspaces.$inferInsert;
 export type Member = typeof members.$inferSelect;
