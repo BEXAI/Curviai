@@ -536,6 +536,10 @@ export function NewPackForm({
     // Its remembered choices prefill the options, like the SKU (PHASE_15
     // P1). A product without them, after one with them, starts over from
     // Marketplace ready so one product's choices never carry to another.
+    // While cutouts are paused and the seller chose "Keep my photos
+    // instead", a product pick never undoes that choice: its remembered
+    // choices or a reset to Marketplace ready would need a cutout again.
+    if (pauseLeftOut !== null) return;
     const remembered =
       optionsOn && product ? rememberedFormState(product.outputDefaults, { brandColorCount }) : null;
     if (remembered && product) {
