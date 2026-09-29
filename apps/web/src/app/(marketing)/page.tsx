@@ -4,7 +4,6 @@ import { Card, buttonVariants, cn } from "@curvi/ui";
 import { JsonLd } from "@/components/json-ld";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { ComplianceBadgeDemo } from "@/components/marketing/compliance-badge-demo";
-import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
 import { EmailCapture } from "@/components/marketing/email-capture";
 import {
   homeChannelTiles,
@@ -157,7 +156,11 @@ export default function HomePage() {
             </div>
             <div className="min-w-0 lg:col-span-7 lg:col-start-1 lg:row-span-3 lg:row-start-1">
               <div className="rounded-3xl bg-white/[0.04] p-2 shadow-[0_2.5rem_7.5rem_-2.5rem_rgb(45_212_191/0.35)] ring-1 ring-inset ring-white/10">
-                <BeforeAfterSlider beforeSrc={beforeDemoImage} afterSrc={afterDemoImage} />
+                <BeforeAfterSlider
+                  beforeSrc="/home/before-car.jpg"
+                  afterSrc="/home/after-car.jpg"
+                  aspectRatio="1200 / 746"
+                />
               </div>
               <p className="mt-3 text-center font-mono text-xs text-ink-400">{homeHero.sliderCaption}</p>
               <FeatureTile featureKey="fidelity" className="mt-6" />

@@ -208,7 +208,9 @@ describe("pages", () => {
     expect(html.match(/data-testid="coming-soon"/g)?.length).toBe(soon);
     expect(html).toContain(`about ${typicalPackCredits()} credits`);
     expect(html).toContain(`${freeCredits()} credits`);
-    expect(html).toContain('data-testid="illustration-label"');
+    // The home slider shows a real Curvi result, so it carries no Illustration label.
+    expect(html).toContain('src="/home/before-car.jpg"');
+    expect(html).not.toContain('data-testid="illustration-label"');
     expect(html).not.toContain("Curvi output");
     expect(html).not.toContain("40 to 60");
     expect(faqQuestions(html)).toEqual(homeFaqs.map((faq) => faq.q));

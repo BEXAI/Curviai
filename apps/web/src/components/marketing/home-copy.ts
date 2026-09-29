@@ -30,7 +30,7 @@ export const homeHero = {
   lead: `Turn one photo into AI product images for ${liveChannelShortList()}, without changing your product.`,
   proof:
     "Every file is measured against the channel rules before you download it. We keep your real product pixels and generate only the light, shadow and setting around them, so labels never warp.",
-  sliderCaption: "Illustration, not a customer photo. Drag the divider: the product stays, the background changes.",
+  sliderCaption: "A real Curvi result: the seller's photo, then one finished file. Drag the divider: the product stays, the background changes.",
 };
 
 /**

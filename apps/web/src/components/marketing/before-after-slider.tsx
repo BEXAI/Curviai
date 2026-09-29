@@ -9,6 +9,8 @@ export interface BeforeAfterSliderProps {
   afterSrc: string;
   beforeLabel?: string;
   afterLabel?: string;
+  /** The frame's width to height ratio, for example "791 / 492"; square by default. */
+  aspectRatio?: string;
   className?: string;
 }
 
@@ -24,6 +26,7 @@ export function BeforeAfterSlider({
   afterSrc,
   beforeLabel = "Before",
   afterLabel = "After",
+  aspectRatio,
   className,
 }: BeforeAfterSliderProps) {
   const illustration = isIllustrationSrc(beforeSrc) || isIllustrationSrc(afterSrc);
@@ -66,6 +69,7 @@ export function BeforeAfterSlider({
     <div className={cn("select-none", className)}>
       <div
         ref={containerRef}
+        style={aspectRatio ? { aspectRatio } : undefined}
         className="relative aspect-square w-full cursor-ew-resize overflow-hidden rounded-xl border border-ink-200 bg-white shadow-sm"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
