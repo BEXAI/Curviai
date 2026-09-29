@@ -33,6 +33,9 @@ export interface HelpArticle {
 
 const main = amazonMainRules();
 
+/** The help article on the API, MCP server, CLI and skill; llms.txt links it. */
+export const AGENT_HELP_SLUG = "ai-agents-and-the-command-line";
+
 export const helpArticles: HelpArticle[] = [
   {
     slug: "what-photo-should-i-upload",
@@ -97,6 +100,16 @@ export const helpArticles: HelpArticle[] = [
     body: [
       "The Fresh Creative Drop is coming soon. Each week, Curvi will make new seasonal and ad variants for your top products and put them in your library to review. Nothing goes live unless you approve it.",
       "The drop will follow the retail calendar, so themed variants arrive ahead of big shopping events. It is not available on any plan yet.",
+    ],
+    structured: "never",
+  },
+  {
+    slug: AGENT_HELP_SLUG,
+    title: "Can I make packs from an AI agent or the command line?",
+    status: "coming_soon",
+    body: [
+      "Not yet. A public Curvi API, an MCP server for AI assistants, a curvi command line tool and a Curvi skill for AI coding agents are coming soon. Each will make the same packs as the app, with the same checks, the same compliance report and the same credits.",
+      "Access will use API keys you make and revoke in your workspace settings. Until then, make packs at the New pack page in the app, and use the free Amazon main image checker in the browser.",
     ],
     structured: "never",
   },

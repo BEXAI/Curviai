@@ -142,6 +142,24 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@24.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.51.2)(tsx@4.23.15)
 
+  packages/cli:
+    devDependencies:
+      '@curvi/pipeline':
+        specifier: workspace:*
+        version: link:../pipeline
+      '@curvi/specs':
+        specifier: workspace:*
+        version: link:../specs
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.0
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@24.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.51.2)(tsx@4.23.15)
+
   packages/db:
     dependencies:
       '@curvi/specs':

@@ -565,3 +565,11 @@ No new external source was fetched for this pass; each value is taken from the p
 | Pinterest standard pin 2:3 at 1000 x 1500, PNG or JPEG up to 20 MB, title up to 100 characters; carousel pins 2 to 5 images (up to 10 for the sales objective). | registry.json `pinterest.pin` maxBytes 20000000 and `textLimits.title` 100; seed `adsFormats.carousel.maxSlides` 10 (the largest carousel the verified rows name) | "Pinterest" row | Implementer (p16/formats), 2026-09-29 |
 
 Not verified: TikTok's own safe zone overlay files (inside Ads Manager); Meta's own carousel card limit and card sizes (no Meta carousel page was fetched; the carousel ships its slides at meta.feed_4x5, 1080 x 1350, which the Feed rows confirm as a valid image size, and never more than 10); whether a 4:5 carousel card is cropped in every placement.
+
+## PHASE_16 workstream 5: the curvi CLI (checked 2026-09-29)
+
+| Fact used | Where | Source | Checked by |
+|---|---|---|---|
+| Node.js runs TypeScript files with no flag from v22.18.0 (type stripping unflagged; release notes, commit 8d1f5df313) and from v23.6.0 on the current lines. Relative imports must name the `.ts` file; enums, runtime namespaces, parameter properties, import aliases and decorators are refused (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX). Node does not strip types in files under node_modules. | `packages/cli/bin/curvi.js` imports `src/main.ts` directly; `packages/cli/tsconfig.json` sets `allowImportingTsExtensions` and `erasableSyntaxOnly`; `engines.node` is `>=22.18` | nodejs.org/en/blog/release/v22.18.0, nodejs.org/api/typescript.html | Implementer (p16/cli), 2026-09-29 |
+
+Not verified yet: the higgsfield-ai/skills SKILL.md front matter fields beyond name, description and license (the skill uses only those three, which the Agent Skills format requires); skill directory listing requirements (none exist until the curvi-ai GitHub org does, founder decision 6).
