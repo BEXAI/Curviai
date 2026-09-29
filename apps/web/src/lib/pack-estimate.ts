@@ -169,6 +169,11 @@ function lineFor(shot: Shot): { key: string; name: LineName } {
       return { key: "video_lifestyle_15s", name: { one: "Lifestyle clip, 15 seconds" } };
     case "video_ugc_hook":
       return { key: "video_ugc_hook", name: { one: "UGC hook ad" } };
+    case "original_photo":
+      return {
+        key: "original_photo",
+        name: { one: "Your photo, resized for each channel", many: (n) => `Your photos, resized for each channel, ${n}` },
+      };
   }
 }
 

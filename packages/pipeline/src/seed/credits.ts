@@ -346,4 +346,7 @@ export interface PlatformSettingSeedRow {
  * grant_signup_credits function pays once a user's email is confirmed. */
 export const platformSettingSeedRows: PlatformSettingSeedRow[] = [
   { key: "free_signup_credits", value: tierByKey("free").creditsOnce },
+  // Kill switch for seller output options (PHASE_15). createJob refuses non
+  // default options while it is false, whatever the web flag says.
+  { key: "output_options_enabled", value: true },
 ];

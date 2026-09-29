@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "specs": [
     {
       "id": "amazon.main",
@@ -96,6 +96,7 @@
       "minHeight": 500,
       "formats": ["jpg", "png"],
       "textAllowed": false,
+      "overlaysAllowed": false,
       "iptcDigitalSourceTypeRequiredIfAI": true
     },
     {
@@ -119,6 +120,8 @@
       "formats": ["jpg", "png"],
       "maxBytes": 12000000,
       "textAllowed": false,
+      "overlaysAllowed": false,
+      "bordersAllowed": false,
       "maxCount": 24
     },
     {
@@ -140,6 +143,7 @@
       "maxBytes": 5000000,
       "background": { "type": "white_preferred" },
       "textAllowed": false,
+      "bordersAllowed": false,
       "maxCount": 9
     },
     {

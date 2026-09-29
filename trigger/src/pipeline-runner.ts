@@ -63,6 +63,7 @@ import {
   IntakeToolResult,
   ProductProfile,
   QCVerdict,
+  LlmShotList,
   ShotList,
   strictToolSchema,
   type AngleRole,
@@ -2566,7 +2567,9 @@ export const PACKSHOT_TYPES: ReadonlySet<Shot["type"]> = new Set<Shot["type"]>([
 ]);
 
 export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanCheck {
-  const parsed = ShotList.safeParse(raw);
+  // LlmShotList leaves out the deterministic only types (original_photo),
+  // so a plan that names one fails here.
+  const parsed = LlmShotList.safeParse(raw);
   if (!parsed.success) {
     return { ok: false, reason: "the plan did not match the shot list schema" };
   }
@@ -3266,7 +3269,7 @@ export async function runGeneratePack(
         { profile, options: planOptions },
         { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "plan" },
         undefined,
-        ShotList,
+        LlmShotList,
       ),
     );
     const fit: FitOptions = {

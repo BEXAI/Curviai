@@ -26,13 +26,26 @@ export const ProductProfile = z.object({
 });
 
 export const Shot = z.object({
-  id: z.string(), type: z.enum(["amazon_main","alt_angle_white","cutout_png","sweep_gray","sweep_brand","lifestyle","infographic","dimensions","in_the_box","comparison","aplus_banner","shopify_hero","collection_thumb","social_1x1","social_4x5","social_9x16","social_2x3","video_spin","video_hero_6s","video_lifestyle_15s","video_ugc_hook"]),
+  id: z.string(), type: z.enum(["amazon_main","alt_angle_white","cutout_png","sweep_gray","sweep_brand","lifestyle","infographic","dimensions","in_the_box","comparison","aplus_banner","shopify_hero","collection_thumb","social_1x1","social_4x5","social_9x16","social_2x3","video_spin","video_hero_6s","video_lifestyle_15s","video_ugc_hook","original_photo"]),
   sourceMediaId: z.string(), method: z.enum(["deterministic","composite_generate","edit_generate","template","video_generate","avatar"]),
   channels: z.array(z.string()), stylePreset: z.string(), scene: z.string().max(400).optional(),
   callouts: z.array(z.string().max(40)).max(5).optional(), credits: z.number(), priority: z.number().int()
 });
 
 export const ShotList = z.object({ shots: z.array(Shot).max(40), skipped: z.array(z.object({ type: z.string(), reason: z.string() })) });
+
+/**
+ * Shot types only the deterministic planner may plan (PHASE_15). The LLM
+ * never sees them: the plan recipe's tool schema is built from LlmShotList.
+ */
+export const DETERMINISTIC_ONLY_SHOT_TYPES = ["original_photo"] as const;
+
+/** Shot without the deterministic only types. The plan recipe's strict tool
+ * schema and validateLlmShotList use it, so the LLM tool schema is the one
+ * the plan recipe has always had. */
+export const LlmShot = Shot.extend({ type: Shot.shape.type.exclude(DETERMINISTIC_ONLY_SHOT_TYPES) });
+
+export const LlmShotList = z.object({ shots: z.array(LlmShot).max(40), skipped: z.array(z.object({ type: z.string(), reason: z.string() })) });
 
 export const QCVerdict = z.object({
   pass: z.boolean(), fidelity: z.number().min(0).max(1), issues: z.array(z.enum(["label_changed","logo_changed","shape_changed","color_shift","extra_items","artifact","bad_shadow","text_in_main","unrealistic_scale","other"])),
@@ -163,6 +176,8 @@ export type Shot = z.infer<typeof Shot>;
 /** How a shot is produced, for example "deterministic" or "video_generate". */
 export type ShotMethod = Shot["method"];
 export type ShotList = z.infer<typeof ShotList>;
+export type LlmShot = z.infer<typeof LlmShot>;
+export type LlmShotList = z.infer<typeof LlmShotList>;
 export type QCVerdict = z.infer<typeof QCVerdict>;
 export type IntakeImageResult = z.infer<typeof IntakeImageResult>;
 export type SellerIntent = z.infer<typeof SellerIntent>;

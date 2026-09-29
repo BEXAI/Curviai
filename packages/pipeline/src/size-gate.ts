@@ -12,10 +12,12 @@
  * never gated. The sizes come from the spec registry (CLAUDE.md rule 2).
  */
 import { getSpec, hasSpec, type ChannelSpec } from "@curvi/specs";
+import { MAX_SOURCE_UPSCALE } from "./output-options";
 import { minLongSideFor } from "./qc/pixelChecks";
 
-/** The most a source is scaled up for any output (PHASE_13.md item 7). */
-export const MAX_SOURCE_UPSCALE = 1.5;
+// Defined in the client safe options module, which scales kept photos by the
+// same cap (PHASE_15 control 6).
+export { MAX_SOURCE_UPSCALE };
 
 /** What one channel spec asks of the photo. */
 export interface SizeRequirement {

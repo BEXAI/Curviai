@@ -7,6 +7,7 @@ import {
   ingestImage,
   INGEST_PIXEL_CAP,
   readMovieDurationSeconds,
+  sourceMediaIngestOf,
   stripJpegMetadata,
   stripPngMetadata,
   stripWebpMetadata,
@@ -78,6 +79,8 @@ describe("ingestImage", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.changed).toBe(true);
+    expect(result.reencoded).toBe(false);
+    expect(result.sourceFormat).toBe("jpeg");
     expect(result.format).toBe("jpeg");
     expect([result.width, result.height]).toEqual([W, H]);
     const meta = await sharp(result.bytes).metadata();
@@ -92,6 +95,8 @@ describe("ingestImage", () => {
     const result = await ingestImage(input);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.reencoded).toBe(true);
+    expect(sourceMediaIngestOf(result)).toEqual({ v: 1, reencoded: true, sourceFormat: "jpeg" });
     expect([result.width, result.height]).toEqual([H, W]);
     const meta = await sharp(result.bytes).metadata();
     expect(meta.orientation ?? 1).toBe(1);
@@ -123,6 +128,7 @@ describe("ingestImage", () => {
     const input = await frame().jpeg().toBuffer();
     const result = await ingestImage(input);
     expect(result.ok && result.changed).toBe(false);
+    expect(result.ok && sourceMediaIngestOf(result)).toEqual({ v: 1, reencoded: false, sourceFormat: "jpeg" });
   });
 
   it("strips PNG text and EXIF chunks losslessly", async () => {
@@ -131,6 +137,7 @@ describe("ingestImage", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.format).toBe("png");
+    expect(result.reencoded).toBe(false);
     expect((await sharp(result.bytes).metadata()).exif).toBeUndefined();
     expect((await pixels(result.bytes)).equals(await pixels(input))).toBe(true);
   });
@@ -141,6 +148,7 @@ describe("ingestImage", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.format).toBe("webp");
+    expect(result.reencoded).toBe(false);
     expect((await sharp(result.bytes).metadata()).exif).toBeUndefined();
     expect(result.bytes.readUInt32LE(4)).toBe(result.bytes.length - 8);
     expect((await pixels(result.bytes)).equals(await pixels(input))).toBe(true);
@@ -155,6 +163,7 @@ describe("ingestImage", () => {
     if (!result.ok) return;
     expect(result.format).toBe("webp");
     expect(result.changed).toBe(true);
+    expect(result.reencoded).toBe(true);
     expect([result.width, result.height]).toEqual([H, W]);
     expect(webpIsLossless(result.bytes)).toBe(true);
     expect((await pixels(result.bytes)).equals(await pixels(input))).toBe(true);
@@ -171,10 +180,12 @@ describe("ingestImage", () => {
   });
 
   it("turns GIF and TIFF into PNG", async () => {
-    for (const input of [await frame().gif().toBuffer(), await frame().tiff().toBuffer()]) {
+    const inputs = { gif: await frame().gif().toBuffer(), tiff: await frame().tiff().toBuffer() } as const;
+    for (const [sourceFormat, input] of Object.entries(inputs)) {
       const result = await ingestImage(input);
       expect(result.ok && result.format).toBe("png");
       expect(result.ok && result.contentType).toBe("image/png");
+      expect(result.ok && sourceMediaIngestOf(result)).toEqual({ v: 1, reencoded: true, sourceFormat });
     }
   });
 
