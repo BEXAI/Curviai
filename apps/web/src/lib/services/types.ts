@@ -153,6 +153,9 @@ export interface InventoryItemView {
 
 export interface InventoryPhotoView {
   items: InventoryItemView[];
+  /** The short reason the vision picker gave, when it chose the featured
+   * product because the rules alone could not. */
+  pickedReason?: string | null;
 }
 
 export interface JobSummary {

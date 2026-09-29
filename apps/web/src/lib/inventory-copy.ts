@@ -13,7 +13,10 @@ export function inventoryView(raw: unknown): InventoryPhotoView[] | null {
   }
   const views = photos.map((photo): InventoryPhotoView => {
     const items = Array.isArray((photo as { items?: unknown })?.items) ? (photo as { items: unknown[] }).items : [];
+    const p = photo as { rule?: unknown; vision?: { reason?: unknown } | null } | null;
+    const reason = p?.rule === "vision" && typeof p.vision?.reason === "string" ? p.vision.reason.trim().slice(0, 200) : "";
     return {
+      ...(reason ? { pickedReason: reason } : {}),
       items: items.flatMap((item): InventoryItemView[] => {
         const i = item as Partial<Record<keyof InventoryItemView | "colorName", unknown>>;
         const status = i.status === "featured" || i.status === "removed" || i.status === "kept" ? i.status : null;
@@ -39,6 +42,12 @@ const STATUS_WORD: Record<InventoryItemView["status"], string> = {
   removed: "removed",
   kept: "kept",
 };
+
+/** The line saying the featured product was picked by the vision picker,
+ * with its short reason, or null when the rules picked it. */
+export function pickedLine(photo: InventoryPhotoView): string | null {
+  return photo.pickedReason ? `Picked by looking at the photo: ${photo.pickedReason}` : null;
+}
 
 /**
  * One plain line per photo that showed more than one product, for example

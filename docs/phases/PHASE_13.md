@@ -108,6 +108,17 @@ Trigger: two more packs with a blue and a red Gatorade bottle and the note "Blue
 
 Demo mode has no cutout: the inventory is skipped and packs run exactly as before. A photo whose inventory decides nothing needs removing (one piece, one product) keeps the intake only target, so single product packs are unchanged.
 
+### Vision tie breaker (added 2026-09-29)
+
+When the rules end in `conflict` or `ambiguous`, the photo has 2 to 6 significant pieces and the seller wrote something (the note, or intake's featureOnly or exclude), the runner asks the `target_picker` recipe (stage `pick`, Haiku 4.5 with Sonnet 5 as fallback, seeded in packages/pipeline/src/seed/recipes.ts) before failing. This also covers notes the word lists cannot read, such as "the one on the right" or "the one with the gold cap".
+
+1. **What it sees.** `renderContactSheet` (packages/pipeline/src/contact-sheet.ts) draws each piece from the inventory cutout already held for the photo (no second cutout call), cropped with a 6% margin, only that piece's own pixels, fitted into a cell on neutral gray under a large number drawn from the template font (seven segment rectangles without it). Pieces are numbered left to right (`pickerNumbering`). The original photo goes along, downscaled to 1024 px. The JSON carries each number's measured color, shape and intake label, the parsed featureOnly and exclude, and the note wrapped in `<user_description>`.
+2. **What it answers.** A strict tool `{ choice: number | null, confidence: "high" | "medium" | "low", reason }` (TargetPick in schemas.ts). The call runs through llmJson and packages/ai like every recipe, and its spend is booked on the job.
+3. **What counts.** `visionDecision` takes the answer only when choice is a number on the sheet, confidence is high or medium, and the piece's dominant color is not one the note excludes (the deterministic color stays a hard veto). An accepted pick is recorded as rule `vision`, features that piece, removes the rest and keeps the touching checks. Anything else, including a picker that fails or answers out of shape, leaves the photo ambiguous and the pack fails with MULTIPLE_PRODUCTS_MESSAGE and nothing charged (the picker's spend stays on the job's COGS).
+4. **What is kept.** The inventory record holds `vision` (choice, confidence, the reason made plain and cut to 200 characters, and the outcome). When the pick was taken the pack page inventory card and the compliance report say "Picked by looking at the photo: " and the reason.
+
+The recipes table needs the target_picker row after deploy (the seed CLI adds it); until then the worker uses the compiled seed row. No migration: `generation_jobs.inventory` and `recipes.stage` are jsonb and text.
+
 ### Known limits
 
 - Two touching products of one color form one piece; with no model boxes the inventory cannot split them and the pack ships the piece (as before). The excluded color guard catches touching products of different colors.

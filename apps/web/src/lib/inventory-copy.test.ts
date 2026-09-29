@@ -2,7 +2,7 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it } from "vitest";
 import { InventoryCard } from "@/components/app/inventory-card";
-import { inventoryLines, inventoryView } from "./inventory-copy";
+import { inventoryLines, inventoryView, pickedLine } from "./inventory-copy";
 
 beforeAll(() => {
   (globalThis as { React?: typeof React }).React = React;
@@ -66,6 +66,23 @@ describe("inventory copy", () => {
     const one = inventoryView({ photos: [{ items: [item("mug", "white", "featured")] }] });
     expect(renderToStaticMarkup(React.createElement(InventoryCard, { inventory: one }))).toBe("");
     expect(renderToStaticMarkup(React.createElement(InventoryCard, { inventory: null }))).toBe("");
+  });
+
+  it("says when the product was picked by looking at the photo, only for a vision pick", () => {
+    const vision = { choice: 2, confidence: "high", reason: "Only the blue bottle has a gold cap.", outcome: "accepted" };
+    const picked = inventoryView({
+      photos: [{ rule: "vision", vision, items: [item("red tall object", "red", "removed"), item("blue tall object", "blue", "featured")] }],
+    });
+    expect(picked?.[0].pickedReason).toBe("Only the blue bottle has a gold cap.");
+    expect(pickedLine(picked![0])).toBe("Picked by looking at the photo: Only the blue bottle has a gold cap.");
+    const html = renderToStaticMarkup(React.createElement(InventoryCard, { inventory: picked }));
+    expect(html).toContain("Picked by looking at the photo: Only the blue bottle has a gold cap.");
+    // A refused answer is kept on the job but never shown.
+    const refused = inventoryView({
+      photos: [{ rule: "ambiguous", vision: { ...vision, outcome: "low_confidence" }, items: [item("a", "red", "kept"), item("b", "blue", "kept")] }],
+    });
+    expect(refused?.[0].pickedReason).toBeUndefined();
+    expect(pickedLine(refused![0])).toBeNull();
   });
 
   it("drops anything malformed", () => {

@@ -139,6 +139,24 @@ export const IntakeToolResult = z.object({
   sellerIntent: SellerIntent,
 });
 
+/**
+ * The target_picker answer (docs/phases/PHASE_13.md, inventory tie
+ * breaker): the number of the one item on the contact sheet the seller's
+ * note means, or null when none or several fit, with a confidence and a
+ * short reason. Sent as the strict tool schema, so every field is required.
+ */
+export const TargetPick = z.object({
+  choice: z.number().int().min(1).max(6).nullable(),
+  confidence: z.enum(["high", "medium", "low"]),
+  reason: z.string().max(200),
+});
+
+/** TargetPick as answers are validated: a reason past 200 characters is cut,
+ * not a reason to drop the answer. */
+export const TargetPickAnswer = TargetPick.extend({
+  reason: z.string().transform((text) => text.slice(0, 200)),
+});
+
 export type Hex = z.infer<typeof Hex>;
 export type ProductProfile = z.infer<typeof ProductProfile>;
 export type Shot = z.infer<typeof Shot>;
@@ -151,6 +169,7 @@ export type SellerIntent = z.infer<typeof SellerIntent>;
 export type NormalizedBox = z.infer<typeof NormalizedBox>;
 export type IntakeProduct = z.infer<typeof IntakeProduct>;
 export type IntakeResult = z.infer<typeof IntakeResult>;
+export type TargetPick = z.infer<typeof TargetPick>;
 
 /** JSON Schema for a Zod schema, ready to send as a tool or response schema. */
 export function jsonSchemaFor(schema: z.ZodType): Record<string, unknown> {

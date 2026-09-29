@@ -1,5 +1,5 @@
 import { Badge, Card, CardContent } from "@curvi/ui";
-import { inventoryLines } from "@/lib/inventory-copy";
+import { inventoryLines, pickedLine } from "@/lib/inventory-copy";
 import type { InventoryItemView, InventoryPhotoView } from "@/lib/services/types";
 
 const STATUS_BADGE: Record<InventoryItemView["status"], { text: string; variant: "success" | "outline" | "default" }> = {
@@ -29,6 +29,11 @@ export function InventoryCard({ inventory }: { inventory: InventoryPhotoView[] |
             <p className="text-sm text-ink-600" data-testid="inventory-line">
               {lines[i]}
             </p>
+            {pickedLine(photo) ? (
+              <p className="text-sm text-ink-600" data-testid="inventory-picked">
+                {pickedLine(photo)}
+              </p>
+            ) : null}
             <ul className="flex flex-wrap gap-2" aria-label="Products found">
               {photo.items.map((item, j) => (
                 <li key={j} className="inline-flex items-center gap-2 text-sm text-ink-800">
