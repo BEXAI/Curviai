@@ -309,6 +309,25 @@ body.theme-dark > * {
     radial-gradient(40rem 26rem at 10% 80%, rgb(45 212 191 / 0.14), transparent 70%);
 }
 
+/*
+ * The logo's colors over the hero metal: a color blend keeps the metal's
+ * light and shade and swaps its hue, teal at the lower left through deep
+ * teal and plum to the logo pink at the upper right, as in the C mark.
+ */
+.hero-metal-hue {
+  background-image: linear-gradient(
+    35deg,
+    #1fd1b8 0%,
+    #14a39a 28%,
+    #0e5f66 45%,
+    #6b2459 62%,
+    #c2336f 80%,
+    #ec4899 100%
+  );
+  mix-blend-mode: color;
+  opacity: 0.9;
+}
+
 .hero-metal-fallback::before {
   content: "";
   position: absolute;

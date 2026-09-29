@@ -13,7 +13,8 @@ import { LiquidMetal } from "@paper-design/shaders-react";
  * version bump must not change the look silently. They start from the
  * library's full bleed "Backdrop" preset (shape none, scale 1) and are tuned
  * to the brand: the night page color behind the metal, a wine color burn
- * tint (the metal's own colors are fixed in the shader; only the tint moves
+ * tint in the logo teal, recolored across the hero by the .hero-metal-hue
+ * layer in globals.css (the metal's own colors are fixed in the shader; only the tint moves
  * them), a gentle red shift and no blue shift so the fringes read wine
  * instead of a rainbow, and a calmer speed. The comparison and the date are
  * in docs/phases/HOME_LIQUID_METAL.md. The two colors match the night and
@@ -26,7 +27,7 @@ const BRAND_METAL = {
   worldWidth: 0,
   worldHeight: 0,
   colorBack: "#07080d",
-  colorTint: "#b03a5b",
+  colorTint: "#2dd4bf",
   repetition: 1.5,
   softness: 0.15,
   distortion: 0.1,

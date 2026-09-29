@@ -278,6 +278,8 @@ export function LiquidMetalBackdrop({ className }: { className?: string }) {
           </ShaderBoundary>
         </div>
       ) : null}
+      {/* The logo's teal to pink sweep, laid over both metals as a color blend. */}
+      <div data-testid="hero-metal-hue" className="hero-metal-hue absolute inset-0" />
     </div>
   );
 }
