@@ -19,9 +19,18 @@ import {
   fidelityReport,
   makeOriginalFit,
   SourceTooSmallError,
+  uprightSize,
+  type NormalizedBox,
   type Shot,
 } from "@curvi/pipeline";
-import { backgroundFor, MAX_SOURCE_UPSCALE, SOURCE_TOO_SMALL_REASON, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
+import {
+  backgroundFor,
+  keptMaxUpscale,
+  SOURCE_TOO_SMALL_REASON,
+  type PixelBox,
+  type ResolvedOutputOptions,
+} from "@curvi/pipeline/output-options";
+import { requiresWhiteBackground } from "@curvi/specs";
 import { originalFit } from "@curvi/pipeline/seed";
 import type { PackAssetTreatment } from "@curvi/pipeline/treatment";
 import type { ChannelSpec } from "@curvi/specs";
@@ -51,6 +60,8 @@ export interface OriginalShotInput {
   loadSource: OriginalSourceLoader | null;
   /** The stored copy was written again at upload (source_media.ingest). */
   reencodedAtUpload?: boolean;
+  /** The product box, normalized to the upright photo, for the P1 crop fit. */
+  productBox?: NormalizedBox;
   /** The fit renderer; makeOriginalFit unless a test passes a double that
    * drifts, to show the exact proof catches it. */
   fitOriginal?: typeof makeOriginalFit;
@@ -77,9 +88,10 @@ export type OriginalShotRender = OriginalRendered | OriginalShippedUnchanged;
 
 /**
  * Fits one kept photo to one spec: loads the stored upload (only from this
- * workspace's prefix), calls makeOriginalFit with the seller's fit and the
- * spec's background color for added space, then proves and encodes the
- * render. Throws ShotUnavailableError with SOURCE_TOO_SMALL_REASON when the
+ * workspace's prefix), calls makeOriginalFit with the seller's fit, the
+ * spec's background color for added space (or the photo's own edge color
+ * with Match my photo's edges), the enlarge cap (1 with Never enlarge) and
+ * the product box for a crop, then proves and encodes the render. Throws ShotUnavailableError with SOURCE_TOO_SMALL_REASON when the
  * photo cannot reach the spec (the planner skips those; this is the last
  * guard), and ShotUnavailableError for a missing or foreign photo or a render
  * that drifted.
@@ -93,13 +105,20 @@ export async function renderOriginalShot(input: OriginalShotInput): Promise<Orig
   if (!source || source.length === 0) {
     throw new ShotUnavailableError(ORIGINAL_NOT_LOADED);
   }
+  const fit = output?.fit ?? "auto";
+  const productBox = fit === "crop" && input.productBox ? await pixelBoxOf(source, input.productBox) : null;
+  // Edge match never reaches a white required spec: a kept photo never
+  // ships there, and the color rule would force white anyway.
+  const edgeMatch = output?.color.kind === "edge_match" && !requiresWhiteBackground(spec);
   let fitted: Awaited<ReturnType<typeof makeOriginalFit>>;
   try {
     fitted = await (input.fitOriginal ?? makeOriginalFit)(source, spec, {
-      fit: output?.fit ?? "auto",
+      fit,
       padRgb: backgroundFor(spec, output).rgb,
-      maxUpscale: MAX_SOURCE_UPSCALE,
+      ...(edgeMatch ? { edgeMatch: true } : {}),
+      maxUpscale: keptMaxUpscale(output),
       maxMegapixels: originalFit.maxMegapixels,
+      ...(productBox ? { productBox } : {}),
       ...(input.reencodedAtUpload ? { reencodedAtUpload: true } : {}),
     });
   } catch (err) {
@@ -151,4 +170,17 @@ export async function renderOriginalShot(input: OriginalShotInput): Promise<Orig
       fidelityKind: "main",
     },
   };
+}
+
+/** A normalized box in upright source pixels, or null when the photo size cannot be read. */
+async function pixelBoxOf(source: Buffer, box: NormalizedBox): Promise<PixelBox | null> {
+  const size = await uprightSize(source);
+  if (!size) {
+    return null;
+  }
+  const left = Math.max(0, Math.floor(box.x * size.width));
+  const top = Math.max(0, Math.floor(box.y * size.height));
+  const right = Math.min(size.width, Math.ceil((box.x + box.width) * size.width));
+  const bottom = Math.min(size.height, Math.ceil((box.y + box.height) * size.height));
+  return right > left && bottom > top ? { left, top, width: right - left, height: bottom - top } : null;
 }

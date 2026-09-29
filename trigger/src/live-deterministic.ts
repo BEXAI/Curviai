@@ -31,7 +31,13 @@ import {
   type RawMask,
   type Shot,
 } from "@curvi/pipeline";
-import { backgroundFor, rgbToHex, type ResolvedOutputOptions, type SpecBackground } from "@curvi/pipeline/output-options";
+import {
+  backgroundFor,
+  productSizeFillFor,
+  rgbToHex,
+  type ResolvedOutputOptions,
+  type SpecBackground,
+} from "@curvi/pipeline/output-options";
 import { canvasDefaults, stillStyle } from "@curvi/pipeline/seed";
 import type { PackAssetTreatment } from "@curvi/pipeline/treatment";
 import { getSpec, type ChannelSpec } from "@curvi/specs";
@@ -88,7 +94,7 @@ export async function renderDeterministicShot(input: {
     case "alt_angle_white":
     case "collection_thumb":
       return withTreatment(
-        await renderOnBackground(product, spec, backgroundFor(spec, output)),
+        await renderOnBackground(product, spec, backgroundFor(spec, output), productSizeFillFor(spec, output)),
         backgroundTreatment(spec, output, input.keptSource),
       );
     case "cutout_png":
@@ -151,13 +157,19 @@ function withTreatment(still: StillRender, treatment: PackAssetTreatment | undef
  * Product on one flat color at the spec size, fill inside spec.fill: white
  * (the registry's, else seed white) on a spec that requires it, the seller's
  * color elsewhere. Edge pixels blend toward that color, never toward white.
+ * fill is the seller's product size (productSizeFillFor); today's standard
+ * fill when absent.
  */
 export async function renderOnBackground(
   product: LiveProduct,
   spec: ChannelSpec,
   background: Pick<SpecBackground, "rgb">,
+  fill?: number,
 ): Promise<StillRender> {
-  const main = await makeOnBackground(product.productPng, product.maskPng, spec, { rgb: background.rgb });
+  const main = await makeOnBackground(product.productPng, product.maskPng, spec, {
+    rgb: background.rgb,
+    ...(fill !== undefined ? { fill } : {}),
+  });
   const reference = await referenceFor(product, main.placement, main.width, main.height);
   return encodeStill(main.raw, main.mask, reference, spec, main.placement, main.jpeg);
 }
@@ -175,16 +187,16 @@ async function renderCutout(
   output: ResolvedOutputOptions | null,
 ): Promise<StillRender> {
   if (!allowsTransparency(spec)) {
-    return renderOnBackground(product, spec, backgroundFor(spec, output));
+    return renderOnBackground(product, spec, backgroundFor(spec, output), productSizeFillFor(spec, output));
   }
   const cutout = await makeCutoutPng(product.productPng, product.maskPng);
   const trimmed = await decodeToRgba(cutout.png);
 
   const { width: canvasW, height: canvasH } = canvasSizeFor(spec);
   const canvasLong = Math.max(canvasW, canvasH);
-  const fillTarget = spec.fill
-    ? Math.min(spec.fill.max, Math.max(spec.fill.min, canvasDefaults.cutoutFillTarget))
-    : canvasDefaults.cutoutFillTarget;
+  // The seller's product size, clamped into spec.fill. Standard, the size
+  // without options, is today's cutout target.
+  const fillTarget = productSizeFillFor(spec, output);
   const scale = Math.min(
     (fillTarget * canvasLong) / Math.max(trimmed.width, trimmed.height),
     (canvasW * canvasDefaults.maxAxisShare) / trimmed.width,

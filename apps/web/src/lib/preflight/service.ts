@@ -71,6 +71,29 @@ export function reusableIntakeOf(row: UploadPreflight | undefined, now: Date): P
   return row.intake as unknown as PreflightIntake;
 }
 
+/**
+ * The product box the preflight kept for an upload (upload_preflights.result
+ * productBox), for the P1 crop fit, or undefined when the row has none or
+ * holds anything but a box inside the photo. Any age: the box describes the
+ * stored photo, which never changes.
+ */
+export function preflightProductBoxOf(
+  row: UploadPreflight | undefined,
+): { x: number; y: number; width: number; height: number } | undefined {
+  const box = (row?.result as { productBox?: unknown } | null | undefined)?.productBox;
+  if (!box || typeof box !== "object") {
+    return undefined;
+  }
+  const { x, y, width, height } = box as Record<string, unknown>;
+  const numbers = [x, y, width, height];
+  if (!numbers.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    return undefined;
+  }
+  const [bx, by, bw, bh] = numbers as number[];
+  const inside = bx >= 0 && by >= 0 && bw > 0 && bh > 0 && bx + bw <= 1.0001 && by + bh <= 1.0001;
+  return inside ? { x: bx, y: by, width: bw, height: bh } : undefined;
+}
+
 export async function preflightUpload(
   deps: PreflightServiceDeps,
   workspaceId: string,

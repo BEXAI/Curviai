@@ -6,11 +6,14 @@ import { boundingBoxOfMask } from "../mask";
 import { fidelityReport } from "../qc/fidelity";
 import { qcKindForSpec } from "../qc/pixelChecks";
 import { rectProduct } from "../testutil";
+import { productSizeFillFor } from "../output-options";
+import { canvasDefaults } from "../seed/templates";
 import {
   buildProductReference,
   encodeUnderLimit,
   makeAmazonMain,
   makeCutoutPng,
+  makeOnBackground,
   makeSweep,
   MIN_JPEG_QUALITY,
   OutputTooLargeError,
@@ -155,6 +158,31 @@ describe("makeAmazonMain", () => {
       .png()
       .toBuffer();
     await expect(makeAmazonMain(product.source, wrongMask, smallSpec)).rejects.toThrow(/size/i);
+  });
+});
+
+describe("product size in the frame (PHASE_15 P1)", () => {
+  it("places a larger or smaller product on an open spec, and keeps amazon.main inside its fill range", async () => {
+    const product = await rectProduct(256, "rgb(30,80,160)", { background: 128 });
+    const open = getSpec("meta.feed_1x1");
+    const white: [number, number, number] = [255, 255, 255];
+    const fills: number[] = [];
+    for (const size of ["smaller", "standard", "larger"] as const) {
+      const placed = await makeOnBackground(product.source, product.mask, open, {
+        rgb: white,
+        fill: productSizeFillFor(open, { productSize: size }),
+      });
+      fills.push(placed.fillRatio);
+      const main = await makeOnBackground(product.source, product.mask, getSpec("amazon.main"), {
+        rgb: white,
+        fill: productSizeFillFor(getSpec("amazon.main"), { productSize: size }),
+      });
+      expect(main.fillRatio).toBeGreaterThanOrEqual(0.85 - 0.005);
+      expect(main.fillRatio).toBeLessThanOrEqual(0.9 + 0.005);
+    }
+    expect(fills[0]).toBeLessThan(fills[1]);
+    expect(fills[1]).toBeLessThan(fills[2]);
+    expect(fills[2]).toBeLessThanOrEqual(canvasDefaults.maxAxisShare);
   });
 });
 

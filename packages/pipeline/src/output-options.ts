@@ -14,8 +14,9 @@
  *   whose registry rule requires white always gets white.
  *
  * Colors, sizes and limits come from the seed and the registry (CLAUDE.md
- * rule 2). The P0 schema accepts only P0 fields; each P1 field joins it in
- * the pull request that renders it.
+ * rule 2). Each P1 field (crop fit, edge match, scene count and style, logo,
+ * product size, never enlarge, graphics color) joined the schema with its
+ * renderer; a stored row from before P1 reads them as their defaults.
  */
 import { z } from "zod";
 import {
@@ -30,7 +31,16 @@ import {
 } from "@curvi/specs";
 import type { Shot } from "./schemas";
 import { MAX_BRAND_COLORS } from "./seed/brand";
-import { backgroundSwatches, canvasDefaults, originalFit, stillStyle, type BackgroundSwatchKey } from "./seed/templates";
+import {
+  backgroundSwatches,
+  canvasDefaults,
+  originalFit,
+  presets,
+  sceneCountOptions,
+  stillStyle,
+  type BackgroundSwatchKey,
+  type PresetKey,
+} from "./seed/templates";
 
 /** A six digit hex color, like #1F2A44. */
 export const HEX = /^#[0-9A-Fa-f]{6}$/;
@@ -55,6 +65,9 @@ export const ColorChoice = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("swatch"), key: z.enum(SWATCH_KEYS) }).strict(),
   z.object({ kind: z.literal("brand"), index: z.number().int().min(0).max(MAX_BRAND_COLORS - 1) }).strict(),
   z.object({ kind: z.literal("custom"), hex: z.string().regex(HEX) }).strict(),
+  /** Match my photo's edges (P1): a kept photo's added space takes the
+   * median color of its own outer ring. Removed photos and extras use white. */
+  z.object({ kind: z.literal("edge_match") }).strict(),
 ]);
 export type ColorChoice = z.infer<typeof ColorChoice>;
 
@@ -95,7 +108,50 @@ export type LookKey = (typeof LOOK_KEYS)[number];
 export type Look = LookKey | "custom";
 
 const Background = z.enum(["remove", "keep"]);
-const Fit = z.enum(["auto", "pad"]);
+/** auto keeps the photo's shape, pad adds flat space, crop (P1) trims to the
+ * channel's shape around the product box. */
+const Fit = z.enum(["auto", "pad", "crop"]);
+export type OutputFit = z.infer<typeof Fit>;
+
+/** Scene style (P1): auto lets the planner and the brand kit pick; a seeded
+ * preset key overrides both for this pack. */
+export const SCENE_PRESET_AUTO = "auto";
+export const SCENE_PRESET_KEYS = [SCENE_PRESET_AUTO, ...(Object.keys(presets) as PresetKey[])] as [
+  typeof SCENE_PRESET_AUTO,
+  ...PresetKey[],
+];
+const ScenePreset = z.enum(SCENE_PRESET_KEYS);
+export type ScenePresetChoice = z.infer<typeof ScenePreset>;
+
+/** Product size in the frame (P1), keys of seed canvasDefaults.productSizeFill. */
+export const PRODUCT_SIZE_KEYS = Object.keys(canvasDefaults.productSizeFill) as [
+  keyof typeof canvasDefaults.productSizeFill,
+  ...(keyof typeof canvasDefaults.productSizeFill)[],
+];
+const ProductSize = z.enum(PRODUCT_SIZE_KEYS);
+export type ProductSize = z.infer<typeof ProductSize>;
+
+const SceneCount = z.number().int().min(sceneCountOptions.min).max(sceneCountOptions.max);
+
+/** The P1 choices' defaults: today's pack, with the seeded scene count. */
+export const P1_DEFAULTS: OutputP1Choices = {
+  sceneCount: sceneCountOptions.default,
+  scenePreset: SCENE_PRESET_AUTO,
+  logo: true,
+  productSize: "standard",
+  enlarge: true,
+  graphicsColor: false,
+};
+
+/** The P1 choices, filled. */
+export interface OutputP1Choices {
+  sceneCount: number;
+  scenePreset: ScenePresetChoice;
+  logo: boolean;
+  productSize: ProductSize;
+  enlarge: boolean;
+  graphicsColor: boolean;
+}
 
 const ExtrasInput = z
   .object({
@@ -120,8 +176,8 @@ const Extras = z
 export type OutputExtras = z.infer<typeof Extras>;
 
 /**
- * What a request may send. P0 fields only, strict: an unknown key or a P1
- * value (fit crop, edge_match, sceneCount) is refused.
+ * What a request may send, strict: an unknown key or an out of range value
+ * is refused.
  */
 export const OutputOptionsInput = z
   .object({
@@ -131,18 +187,24 @@ export const OutputOptionsInput = z
     color: ColorChoice.default({ kind: "swatch", key: DEFAULT_SWATCH_KEY }),
     fit: Fit.default("auto"),
     extras: ExtrasInput.default({}),
+    sceneCount: SceneCount.default(P1_DEFAULTS.sceneCount),
+    scenePreset: ScenePreset.default(P1_DEFAULTS.scenePreset),
+    logo: z.boolean().default(P1_DEFAULTS.logo),
+    productSize: ProductSize.default(P1_DEFAULTS.productSize),
+    enlarge: z.boolean().default(P1_DEFAULTS.enlarge),
+    graphicsColor: z.boolean().default(P1_DEFAULTS.graphicsColor),
   })
   .strict();
 /** The request shape, before defaults. */
 export type OutputOptionsInput = z.input<typeof OutputOptionsInput>;
 
 /** Options after normalization: every field filled, extras complete. */
-export interface NormalizedOutputOptions {
+export interface NormalizedOutputOptions extends OutputP1Choices {
   v: 1;
   lookBase?: LookKey;
   background: "remove" | "keep";
   color: ColorChoice;
-  fit: "auto" | "pad";
+  fit: OutputFit;
   extras: OutputExtras;
 }
 
@@ -169,6 +231,12 @@ export function normalizeOutputOptions(input?: OutputOptionsInput | null): Norma
     color: parsed.color,
     fit: parsed.fit,
     extras,
+    sceneCount: parsed.sceneCount,
+    scenePreset: parsed.scenePreset,
+    logo: parsed.logo,
+    productSize: parsed.productSize,
+    enlarge: parsed.enlarge,
+    graphicsColor: parsed.graphicsColor,
   };
 }
 
@@ -180,6 +248,7 @@ export const LOOK_PRESETS: Readonly<Record<LookKey, OutputChoices>> = {
     color: { kind: "swatch", key: DEFAULT_SWATCH_KEY },
     fit: "auto",
     extras: allExtras(true),
+    ...P1_DEFAULTS,
   },
   keep_photo: {
     v: 1,
@@ -187,6 +256,7 @@ export const LOOK_PRESETS: Readonly<Record<LookKey, OutputChoices>> = {
     color: { kind: "swatch", key: DEFAULT_SWATCH_KEY },
     fit: "auto",
     extras: allExtras(false),
+    ...P1_DEFAULTS,
   },
   brand: {
     v: 1,
@@ -194,6 +264,7 @@ export const LOOK_PRESETS: Readonly<Record<LookKey, OutputChoices>> = {
     color: { kind: "brand", index: 0 },
     fit: "auto",
     extras: allExtras(true),
+    ...P1_DEFAULTS,
   },
 };
 
@@ -215,7 +286,19 @@ function canonicalJson(value: unknown): string {
 }
 
 function choicesOf(options: NormalizedOutputOptions | OutputChoices): OutputChoices {
-  return { v: 1, background: options.background, color: options.color, fit: options.fit, extras: options.extras };
+  return {
+    v: 1,
+    background: options.background,
+    color: options.color,
+    fit: options.fit,
+    extras: options.extras,
+    sceneCount: options.sceneCount,
+    scenePreset: options.scenePreset,
+    logo: options.logo,
+    productSize: options.productSize,
+    enlarge: options.enlarge,
+    graphicsColor: options.graphicsColor,
+  };
 }
 
 /** The look the choices amount to: the preset key on an exact match, otherwise custom. */
@@ -255,7 +338,10 @@ export function outputOptionsKey(input?: OutputOptionsInput | NormalizedOutputOp
  * choices plus the server derived look, the color snapshot, the brand sweep
  * snapshot and the R2 keys of the kept photos. JSON safe, since it crosses
  * the generate-shot subtask boundary. The runner parses the payload with
- * this schema and fails the job closed on anything else.
+ * this schema and fails the job closed on anything else. The P1 fields are
+ * optional so a row stored before P1 still parses; read them through the
+ * accessors below (sceneCountOf, keptMaxUpscale and the rest), which fill
+ * the defaults.
  */
 export const ResolvedOutputOptions = z
   .object({
@@ -269,6 +355,12 @@ export const ResolvedOutputOptions = z
     colorHex: z.string().regex(HEX),
     brandSweepHex: z.string().regex(HEX),
     keepMediaIds: z.array(z.string().min(1).max(1024)),
+    sceneCount: SceneCount.optional(),
+    scenePreset: ScenePreset.optional(),
+    logo: z.boolean().optional(),
+    productSize: ProductSize.optional(),
+    enlarge: z.boolean().optional(),
+    graphicsColor: z.boolean().optional(),
   })
   .strict();
 export type ResolvedOutputOptions = z.infer<typeof ResolvedOutputOptions>;
@@ -295,7 +387,9 @@ export function resolveOutputOptions(options: NormalizedOutputOptions, snapshot:
  * The hex a color choice resolves to, upper case: a seeded swatch, the brand
  * kit color at the index, or the custom value. null when the brand kit has
  * no color at that index (createJob answers invalid_options). Whether the
- * plan includes brand kits is createJob's check, not this one.
+ * plan includes brand kits is createJob's check, not this one. Edge match
+ * resolves to seed white: removed photos and extras use it, and each kept
+ * photo's added space takes its own edge color at render time.
  */
 export function resolveColorHex(choice: ColorChoice, brandColors: readonly string[]): string | null {
   switch (choice.kind) {
@@ -307,12 +401,71 @@ export function resolveColorHex(choice: ColorChoice, brandColors: readonly strin
     }
     case "custom":
       return choice.hex.toUpperCase();
+    case "edge_match":
+      return stillStyle.whiteHex.toUpperCase();
   }
 }
 
-/** The photos with Keep: every photo when the pack keeps its backgrounds (P0). */
-export function keepMediaIdsFor(options: Pick<NormalizedOutputOptions, "background">, photoIds: readonly string[]): string[] {
-  return options.background === "keep" ? [...photoIds] : [];
+/** The P1 fields as a job carries them; absent on rows stored before P1. */
+type P1Fields = Partial<OutputP1Choices>;
+
+/** Lifestyle scenes the pack plans (P1 "Number of scenes"); the seeded
+ * default without options. Scenes off is extras.scenes, not a count. */
+export function sceneCountOf(options?: Pick<P1Fields, "sceneCount"> | null): number {
+  return options?.sceneCount ?? P1_DEFAULTS.sceneCount;
+}
+
+/** The seller's scene style, or null for auto (the planner and brand kit pick). */
+export function scenePresetOf(options?: Pick<P1Fields, "scenePreset"> | null): PresetKey | null {
+  const preset = options?.scenePreset ?? P1_DEFAULTS.scenePreset;
+  return preset === SCENE_PRESET_AUTO ? null : preset;
+}
+
+/** Whether template graphics carry the brand logo (P1 "Logo on graphics"). */
+export function logoOn(options?: Pick<P1Fields, "logo"> | null): boolean {
+  return options?.logo ?? P1_DEFAULTS.logo;
+}
+
+/** Whether template cards use the chosen color (P1 "Graphics follow your color"). */
+export function graphicsFollowColor(options?: Pick<P1Fields, "graphicsColor"> | null): boolean {
+  return options?.graphicsColor ?? P1_DEFAULTS.graphicsColor;
+}
+
+/** The most a kept photo is enlarged: MAX_SOURCE_UPSCALE, or 1 with Never
+ * enlarge my photo (P1). */
+export function keptMaxUpscale(options?: Pick<P1Fields, "enlarge"> | null): number {
+  return (options?.enlarge ?? P1_DEFAULTS.enlarge) ? MAX_SOURCE_UPSCALE : 1;
+}
+
+/**
+ * The product fill for a removed photo on this spec (P1 "Product size in the
+ * frame"): the seeded share for the seller's size, clamped into spec.fill
+ * when the spec sets one, so amazon.main stays within its registry range.
+ * The renderers also keep the product inside canvasDefaults.maxAxisShare.
+ */
+export function productSizeFillFor(spec: ChannelSpec, options?: Pick<P1Fields, "productSize"> | null): number {
+  const fill = canvasDefaults.productSizeFill[options?.productSize ?? P1_DEFAULTS.productSize];
+  return spec.fill ? Math.min(spec.fill.max, Math.max(spec.fill.min, fill)) : fill;
+}
+
+/** A photo's own background choice (P1 "Background per photo"); pack
+ * follows the pack's switch. */
+export type PhotoBackgroundChoice = "pack" | "remove" | "keep";
+
+/**
+ * The photos with Keep: a photo whose own choice is keep, and every photo
+ * that follows the pack (no choice, or pack) when the pack keeps its
+ * backgrounds. Photo order is kept.
+ */
+export function keepMediaIdsFor(
+  options: Pick<NormalizedOutputOptions, "background">,
+  photoIds: readonly string[],
+  perPhoto?: Readonly<Partial<Record<string, PhotoBackgroundChoice>>>,
+): string[] {
+  return photoIds.filter((id) => {
+    const own = perPhoto?.[id];
+    return own === "keep" || ((own === undefined || own === "pack") && options.background === "keep");
+  });
 }
 
 /** One photo of the pack as the planner and the estimate see it. */
@@ -335,13 +488,18 @@ export interface OutputPlanFlags {
   background: "remove" | "keep";
   keepMediaIds: string[];
   extras: OutputExtras;
-  fit: "auto" | "pad";
+  fit: OutputFit;
   photos: PlanPhoto[];
+  /** Lifestyle scenes to plan (P1); the seeded default when absent. */
+  sceneCount?: number;
+  /** False with Never enlarge my photo (P1): kept photos cap at 1. */
+  enlarge?: boolean;
 }
 
 /** The plan flags for resolved options and the pack's photos. No hex, no free text. */
 export function planFlagsOf(
-  resolved: Pick<ResolvedOutputOptions, "background" | "keepMediaIds" | "extras" | "fit">,
+  resolved: Pick<ResolvedOutputOptions, "background" | "keepMediaIds" | "extras" | "fit"> &
+    Pick<P1Fields, "sceneCount" | "enlarge">,
   photos: readonly PlanPhoto[],
 ): OutputPlanFlags {
   return {
@@ -349,6 +507,8 @@ export function planFlagsOf(
     keepMediaIds: [...resolved.keepMediaIds],
     extras: { ...resolved.extras },
     fit: resolved.fit,
+    sceneCount: sceneCountOf(resolved),
+    enlarge: resolved.enlarge ?? P1_DEFAULTS.enlarge,
     photos: photos.map((photo) => ({
       id: photo.id,
       ...(photo.angle !== undefined ? { angle: photo.angle } : {}),
@@ -485,6 +645,36 @@ export function packNeedsCutout(specIds: readonly string[], flags: OutputPlanFla
   return cutoutMediaIds(flags.photos, specIds, flags).length > 0;
 }
 
+/** WCAG relative luminance of an sRGB color, 0 (black) to 1 (white). */
+export function relativeLuminance(hex: string): number {
+  const linear = hexToRgb(hex).map((c) => {
+    const v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+/**
+ * The card and text colors of a template graphic (infographic, dimensions,
+ * in the box, comparison, social cards, banners). Today's look: the style
+ * preset's seeded card color. With "Graphics follow your color" (P1) the
+ * card takes the spec's resolved background (backgroundFor, so a white
+ * required spec stays white), and the text flips to seed
+ * stillStyle.textOnDarkHex on a card darker than darkBackgroundLuminance.
+ */
+export function templateCardColors(
+  spec: ChannelSpec,
+  stylePreset: string,
+  resolved?: (Pick<ResolvedOutputOptions, "colorHex"> & { graphicsColor?: boolean }) | null,
+): { backgroundHex: string; textHex: string } {
+  const preset = (stillStyle.presetBackgroundHex as Record<string, string>)[stylePreset];
+  const backgroundHex = graphicsFollowColor(resolved)
+    ? rgbToHex(backgroundFor(spec, resolved).rgb)
+    : (preset ?? stillStyle.defaultBackgroundHex);
+  const dark = relativeLuminance(backgroundHex) < stillStyle.darkBackgroundLuminance;
+  return { backgroundHex, textHex: dark ? stillStyle.textOnDarkHex : stillStyle.textHex };
+}
+
 /** "#1F2A44" as [31, 42, 68]. */
 export function hexToRgb(hex: string): [number, number, number] {
   if (!HEX.test(hex)) {
@@ -522,11 +712,17 @@ export function backgroundFor(spec: ChannelSpec, resolved?: Pick<ResolvedOutputO
 }
 
 /**
- * How a kept photo is fitted to a spec. An exact size spec always gets added
- * space. A spec that refuses added borders (eBay, TikTok Shop) always keeps
- * the photo's shape, even with pad. Otherwise the seller's choice.
+ * How a kept photo is fitted to a spec. Crop (P1) trims to the spec's shape
+ * on every spec, since it adds nothing; when the product box cannot fit, the
+ * renderer falls back to cropFallbackFor. Otherwise an exact size spec always
+ * gets added space, a spec that refuses added borders (eBay, TikTok Shop)
+ * always keeps the photo's shape, even with pad, and every other spec takes
+ * the seller's choice.
  */
-export function originalFitFor(spec: ChannelSpec, resolved?: Pick<ResolvedOutputOptions, "fit"> | null): "auto" | "pad" {
+export function originalFitFor(spec: ChannelSpec, resolved?: Pick<ResolvedOutputOptions, "fit"> | null): OutputFit {
+  if (resolved?.fit === "crop") {
+    return "crop";
+  }
   if (!allowsAddedBorders(spec)) {
     return "auto";
   }
@@ -534,6 +730,85 @@ export function originalFitFor(spec: ChannelSpec, resolved?: Pick<ResolvedOutput
     return "pad";
   }
   return resolved?.fit ?? "auto";
+}
+
+/** The fit a crop falls back to when the product box is unknown or does not
+ * fit the spec's shape: pad, or auto on a spec that refuses added borders. */
+export function cropFallbackFor(spec: ChannelSpec): "auto" | "pad" {
+  return originalFitFor(spec, { fit: "pad" }) as "auto" | "pad";
+}
+
+/** A rectangle in upright source pixels. */
+export interface PixelBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The crop window for a kept photo on one spec (P1 "Trim to the channel's
+ * shape"), in upright source pixels: the largest window of the spec's canvas
+ * aspect (canvasSizeFor) that fits in the photo and holds the product box
+ * plus seed originalFit.cropMarginShare of the box's longest side on every
+ * side (the margin stops at the photo's edge). On a spec with a safe zone
+ * (meta.story_9x16) the box plus margin must also sit inside the zone once
+ * the window is scaled to the canvas. The window is centered on the box as
+ * far as those rules allow. null when there is no usable box or the box
+ * cannot fit, and the caller falls back (cropFallbackFor). Pure.
+ */
+export function cropWindowFor(
+  photo: { width: number; height: number },
+  box: PixelBox | null | undefined,
+  spec: ChannelSpec,
+): PixelBox | null {
+  const { width: W, height: H } = photo;
+  if (!box || !(W > 0 && H > 0) || !(box.width > 0 && box.height > 0)) {
+    return null;
+  }
+  const boxLeft = Math.max(0, box.left);
+  const boxTop = Math.max(0, box.top);
+  const boxRight = Math.min(W, box.left + box.width);
+  const boxBottom = Math.min(H, box.top + box.height);
+  if (!(boxRight > boxLeft && boxBottom > boxTop)) {
+    return null;
+  }
+  const margin = originalFit.cropMarginShare * Math.max(boxRight - boxLeft, boxBottom - boxTop);
+  const need = {
+    left: Math.max(0, Math.floor(boxLeft - margin)),
+    top: Math.max(0, Math.floor(boxTop - margin)),
+    right: Math.min(W, Math.ceil(boxRight + margin)),
+    bottom: Math.min(H, Math.ceil(boxBottom + margin)),
+  };
+  const canvas = canvasSizeFor(spec);
+  const aspect = canvas.width / canvas.height;
+  // The largest window of the canvas aspect inside the photo, in whole pixels.
+  let winW = Math.min(W, Math.floor(H * aspect));
+  let winH = Math.min(H, Math.round(winW / aspect));
+  if (winH < 1 || winW < 1) {
+    return null;
+  }
+  if (Math.abs(winW / winH - aspect) > 0.01) {
+    winH = Math.min(H, Math.floor(winW / aspect));
+    winW = Math.min(W, Math.round(winH * aspect));
+  }
+  // The safe zone, in window pixels.
+  const zoneTop = Math.ceil(((spec.safeZone?.top ?? 0) * winH) / canvas.height);
+  const zoneBottom = Math.ceil(((spec.safeZone?.bottom ?? 0) * winH) / canvas.height);
+  const place = (lo: number, hi: number, center: number): number | null => {
+    if (lo > hi) return null;
+    return Math.min(hi, Math.max(lo, Math.round(center)));
+  };
+  const left = place(Math.max(0, need.right - winW), Math.min(W - winW, need.left), (need.left + need.right - winW) / 2);
+  const top = place(
+    Math.max(0, need.bottom - (winH - zoneBottom)),
+    Math.min(H - winH, need.top - zoneTop),
+    (need.top + need.bottom - winH - zoneTop + zoneBottom) / 2,
+  );
+  if (left === null || top === null) {
+    return null;
+  }
+  return { left, top, width: winW, height: winH };
 }
 
 /**
@@ -574,16 +849,19 @@ export interface OriginalScale {
  * auto: s = min(maxW / w, maxH / h, maxLongSide / long, sqrt(maxMP / (w * h)), 1),
  * with maxMP the smaller of spec.maxMegapixels and seed
  * originalFit.maxMegapixels. When that misses the spec's minimum long side,
- * minWidth or minHeight, s rises to meet all three, but never above
- * MAX_SOURCE_UPSCALE nor past a maximum; otherwise the photo is skipped with
+ * minWidth or minHeight, s rises to meet all three, but never above the
+ * enlarge cap (keptMaxUpscale: MAX_SOURCE_UPSCALE, or 1 with Never enlarge)
+ * nor past a maximum; otherwise the photo is skipped with
  * SOURCE_TOO_SMALL_REASON. pad: the photo fits inside the canvas (inside the
  * safe zone when the spec has one) and is never enlarged, since the canvas
- * meets the spec's size; pad never skips.
+ * meets the spec's size; pad never skips. crop is planned as its fallback,
+ * since the box is only known at render time: pad never skips, and on a
+ * spec that refuses added borders crop falls back to auto.
  */
 export function originalScale(
   photo: { width: number; height: number },
   spec: ChannelSpec,
-  resolved?: Pick<ResolvedOutputOptions, "fit"> | null,
+  resolved?: (Pick<ResolvedOutputOptions, "fit"> & { enlarge?: boolean }) | null,
 ): OriginalScale {
   const { width: w, height: h } = photo;
   const placed = (scale: number): OriginalScale => ({
@@ -596,7 +874,8 @@ export function originalScale(
   }
   const maxMegapixels = Math.min(spec.maxMegapixels ?? Number.POSITIVE_INFINITY, originalFit.maxMegapixels);
   const byMegapixels = Math.sqrt((maxMegapixels * 1_000_000) / (w * h));
-  if (originalFitFor(spec, resolved) === "pad") {
+  const fit = originalFitFor(spec, resolved);
+  if ((fit === "crop" ? cropFallbackFor(spec) : fit) === "pad") {
     const canvas = canvasSizeFor(spec);
     const safeHeight = canvas.height - (spec.safeZone?.top ?? 0) - (spec.safeZone?.bottom ?? 0);
     return placed(Math.min(canvas.width / w, Math.max(1, safeHeight) / h, byMegapixels, 1));
@@ -609,8 +888,9 @@ export function originalScale(
   if (scale >= need) {
     return placed(scale);
   }
-  if (need > MAX_SOURCE_UPSCALE || need > upper) {
-    return { ...placed(Math.min(need, upper, MAX_SOURCE_UPSCALE)), skip: SOURCE_TOO_SMALL_REASON };
+  const cap = keptMaxUpscale(resolved);
+  if (need > cap || need > upper) {
+    return { ...placed(Math.min(need, upper, cap)), skip: SOURCE_TOO_SMALL_REASON };
   }
   return placed(need);
 }
@@ -664,7 +944,7 @@ export function keptPhotoSpecIds(photo: PlanPhoto, photos: readonly PlanPhoto[],
  */
 export function conflictsFor(
   specIds: readonly string[],
-  resolved: Pick<ResolvedOutputOptions, "colorHex" | "fit" | "keepMediaIds">,
+  resolved: Pick<ResolvedOutputOptions, "colorHex" | "fit" | "keepMediaIds"> & { enlarge?: boolean },
   photos: readonly ConflictPhoto[],
 ): OutputConflict[] {
   const out: OutputConflict[] = [];

@@ -92,7 +92,7 @@ import {
   type ImageModelSeedRow,
   type PresetKey,
 } from "@curvi/pipeline/seed";
-import { MAX_SOURCE_UPSCALE } from "@curvi/pipeline/output-options";
+import { keptMaxUpscale, logoOn, templateCardColors } from "@curvi/pipeline/output-options";
 import { getSpec, listSpecs, requiresWhiteBackground, type ChannelSpec } from "@curvi/specs";
 
 /** Long edge of the source photo the live shots work from: the largest
@@ -1271,13 +1271,14 @@ export class LiveShotGenerator implements ShotGenerator {
 
   /**
    * The brand logo's bytes, loaded once per workspace and key, or null when
-   * the kit has none, the key sits outside the workspace, or it cannot be
-   * read. A logo is optional styling, so a failed read never fails a shot.
+   * the kit has none, the seller turned Logo on graphics off for this pack
+   * (PHASE_15 P1), the key sits outside the workspace, or it cannot be read.
+   * A logo is optional styling, so a failed read never fails a shot.
    */
   private logoFor(args: ShotGenerateArgs): Promise<Buffer | null> {
     const key = args.brand?.logoKey;
     const { loadMedia } = this.opts;
-    if (!key || !loadMedia || !isWorkspaceObjectKey(args.workspaceId, key)) {
+    if (!logoOn(args.output) || !key || !loadMedia || !isWorkspaceObjectKey(args.workspaceId, key)) {
       return Promise.resolve(null);
     }
     const cacheKey = `${args.workspaceId}:${key}`;
@@ -1360,6 +1361,7 @@ export class LiveShotGenerator implements ShotGenerator {
         workspaceId: args.workspaceId,
         loadSource: this.opts.loadMedia ? (key) => this.sourceFor(args.jobId, key) : null,
         ...(args.reencodedAtUpload ? { reencodedAtUpload: true } : {}),
+        ...(args.productBox ? { productBox: args.productBox } : {}),
       });
       if (rendered.kind === "unchanged") {
         return {
@@ -1439,7 +1441,7 @@ export class LiveShotGenerator implements ShotGenerator {
         return null;
       }
       const file = await makeAlreadyWhite(source, productMask, spec, {
-        maxUpscale: MAX_SOURCE_UPSCALE,
+        maxUpscale: keptMaxUpscale(output),
         edgeMarginPx: QC_EDGE_MARGIN_PX,
         ...(args.reencodedAtUpload ? { reencodedAtUpload: true } : {}),
       });
@@ -1552,10 +1554,9 @@ export class LiveShotGenerator implements ShotGenerator {
                 productPng: product.productPng,
                 maskPng: product.maskPng,
                 callouts: shot.callouts,
-                backgroundHex:
-                  (stillStyle.presetBackgroundHex as Record<string, string>)[shot.stylePreset] ??
-                  stillStyle.defaultBackgroundHex,
-                textHex: stillStyle.textHex,
+                // The preset's card color, or the seller's color with
+                // Graphics follow your color, text flipped on a dark card.
+                ...templateCardColors(getSpec(shot.channels[0]), shot.stylePreset, args.output),
                 accentHex: stillStyle.accentHex,
                 fonts: args.brand?.fonts,
                 logo: await this.logoFor(args),

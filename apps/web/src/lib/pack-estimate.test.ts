@@ -69,7 +69,7 @@ describe("estimatePackCredits lists and holds only what the pack makes (Update.m
       "Alternate angles on white, 2",
       "Transparent cutout",
       "Background sweeps, 2",
-      "Lifestyle scenes, 2",
+      "Lifestyle scenes, 3",
       "Infographic",
       "Collection thumbnail",
       "Social crop",
@@ -176,7 +176,14 @@ describe("estimatePackCredits follows the output options (PHASE_15 pricing fixtu
   /** The flags the form sends before it knows any media id. */
   function output(input: OutputOptionsInput): OutputPlanFlags {
     const normalized = normalizeOutputOptions(input);
-    return { background: normalized.background, keepMediaIds: [], extras: normalized.extras, fit: normalized.fit, photos: [] };
+    return {
+      background: normalized.background,
+      keepMediaIds: [],
+      extras: normalized.extras,
+      fit: normalized.fit,
+      photos: [],
+      sceneCount: normalized.sceneCount,
+    };
   }
   const threePhotos = [{}, {}, {}];
   const sum = (lines: ReadonlyArray<{ credits: number }>) => lines.reduce((total, line) => total + line.credits, 0);
@@ -199,7 +206,10 @@ describe("estimatePackCredits follows the output options (PHASE_15 pricing fixtu
 
   const KEEP_WIDE = ["amazon.main", "walmart.main", "tiktokshop.main", "google.merchant.main", "etsy.listing", "ebay.listing"];
   const fixtures: Array<{ name: string; channels: string[]; input?: OutputOptionsInput; shots: number; charged: number; hold: number }> = [
-    { name: "Marketplace ready (today)", channels: DEFAULT_FORM, shots: 11, charged: 6.5, hold: 7 },
+    // Founder decision 4: a default pack plans 3 scenes, one more than before.
+    { name: "Marketplace ready (today)", channels: DEFAULT_FORM, shots: 12, charged: 7.5, hold: 8 },
+    { name: "Marketplace ready, 1 scene", channels: DEFAULT_FORM, input: { sceneCount: 1 }, shots: 10, charged: 5.5, hold: 6 },
+    { name: "Marketplace ready, 4 scenes", channels: DEFAULT_FORM, input: { sceneCount: 4 }, shots: 13, charged: 8.5, hold: 9 },
     { name: "Marketplace ready, scenes off", channels: DEFAULT_FORM, input: { extras: { scenes: false } }, shots: 9, charged: 4.5, hold: 5 },
     { name: "Keep my photo (Amazon main made white)", channels: DEFAULT_FORM, input: { background: "keep" }, shots: 4, charged: 2, hold: 2 },
     {
@@ -210,7 +220,7 @@ describe("estimatePackCredits follows the output options (PHASE_15 pricing fixtu
       charged: 1.5,
       hold: 2,
     },
-    { name: "Keep my photo plus 2 scenes", channels: DEFAULT_FORM, input: { background: "keep", extras: { scenes: true } }, shots: 6, charged: 4, hold: 4 },
+    { name: "Keep my photo plus 3 scenes", channels: DEFAULT_FORM, input: { background: "keep", extras: { scenes: true } }, shots: 7, charged: 5, hold: 5 },
     { name: "Keep my photo for six marketplaces", channels: KEEP_WIDE, input: { background: "keep" }, shots: 6, charged: 3, hold: 3 },
   ];
   for (const fixture of fixtures) {

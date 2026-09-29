@@ -31,6 +31,9 @@ export interface PayloadMedia {
   targetBox?: { x: number; y: number; width: number; height: number } | null;
   /** The preflight's intake answer, for the runner to reuse when fresh. */
   preflight?: PreflightIntake;
+  /** The product box the preflight found (upload_preflights.result
+   * productBox), for the P1 crop fit; targetBox wins over it. */
+  productBox?: { x: number; y: number; width: number; height: number } | null;
   /** Stored upright pixel size (source_media width and height, from the
    * ingest check), so the runner sizes kept photos without a decode. */
   width?: number | null;
@@ -66,7 +69,9 @@ export function payloadOutputOf(stored: unknown): ResolvedOutputOptions | undefi
 }
 
 /** A box the runner can use: every side inside the photo. */
-function validBox(box: PayloadMedia["targetBox"]): box is NonNullable<PayloadMedia["targetBox"]> {
+function validBox(
+  box: PayloadMedia["targetBox"] | PayloadMedia["productBox"],
+): box is NonNullable<PayloadMedia["targetBox"]> {
   return (
     !!box &&
     [box.x, box.y, box.width, box.height].every((n) => typeof n === "number" && Number.isFinite(n)) &&
@@ -161,6 +166,7 @@ export function buildGeneratePackInput(args: {
           ...(isAngleRole(m.angle) ? { angle: m.angle } : {}),
           ...(validBox(m.targetBox) ? { targetBox: m.targetBox } : {}),
           ...(m.preflight ? { preflight: m.preflight } : {}),
+          ...(validBox(m.productBox) ? { productBox: m.productBox } : {}),
           ...(width !== undefined && height !== undefined ? { width, height } : {}),
           ...(typeof m.reencoded === "boolean" ? { reencoded: m.reencoded } : {}),
         };

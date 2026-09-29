@@ -23,7 +23,7 @@ import {
   type PipelineDeps,
   type ShotGenerator,
 } from "./pipeline-runner";
-import { runUploadPreflight } from "./preflight";
+import { runUploadPreflight, unionBox } from "./preflight";
 import { noteKey, PREFLIGHT_FRESH_MS, reusablePreflightIntake, type PreflightIntake } from "./preflight-intake";
 import { demoProfile, DemoShotGenerator } from "./runtime";
 
@@ -388,6 +388,22 @@ describe("runUploadPreflight", () => {
     const run = await runUploadPreflight(deps, { preflightId: "pf-2", workspaceId: WS, mediaKey: KEY, note: "the blue one only" });
     expect(run.rule).toBe("note");
     expect(run.items.filter((i) => i.featured).map((i) => i.label)).toEqual(["blue bottle"]);
+    // The crop box is the featured piece's box (PHASE_15 P1).
+    const blue = run.items.find((i) => i.featured)!;
+    expect(run.productBox).toEqual(blue.box);
+  });
+
+  it("keeps the union of every piece as the product box when none is featured", async () => {
+    const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
+    const run = await runUploadPreflight(deps, { preflightId: "pf-1b", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(run.items.some((i) => i.featured)).toBe(false);
+    const union = unionBox(run.items.map((i) => i.box))!;
+    expect(run.productBox).toEqual(union);
+    for (const item of run.items) {
+      expect(item.box.x).toBeGreaterThanOrEqual(union.x);
+      expect(item.box.x + item.box.width).toBeLessThanOrEqual(union.x + union.width + 1e-9);
+    }
+    expect(unionBox([])).toBeNull();
   });
 
   it("returns intake only and says so when the cutout provider is unavailable", async () => {

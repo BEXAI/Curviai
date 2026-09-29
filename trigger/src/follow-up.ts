@@ -23,7 +23,7 @@
  */
 
 import type { JobRecipeVariant } from "@curvi/db";
-import { badgeEligible, buildPack, type Shot } from "@curvi/pipeline";
+import { badgeEligible, buildPack, type NormalizedBox, type Shot } from "@curvi/pipeline";
 import { channelFileLimit, getSpec, hasSpec } from "@curvi/specs";
 import type { ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 import {
@@ -92,6 +92,9 @@ export interface PackFollowUpInput {
   output?: ResolvedOutputOptions;
   /** Media ids of photos whose stored copy was written again at upload. */
   reencoded?: string[];
+  /** The product box per photo, by media id (target_box, else the upload
+   * preflight's productBox), for the P1 crop fit of kept photos. */
+  productBoxes?: Record<string, NormalizedBox>;
 }
 
 export interface PackFollowUpSummary {
@@ -240,6 +243,9 @@ export async function runPackFollowUp(
       ...(input.brand ? { brand: input.brand } : {}),
       ...(parsedOutput.output ? { output: parsedOutput.output } : {}),
       ...(input.reencoded && input.reencoded.length > 0 ? { reencoded: [...input.reencoded] } : {}),
+      ...(input.productBoxes && Object.keys(input.productBoxes).length > 0
+        ? { productBoxes: { ...input.productBoxes } }
+        : {}),
     };
     // One shot failing never takes its siblings down, as in a first run, and
     // an added angle's shots share the first run's concurrency limit.

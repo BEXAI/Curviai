@@ -40,6 +40,7 @@ import {
   planFlagsOf,
   resolveColorHex,
   resolveOutputOptions,
+  SOURCE_TOO_SMALL_REASON,
   type OutputOptionsInput,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
@@ -434,10 +435,14 @@ describe("kept photos and colored backgrounds keep the product pixels (PHASE_15)
     priority: 1,
   });
 
-  for (const fit of ["auto", "pad"] as const) {
+  for (const fit of ["auto", "pad", "crop"] as const) {
     it(`original_photo passes fidelity with kind main on every spec it may target, fit ${fit}`, async () => {
       const photo = await keptPhoto();
-      const output = optionsWith({ background: "keep", fit, color: { kind: "swatch", key: "sand" } }, "#EADFCF");
+      // The crop run also matches the photo's edges where a crop falls back to pad.
+      const output =
+        fit === "crop"
+          ? optionsWith({ background: "keep", fit, color: { kind: "edge_match" } }, white)
+          : optionsWith({ background: "keep", fit, color: { kind: "swatch", key: "sand" } }, "#EADFCF");
       const generator = new LiveShotGenerator({
         ai: { registry: new ProviderRegistry(), routing: {}, meter: new InMemoryCostMeter(), breakerStore: new InMemoryBreakerStore() },
         wiring: { llmLive: false, imageProviders: [], cutoutProviders: [], cutoutLive: false },
@@ -445,6 +450,7 @@ describe("kept photos and colored backgrounds keep the product pixels (PHASE_15)
       });
       const specIds = keptSpecIds();
       expect(specIds.length).toBeGreaterThan(3);
+      let cropped = 0;
       for (const specId of specIds) {
         const generation = await generator.generate({
           shot: originalShot(specId),
@@ -453,8 +459,13 @@ describe("kept photos and colored backgrounds keep the product pixels (PHASE_15)
           jobId: "job-kept",
           workspaceId: "ws-1",
           output,
+          ...(fit === "crop" ? { productBox: { x: 0.35, y: 0.3, width: 0.3, height: 0.4 } } : {}),
         });
         expect(generation.fidelityKind, specId).toBe("main");
+        if (fit === "crop") {
+          expect(generation.treatment?.cropped || generation.treatment?.cropFallback, specId).toBe(true);
+          if (generation.treatment?.cropped) cropped++;
+        }
         if (generation.passthrough) {
           expect(generation.encoded.buffer.equals(photo), specId).toBe(true);
           continue;
@@ -470,8 +481,34 @@ describe("kept photos and colored backgrounds keep the product pixels (PHASE_15)
         expect(report.issues, specId).toEqual([]);
         expect(report.maskArea, specId).toBeGreaterThan(0);
       }
+      if (fit === "crop") {
+        expect(cropped).toBeGreaterThan(0);
+      }
     }, 120_000);
   }
+
+  it("never enlarges a kept photo with Never enlarge my photo", async () => {
+    const small = await encodeJpeg(solidCanvas(1200, 1200, 90, 120, 150), 92);
+    const spec = getSpec("amazon.secondary");
+    // 1200 px reaches amazon.secondary's 1600 minimum only by enlarging it.
+    const enlarged = await renderOriginalShot({
+      shot: originalShot(spec.id),
+      spec,
+      workspaceId: "ws-1",
+      output: optionsWith({ background: "keep" }, white),
+      loadSource: async () => small,
+    });
+    expect(enlarged.kind === "rendered" ? enlarged.still.treatment.scale : 1).toBeGreaterThan(1);
+    await expect(
+      renderOriginalShot({
+        shot: originalShot(spec.id),
+        spec,
+        workspaceId: "ws-1",
+        output: optionsWith({ background: "keep", enlarge: false }, white),
+        loadSource: async () => small,
+      }),
+    ).rejects.toThrow(SOURCE_TOO_SMALL_REASON);
+  });
 
   it("fails a render that sharpens, brightens or shifts the photo by one pixel", async () => {
     const photo = await keptPhoto();

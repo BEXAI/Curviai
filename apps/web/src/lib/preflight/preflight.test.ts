@@ -14,6 +14,7 @@ import {
 } from "./copy";
 import { demoPreflight } from "./demo";
 import { sizeNeeds, storedPreflightOf } from "./result";
+import { preflightProductBoxOf } from "./service";
 import type { PreflightView } from "./types";
 
 // docs/phases/PHASE_14.md workstream 4 and item 3.2: what the form says
@@ -59,6 +60,19 @@ describe("storedPreflightOf", () => {
     );
     expect(stored).toMatchObject({ status: "ready", found: "silver watch", problem: null, productLongSide: 1000 });
     expect(stored.sizes.find((s) => s.specId === "amazon.main")).toMatchObject({ measure: "product" });
+  });
+
+  it("keeps the inventory's product box for the crop fit (PHASE_15 P1)", () => {
+    const box = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 };
+    expect(storedPreflightOf(run({ productBox: box })).productBox).toEqual(box);
+    expect(storedPreflightOf(run({})).productBox).toBeUndefined();
+    const row = { result: { productBox: box } } as unknown as Parameters<typeof preflightProductBoxOf>[0];
+    expect(preflightProductBoxOf(row)).toEqual(box);
+    const outside = { result: { productBox: { x: 0.9, y: 0, width: 0.5, height: 0.5 } } } as unknown as Parameters<
+      typeof preflightProductBoxOf
+    >[0];
+    expect(preflightProductBoxOf(outside)).toBeUndefined();
+    expect(preflightProductBoxOf(undefined)).toBeUndefined();
   });
 
   it("blocks prohibited goods, screenshots and photos with no product, each with its own fix", () => {

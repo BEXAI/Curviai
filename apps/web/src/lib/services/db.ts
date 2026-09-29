@@ -72,6 +72,7 @@ import {
   putGeneratedObject,
 } from "@/lib/r2";
 import {
+  preflightProductBoxOf,
   preflightRowsFor,
   preflightUpload as runPreflightUpload,
   reusableIntakeOf,
@@ -87,9 +88,11 @@ import { r2TrustStorage } from "@/lib/trust/storage";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
 import {
+  hasPhotoBackgroundOverride,
   isNonDefaultOutput,
   outputEstimateInputs,
   parseStoredOutputOptions,
+  photoBackgroundsOf,
   readStoredOutputOptions,
   resolveJobOutput,
   type OutputPhoto,
@@ -1387,7 +1390,45 @@ export class DbService implements Services {
       baseCostMicros: run.baseCostMicros,
       ...(run.output ? { output: run.output } : {}),
       ...(await this.reencodedSources(workspaceId, run.shots)),
+      ...(run.output?.fit === "crop" ? await this.productBoxesFor(workspaceId, run.shots) : {}),
     };
+  }
+
+  /**
+   * The product box per source photo of the follow up shots, for the P1
+   * crop fit of kept photos: the seller's tap (source_media.target_box),
+   * else the upload preflight's productBox. The same rule as a first run.
+   */
+  private async productBoxesFor(
+    workspaceId: string,
+    shots: Shot[],
+  ): Promise<{ productBoxes?: Record<string, { x: number; y: number; width: number; height: number }> }> {
+    const keys = [...new Set(shots.map((s) => s.sourceMediaId).filter((k): k is string => typeof k === "string" && k.length > 0))];
+    if (keys.length === 0) {
+      return {};
+    }
+    try {
+      const [rows, preflights] = await Promise.all([
+        this.db.query.sourceMedia.findMany({
+          where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.r2Key, keys)),
+          columns: { r2Key: true, targetBox: true },
+        }),
+        preflightRowsFor(this.db, workspaceId, keys),
+      ]);
+      const boxes: Record<string, { x: number; y: number; width: number; height: number }> = {};
+      for (const key of keys) {
+        const box = rows.find((r) => r.r2Key === key)?.targetBox ?? preflightProductBoxOf(preflights.get(key));
+        if (box) {
+          boxes[key] = box;
+        }
+      }
+      return Object.keys(boxes).length > 0 ? { productBoxes: boxes } : {};
+    } catch (err) {
+      // A crop without a box falls back to added space with a note, so a
+      // failed read never stops the follow up.
+      console.warn(`[jobs] could not read the product boxes of workspace ${workspaceId}`, err);
+      return {};
+    }
   }
 
   /** The follow up shots' source photos whose stored copy was written again
@@ -1687,7 +1728,10 @@ export class DbService implements Services {
     if (!brandKitRead && input.outputOptions?.color?.kind === "brand") {
       return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
     }
-    const wantsOptions = input.mode !== "concept" && isNonDefaultRequest(input.outputOptions);
+    const photoBackgrounds = photoBackgroundsOf(input.uploads);
+    const wantsOptions =
+      input.mode !== "concept" &&
+      (isNonDefaultRequest(input.outputOptions) || hasPhotoBackgroundOverride(input.outputOptions, photoBackgrounds));
     const output = resolveJobOutput({
       input: input.outputOptions,
       mode: input.mode,
@@ -1695,6 +1739,7 @@ export class DbService implements Services {
       brandColors,
       brandKitsAllowed: entitlementsFor(tier).brandKits > 0,
       photos,
+      photoBackgrounds,
     });
     if (!output.ok) {
       return { outcome: "rejected", reason: output.reason, message: output.message };
@@ -1883,6 +1928,7 @@ export class DbService implements Services {
           media: media.map((m) => ({
             ...m,
             preflight: reusableIntakeOf(preflights.get(m.r2Key), new Date()),
+            productBox: preflightProductBoxOf(preflights.get(m.r2Key)),
           })),
           userDescription: input.userDescription,
           brandColors,

@@ -44,6 +44,22 @@ describe("applyBrandStylePreset", () => {
     expect(applyBrandStylePreset(plan, "outdoor", clear)).toBe(plan);
   });
 
+  it("lets the pack's Scene style win over the kit, and auto defer to it (PHASE_15 P1)", () => {
+    expect(applyBrandStylePreset(plan, "luxury_marble", matte, "outdoor").shots.map((s) => s.stylePreset)).toEqual([
+      "none",
+      "outdoor",
+      "outdoor",
+    ]);
+    expect(applyBrandStylePreset(plan, null, matte, "holiday").shots[1].stylePreset).toBe("holiday");
+    expect(applyBrandStylePreset(plan, "luxury_marble", matte, AUTO_STYLE_PRESET).shots[1].stylePreset).toBe(
+      "luxury_marble",
+    );
+    expect(applyBrandStylePreset(plan, null, matte, AUTO_STYLE_PRESET)).toBe(plan);
+    // Reflective products stay on soft light whatever the seller picks.
+    const shiny = { surface: { reflective: true, transparent: false, textured: false } };
+    expect(applyBrandStylePreset(plan, null, shiny, "outdoor")).toBe(plan);
+  });
+
   it("recognizes only seeded preset keys", () => {
     expect(brandStylePreset("holiday")).toBe("holiday");
     expect(brandStylePreset("toString")).toBeNull();

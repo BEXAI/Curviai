@@ -72,6 +72,7 @@ describe("parseTreatmentNote", () => {
       [TREATMENT_NOTES.resizedFrom(4032, 3024), "resizedFrom", "4032x3024"],
       [TREATMENT_NOTES.padded("#1F2A44"), "padded", "#1F2A44"],
       [TREATMENT_NOTES.cropped, "cropped", undefined],
+      [TREATMENT_NOTES.cropFallback, "cropFallback", undefined],
       [TREATMENT_NOTES.enlarged(1.25), "enlarged", "1.3"],
       [TREATMENT_NOTES.colorConverted, "colorConverted", undefined],
       [TREATMENT_NOTES.alphaFilled("#FFFFFF"), "alphaFilled", "#FFFFFF"],

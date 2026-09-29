@@ -73,7 +73,8 @@ export interface WhitenResult {
   placement: ProductPlacement;
 }
 
-const DEFAULT_FILL_TARGET = 0.875;
+/** Today's product fill: the Standard product size (seed). */
+const DEFAULT_FILL_TARGET = canvasDefaults.productSizeFill.standard;
 
 /** An RGB color as three bytes. */
 export type Rgb = readonly [number, number, number];
@@ -115,6 +116,11 @@ export async function makeAmazonMain(
 export interface OnBackgroundOptions {
   /** The background color every pixel outside the mask gets. */
   rgb: Rgb;
+  /** Product longest side over canvas longest side (P1 "Product size in the
+   * frame", output-options productSizeFillFor). Clamped into spec.fill here
+   * too, so a white main never leaves its registry range. Default: today's
+   * standard fill. */
+  fill?: number;
 }
 
 /**
@@ -140,9 +146,8 @@ export async function makeOnBackground(
 
   const canvasW = spec.width ?? canvasDefaults.width;
   const canvasH = spec.height ?? canvasW;
-  const fillTarget = spec.fill
-    ? clamp(DEFAULT_FILL_TARGET, spec.fill.min, spec.fill.max)
-    : DEFAULT_FILL_TARGET;
+  const fill = opts.fill ?? DEFAULT_FILL_TARGET;
+  const fillTarget = spec.fill ? clamp(fill, spec.fill.min, spec.fill.max) : fill;
 
   let smallest = { bytes: 0, width: canvasW, height: canvasH };
   for (const size of stepDownSizes(canvasW, canvasH, spec)) {

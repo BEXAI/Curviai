@@ -23,7 +23,7 @@ import {
   type RawImage,
   type RawMask,
 } from "@curvi/pipeline";
-import { backgroundFor, MAX_SOURCE_UPSCALE, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
+import { backgroundFor, keptMaxUpscale, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 import { originalFit, recipeSeedRows } from "@curvi/pipeline/seed";
 import { getSpec } from "@curvi/specs";
 import type { ChurnSignals } from "./churn";
@@ -201,7 +201,8 @@ export class DemoShotGenerator implements ShotGenerator {
     const fitted = await makeOriginalFit(photo, spec, {
       fit: output?.fit ?? "auto",
       padRgb: backgroundFor(spec, output).rgb,
-      maxUpscale: MAX_SOURCE_UPSCALE,
+      ...(output?.color.kind === "edge_match" ? { edgeMatch: true } : {}),
+      maxUpscale: keptMaxUpscale(output),
       maxMegapixels: originalFit.maxMegapixels,
     });
     if (fitted.passthrough) {

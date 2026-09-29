@@ -576,6 +576,8 @@ export function outputColorName(resolved: Pick<ResolvedOutputOptions, "color" | 
       return `brand color ${resolved.color.index + 1}, ${resolved.colorHex.toUpperCase()}`;
     case "custom":
       return resolved.colorHex.toUpperCase();
+    case "edge_match":
+      return "your photo's own edge color";
   }
 }
 
