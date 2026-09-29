@@ -38,6 +38,7 @@ import {
 } from "@curvi/ai";
 import { createHash } from "node:crypto";
 import {
+  applyAddedOverlays,
   applyOriginalSizes,
   badgeEligible,
   applyBrandStylePreset,
@@ -1263,6 +1264,31 @@ export function screenshotMediaIds(intake: IntakeResult, judged: readonly string
   }
   intake.images.forEach((image, i) => {
     if (image.screenshot === true) {
+      flagged.add(judged[i]);
+    }
+  });
+  return flagged;
+}
+
+/**
+ * Media ids intake flagged with addedOverlays: text, borders, watermarks or
+ * stickers added on top of the photo (intake version 5, PHASE_15 P1). Mapped
+ * like screenshotMediaIds: when the entry count does not match the photos,
+ * no photo is flagged, so a kept photo ships as before.
+ */
+export function addedOverlayMediaIds(intake: IntakeResult, judged: readonly string[], jobId: string): Set<string> {
+  const flagged = new Set<string>();
+  if (!intake.images.some((image) => image.addedOverlays === true)) {
+    return flagged;
+  }
+  if (intake.images.length !== judged.length) {
+    console.warn(
+      `[runner] job ${jobId} intake returned ${intake.images.length} verdicts for ${judged.length} photos; added text flags are not mapped to photos`,
+    );
+    return flagged;
+  }
+  intake.images.forEach((image, i) => {
+    if (image.addedOverlays === true) {
       flagged.add(judged[i]);
     }
   });
@@ -3106,7 +3132,9 @@ const MAX_PLAN_SHOTS = 40;
  * 3. shots in an extra family the seller turned off are skipped with
  *    SELLER_OFF_REASON (the excluded types, PHASE_15), lifestyle scenes past
  *    the pack's scene count are skipped (capSceneCount), and each kept photo
- *    leaves the specs it is too small for (applyOriginalSizes);
+ *    leaves the specs it is too small for (applyOriginalSizes) and, when
+ *    intake saw added text on it, the specs that refuse overlays
+ *    (applyAddedOverlays);
  * 4. when google.merchant.main is picked its slot is filled: the white main
  *    image also ships to Google when there is one, otherwise a white front
  *    shot is added; a picked spec the seller's switches emptied gets the
@@ -3144,6 +3172,7 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
   shots = skipSellerOffShots(shots, opts.output, skipped);
   shots = capSceneCount(shots, opts.output, skipped);
   shots = applyOriginalSizes(shots, opts.output, skipped);
+  shots = applyAddedOverlays(shots, opts.output, skipped);
 
   const frontUsable = opts.profile.imageQuality.usableForMain && opts.profile.photographedAngles.includes("front");
   if (
@@ -3385,10 +3414,15 @@ function pickedSpecIds(channels: readonly string[]): string[] {
 
 /**
  * The plan flags of a run: the resolved options over the camera photos, in
- * pack order, with their stored sizes and seller angles. Only camera photos
- * can be kept, so a screenshot in keepMediaIds is dropped.
+ * pack order, with their stored sizes and seller angles, and the photos
+ * intake saw added text on (addedOverlayMediaIds). Only camera photos can be
+ * kept, so a screenshot in keepMediaIds is dropped.
  */
-export function runPlanFlags(output: ResolvedOutputOptions, images: GeneratePackInput["images"]): OutputPlanFlags {
+export function runPlanFlags(
+  output: ResolvedOutputOptions,
+  images: GeneratePackInput["images"],
+  addedOverlays: ReadonlySet<string> = new Set(),
+): OutputPlanFlags {
   const ids = new Set(images.map((image) => image.mediaId));
   return planFlagsOf(
     { ...output, keepMediaIds: output.keepMediaIds.filter((id) => ids.has(id)) },
@@ -3397,6 +3431,7 @@ export function runPlanFlags(output: ResolvedOutputOptions, images: GeneratePack
       ...(image.angle !== undefined ? { angle: image.angle } : {}),
       ...(image.width !== undefined ? { width: image.width } : {}),
       ...(image.height !== undefined ? { height: image.height } : {}),
+      ...(addedOverlays.has(image.mediaId) ? { addedOverlays: true } : {}),
     })),
   );
 }
@@ -3591,7 +3626,11 @@ export async function runGeneratePack(
     }
     // The output options as plan flags over the camera photos: a screenshot
     // is never the product, so it is never kept either.
-    const flags = output ? runPlanFlags(output, images) : undefined;
+    // A kept photo intake saw added text on is left out of the specs that
+    // refuse it (applyAddedOverlays).
+    const flags = output
+      ? runPlanFlags(output, images, addedOverlayMediaIds(intake.value, judged, input.jobId))
+      : undefined;
     const keptIds = flags?.keepMediaIds ?? [];
     // The photos a cutout shot needs; the others (kept photos no shot cuts
     // out) read the upload's cached cutout only. Null: every photo.

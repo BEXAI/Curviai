@@ -9,6 +9,7 @@ import {
   SHOT_PROVIDER_TROUBLE,
 } from "@curvi/trigger/runner";
 import {
+  ADDED_OVERLAYS_REASON,
   MAX_SOURCE_UPSCALE,
   normalizeOutputOptions,
   resolveOutputOptions,
@@ -17,7 +18,14 @@ import {
 } from "@curvi/pipeline/output-options";
 import { listSpecs } from "@curvi/specs";
 import { SETTLED_JOB_MESSAGES } from "@/lib/jobs/enqueue";
-import { needsReviewNote, outputOptionsSummary, packSummaryLine, publicJobError, skippedCopy } from "./job-copy";
+import {
+  ADDED_TEXT_COPY,
+  needsReviewNote,
+  outputOptionsSummary,
+  packSummaryLine,
+  publicJobError,
+  skippedCopy,
+} from "./job-copy";
 
 // enqueue.ts schedules inline packs with next/server's after(); only its
 // settled messages are read here.
@@ -215,8 +223,20 @@ describe("PHASE_15 reasons", () => {
     expect(needsReviewNote(SELLER_OFF_REASON)).toContain("You turned this off");
   });
 
+  it("tells the seller to leave the channel out or upload a clean photo for added text (P1)", () => {
+    const copy = skippedCopy(`original_photo:ebay.listing ${ADDED_OVERLAYS_REASON}`, "original_photo");
+    expect(copy).toBe(ADDED_TEXT_COPY);
+    expect(copy.label).toBe("Needs a clean photo");
+    expect(copy.note).toContain("added text, a border or a watermark");
+    expect(copy.note).toContain("Upload a clean photo, or untick this channel.");
+    expect(copy.note).toContain("Your product's own logo and labels are fine.");
+    expect(skippedCopy(ADDED_OVERLAYS_REASON).label).not.toBe("Needs photo");
+  });
+
   it("keeps every new line plain spoken (rule 9)", () => {
     const lines = [
+      ADDED_TEXT_COPY.label,
+      ADDED_TEXT_COPY.note,
       skippedCopy(SELLER_OFF_REASON).label,
       skippedCopy(SELLER_OFF_REASON).note,
       skippedCopy(SOURCE_TOO_SMALL_REASON).label,

@@ -114,6 +114,7 @@ export function storedPreflightOf(
     ...(run.productBox ? { productBox: run.productBox } : {}),
     // The preview shows one product, so a photo that needs the chooser has none.
     ...(previewKey && status === "ready" ? { previewKey } : {}),
+    ...(image.addedOverlays === true ? { addedOverlays: true } : {}),
   };
 }
 

@@ -30,6 +30,7 @@ import {
   normalizeOutputOptions,
   resolveColorHex,
   resolveOutputOptions,
+  ADDED_OVERLAYS_REASON,
   SELLER_OFF_REASON,
   type OutputOptionsInput,
   type ResolvedOutputOptions,
@@ -70,6 +71,7 @@ import {
   parseRunOutput,
   productBoxesOf,
   runPlanFlags,
+  addedOverlayMediaIds,
   shotFailureOutcome,
   moderationBlockedMessage,
   moderationBlockReasons,
@@ -662,7 +664,7 @@ describe("brands and logos are always allowed (PHASE_14 workstream 2)", () => {
   });
 
   it("never blocks on a brand or a logo alone", () => {
-    const intake = { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, flags: cleanFlags }] };
+    const intake = { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags: cleanFlags }] };
     const profile = { ...demoProfile, preserveLogos: ["ROLEX"], complianceFlags: ["possible_counterfeit" as const] };
     expect(moderationBlockReasons(intake, profile)).toEqual([]);
     const claims = { ...demoProfile, complianceFlags: ["medical_claim" as const, "child_product" as const, "none" as const] };
@@ -3240,6 +3242,61 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
       type: "social_1x1",
       reason: SELLER_OFF_REASON,
       channels: ["meta.feed_1x1"],
+    });
+  });
+
+  describe("added text on a kept photo (intake version 5)", () => {
+    const flaggedIntake = (addedOverlays: boolean) => ({
+      images: [
+        {
+          sellableProduct: true,
+          distinctProducts: 1,
+          sharpEnough: true,
+          screenshot: false,
+          addedOverlays,
+          flags: cleanFlags,
+          products: [{ label: "blue bottle", box: { x: 0.3, y: 0.2, width: 0.4, height: 0.6 }, matchesIntent: "yes" }],
+        },
+      ],
+    });
+    const intake = (addedOverlays: boolean) =>
+      new MockProvider({ name: "mock-intake", tasks: [intakeKey], output: flaggedIntake(addedOverlays) });
+
+    it("addedOverlayMediaIds maps the flag to photos, and none when the counts differ", () => {
+      const one = { images: [{ ...flaggedIntake(true).images[0], products: [] }] };
+      expect(addedOverlayMediaIds(one, ["m1"], "job")).toEqual(new Set(["m1"]));
+      expect(addedOverlayMediaIds(one, ["m1", "m2"], "job")).toEqual(new Set());
+      const clean = { images: [{ ...flaggedIntake(false).images[0], products: [] }] };
+      expect(addedOverlayMediaIds(clean, ["m1"], "job")).toEqual(new Set());
+    });
+
+    it("runPlanFlags marks only the flagged photos", () => {
+      const flags = runPlanFlags(keepAll(["m1", "m2"]), [{ mediaId: "m1" }, { mediaId: "m2" }], new Set(["m2"]));
+      expect(flags.photos).toEqual([{ id: "m1" }, { id: "m2", addedOverlays: true }]);
+    });
+
+    it("leaves a flagged kept photo out of eBay and ships it elsewhere", async () => {
+      const deps = makeDeps({ ai: makeAi({ intake: intake(true) }) });
+      const summary = await runGeneratePack(
+        { ...baseInput, channels: ["ebay.listing", "shopify.product"], output: keepAll(["m1"]) },
+        deps,
+      );
+      expect(summary.state).toBe("done");
+      expect(summary.skipped).toContainEqual({ type: "original_photo:ebay.listing", reason: ADDED_OVERLAYS_REASON });
+      const files = await packReport(summary);
+      expect(files.some((f) => f.specId === "shopify.product" && f.pass)).toBe(true);
+      expect(files.some((f) => f.specId === "ebay.listing")).toBe(false);
+    });
+
+    it("ships a clean kept photo to eBay as before", async () => {
+      const summary = await runGeneratePack(
+        { ...baseInput, channels: ["ebay.listing", "shopify.product"], output: keepAll(["m1"]) },
+        makeDeps({ ai: makeAi({ intake: intake(false) }) }),
+      );
+      expect(summary.state).toBe("done");
+      expect(summary.skipped.some((s) => s.reason === ADDED_OVERLAYS_REASON)).toBe(false);
+      const files = await packReport(summary);
+      expect(files.some((f) => f.specId === "ebay.listing" && f.pass)).toBe(true);
     });
   });
 

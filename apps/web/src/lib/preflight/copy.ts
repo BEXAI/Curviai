@@ -6,6 +6,8 @@
  * selected channels from the form.
  */
 
+import { specAcceptsImage } from "@curvi/pipeline/output-options";
+import { getSpec, hasSpec, refusesOverlays } from "@curvi/specs";
 import type { PreflightItemView, PreflightProblem, PreflightView } from "./types";
 
 const FAMILY_NAMES: Record<string, string> = {
@@ -63,6 +65,31 @@ export interface PhotoOutputContext {
  * "Several products in one photo"). */
 export const OTHER_ITEMS_KEPT_COPY =
   "This photo shows other items. With the background kept, they stay in your images. Turn on Remove the background to show only your product.";
+
+/**
+ * The selected specs a kept photo with added text, borders or watermarks is
+ * left out of: those that take a kept photo and refuse overlays in the
+ * registry (eBay, Google), as the planner's applyAddedOverlays does.
+ */
+export function addedTextSpecIds(selected: readonly string[]): string[] {
+  return selected.filter((id) => {
+    if (!hasSpec(id)) return false;
+    const spec = getSpec(id);
+    return refusesOverlays(spec) && specAcceptsImage(spec, "original");
+  });
+}
+
+/**
+ * Under a kept photo intake saw added text on (PHASE_15 P1): "This photo
+ * looks like it has added text, a border or a watermark, which eBay does not
+ * allow, so it will be left out there. ..." Null for no specs.
+ */
+export function addedTextPhotoLine(specIds: readonly string[]): string | null {
+  const families = [...new Set(specIds.map(familyName))];
+  if (families.length === 0) return null;
+  const one = families.length === 1;
+  return `This photo looks like it has added text, a border or a watermark, which ${joinNames(families)} ${one ? "does" : "do"} not allow, so it will be left out there. Upload a clean photo to include it, or leave ${one ? "this channel" : "these channels"} out. Your product's own logo and labels are fine.`;
+}
 
 export interface SizeShortfall {
   specId: string;
@@ -161,7 +188,8 @@ export function preflightBlockReason(
 
 /**
  * What the form says under a kept photo instead of blocking: its other
- * items stay in the picture, and the channels it may be too small for. Empty
+ * items stay in the picture, the channels its added text keeps it out of,
+ * and the channels it may be too small for. Empty
  * for a removed photo. The exact pixel numbers per channel come from the
  * conflicts (output-options-copy.ts tooSmallLine).
  */
@@ -175,6 +203,10 @@ export function keptPhotoHeadsUp(
   const lines: string[] = [];
   if (view.status === "choose" && !output.feedsCutout) {
     lines.push(OTHER_ITEMS_KEPT_COPY);
+  }
+  if (view.addedOverlays === true) {
+    const line = addedTextPhotoLine(addedTextSpecIds(selected));
+    if (line) lines.push(line);
   }
   const short = sizeShortfalls(view, selected, chosen, output);
   if (short.length > 0) {

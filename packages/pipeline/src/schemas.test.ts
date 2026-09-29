@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   DETERMINISTIC_ONLY_SHOT_TYPES,
   IntakeResult,
+  IntakeToolResult,
   LlmShot,
   LlmShotList,
   ProductProfile,
@@ -119,6 +120,30 @@ describe("strictToolSchema", () => {
         images: [{ ...base, products: [{ label: "x", box: { x: 40, y: 10, width: 300, height: 400 }, matchesIntent: "yes" }] }],
       }).success,
     ).toBe(false);
+  });
+
+  it("requires intake version 5's addedOverlays from the model and defaults it to false on read", () => {
+    const tool = strictToolSchema(IntakeToolResult) as {
+      properties: { images: { items: { properties: Record<string, unknown>; required: string[] } } };
+    };
+    const item = tool.properties.images.items;
+    expect(item.properties.addedOverlays).toEqual({ type: "boolean" });
+    expect(item.required).toContain("addedOverlays");
+    const base = {
+      sellableProduct: true,
+      distinctProducts: 1,
+      sharpEnough: true,
+      flags: { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false },
+    };
+    // A version 4 answer, which never asked, reads as a clean photo.
+    expect(IntakeResult.parse({ images: [base] }).images[0].addedOverlays).toBe(false);
+    expect(IntakeResult.parse({ images: [{ ...base, addedOverlays: true }] }).images[0].addedOverlays).toBe(true);
+    expect(IntakeResult.safeParse({ images: [{ ...base, addedOverlays: "yes" }] }).success).toBe(false);
+    // The tool schema refuses an answer without it.
+    const sellerIntent = { featureOnly: null, exclude: [], mustKeep: [], styleNotes: null };
+    const answer = { ...base, screenshot: false, products: [] };
+    expect(IntakeToolResult.safeParse({ images: [answer], sellerIntent }).success).toBe(false);
+    expect(IntakeToolResult.safeParse({ images: [{ ...answer, addedOverlays: false }], sellerIntent }).success).toBe(true);
   });
 
   it("keeps property names that match keywords and keeps enums", () => {

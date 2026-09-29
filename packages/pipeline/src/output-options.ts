@@ -55,6 +55,11 @@ export const SELLER_OFF_REASON = "turned off by the seller";
 /** Reason recorded in skipped for a kept photo too small for a spec within the enlarge cap. */
 export const SOURCE_TOO_SMALL_REASON = "source too small for this channel";
 
+/** Reason recorded in skipped for a kept photo intake saw added text,
+ * borders, watermarks or stickers on, left out of a spec that refuses them
+ * (refusesOverlays, PHASE_15 P1). */
+export const ADDED_OVERLAYS_REASON = "added text or overlays on the photo";
+
 /** Seeded swatch keys, in dropdown order. */
 export const SWATCH_KEYS = Object.keys(backgroundSwatches) as [BackgroundSwatchKey, ...BackgroundSwatchKey[]];
 
@@ -477,6 +482,9 @@ export interface PlanPhoto {
   /** Stored pixel size, when known. */
   width?: number;
   height?: number;
+  /** Intake saw text, borders, watermarks or stickers added on top of the
+   * photo (intake version 5). The product's own logo or label never counts. */
+  addedOverlays?: boolean;
 }
 
 /**
@@ -514,6 +522,7 @@ export function planFlagsOf(
       ...(photo.angle !== undefined ? { angle: photo.angle } : {}),
       ...(photo.width !== undefined ? { width: photo.width } : {}),
       ...(photo.height !== undefined ? { height: photo.height } : {}),
+      ...(photo.addedOverlays === true ? { addedOverlays: true } : {}),
     })),
   };
 }

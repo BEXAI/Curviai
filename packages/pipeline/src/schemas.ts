@@ -116,6 +116,11 @@ export const IntakeImageResult = z.object({
    * the seller's note (intake version 3). Optional so answers from versions
    * 1 and 2, which never returned it, still parse and behave as before. */
   products: z.array(IntakeProduct).max(12).optional(),
+  /** True when text, a border, a watermark or a sticker was added on top of
+   * the photo (intake version 5, PHASE_15 P1). The product's own printed
+   * logo or label is never an overlay. Defaults to false, so answers from
+   * versions 1 to 4, which never asked, read as a clean photo. */
+  addedOverlays: z.boolean().default(false),
   flags: z.object({
     nudity: z.boolean(),
     weapons: z.boolean(),
@@ -134,7 +139,7 @@ export const IntakeResult = z.object({
 
 /**
  * The intake answer shape sent to the model as its strict tool schema. The
- * version 3 fields are required here: under strict tool use the model may
+ * version 3 fields, and version 5's addedOverlays, are required here: under strict tool use the model may
  * leave an optional property out, and on 2026-09-29 it did, so a pack with
  * two bottles and a note naming one ran with no product boxes and no parsed
  * intent. Answers are still validated with the lenient IntakeResult, so a
@@ -146,6 +151,7 @@ export const IntakeToolResult = z.object({
       IntakeImageResult.extend({
         screenshot: z.boolean(),
         products: z.array(IntakeProduct).max(12),
+        addedOverlays: z.boolean(),
       }),
     )
     .min(1),
