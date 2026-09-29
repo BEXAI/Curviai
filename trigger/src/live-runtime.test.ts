@@ -3,6 +3,7 @@ import {
   ASYNC_JOB_TIMEOUT_MARGIN_MS,
   BflFluxProvider,
   callWithFailover,
+  CircuitBreaker,
   imageDimensions,
   InMemoryBreakerStore,
   InMemoryCapStore,
@@ -17,7 +18,24 @@ import {
   type ProviderRequest,
   type ProviderResponse,
 } from "@curvi/ai";
-import { coverage, encodePng, rawToSharp, solidCanvas, type ImageOutput } from "@curvi/pipeline";
+import {
+  coverage,
+  decodeToRgba,
+  encodePng,
+  pixelChecks,
+  rawToSharp,
+  solidCanvas,
+  type ImageOutput,
+} from "@curvi/pipeline";
+import {
+  normalizeOutputOptions,
+  resolveColorHex,
+  resolveOutputOptions,
+  type ResolvedOutputOptions,
+} from "@curvi/pipeline/output-options";
+import { getSpec } from "@curvi/specs";
+import { cutoutCacheKey, type CutoutCacheStore } from "./cutout-cache";
+import { QC_EDGE_MARGIN_PX } from "./shot-outputs";
 import {
   CUTOUT_TASK,
   HARMONIZE_TASK,
@@ -1065,5 +1083,158 @@ describe("source photo orientation (7.8)", () => {
       workspaceId: "ws-1",
     });
     expect(cutout.received[0].toString()).toBe("heic-bytes");
+  });
+});
+
+describe("kept photos and the upload cache (PHASE_15 item 16)", () => {
+  const photoKey = "ws/ws-1/src/kept.png";
+  const argsFor = (shot: Shot, output?: ResolvedOutputOptions) => ({
+    shot,
+    attempt: 1,
+    useFallbackProvider: false,
+    jobId: "job-keep",
+    workspaceId: "ws-1",
+    ...(output ? { output } : {}),
+  });
+  const shotOf = (type: Shot["type"], specId: string): Shot => ({
+    id: `${type}-${specId}`,
+    type,
+    sourceMediaId: photoKey,
+    method: "deterministic",
+    channels: [specId],
+    stylePreset: "none",
+    credits: 0.5,
+    priority: 1,
+  });
+  const white = resolveColorHex({ kind: "swatch", key: "white" }, []) as string;
+  const keep = (): ResolvedOutputOptions =>
+    resolveOutputOptions(normalizeOutputOptions({ background: "keep" }), {
+      colorHex: white,
+      brandSweepHex: white,
+      keepMediaIds: [photoKey],
+    });
+
+  /** A 1600 x 1600 PNG: a textured 1300 px product on the given background. */
+  async function studioPhoto(background: number): Promise<{ photo: Buffer; cutout: Buffer }> {
+    const size = 1600;
+    const photo = solidCanvas(size, size, background, background, background);
+    const cutout = solidCanvas(size, size, 0, 0, 0, 0);
+    const start = 150;
+    const end = 1450;
+    for (let y = start; y < end; y++) {
+      for (let x = start; x < end; x++) {
+        const o = (y * size + x) * 4;
+        const rgb = [40 + (x % 120), 60 + (y % 90), 150 - ((x + y) % 70)];
+        for (const target of [photo, cutout]) {
+          target.data[o] = rgb[0];
+          target.data[o + 1] = rgb[1];
+          target.data[o + 2] = rgb[2];
+          target.data[o + 3] = 255;
+        }
+      }
+    }
+    return { photo: await encodePng(photo), cutout: await encodePng(cutout) };
+  }
+
+  /** An in memory cutout cache holding the given cutout for the photo's bytes. */
+  function cacheWith(photo: Buffer, cutout: Buffer | null): CutoutCacheStore & { reads: number } {
+    const store = {
+      reads: 0,
+      async get(key: string) {
+        store.reads += 1;
+        return cutout && key === cutoutCacheKey("ws-1", photo, "png")
+          ? { bytes: cutout, contentType: "image/png", storedAt: new Date() }
+          : null;
+      },
+      async put() {},
+    };
+    return store;
+  }
+
+  it("renders original_photo with cutoutLive false and never cuts it out, while amazon_main is unavailable", async () => {
+    const { photo } = await studioPhoto(255);
+    const { ai, cutout } = liveDeps(new FakeSceneProvider(), await productCutoutPng(96));
+    const wiring: LiveWiring = { llmLive: false, imageProviders: [], cutoutProviders: [], cutoutLive: false };
+    const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async (key) => (key === photoKey ? photo : null) });
+
+    const original = await generator.generate(argsFor(shotOf("original_photo", "amazon.secondary"), keep()));
+    expect(original.fidelityKind).toBe("main");
+    expect(original.treatment?.kind).toMatch(/^original/);
+    expect(original.costMicros).toBe(0);
+    await expect(generator.generate(argsFor(shotOf("amazon_main", "amazon.main"), keep()))).rejects.toBeInstanceOf(
+      ShotUnavailableError,
+    );
+    expect(cutout.calls).toBe(0);
+  });
+
+  it("reads the inventory cutout of a kept photo from the cache only and never calls a provider", async () => {
+    const { photo, cutout: cachedCutout } = await studioPhoto(255);
+    const { ai, wiring, cutout } = liveDeps(new FakeSceneProvider(), await productCutoutPng(96));
+    const hit = new LiveShotGenerator({
+      ai,
+      wiring,
+      loadMedia: async () => photo,
+      cutoutCache: cacheWith(photo, cachedCutout),
+    });
+    const found = await hit.inventoryCutout({ jobId: "job-keep", workspaceId: "ws-1", mediaId: photoKey, cacheOnly: true });
+    expect(found.cutout?.width).toBe(1600);
+    expect(found.costMicros).toBe(0);
+
+    const miss = new LiveShotGenerator({ ai, wiring, loadMedia: async () => photo, cutoutCache: cacheWith(photo, null) });
+    const empty = await miss.inventoryCutout({ jobId: "job-keep", workspaceId: "ws-1", mediaId: photoKey, cacheOnly: true });
+    expect(empty).toEqual({ cutout: null, costMicros: 0 });
+    const uncached = new LiveShotGenerator({ ai, wiring, loadMedia: async () => photo });
+    expect(
+      await uncached.inventoryCutout({ jobId: "job-keep", workspaceId: "ws-1", mediaId: photoKey, cacheOnly: true }),
+    ).toEqual({ cutout: null, costMicros: 0 });
+    expect(cutout.calls).toBe(0);
+  });
+
+  it("returns the cached cutout while the cutout breaker is open", async () => {
+    const { photo, cutout: cachedCutout } = await studioPhoto(240);
+    const { ai, wiring, cutout } = liveDeps(new FakeSceneProvider(), await productCutoutPng(96));
+    await new CircuitBreaker(ai.breakerStore).tripForQuota("fal-birefnet");
+    const generator = new LiveShotGenerator({
+      ai,
+      wiring,
+      loadMedia: async () => photo,
+      cutoutCache: cacheWith(photo, cachedCutout),
+    });
+    const main = await generator.generate(argsFor(shotOf("amazon_main", "amazon.main")));
+    expect(main.encoded.buffer.length).toBeGreaterThan(0);
+    expect(main.costMicros).toBe(0);
+    expect(cutout.calls).toBe(0);
+  });
+
+  it("makes an already white photo's Amazon main from the photo itself, and a shadowed one the made white way", async () => {
+    const studio = await studioPhoto(255);
+    const { ai, wiring, cutout } = liveDeps(new FakeSceneProvider(), await productCutoutPng(96));
+    const onWhite = new LiveShotGenerator({
+      ai,
+      wiring,
+      loadMedia: async () => studio.photo,
+      cutoutCache: cacheWith(studio.photo, studio.cutout),
+    });
+    const own = await onWhite.generate(argsFor(shotOf("amazon_main", "amazon.main"), keep()));
+    expect(own.treatment).toMatchObject({ kind: "original", alreadyWhite: true });
+    expect(own.fidelityKind).toBe("main");
+    expect(own.qcMask).toBeDefined();
+    expect(own.costMicros).toBe(0);
+    const checked = await pixelChecks(await decodeToRgba(own.encoded.buffer), own.qcMask ?? null, getSpec("amazon.main"), {
+      edgeMarginPx: QC_EDGE_MARGIN_PX,
+    });
+    expect(checked.pass).toBe(true);
+
+    const shadowed = await studioPhoto(236);
+    const offWhite = new LiveShotGenerator({
+      ai,
+      wiring,
+      loadMedia: async () => shadowed.photo,
+      cutoutCache: cacheWith(shadowed.photo, shadowed.cutout),
+    });
+    const made = await offWhite.generate(argsFor(shotOf("amazon_main", "amazon.main"), keep()));
+    expect(made.treatment).toEqual({ kind: "background", colorHex: white, forcedWhite: true });
+    // The made white path reused the upload's cutout too.
+    expect(cutout.calls).toBe(0);
   });
 });

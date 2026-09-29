@@ -11,9 +11,11 @@
 import { InMemoryCapStore, InMemoryCostMeter, processBreakerStore, ProviderRegistry, SpendCaps } from "@curvi/ai";
 import type { CapStore, CostAwareProvider, ProviderRequest, ProviderResponse, RoutingTable } from "@curvi/ai";
 import {
+  buildProductReferenceFromEncoded,
   encodeJpeg,
   encodePng,
   limitImageMemory,
+  makeOriginalFit,
   QC_THRESHOLDS,
   qcKindForSpec,
   solidCanvas,
@@ -21,12 +23,13 @@ import {
   type RawImage,
   type RawMask,
 } from "@curvi/pipeline";
-import { recipeSeedRows } from "@curvi/pipeline/seed";
+import { backgroundFor, MAX_SOURCE_UPSCALE, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
+import { originalFit, recipeSeedRows } from "@curvi/pipeline/seed";
 import { getSpec } from "@curvi/specs";
 import type { ChurnSignals } from "./churn";
-import { installCutoutCache } from "./cutout-cache";
+import { cacheCutouts, r2CutoutCacheStore } from "./cutout-cache";
 import { LiveShotGenerator, makeR2MediaLoader, wireLiveProviders } from "./live-runtime";
-import { canvasSizeFor } from "./shot-outputs";
+import { canvasSizeFor, encodeForSpec, stillQcErosion } from "./shot-outputs";
 import { parseShotConcurrency } from "./shot-concurrency";
 import type { DropWorkspace } from "./drops";
 import { SpendAlertNotifier } from "./spend-alerts";
@@ -136,6 +139,9 @@ export function demoRoutingTable(): RoutingTable {
   return routing;
 }
 
+/** Size of the demo generator's synthetic kept photo: a 4:3 phone shot. */
+const DEMO_PHOTO_SIZE = { width: 1600, height: 1200 } as const;
+
 /**
  * Renders a synthetic product image sized to the shot's channel spec: a pure
  * white canvas with a centered product rectangle and a matching mask, so the
@@ -145,9 +151,21 @@ export function demoRoutingTable(): RoutingTable {
  */
 export class DemoShotGenerator implements ShotGenerator {
   private readonly cache = new Map<string, Promise<ShotGeneration>>();
+  private photo: Promise<Buffer> | null = null;
 
   generate(args: ShotGenerateArgs): Promise<ShotGeneration> {
     const specId = args.shot.channels[0];
+    if (args.shot.type === "original_photo") {
+      // A kept photo in db mode without providers: a patterned synthetic
+      // photo fitted with the real geometry (PHASE_15 item 22).
+      const key = `${specId}:original:${args.output?.fit ?? "auto"}:${args.output?.colorHex ?? ""}`;
+      let cached = this.cache.get(key);
+      if (!cached) {
+        cached = this.renderOriginal(specId, args.output);
+        this.cache.set(key, cached);
+      }
+      return cached;
+    }
     const needsReference = args.shot.method === "composite_generate" || args.shot.method === "edit_generate";
     const key = `${specId}:${needsReference ? "ref" : "plain"}`;
     let cached = this.cache.get(key);
@@ -156,6 +174,69 @@ export class DemoShotGenerator implements ShotGenerator {
       this.cache.set(key, cached);
     }
     return cached;
+  }
+
+  /** A synthetic photo with a pattern, so resizing and added space show. */
+  private demoPhoto(): Promise<Buffer> {
+    this.photo ??= (async () => {
+      const { width, height } = DEMO_PHOTO_SIZE;
+      const image = solidCanvas(width, height, 0, 0, 0);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const o = (y * width + x) * 4;
+          const band = (Math.floor(x / 80) + Math.floor(y / 80)) % 2;
+          image.data[o] = 90 + Math.round((120 * x) / width);
+          image.data[o + 1] = band ? 150 : 110;
+          image.data[o + 2] = 90 + Math.round((120 * y) / height);
+        }
+      }
+      return encodeJpeg(image, 92);
+    })();
+    return this.photo;
+  }
+
+  private async renderOriginal(specId: string, output: ResolvedOutputOptions | undefined): Promise<ShotGeneration> {
+    const spec = getSpec(specId);
+    const photo = await this.demoPhoto();
+    const fitted = await makeOriginalFit(photo, spec, {
+      fit: output?.fit ?? "auto",
+      padRgb: backgroundFor(spec, output).rgb,
+      maxUpscale: MAX_SOURCE_UPSCALE,
+      maxMegapixels: originalFit.maxMegapixels,
+    });
+    if (fitted.passthrough) {
+      return {
+        image: { data: Buffer.alloc(0), width: fitted.width, height: fitted.height, channels: 4 },
+        mask: null,
+        encoded: { buffer: fitted.passthrough.bytes, format: fitted.passthrough.format },
+        costMicros: 0,
+        fidelityKind: "main",
+        treatment: fitted.treatment,
+        passthrough: { sha256: fitted.passthrough.sha256 },
+      };
+    }
+    const reference = await buildProductReferenceFromEncoded(photo, fitted.placement, {
+      width: fitted.width,
+      height: fitted.height,
+    });
+    const erosion = await stillQcErosion(fitted.mask, fitted.treatment.scale ?? 1);
+    const out = await encodeForSpec(fitted.raw, fitted.mask, reference, spec, {
+      preferPng: fitted.preferPng,
+      erodePx: erosion.erodePx,
+      fidelityKind: "main",
+    });
+    return {
+      image: out.image,
+      mask: fitted.mask,
+      productReference: reference,
+      encoded: out.encoded,
+      costMicros: 0,
+      fidelityRequired: true,
+      fidelityKind: "main",
+      fidelityErodePx: erosion.erodePx,
+      fidelityErodeFloorPx: erosion.floorPx,
+      treatment: fitted.treatment,
+    };
   }
 
   private async render(specId: string, needsReference: boolean): Promise<ShotGeneration> {
@@ -292,8 +373,13 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   };
   const wiring = wireLiveProviders(registry, routing);
   // Cutouts are cached in R2 per workspace and exact input bytes, so the pack
-  // reuses the cutout its preflight at upload paid for (PHASE_14.md W4).
-  installCutoutCache(registry);
+  // reuses the cutout its preflight at upload paid for (PHASE_14.md W4). The
+  // one store wraps the cutout providers and is read directly by the live
+  // generator (PHASE_15 item 16).
+  const cutoutCache = r2CutoutCacheStore();
+  if (cutoutCache) {
+    cacheCutouts(registry, cutoutCache);
+  }
   const loadMedia = makeR2MediaLoader();
   // Any live provider key means real customers and real spend, so the demo
   // generator (synthetic placeholder images built to pass QC) must never run.
@@ -304,7 +390,7 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   const liveMode = wiring.llmLive || wiring.imageProviders.length > 0 || wiring.cutoutLive;
   const demoAllowed = !opts.realCredits || optionalEnv("CURVI_ALLOW_DEMO_GENERATION") === "1";
   const generator =
-    liveMode || !demoAllowed ? new LiveShotGenerator({ ai, wiring, loadMedia }) : new DemoShotGenerator();
+    liveMode || !demoAllowed ? new LiveShotGenerator({ ai, wiring, loadMedia, cutoutCache }) : new DemoShotGenerator();
   return {
     ai,
     store: new InMemoryJobStore(),
