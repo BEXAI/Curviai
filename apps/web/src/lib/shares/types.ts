@@ -46,6 +46,10 @@ export interface PublicShareImage {
   ref: string;
   src: string;
   alt: string;
+  /** The channel spec the file was made for, so the page can show it in
+   * its own aspect box (previewAspect). Absent for the before photo and for
+   * drawn illustrations. */
+  specId?: string | null;
 }
 
 /** Everything the public page shows, and nothing more (no ids, no keys). */
@@ -61,6 +65,10 @@ export interface PublicShare {
   inGallery: boolean;
   /** True when the images are drawn illustrations (demo mode), labeled as such. */
   illustration: boolean;
+  /** True when the hero is the seller's own kept photo (PHASE_15 item 34):
+   * there is no makeover to compare, so the page is titled "Sized for each
+   * channel" and never offers a before and after. */
+  sizedForChannels: boolean;
 }
 
 export interface GalleryEntry {

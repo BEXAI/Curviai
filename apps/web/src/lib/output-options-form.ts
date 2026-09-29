@@ -1187,8 +1187,8 @@ export function keepBackgroundHint(note: string, background: OutputChoices["back
 
 export const PHOTO_BACKGROUND_OPTIONS: ReadonlyArray<{ value: PhotoBackground; label: string }> = [
   { value: "pack", label: "Pack setting" },
-  { value: "remove", label: "Remove" },
-  { value: "keep", label: "Keep as is" },
+  { value: "remove", label: "Remove background" },
+  { value: "keep", label: "Keep background" },
 ];
 
 export function isPhotoBackground(value: string): value is PhotoBackground {

@@ -1141,6 +1141,7 @@ export function NewPackForm({
                         </Label>
                         <Select
                           id={`photo-angle-${photo.id}`}
+                          className="[&_select]:h-11"
                           value={photo.angle}
                           onChange={(event) => updatePhoto(photo.id, { angle: event.target.value as AngleRole })}
                           data-testid="photo-angle"
@@ -1160,6 +1161,7 @@ export function NewPackForm({
                         </Label>
                         <Select
                           id={`photo-background-${photo.id}`}
+                          className="[&_select]:h-11"
                           value={photo.background ?? "pack"}
                           onChange={(event) => {
                             const value = event.target.value;

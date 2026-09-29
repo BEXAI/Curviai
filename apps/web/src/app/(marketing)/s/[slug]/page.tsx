@@ -4,8 +4,11 @@ import { notFound } from "next/navigation";
 import { cache } from "react";
 import { buttonVariants } from "@curvi/ui";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
-import { fitDescription, pageMetadata, TITLE_MAX } from "@/lib/seo";
+import { OutputPreview } from "@/components/app/output-preview";
+import { previewAspect } from "@/lib/output-preview";
+import { fitDescription, pageMetadata } from "@/lib/seo";
 import { getShareStore, type PublicShare } from "@/lib/shares";
+import { shareDescription, shareIntro, shareOgAlt, sharePackHeading, shareTitle } from "@/lib/shares/page-copy";
 import { ILLUSTRATION_LABEL } from "@/components/marketing/demo-images";
 
 // Published and unpublished at any moment by the owner, so never cached.
@@ -16,12 +19,6 @@ type Params = { params: Promise<{ slug: string }> };
 /** One read per request, shared by the metadata and the page. */
 const loadShare = cache(async (slug: string): Promise<PublicShare | null> => getShareStore().getPublic(slug));
 
-function pageTitle(share: PublicShare): string {
-  const full = `${share.title}, before and after`;
-  // Leave room for the " | Curvi" the layout template adds.
-  return full.length <= TITLE_MAX - 8 ? full : "A product photo makeover, before and after";
-}
-
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { slug } = await params;
   const share = await loadShare(slug);
@@ -30,17 +27,15 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   }
   const path = `/s/${share.slug}`;
   return pageMetadata({
-    title: pageTitle(share),
-    description: fitDescription(
-      `${share.title}: one product photo in, a studio pack out, made with Curvi. The product pixels are never regenerated. Drag the slider to compare.`,
-    ),
+    title: shareTitle(share),
+    description: fitDescription(shareDescription(share)),
     path,
     // Only makeovers the owner put in the public gallery are offered to
     // search engines; a page shared by link stays out of the index.
     noIndex: !share.inGallery || share.illustration,
     ...(share.illustration
       ? {}
-      : { image: { url: `${path}/og`, width: 1200, height: 630, alt: `${share.title}, before and after, made with Curvi` } }),
+      : { image: { url: `${path}/og`, width: 1200, height: 630, alt: shareOgAlt(share) } }),
   });
 }
 
@@ -61,9 +56,7 @@ export default async function SharePage({ params }: Params) {
         {share.title}
       </h1>
       <p className="mx-auto mt-3 max-w-xl text-center text-ink-600">
-        {share.before
-          ? "Drag the divider to compare the original photo with the result. The product itself is never regenerated, so what a buyer sees is the real item."
-          : "The result from one product photo. The product itself is never regenerated, so what a buyer sees is the real item."}
+        {shareIntro(share)}
       </p>
       {share.illustration ? (
         <p className="mx-auto mt-4 max-w-xl rounded-lg bg-ink-50 p-3 text-center text-sm text-ink-600">
@@ -75,10 +68,12 @@ export default async function SharePage({ params }: Params) {
         {share.before ? (
           <BeforeAfterSlider beforeSrc={share.before.src} afterSrc={share.after.src} />
         ) : (
-          <img
+          <OutputPreview
             src={share.after.src}
             alt={share.after.alt}
-            className="aspect-square w-full rounded-xl border border-ink-100 object-contain"
+            aspect={previewAspect([share.after.specId])}
+            className="rounded-xl bg-white"
+            testId="share-hero-image"
           />
         )}
       </div>
@@ -86,12 +81,18 @@ export default async function SharePage({ params }: Params) {
       {share.images.length > 1 ? (
         <section className="mt-12" aria-labelledby="share-pack-heading">
           <h2 id="share-pack-heading" className="text-center text-xl font-semibold text-ink-950">
-            The whole pack
+            {sharePackHeading(share)}
           </h2>
           <ul data-testid="share-pack" className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {share.images.map((image) => (
-              <li key={image.ref} className="overflow-hidden rounded-xl border border-ink-100 bg-white">
-                <img src={image.src} alt={image.alt} loading="lazy" className="aspect-square w-full object-contain" />
+              <li key={image.ref}>
+                <OutputPreview
+                  src={image.src}
+                  alt={image.alt}
+                  aspect={previewAspect([image.specId])}
+                  className="rounded-xl bg-white"
+                  testId="share-pack-image"
+                />
               </li>
             ))}
           </ul>

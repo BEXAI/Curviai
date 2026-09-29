@@ -97,7 +97,13 @@ describe("publishing", () => {
     expect(result.status.inGallery).toBe(false);
 
     const page = await store.getPublic(result.status.slug!);
-    expect(page).toMatchObject({ kind: "before_after", title: "Copper kettle", category: "home_kitchen", illustration: false });
+    expect(page).toMatchObject({
+      kind: "before_after",
+      title: "Copper kettle",
+      category: "home_kitchen",
+      illustration: false,
+      sizedForChannels: false,
+    });
     expect(page?.before?.src).toBe(`/s/${result.status.slug}/image/before`);
     expect(page?.after?.ref).toBe(`v_${f.lifestyleVariant}`);
     expect(page?.images).toEqual([]);
@@ -132,7 +138,9 @@ describe("publishing", () => {
     if (!result.ok) return;
     const page = await store.getPublic(result.status.slug!);
     expect(page?.after?.ref).toBe(`v_${keptVariant.id}`);
+    expect(page?.after?.specId).toBe("etsy.listing");
     expect(page?.before).toBeNull();
+    expect(page?.sizedForChannels).toBe(true);
   });
 
   it("refuses editors and clients, and packs with nothing delivered", async () => {
