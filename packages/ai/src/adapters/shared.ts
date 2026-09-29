@@ -82,6 +82,61 @@ export function billedFailure(err: unknown, provider: string, task: string, bill
  * refusal to content_blocked. Returning undefined keeps the default mapping. */
 export type HttpErrorClassifier = (status: number, bodyText: string) => ProviderErrorCode | undefined;
 
+/**
+ * Recognizes an answer that says the provider account ran out of quota,
+ * credit or plan images, so the router stops asking that provider
+ * (provider_quota) instead of retrying it. Matches:
+ * - any HTTP 402 Payment Required (BFL "Insufficient credits", fal);
+ * - "You have exhausted the number of images in your plan" (a cutout plan);
+ * - BFL "Insufficient credits";
+ * - OpenAI `insufficient_quota` and Anthropic "credit balance is too low";
+ * - fal "Exhausted balance" and "User is locked";
+ * - Gemini RESOURCE_EXHAUSTED when it names a billing, prepayment or daily
+ *   quota, never a per minute rate limit, which stays a transient 429.
+ */
+export function quotaErrorCode(status: number, bodyText: string): ProviderErrorCode | undefined {
+  if (status === 402) return "provider_quota";
+  const body = bodyText.toLowerCase();
+  const plainMarkers = [
+    "exhausted the number of images",
+    "insufficient credits",
+    "insufficient_quota",
+    "credit balance is too low",
+    "exhausted balance",
+    "user is locked",
+  ];
+  if (plainMarkers.some((marker) => body.includes(marker))) {
+    return "provider_quota";
+  }
+  if (body.includes("resource_exhausted") && !body.includes("per minute") && !body.includes("perminute")) {
+    const quotaMarkers = ["billing", "prepay", "depleted", "per day", "perday", "daily", "limit: 0"];
+    if (quotaMarkers.some((marker) => body.includes(marker))) {
+      return "provider_quota";
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The ProviderError for a non 2xx answer. The adapter's own classifier runs
+ * first (for example a moderation refusal to content_blocked), then the
+ * quota check. 5xx and 429 are transient and retryable; other 4xx are not.
+ * A content block or a quota answer is never retryable, whatever the status.
+ */
+export function httpProviderError(
+  provider: string,
+  task: string,
+  status: number,
+  bodyText: string,
+  classify?: HttpErrorClassifier,
+): ProviderError {
+  const code = classify?.(status, bodyText) ?? quotaErrorCode(status, bodyText);
+  const retryable = code !== "content_blocked" && code !== "provider_quota" && (status >= 500 || status === 429);
+  return new ProviderError(`${provider} responded ${status}: ${bodyText.slice(0, 500)}`, provider, task, retryable, undefined, {
+    code,
+  });
+}
+
 export async function requestJson<T>(
   fetchFn: FetchLike,
   provider: string,
@@ -104,18 +159,7 @@ export async function requestJson<T>(
   }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    const code = classify?.(res.status, body);
-    // 5xx and 429 are transient; other 4xx are not. A classified content
-    // block is never retryable, whatever the status.
-    const retryable = code !== "content_blocked" && (res.status >= 500 || res.status === 429);
-    throw new ProviderError(
-      `${provider} responded ${res.status}: ${body.slice(0, 500)}`,
-      provider,
-      task,
-      retryable,
-      undefined,
-      { code },
-    );
+    throw httpProviderError(provider, task, res.status, body, classify);
   }
   return (await res.json()) as T;
 }

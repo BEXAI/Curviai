@@ -12,7 +12,7 @@ import {
   SpendCaps,
   type CostAwareProvider,
   type GeminiImageInput,
-  type PhotoroomCutoutInput,
+  type CutoutInput,
   type Provider,
   type ProviderRequest,
   type ProviderResponse,
@@ -104,13 +104,13 @@ describe("wireLiveProviders", () => {
     expect(registry.get("gemini-image")?.supports(SCENE_PLATE_TASK)).toBe(true);
   });
 
-  it("registers photoroom for cutouts when its key is set", () => {
+  it("registers the fal BiRefNet cutout when its key is set", () => {
     const { registry, routing } = freshBase();
     const wiring = wireLiveProviders(registry, routing, (name) =>
-      name === "PHOTOROOM_API_KEY" ? "key" : undefined,
+      name === "FAL_KEY" ? "key" : undefined,
     );
     expect(wiring.cutoutLive).toBe(true);
-    expect(routing[CUTOUT_TASK]).toEqual(["photoroom"]);
+    expect(routing[CUTOUT_TASK]).toEqual(["fal-birefnet"]);
   });
 });
 
@@ -131,7 +131,7 @@ async function productCutoutPng(size: number): Promise<Buffer> {
 }
 
 class FakeCutoutProvider implements Provider {
-  readonly name = "photoroom";
+  readonly name = "fal-birefnet";
   readonly kind = "cutout" as const;
   calls = 0;
   constructor(private readonly png: Buffer) {}
@@ -185,11 +185,11 @@ function liveDeps(
   const routing = {
     [SCENE_PLATE_TASK]: ["gemini-image"],
     harmonize: ["gemini-image"],
-    [CUTOUT_TASK]: ["photoroom"],
+    [CUTOUT_TASK]: ["fal-birefnet"],
   };
   return {
     ai: { registry, routing, meter: new InMemoryCostMeter(), breakerStore: new InMemoryBreakerStore(), caps },
-    wiring: { llmLive: true, imageProviders: ["gemini-image"], cutoutLive: true },
+    wiring: { llmLive: true, imageProviders: ["gemini-image"], cutoutProviders: ["fal-birefnet"], cutoutLive: true },
     cutout,
   };
 }
@@ -445,7 +445,7 @@ describe("alphaMask", () => {
 });
 
 describe("buildRuntimeDeps generator selection (real credits)", () => {
-  const keys = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "PHOTOROOM_API_KEY"];
+  const keys = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "FAL_KEY"];
   const shotArgs = {
     shot: { ...compositeShotArgs, type: "amazon_main" as const, method: "deterministic" as const, channels: ["amazon.main"] },
     attempt: 1,
@@ -490,10 +490,10 @@ describe("a live pack end to end (fake providers, real renderers)", () => {
     deps.ai.registry.register(cutout);
     deps.ai.routing[SCENE_PLATE_TASK] = ["gemini-image"];
     deps.ai.routing.harmonize = ["gemini-image"];
-    deps.ai.routing[CUTOUT_TASK] = ["photoroom"];
+    deps.ai.routing[CUTOUT_TASK] = ["fal-birefnet"];
     const generator = new LiveShotGenerator({
       ai: deps.ai,
-      wiring: { llmLive: false, imageProviders: ["gemini-image"], cutoutLive: true },
+      wiring: { llmLive: false, imageProviders: ["gemini-image"], cutoutProviders: ["fal-birefnet"], cutoutLive: true },
       loadMedia: async () => Buffer.from("source-photo"),
     });
 
@@ -521,7 +521,7 @@ describe("a live pack end to end (fake providers, real renderers)", () => {
       }
     }
     expect(passedTypes).toContain("amazon_main");
-    // One Photoroom call for the whole pack: every shot shares the cutout.
+    // One cutout call for the whole pack: every shot shares the cutout.
     expect(cutout.calls).toBe(1);
     // Secondary shots ship to both Amazon and Shopify, so there are more
     // files than charged shots.
@@ -569,10 +569,10 @@ describe("rule 3 on live stills", () => {
     const cutout = new FakeCutoutProvider(await texturedCutoutPng(240, 180));
     deps.ai.registry.register(scene);
     deps.ai.registry.register(cutout);
-    deps.ai.routing[CUTOUT_TASK] = ["photoroom"];
+    deps.ai.routing[CUTOUT_TASK] = ["fal-birefnet"];
     const generator = new LiveShotGenerator({
       ai: deps.ai,
-      wiring: { llmLive: false, imageProviders: ["gemini-image"], cutoutLive: true },
+      wiring: { llmLive: false, imageProviders: ["gemini-image"], cutoutProviders: ["fal-birefnet"], cutoutLive: true },
       loadMedia: async () => Buffer.from("source-photo"),
     });
     const shot: Shot = { ...compositeShotArgs, id: "main-up", type: "amazon_main", method: "deterministic", channels: ["amazon.main"], stylePreset: "none" };
@@ -643,10 +643,10 @@ describe("segmentation guard (2.13)", () => {
     deps.ai.registry.register(cutout);
     deps.ai.routing[SCENE_PLATE_TASK] = ["gemini-image"];
     deps.ai.routing.harmonize = ["gemini-image"];
-    deps.ai.routing[CUTOUT_TASK] = ["photoroom"];
+    deps.ai.routing[CUTOUT_TASK] = ["fal-birefnet"];
     const generator = new LiveShotGenerator({
       ai: deps.ai,
-      wiring: { llmLive: false, imageProviders: ["gemini-image"], cutoutLive: true },
+      wiring: { llmLive: false, imageProviders: ["gemini-image"], cutoutProviders: ["fal-birefnet"], cutoutLive: true },
       loadMedia: async () => Buffer.from("source-photo"),
     });
 
@@ -822,12 +822,12 @@ function bridgedDeps(inners: FakeGeminiInner[], cutoutPng: Buffer, caps?: SpendC
   const meter = new InMemoryCostMeter();
   const ai: PipelineDeps["ai"] = {
     registry,
-    routing: { [SCENE_PLATE_TASK]: chain, [HARMONIZE_TASK]: chain, [CUTOUT_TASK]: ["photoroom"] },
+    routing: { [SCENE_PLATE_TASK]: chain, [HARMONIZE_TASK]: chain, [CUTOUT_TASK]: ["fal-birefnet"] },
     meter,
     breakerStore: new InMemoryBreakerStore(),
     caps,
   };
-  const wiring: LiveWiring = { llmLive: true, imageProviders: chain, cutoutLive: true };
+  const wiring: LiveWiring = { llmLive: true, imageProviders: chain, cutoutProviders: ["fal-birefnet"], cutoutLive: true };
   return { ai, wiring, meter, cutout };
 }
 
@@ -1007,7 +1007,7 @@ describe("source photo orientation (7.8)", () => {
   class RecordingCutout extends FakeCutoutProvider {
     readonly received: Buffer[] = [];
     override async invoke<TIn, TOut>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
-      this.received.push(Buffer.from((req.input as unknown as PhotoroomCutoutInput).imageBytes));
+      this.received.push(Buffer.from((req.input as unknown as CutoutInput).imageBytes));
       return super.invoke(req);
     }
   }
@@ -1025,13 +1025,13 @@ describe("source photo orientation (7.8)", () => {
     registry.register(cutout);
     const ai: PipelineDeps["ai"] = {
       registry,
-      routing: { [CUTOUT_TASK]: ["photoroom"] },
+      routing: { [CUTOUT_TASK]: ["fal-birefnet"] },
       meter: new InMemoryCostMeter(),
       breakerStore: new InMemoryBreakerStore(),
     };
     const generator = new LiveShotGenerator({
       ai,
-      wiring: { llmLive: true, imageProviders: [], cutoutLive: true },
+      wiring: { llmLive: true, imageProviders: [], cutoutProviders: ["fal-birefnet"], cutoutLive: true },
       loadMedia: async () => sideways,
     });
     await generator.generate({
@@ -1053,8 +1053,8 @@ describe("source photo orientation (7.8)", () => {
     const registry = new ProviderRegistry();
     registry.register(cutout);
     const generator = new LiveShotGenerator({
-      ai: { registry, routing: { [CUTOUT_TASK]: ["photoroom"] }, meter: new InMemoryCostMeter(), breakerStore: new InMemoryBreakerStore() },
-      wiring: { llmLive: true, imageProviders: [], cutoutLive: true },
+      ai: { registry, routing: { [CUTOUT_TASK]: ["fal-birefnet"] }, meter: new InMemoryCostMeter(), breakerStore: new InMemoryBreakerStore() },
+      wiring: { llmLive: true, imageProviders: [], cutoutProviders: ["fal-birefnet"], cutoutLive: true },
       loadMedia: async () => Buffer.from("heic-bytes"),
     });
     await generator.generate({

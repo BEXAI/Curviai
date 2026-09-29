@@ -1,4 +1,8 @@
 /**
+ * NOT WIRED (Phase 14, 2026-09-29): Photoroom is a competitor, so no live
+ * route uses this adapter any more; the cutout stage runs on fal BiRefNet
+ * (falCutout.ts). Kept until it is deleted in a cleanup change.
+ *
  * Photoroom background removal adapter (multipart POST {baseUrl}/v1/segment
  * with the x-api-key header). Image bytes in, cutout PNG bytes out. Cost is
  * a flat per call price from the injected price table.
@@ -13,7 +17,7 @@ import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
-import { resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
+import { httpProviderError, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const PHOTOROOM_API_KEY_ENV = "PHOTOROOM_API_KEY";
 
@@ -112,8 +116,8 @@ export class PhotoroomCutoutProvider implements CostAwareProvider {
     }
     if (!res.ok) {
       const bodyText = await res.text().catch(() => "");
-      const retryable = res.status >= 500 || res.status === 429;
-      throw new ProviderError(`${this.name} responded ${res.status}: ${bodyText.slice(0, 500)}`, this.name, req.task, retryable);
+      // A 402 "exhausted the number of images in your plan" is provider_quota.
+      throw httpProviderError(this.name, req.task, res.status, bodyText);
     }
 
     const buffer = await res.arrayBuffer();

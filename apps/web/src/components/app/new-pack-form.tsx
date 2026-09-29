@@ -68,6 +68,9 @@ interface NewPackFormProps {
   /** Product to preselect, e.g. from "New pack for this product". Anything
    * not in `products` is ignored. */
   initialProductId?: string | null;
+  /** True while the cutout service is unavailable (the new pack preflight):
+   * every shot needs it, so Create pack is disabled. */
+  packsPaused?: boolean;
 }
 
 const DEFAULT_CHANNELS = ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"];
@@ -206,7 +209,15 @@ async function sha256Hex(file: File): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export function NewPackForm({ products, channels, tier, creditBalance, paywall, initialProductId }: NewPackFormProps) {
+export function NewPackForm({
+  products,
+  channels,
+  tier,
+  creditBalance,
+  paywall,
+  initialProductId,
+  packsPaused = false,
+}: NewPackFormProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   // One Idempotency-Key per submission intent (Update.md 6.1): a retry of the
@@ -491,6 +502,7 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
   }
 
   async function submit() {
+    if (packsPaused) return;
     setSubmitError(null);
     if (uploading || submitting || checking) {
       return;
@@ -963,8 +975,8 @@ export function NewPackForm({ products, channels, tier, creditBalance, paywall, 
               variant="secondary"
               size="lg"
               className="mt-5 w-full"
-              disabled={submitting || uploading || checking || blockReason !== null}
-              aria-disabled={submitting || uploading || checking || blockReason !== null}
+              disabled={submitting || uploading || checking || blockReason !== null || packsPaused}
+              aria-disabled={submitting || uploading || checking || blockReason !== null || packsPaused}
               onClick={() => void submit()}
               data-testid="create-pack"
             >

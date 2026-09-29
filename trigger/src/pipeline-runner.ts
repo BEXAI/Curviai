@@ -24,11 +24,14 @@ import {
   billedMicrosOf,
   callWithFailover,
   hasProviderErrorCode,
+  isProviderChainUnavailable,
+  isTransientChainFailure,
   providerErrorsOf,
   type BreakerStore,
   type CallWithFailoverOptions,
   type CapsHook,
   type CostMeter,
+  type ProviderQuotaInfo,
   type ProviderRegistry,
   type RoutingTable,
   type SpendCaps,
@@ -100,7 +103,7 @@ import {
   type RawMask,
   type Shot,
 } from "@curvi/pipeline";
-import { creditCosts, recipeSeedRows, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
+import { creditCosts, HARMONIZE_TASK, recipeSeedRows, SCENE_PLATE_TASK, type RecipeRow, type TierKey } from "@curvi/pipeline/seed";
 import {
   getSpec,
   hasSpec,
@@ -137,6 +140,13 @@ export { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 
 /** Plain copy for a shot that ended on an unexpected provider or runtime error. */
 export const SHOT_PROVIDER_TROUBLE = "Our image provider had trouble with this shot, so it needs review.";
+/**
+ * Plain copy for a generative shot left out because the scene image service
+ * is unavailable (every image provider failing, out of quota or behind an
+ * open breaker). The pack still delivers its other files; this shot's
+ * credits are released (docs/phases/PHASE_14.md 1.3).
+ */
+export const SHOT_SCENE_PAUSED = "Paused, the scene service is unavailable, not charged.";
 /** Plain copy for a shot an image provider's safety system declined (Update.md 5.4). */
 export const SHOT_CONTENT_BLOCKED = "The image service declined to make this scene, so this shot needs review.";
 /** Plain copy for a passing shot the packager left out because its channel
@@ -182,13 +192,20 @@ export interface AiDeps {
   /** Passed to every routed call: receives the bookkeeping errors the router
    * swallows (meter, breaker, release, alert). Wire it to error reporting. */
   onInternalError?: (err: unknown, context: string) => void;
+  /** Passed to every routed call: a provider answered that its account is
+   * out of quota (docs/phases/PHASE_14.md 1.2). The runtime records an
+   * events row, at most once per hour per provider. */
+  onProviderQuota?: (info: ProviderQuotaInfo) => void | Promise<void>;
 }
 
 /** The alert and error hooks every routed call carries. */
-export function routedCallHooks(ai: AiDeps): Pick<CallWithFailoverOptions, "onCapAlert" | "onInternalError"> {
+export function routedCallHooks(
+  ai: AiDeps,
+): Pick<CallWithFailoverOptions, "onCapAlert" | "onInternalError" | "onProviderQuota"> {
   return {
     ...(ai.onCapAlert ? { onCapAlert: ai.onCapAlert } : {}),
     ...(ai.onInternalError ? { onInternalError: ai.onInternalError } : {}),
+    ...(ai.onProviderQuota ? { onProviderQuota: ai.onProviderQuota } : {}),
   };
 }
 
@@ -583,6 +600,14 @@ export interface ShotContext {
   /** What the seller asked to leave out, from the parsed note. The QC judge
    * sees it as data next to the target's label. */
   exclude?: string[];
+  /** Set on the pack's first pass: a shot that ends on a transient provider
+   * failure does not record its asset yet, since the pack retries it once
+   * and records the final outcome (docs/phases/PHASE_14.md 1.4). */
+  deferTransientFailures?: boolean;
+  /** Provider spend of an earlier pass of a shot, by shot id, booked on the
+   * shot again when the pack retries it, so its asset row shows the whole
+   * cost of both passes. */
+  priorCostMicros?: Record<string, number>;
 }
 
 /** IPTC digital source marking per plan 5.7.2: composited scenes carry
@@ -641,6 +666,9 @@ export interface ShotOutcomeBase {
   /** Internal detail when the shot ended on an unexpected error; for logs
    * and the job error, never used as shot copy. */
   failure?: string;
+  /** True when the shot passed no output and ended on a transient provider
+   * chain failure: the pack runs it once more after a short wait (1.4). */
+  transientFailure?: boolean;
 }
 
 /**
@@ -774,6 +802,16 @@ export interface PipelineDeps {
   shotConcurrency?: number;
   /** Where buildPack writes zips. A temp dir when omitted. */
   packOutDir?: string;
+  /** The one delayed retry of transiently failed shots (docs/phases/
+   * PHASE_14.md 1.4). On by default with DEFAULT_DELAYED_RETRY_MS. */
+  delayedRetry?: {
+    enabled?: boolean;
+    delayMs?: number;
+    /** Retry only while the run is younger than this. */
+    budgetMs?: number;
+    /** Injectable wait for tests. */
+    sleep?: (ms: number) => Promise<void>;
+  };
   /** Called when the global daily spend crosses the alert line (plan 4.4:
    * $50 alert). Defaults to a console warning in the runtime wiring. */
   onSpendAlert?: (totalMicros: number) => void;
@@ -1741,6 +1779,9 @@ interface OutputRun {
   stopShot: boolean;
   /** Internal error detail for logs and the job error. */
   failure?: string;
+  /** True when the output ended on a transient provider chain failure
+   * (timeout, 429, 5xx, network), worth one delayed retry of the shot. */
+  transient?: boolean;
 }
 
 function needsReviewSummary(
@@ -1864,6 +1905,13 @@ async function settleGenerationSpend(
   return null;
 }
 
+/** True when a failed call came from the scene image chain (a scene plate or
+ * the harmonize pass), not the cutout or a text model. */
+export function isSceneChainFailure(err: unknown): boolean {
+  const errors = providerErrorsOf(err);
+  return errors.length > 0 && errors.every((e) => e.task === SCENE_PLATE_TASK || e.task === HARMONIZE_TASK);
+}
+
 function errorDetail(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -1925,10 +1973,18 @@ async function runOutput(
       if (hasProviderErrorCode(error, "content_blocked")) {
         return stop(SHOT_CONTENT_BLOCKED, false);
       }
+      // The scene image chain is down (every image provider failing, out of
+      // quota or behind an open breaker): this generative shot is paused and
+      // not charged, and the pack still delivers its other files. A
+      // transient failure is retried once later in the run (1.4).
+      if (isSceneChainFailure(error) && isProviderChainUnavailable(error)) {
+        console.warn(`[runner] shot ${shot.id} for ${specId} paused: the scene service is unavailable`);
+        return { ...stop(SHOT_SCENE_PAUSED, true, errorDetail(error)), transient: isTransientChainFailure(error) };
+      }
       // A provider outage on this shot (for example every image or cutout
       // provider failing) ends this shot only; its siblings carry on.
       console.error(`[runner] shot ${shot.id} for ${specId} failed on attempt ${attempt}`, error);
-      return stop(SHOT_PROVIDER_TROUBLE, true, errorDetail(error));
+      return { ...stop(SHOT_PROVIDER_TROUBLE, true, errorDetail(error)), transient: isTransientChainFailure(error) };
     }
     spent.micros += generation.costMicros;
 
@@ -2222,7 +2278,7 @@ export async function runShot(
   // A fan out subtask builds its own store, so the shot binds its run here.
   const deps: PipelineDeps = { ...pipelineDeps, store: storeForRun(pipelineDeps.store, ctx.runKey) };
   const targets = shotTargetSpecs(shot);
-  const spent: ShotSpend = { micros: 0 };
+  const spent: ShotSpend = { micros: ctx.priorCostMicros?.[shot.id] ?? 0 };
   const runs: OutputRun[] = [];
 
   if (targets.length > 0 && COMPOSITE_METHODS.has(shot.method)) {
@@ -2250,6 +2306,7 @@ export async function runShot(
     runs[0]?.summary ??
     needsReviewSummary(shot.channels[0] ?? "", 1, false, "This shot has no channel to size it for, so it needs review.");
   const failure = runs.find((r) => r.failure !== undefined)?.failure;
+  const transientFailure = passedRuns.length === 0 && runs.some((r) => r.transient === true);
   const outcome: ShotOutcome = {
     shotId: shot.id,
     shotType: shot.type,
@@ -2267,8 +2324,12 @@ export async function runShot(
     outputs: runs.map((r) => r.summary),
     ...(passedRuns.length > 0 ? { packAssets: passedRuns.map((r) => r.packAsset as ShotPackAsset) } : {}),
     ...(passedRuns.length === 0 && failure !== undefined ? { failure } : {}),
+    ...(transientFailure ? { transientFailure } : {}),
   };
-  await deps.store.saveAsset(toStoredAsset(outcome, ctx, shot));
+  // A first pass shot the pack will retry records its asset after the retry.
+  if (!(ctx.deferTransientFailures && transientFailure)) {
+    await deps.store.saveAsset(toStoredAsset(outcome, ctx, shot));
+  }
   return outcome;
 }
 
@@ -2799,6 +2860,93 @@ export function withSellerCopy(plan: ShotList, copy: SellerCopy): ShotList {
   return { shots, skipped };
 }
 
+/** Default wait before the one delayed retry of transiently failed shots. */
+export const DEFAULT_DELAYED_RETRY_MS = 30_000;
+/**
+ * The delayed retry only starts while the run is younger than this, so the
+ * retried shots finish well inside the inline runner's 25 minute cap and the
+ * Trigger.dev task's 30 minute maxDuration.
+ */
+export const DEFAULT_DELAYED_RETRY_BUDGET_MS = 12 * 60_000;
+
+/**
+ * One delayed re-run of the shots that ended on a transient provider chain
+ * failure (timeout, 429, 5xx, network; docs/phases/PHASE_14.md 1.4), after a
+ * short backoff, with the same run key. Quota answers, content blocks and
+ * other 4xx never qualify (isTransientChainFailure). A shot that fails
+ * again keeps its needs review outcome, so its credits are released. The
+ * first pass left these shots' asset rows unwritten; this records the final
+ * outcome of each, and both passes' provider spend stays on the books.
+ */
+async function retryTransientShots(
+  outcomes: ShotOutcome[],
+  shots: readonly Shot[],
+  ctx: ShotContext,
+  runShots: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>,
+  deps: PipelineDeps,
+  runStartedAt: number,
+): Promise<ShotOutcome[]> {
+  const retryIndexes = outcomes
+    .map((outcome, index) => (outcome.status !== "passed" && outcome.transientFailure ? index : -1))
+    .filter((index) => index >= 0);
+  if (retryIndexes.length === 0) {
+    return outcomes;
+  }
+  const settings = deps.delayedRetry ?? {};
+  const delayMs = settings.delayMs ?? DEFAULT_DELAYED_RETRY_MS;
+  const budgetMs = settings.budgetMs ?? DEFAULT_DELAYED_RETRY_BUDGET_MS;
+  const store = storeForRun(deps.store, ctx.runKey);
+  const record = async (outcome: ShotOutcome, shot: Shot): Promise<void> => {
+    try {
+      await store.saveAsset(toStoredAsset(outcome, ctx, shot));
+    } catch (err) {
+      console.error(`[runner] could not record shot ${shot.id}`, err);
+    }
+  };
+  const elapsed = deps.clock.now().getTime() - runStartedAt;
+  const enabled = settings.enabled !== false && elapsed + delayMs < budgetMs;
+  if (enabled) {
+    console.warn(
+      `[runner] job ${ctx.jobId}: ${retryIndexes.length} shot(s) failed on a transient provider error; retrying once in ${delayMs} ms`,
+    );
+    await (settings.sleep ?? defaultRunnerSleep)(delayMs);
+  }
+  // A job settled elsewhere during the wait must not spend again.
+  const live = enabled && (await store.heartbeat?.(ctx.jobId)) !== false;
+  if (!live) {
+    for (const index of retryIndexes) {
+      await record(outcomes[index], shots[index]);
+    }
+    return outcomes;
+  }
+  const retryShots = retryIndexes.map((index) => shots[index]);
+  let retried: ShotOutcome[];
+  try {
+    const priorCostMicros = Object.fromEntries(retryIndexes.map((index) => [shots[index].id, outcomes[index].costMicros]));
+    retried = await runShots(retryShots, { ...ctx, deferTransientFailures: false, priorCostMicros });
+  } catch (err) {
+    console.error(`[runner] job ${ctx.jobId} delayed retry failed`, err);
+    for (const index of retryIndexes) {
+      await record(outcomes[index], shots[index]);
+    }
+    return outcomes;
+  }
+  const merged = [...outcomes];
+  retryIndexes.forEach((index, i) => {
+    const second = retried[i];
+    if (!second) return;
+    // runShot booked the first pass's spend on the retried outcome
+    // (priorCostMicros), so both passes stay on the job's books. A fan out
+    // that returned a crash outcome instead carries at least the first pass.
+    merged[index] = { ...second, costMicros: Math.max(second.costMicros, outcomes[index].costMicros) };
+  });
+  return merged;
+}
+
+function defaultRunnerSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Job error when neither shot planner produced a plan. Plain copy the
  * board shows; credits held for the pack are released by the failure path. */
 export const PLAN_FAILED_MESSAGE = "We could not plan the shots for this product, so nothing was charged.";
@@ -2833,6 +2981,7 @@ export async function runGeneratePack(
   let needsReview = 0;
   let pack: StoredPack | null = null;
   let settled = false;
+  const runStartedAt = clock.now().getTime();
 
   const applyLedger = async (action: LedgerAction | null): Promise<void> => {
     if (!action) {
@@ -3211,6 +3360,7 @@ export async function runGeneratePack(
       ...(input.runKey ? { runKey: input.runKey } : {}),
       ...(Object.keys(targets).length > 0 ? { targets } : {}),
       ...(exclude.length > 0 ? { exclude } : {}),
+      deferTransientFailures: true,
     };
     // Pack level spend cap: a shared tracker gates every generation attempt
     // across the parallel fan out, so a runaway pack stops mid flight. The
@@ -3267,7 +3417,8 @@ export async function runGeneratePack(
           ),
         );
       });
-    const outcomes = await runShots(shotList.shots, ctx);
+    const firstPass = await runShots(shotList.shots, ctx);
+    const outcomes = await retryTransientShots(firstPass, shotList.shots, ctx, runShots, deps, runStartedAt);
     costMicros += outcomes.reduce((sum, o) => sum + o.costMicros, 0);
 
     // QC accounting, part one: release every shot that needs review now.

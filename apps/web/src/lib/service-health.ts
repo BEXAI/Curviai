@@ -294,3 +294,19 @@ export async function runHealthCheck(deps: HealthCheckDeps): Promise<HealthResul
     },
   };
 }
+
+/** The breaker read the quota warnings need; @curvi/ai's CircuitBreaker fits. */
+export interface BreakerReader {
+  openReason(provider: string): Promise<"quota" | "failures" | null>;
+}
+
+/**
+ * `provider_quota:<name>` for every provider whose breaker a quota answer
+ * opened (docs/phases/PHASE_14.md 1.2), in the order given. Reads the
+ * process breaker state only, so it is cheap enough for every health call;
+ * a breaker that cannot be read is skipped, never an error.
+ */
+export async function providerQuotaWarnings(names: readonly string[], breaker: BreakerReader): Promise<string[]> {
+  const reasons = await Promise.all(names.map((name) => breaker.openReason(name).catch(() => null)));
+  return names.filter((_, i) => reasons[i] === "quota").map((name) => `provider_quota:${name}`);
+}

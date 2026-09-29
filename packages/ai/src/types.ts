@@ -134,9 +134,17 @@ export interface RouteOptions {
  * - cap_blocked: a spend cap refused the reservation.
  * - cap_unavailable: the spend cap reservation could not be made (store
  *   error or missing identifiers); the call fails closed.
+ * - provider_quota: the provider refused because the account ran out of
+ *   quota, credit or plan images (HTTP 402, Photoroom style "exhausted the
+ *   number of images", BFL "Insufficient credits", OpenAI insufficient_quota,
+ *   Gemini RESOURCE_EXHAUSTED on a billing or daily quota). Never retried on
+ *   the same provider: the router opens that provider's breaker at once for
+ *   a long cooldown and fails over. It is not transient: waiting a few
+ *   seconds never fixes an empty account.
  */
 export type ProviderErrorCode =
   | "content_blocked"
+  | "provider_quota"
   | "empty_output"
   | "timeout"
   | "estimate_failed"
@@ -181,7 +189,8 @@ export class ProviderError extends Error {
     super(message);
     this.name = "ProviderError";
     this.code = details.code;
-    this.transient = details.code === "content_blocked" ? false : (details.transient ?? retryable);
+    this.transient =
+      details.code === "content_blocked" || details.code === "provider_quota" ? false : (details.transient ?? retryable);
     const billed = details.billedCostMicros ?? 0;
     this.billedCostMicros = Number.isFinite(billed) && billed > 0 ? Math.ceil(billed) : 0;
   }
@@ -212,9 +221,26 @@ export class AllProvidersFailedError extends Error {
 }
 
 export class BreakerOpenError extends ProviderError {
-  constructor(provider: string, task: string) {
-    super(`Circuit breaker open for ${provider}`, provider, task, false);
+  /**
+   * Why the breaker is open: "quota" when a provider_quota answer tripped it
+   * (the error then carries the provider_quota code too), "failures" when
+   * transient failures opened it.
+   */
+  readonly reason: "quota" | "failures";
+
+  constructor(provider: string, task: string, reason: "quota" | "failures" = "failures") {
+    super(
+      reason === "quota"
+        ? `Circuit breaker open for ${provider}: the provider account is out of quota`
+        : `Circuit breaker open for ${provider}`,
+      provider,
+      task,
+      false,
+      undefined,
+      reason === "quota" ? { code: "provider_quota" } : {},
+    );
     this.name = "BreakerOpenError";
+    this.reason = reason;
   }
 }
 
@@ -247,6 +273,35 @@ export function providerErrorsOf(err: unknown): ProviderError[] {
   if (err instanceof AllProvidersFailedError) return err.errors;
   if (err instanceof ProviderError) return [err];
   return [];
+}
+
+/**
+ * True when a failed call says its provider chain is unavailable right now,
+ * not that this request is wrong: every provider in the chain failed with a
+ * transient error (timeout, 5xx, 429, network, a stalled job), sat behind an
+ * open circuit breaker, or ran out of quota. A content block, a cap block, a
+ * non transient 4xx or an unsupported task anywhere in the chain means no.
+ */
+export function isProviderChainUnavailable(err: unknown): boolean {
+  const errors = providerErrorsOf(err);
+  if (errors.length === 0) return false;
+  return errors.every(
+    (e) => e.code === "provider_quota" || e instanceof BreakerOpenError || (e.transient && e.code !== "content_blocked"),
+  );
+}
+
+/**
+ * True when a failed call is worth one delayed retry: the chain is
+ * unavailable (above) and at least one provider failed transiently (a
+ * timeout, 429, 5xx or network error), so a short wait may fix it. A chain
+ * that failed only on quota or open breakers is not retried: the breaker
+ * cooldown outlasts any short backoff.
+ */
+export function isTransientChainFailure(err: unknown): boolean {
+  if (!isProviderChainUnavailable(err)) return false;
+  return providerErrorsOf(err).some(
+    (e) => e.transient && e.code !== "provider_quota" && !(e instanceof BreakerOpenError),
+  );
 }
 
 /** True when err, or any provider error in a failed chain, carries code.

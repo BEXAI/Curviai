@@ -42,6 +42,7 @@ import {
   SHOT_CHANNEL_FULL,
   SHOT_CONTENT_BLOCKED,
   SHOT_PROVIDER_TROUBLE,
+  SHOT_SCENE_PAUSED,
   systemClock,
   validateLlmShotList,
   visionBlocks,
@@ -191,6 +192,8 @@ function makeDeps(overrides: Partial<PipelineDeps> = {}): PipelineDeps & { store
     store,
     clock: systemClock,
     generator: new DemoShotGenerator(),
+    // The one delayed retry of transient failures runs without waiting.
+    delayedRetry: { sleep: async () => {} },
     ...overrides,
     ...(overrides.store ? { store: overrides.store as InMemoryJobStore } : {}),
   } as PipelineDeps & { store: InMemoryJobStore };
@@ -824,9 +827,13 @@ describe("per shot failure isolation (3.3)", () => {
     expect(summary.chargedCredits).toBe(totalCredits - victim.credits);
     expect(summary.chargedCredits + summary.releasedCredits).toBe(summary.reservedCredits);
 
-    const victimAsset = deps.store.assets.find((a) => a.shotId === victim.id) as StoredAsset;
+    // One asset row for the victim, after its one delayed retry (1.4). A
+    // scene chain that is down pauses the shot (1.3).
+    const victimAssets = deps.store.assets.filter((a) => a.shotId === victim.id);
+    expect(victimAssets).toHaveLength(1);
+    const victimAsset = victimAssets[0] as StoredAsset;
     expect(victimAsset.status).toBe("needs_review");
-    expect(victimAsset.verdict.repairHint).toBe(SHOT_PROVIDER_TROUBLE);
+    expect(victimAsset.verdict.repairHint).toBe(SHOT_SCENE_PAUSED);
     // Its credits were released, never charged.
     const released = deps.store.ledger.filter((e) => e.reason === "release" && e.ref === victim.id);
     expect(released).toEqual([expect.objectContaining({ credits: victim.credits })]);
@@ -2103,11 +2110,14 @@ describe("provider spend of failed attempts stays on the books (5.1)", () => {
     const lifestyle = lifestyleOf(fittedPlan());
     expect(lifestyle.length).toBeGreaterThan(0);
     expect(summary.state).toBe("done");
-    expect(summary.costMicros).toBe(40_000 * lifestyle.length);
+    // A stalled job is transient, so each lifestyle shot ran once more after
+    // the delay (1.4): both passes' billed spend is booked.
+    expect(summary.costMicros).toBe(80_000 * lifestyle.length);
     const review = deps.store.assets.filter((a) => a.shotType === "lifestyle");
-    expect(review.every((a) => a.status === "needs_review" && a.costMicros === 40_000)).toBe(true);
-    expect(review.every((a) => a.verdict.repairHint === SHOT_PROVIDER_TROUBLE)).toBe(true);
-    expect(deps.store.states.at(-1)?.meta).toMatchObject({ costMicros: 40_000 * lifestyle.length });
+    expect(review).toHaveLength(lifestyle.length);
+    expect(review.every((a) => a.status === "needs_review" && a.costMicros === 80_000)).toBe(true);
+    expect(review.every((a) => a.verdict.repairHint === SHOT_SCENE_PAUSED)).toBe(true);
+    expect(deps.store.states.at(-1)?.meta).toMatchObject({ costMicros: 80_000 * lifestyle.length });
   });
 
   it("books the spend a ShotFailedAfterSpendError carries and keeps its failure detail", async () => {
@@ -2444,10 +2454,10 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     return encodePng(img);
   }
 
-  /** Stands in for Photoroom: every pixel that is not white is foreground,
+  /** Stands in for the cutout provider: every pixel that is not white is foreground,
    * so it keeps every product it is shown, like the real service. */
   class SegmentAllCutout implements Provider {
-    readonly name = "photoroom";
+    readonly name = "fal-birefnet";
     readonly kind = "cutout" as const;
     readonly inputs: Array<{ width: number; height: number; red: number; blue: number }> = [];
     supports(task: string): boolean {
@@ -2498,12 +2508,12 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     }
     const cutout = new SegmentAllCutout();
     ai.registry.register(cutout);
-    ai.routing[CUTOUT_TASK] = ["photoroom"];
+    ai.routing[CUTOUT_TASK] = ["fal-birefnet"];
     const mediaId = "ws/ws1/src/two-bottles.png";
     const loadMedia = async () => photo;
     const live = new LiveShotGenerator({
       ai,
-      wiring: { llmLive: true, imageProviders: [], cutoutLive: true },
+      wiring: { llmLive: true, imageProviders: [], cutoutProviders: ["fal-birefnet"], cutoutLive: true },
       loadMedia,
     });
     // Records every shot's target on its way to the live generator.

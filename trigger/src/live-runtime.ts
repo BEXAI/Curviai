@@ -2,8 +2,8 @@
  * Live provider wiring. Reads provider API keys from env and upgrades the
  * demo registry and routing in place: Anthropic models per recipe task
  * (models and prices from the pipeline seed), the image scene plate chain
- * (Nano Banana 2, FLUX.2 pro, GPT Image 2 in failover order), Photoroom
- * cutouts, and a LiveShotGenerator that runs the fidelity lock composite
+ * (Nano Banana 2, FLUX.2 pro, GPT Image 2 in failover order), fal BiRefNet
+ * cutouts (FAL_KEY), and a LiveShotGenerator that runs the fidelity lock composite
  * flow against real providers. With no keys set nothing here activates and
  * the demo implementations keep working.
  */
@@ -14,13 +14,15 @@ import {
   ASYNC_JOB_TIMEOUT_MARGIN_MS,
   BflFluxProvider,
   callWithFailover,
+  CircuitBreaker,
   downloadBytes,
+  FAL_API_KEY_ENV,
   type CallResult,
   type CapsHook,
   GeminiImageProvider,
   hasProviderErrorCode,
   OpenaiImageProvider,
-  PhotoroomCutoutProvider,
+  FalCutoutProvider,
   ProviderError,
   providerErrorsOf,
   signalOf,
@@ -31,8 +33,8 @@ import {
   type GeminiImageOutput,
   type OpenaiImageInput,
   type OpenaiImageOutput,
-  type PhotoroomCutoutInput,
-  type PhotoroomCutoutOutput,
+  type CutoutInput,
+  type CutoutOutput,
   type Provider,
   type ProviderKind,
   type ProviderRegistry,
@@ -76,7 +78,7 @@ import {
   imageModelSeedRows,
   llmModelPrices,
   canvasDefaults,
-  photoroomSeed,
+  cutoutModelSeedRows,
   presets,
   recipeSeedRows,
   sceneDefaults,
@@ -105,6 +107,7 @@ import {
   isSpendCapBlock,
   routedCallHooks,
   SHOT_CONTENT_BLOCKED,
+  SHOT_SCENE_PAUSED,
   type PipelineDeps,
   type InventoryCutout,
   type ProductTarget,
@@ -140,6 +143,8 @@ export interface LiveWiring {
   llmLive: boolean;
   /** Scene plate chain in failover order; empty when no image key is set. */
   imageProviders: string[];
+  /** Cutout chain in failover order; empty when FAL_KEY is not set. */
+  cutoutProviders: string[];
   cutoutLive: boolean;
 }
 
@@ -355,7 +360,7 @@ export function wireLiveProviders(
   readEnv: ReadEnv = readEnvDefault,
   fetchFn: FetchLike = fetch,
 ): LiveWiring {
-  const wiring: LiveWiring = { llmLive: false, imageProviders: [], cutoutLive: false };
+  const wiring: LiveWiring = { llmLive: false, imageProviders: [], cutoutProviders: [], cutoutLive: false };
 
   const anthropicKey = readEnv("ANTHROPIC_API_KEY");
   if (anthropicKey) {
@@ -416,17 +421,28 @@ export function wireLiveProviders(
     routing[HARMONIZE_TASK] = [...wiring.imageProviders];
   }
 
-  const photoroomKey = readEnv("PHOTOROOM_API_KEY");
-  if (photoroomKey) {
-    registry.register(
-      new PhotoroomCutoutProvider({
-        name: photoroomSeed.providerName,
-        tasks: [CUTOUT_TASK],
-        apiKey: photoroomKey,
-        priceTable: { perCallMicros: photoroomSeed.perCallMicros },
-      }),
-    );
-    routing[CUTOUT_TASK] = [photoroomSeed.providerName];
+  // Cutouts run on fal (BiRefNet by default), in seed failover order. Every
+  // shot starts from the cutout, so an exhausted or failing cutout provider
+  // fails over to the next seeded one instead of failing every pack.
+  const falKey = readEnv(FAL_API_KEY_ENV);
+  if (falKey) {
+    for (const row of cutoutModelSeedRows) {
+      registry.register(
+        new FalCutoutProvider({
+          name: row.providerName,
+          tasks: [CUTOUT_TASK],
+          apiKey: falKey,
+          modelId: row.model,
+          modelParams: row.params,
+          priceTable: { perCallMicros: row.perCallMicros },
+          fetchFn: fetchFn as typeof fetch,
+        }),
+      );
+      wiring.cutoutProviders.push(row.providerName);
+    }
+  }
+  if (wiring.cutoutProviders.length > 0) {
+    routing[CUTOUT_TASK] = [...wiring.cutoutProviders];
     wiring.cutoutLive = true;
   }
 
@@ -687,7 +703,7 @@ type CapsHooks = CapsHook[] | undefined;
 
 /**
  * Real shot generator. Every still starts from the seller's own photo: load
- * it from R2, cut the product out with Photoroom (once per job and photo,
+ * it from R2, cut the product out through the cutout chain (once per job and photo,
  * shared by every shot and attempt that uses it), then
  * - composite and edit methods generate a scene plate through the image
  *   chain and paste the original product pixels back via compositeShot;
@@ -841,6 +857,20 @@ export class LiveShotGenerator implements ShotGenerator {
     };
   }
 
+  /** True when every configured image provider's breaker is open. */
+  private async sceneChainOpen(): Promise<boolean> {
+    const names = this.opts.wiring.imageProviders;
+    if (names.length === 0) return false;
+    const breaker = new CircuitBreaker(this.opts.ai.breakerStore);
+    try {
+      const open = await Promise.all(names.map((name) => breaker.isOpen(name)));
+      return open.every(Boolean);
+    } catch {
+      // A breaker store that cannot be read never blocks a shot by itself.
+      return false;
+    }
+  }
+
   private capsFor(args: ShotGenerateArgs): CapsHooks {
     const caps = this.opts.ai.caps;
     return caps
@@ -881,9 +911,9 @@ export class LiveShotGenerator implements ShotGenerator {
         // after it stay bounded. Bytes sharp cannot read go as they are; the
         // service may.
         const upright = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
-        let cutout: CallResult<PhotoroomCutoutOutput>;
+        let cutout: CallResult<CutoutOutput>;
         try {
-          cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
+          cutout = await callWithFailover<CutoutInput, CutoutOutput>(
             ai.registry,
             ai.routing,
             ai.meter,
@@ -909,6 +939,38 @@ export class LiveShotGenerator implements ShotGenerator {
       pending.catch(() => this.cutouts.delete(key));
     }
     return pending;
+  }
+
+  /**
+   * The rect of this job's whole photo cutout, when one was already made
+   * (by the product inventory) at the size the crop was taken from; null
+   * otherwise, and when that cutout failed. The pixels are copied as they
+   * are, so the product stays byte identical (rule 3).
+   */
+  private async cachedFullCutoutCrop(
+    key: string,
+    source: { width: number; height: number },
+    rect: PixelRect,
+  ): Promise<RawImage | null> {
+    const pending = this.cutouts.get(key);
+    if (!pending) return null;
+    let load: CutoutLoad;
+    try {
+      load = await pending;
+    } catch {
+      return null;
+    }
+    const { rgba } = load;
+    if (rgba.width !== source.width || rgba.height !== source.height) return null;
+    if (rect.left < 0 || rect.top < 0 || rect.left + rect.width > rgba.width || rect.top + rect.height > rgba.height) {
+      return null;
+    }
+    const data = Buffer.alloc(rect.width * rect.height * 4);
+    for (let y = 0; y < rect.height; y++) {
+      const from = ((rect.top + y) * rgba.width + rect.left) * 4;
+      rgba.data.copy(data, y * rect.width * 4, from, from + rect.width * 4);
+    }
+    return { data, width: rect.width, height: rect.height, channels: 4 };
   }
 
   /** The whole photo cutout's cost the first time it is claimed, else 0. */
@@ -963,7 +1025,7 @@ export class LiveShotGenerator implements ShotGenerator {
   }
 
   /**
-   * The cut out product for this shot's source photo. The Photoroom call runs
+   * The cut out product for this shot's source photo. The cutout call runs
    * once per job and photo; the first caller to use it (the product
    * inventory, or the first shot) books its cost, every later shot and retry
    * reuses it for free. A failed load is not cached, so the next attempt
@@ -1006,31 +1068,41 @@ export class LiveShotGenerator implements ShotGenerator {
           if (!crop) {
             throw new ShotUnavailableError(ISOLATION_FAILED);
           }
-          let cutout: CallResult<PhotoroomCutoutOutput>;
-          try {
-            cutout = await callWithFailover<PhotoroomCutoutInput, PhotoroomCutoutOutput>(
-              ai.registry,
-              ai.routing,
-              ai.meter,
-              ai.breakerStore,
-              {
-                task: CUTOUT_TASK,
-                input: { imageBytes: crop.bytes, format: "png" },
-                workspaceId: args.workspaceId,
-                jobId: args.jobId,
-                stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
-              },
-              { caps, ...routedCallHooks(ai) },
-            );
-          } catch (err) {
-            const billed = failureSpendMicros(err);
-            throw billed > 0 ? new ProductLoadError(err, billed) : err;
+          // One pack never pays twice for the same photo: when the whole
+          // photo was already cut out (the product inventory ran), the crop
+          // is taken from that cutout instead of a second provider call.
+          const reused = await this.cachedFullCutoutCrop(key, crop.source, crop.rect);
+          let cutoutRgba: RawImage;
+          if (reused) {
+            cutoutRgba = reused;
+          } else {
+            let cutout: CallResult<CutoutOutput>;
+            try {
+              cutout = await callWithFailover<CutoutInput, CutoutOutput>(
+                ai.registry,
+                ai.routing,
+                ai.meter,
+                ai.breakerStore,
+                {
+                  task: CUTOUT_TASK,
+                  input: { imageBytes: crop.bytes, format: "png" },
+                  workspaceId: args.workspaceId,
+                  jobId: args.jobId,
+                  stepId: `${args.shot.id}:${CUTOUT_TASK}:${args.attempt}`,
+                },
+                { caps, ...routedCallHooks(ai) },
+              );
+            } catch (err) {
+              const billed = failureSpendMicros(err);
+              throw billed > 0 ? new ProductLoadError(err, billed) : err;
+            }
+            costMicros = cutout.costMicros + cutout.billedFailureMicros;
+            cutoutRgba = await decodeToRgba(Buffer.from(cutout.output.imageBytes));
           }
-          costMicros = cutout.costMicros + cutout.billedFailureMicros;
           // Keep only the cutout pieces on the target; every other product
           // the cutout kept becomes fully transparent. Kept pixels are byte
           // identical, so the fidelity check still proves rule 3.
-          const isolated = isolateCutout(await decodeToRgba(Buffer.from(cutout.output.imageBytes)), cropTarget, crop);
+          const isolated = isolateCutout(cutoutRgba, cropTarget, crop);
           if (isolated.refusal !== undefined) {
             console.warn(`[live] job ${args.jobId} photo ${args.shot.sourceMediaId} isolation refused: ${isolated.refusal}`);
             return { product: null, refusal: isolated.refusal, costMicros };
@@ -1195,6 +1267,11 @@ export class LiveShotGenerator implements ShotGenerator {
     // Refusals that need no cutout happen before any money is spent.
     if (!isComposite) {
       precheckStill(shot, label);
+    } else if (await this.sceneChainOpen()) {
+      // Every image provider sits behind an open breaker (failing or out of
+      // quota): the scene is paused without trying, and the pack delivers
+      // its other files (docs/phases/PHASE_14.md 1.3).
+      throw new ShotUnavailableError(SHOT_SCENE_PAUSED);
     }
 
     const caps = this.capsFor(args);

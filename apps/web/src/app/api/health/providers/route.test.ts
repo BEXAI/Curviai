@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "./route";
 
 const SECRET = "probe-secret-value-for-tests";
-const KEY_ENVS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "PHOTOROOM_API_KEY"];
+const KEY_ENVS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "FAL_KEY"];
 
 function probeRequest(headers: Record<string, string> = {}): Request {
   return new Request("http://localhost/api/health/providers", { headers });
@@ -83,11 +83,11 @@ describe("GET /api/health/providers probes", () => {
     // Only free metadata endpoints, only GETs: nothing generates or spends.
     expect(calls.every((call) => call.method === "GET")).toBe(true);
     // Anthropic (one per priced model) and OpenAI read /v1/models/{id};
-    // BFL, Photoroom and Gemini have their own paths.
+    // BFL and Gemini have their own paths; the fal cutout has no free probe.
     const hosts = calls.map((call) => new URL(call.url).pathname);
-    expect(hosts.filter((p) => p.startsWith("/v1/models/"))).toHaveLength(calls.length - 3);
+    expect(hosts.filter((p) => p.startsWith("/v1/models/"))).toHaveLength(calls.length - 2);
     expect(hosts).toContain("/v1/credits");
-    expect(hosts).toContain("/v2/account");
+    expect(calls.some((call) => call.url.includes("fal.run"))).toBe(false);
     expect(hosts.some((p) => p.startsWith("/v1beta/models/") && !p.includes(":"))).toBe(true);
     expect(hosts.some((p) => /generateContent|segment|messages|images\/generations/.test(p))).toBe(false);
 
@@ -99,9 +99,15 @@ describe("GET /api/health/providers probes", () => {
       configured: true,
       probe: { ok: false, status: 401, error: "The provider refused the key." },
     });
-    const photoroom = body.providers.find((p: { name: string }) => p.name === "photoroom");
-    expect(photoroom).toMatchObject({ kind: "cutout", stages: ["cutout"], probe: { ok: true, status: 200 } });
-    expect(typeof photoroom.probe.latencyMs).toBe("number");
+    const cutout = body.providers.find((p: { name: string }) => p.name === "fal-birefnet");
+    expect(cutout).toMatchObject({
+      kind: "cutout",
+      envVar: "FAL_KEY",
+      stages: ["cutout"],
+      probe: { ok: true, status: null, skipped: "This provider has no key probe." },
+    });
+    const gemini = body.providers.find((p: { name: string }) => p.name === "gemini-image");
+    expect(typeof gemini.probe.latencyMs).toBe("number");
     for (const name of KEY_ENVS) expect(text).not.toContain(`value-of-${name}`);
     expect(text).not.toContain("must not be echoed");
     expect(text).not.toContain(SECRET);
@@ -109,11 +115,11 @@ describe("GET /api/health/providers probes", () => {
 
   it("lists unconfigured providers without calling them", async () => {
     vi.stubEnv("CRON_SECRET", SECRET);
-    vi.stubEnv("PHOTOROOM_API_KEY", "pr-key");
+    vi.stubEnv("BFL_API_KEY", "bfl-key");
     stubFetch(() => 200);
 
     const body = await (await GET(probeRequest({ "x-cron-secret": SECRET }))).json();
-    expect(calls.map((call) => call.url)).toEqual(["https://image-api.photoroom.com/v2/account"]);
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual(["/v1/credits"]);
     expect(body.ok).toBe(true);
     const unconfigured = body.providers.filter((p: { configured: boolean }) => !p.configured);
     expect(unconfigured.length).toBe(body.providers.length - 1);
@@ -123,7 +129,7 @@ describe("GET /api/health/providers probes", () => {
   it("reports a hung or unreachable provider as data within the timeout and never throws", async () => {
     vi.stubEnv("CRON_SECRET", SECRET);
     vi.stubEnv("GEMINI_API_KEY", "g-key");
-    vi.stubEnv("PHOTOROOM_API_KEY", "pr-key");
+    vi.stubEnv("BFL_API_KEY", "bfl-key");
     stubFetch((url) => (url.includes("googleapis") ? "hang" : "throw"));
     vi.useFakeTimers();
 
@@ -134,6 +140,6 @@ describe("GET /api/health/providers probes", () => {
     const body = await res.json();
     const byName = Object.fromEntries(body.providers.map((p: { name: string; probe: unknown }) => [p.name, p.probe]));
     expect(byName["gemini-image"]).toMatchObject({ ok: false, status: null, error: "No answer within 10 seconds." });
-    expect(byName.photoroom).toMatchObject({ ok: false, status: null, error: "The call did not reach the provider (TypeError)." });
+    expect(byName["bfl-flux"]).toMatchObject({ ok: false, status: null, error: "The call did not reach the provider (TypeError)." });
   });
 });

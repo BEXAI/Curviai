@@ -1,6 +1,6 @@
 /**
  * The product as the live generator hands it to every still renderer: the
- * Photoroom cutout of the seller's real photo and its mask, decoded and
+ * cutout (fal BiRefNet) of the seller's real photo and its mask, decoded and
  * encoded once per source photo. Renderers only move, scale and place these
  * pixels; nothing regenerates them (CLAUDE.md rule 3).
  */

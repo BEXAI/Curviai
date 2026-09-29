@@ -54,8 +54,41 @@ export const imageModelSeedRows: ImageModelSeedRow[] = [
   { providerName: "openai-image", family: "openai", model: "gpt-image-2", perImageMicros: 53_000 },
 ];
 
-/** Photoroom segment API, $0.02 per image (plan section 2.4). */
-export const photoroomSeed = { providerName: "photoroom", perCallMicros: 20_000 };
+export interface CutoutModelSeedRow {
+  /** Registry provider name; also the routing table entry. */
+  providerName: string;
+  /** fal model ID passed to the queue gateway. */
+  model: string;
+  /** Extra request fields sent with every cutout. */
+  params: Record<string, unknown>;
+  /** Budgeted per image price in USD micros. */
+  perCallMicros: number;
+}
+
+/**
+ * Cutout chain in failover order (Phase 14, 2026-09-29). Photoroom is a
+ * competitor and no longer used. The default is BiRefNet (MIT licensed) on
+ * fal.ai, at its high resolution general use variant: "General Use (Light
+ * 2K)", trained on 2K images, run at 2048x2048. Never the Matting or
+ * Portrait variants, and never BRIA RMBG 2.0, whose weights are non
+ * commercial. fal lists BiRefNet v2 as billed per compute second (its page
+ * showed "$0 per compute second" on 2026-09-29), so the price below is a
+ * conservative budget of $0.01 per image: about 19 H100 seconds at fal's
+ * $1.89 per hour, several times a 2K segmentation run. docs/verification.md.
+ */
+export const cutoutModelSeedRows: CutoutModelSeedRow[] = [
+  {
+    providerName: "fal-birefnet",
+    model: "fal-ai/birefnet/v2",
+    params: {
+      model: "General Use (Light 2K)",
+      operating_resolution: "2048x2048",
+      output_format: "png",
+      refine_foreground: true,
+    },
+    perCallMicros: 10_000,
+  },
+];
 
 /** Provider spend ceilings in USD micros (plan section 4.4). */
 export const costCaps = {

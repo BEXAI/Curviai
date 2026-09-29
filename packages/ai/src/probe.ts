@@ -112,6 +112,41 @@ export function skippedProbe(reason: string): ProbeResult {
   return { ok: true, status: null, latencyMs: 0, skipped: reason };
 }
 
+/** A probe result kept with the time it was taken. */
+export interface RecordedProbe extends ProbeResult {
+  name: string;
+  at: number;
+}
+
+const probeScope = globalThis as typeof globalThis & { __curviLastProbes?: Map<string, RecordedProbe> };
+
+function lastProbes(): Map<string, RecordedProbe> {
+  probeScope.__curviLastProbes ??= new Map();
+  return probeScope.__curviLastProbes;
+}
+
+/**
+ * Keeps the newest probe result per provider in this process, so cheap
+ * readers (the new pack preflight) can use what the last probe learned
+ * without calling the provider again.
+ */
+export function recordProbeReports(reports: ReadonlyArray<ProbeResult & { name: string }>, now: number = Date.now()): void {
+  const store = lastProbes();
+  for (const report of reports) {
+    store.set(report.name, { ...report, at: now });
+  }
+}
+
+/** The newest recorded probe for a provider, or null when none ran yet. */
+export function lastProbeReport(name: string): RecordedProbe | null {
+  return lastProbes().get(name) ?? null;
+}
+
+/** Forgets every recorded probe; for tests. */
+export function clearProbeReports(): void {
+  lastProbes().clear();
+}
+
 export interface ProbeTarget {
   name: string;
   provider: Provider;

@@ -8,7 +8,7 @@
  * runnable end to end without credentials.
  */
 
-import { InMemoryBreakerStore, InMemoryCapStore, InMemoryCostMeter, ProviderRegistry, SpendCaps } from "@curvi/ai";
+import { InMemoryCapStore, InMemoryCostMeter, processBreakerStore, ProviderRegistry, SpendCaps } from "@curvi/ai";
 import type { CapStore, CostAwareProvider, ProviderRequest, ProviderResponse, RoutingTable } from "@curvi/ai";
 import {
   encodeJpeg,
@@ -30,6 +30,7 @@ import { canvasSizeFor } from "./shot-outputs";
 import { parseShotConcurrency } from "./shot-concurrency";
 import type { DropWorkspace } from "./drops";
 import { SpendAlertNotifier } from "./spend-alerts";
+import { processQuotaNotifier, type QuotaEventWriter } from "./provider-quota";
 import {
   activeRecipe,
   InMemoryJobStore,
@@ -229,6 +230,9 @@ export interface RuntimeDepsOptions {
    * notifier without a database (email when Resend is configured, otherwise
    * a structured log line), once per day. */
   onSpendAlert?: (totalMicros: number) => void;
+  /** Where provider_quota_exhausted events rows go (the db runtime); logs
+   * only without one. */
+  quotaEventDb?: QuotaEventWriter;
 }
 
 const runtimeScope = globalThis as typeof globalThis & { __curviRuntimeSpendAlerts?: SpendAlertNotifier };
@@ -277,10 +281,14 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     registry,
     routing,
     meter: new InMemoryCostMeter(),
-    breakerStore: new InMemoryBreakerStore(),
+    // Shared by every pack run in this process, so a provider that is
+    // failing or out of quota is skipped by the next pack too, and the web
+    // health endpoint and new pack preflight read the same state.
+    breakerStore: processBreakerStore(),
     caps,
     onCapAlert: onSpendAlert,
     onInternalError: reportAiInternalError,
+    onProviderQuota: processQuotaNotifier(opts.quotaEventDb).onProviderQuota,
   };
   const wiring = wireLiveProviders(registry, routing);
   // Cutouts are cached in R2 per workspace and exact input bytes, so the pack
