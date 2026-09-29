@@ -5,9 +5,11 @@ import {
   getSpec,
   isSpecSelected,
   listSpecs,
+  refusesOverlays,
   requiresWhiteBackground,
 } from "@curvi/specs";
 import {
+  ADDED_OVERLAYS_REASON,
   EXTRA_FAMILIES,
   SELLER_OFF_REASON,
   SOURCE_TOO_SMALL_REASON,
@@ -24,6 +26,7 @@ import {
   NO_COMPATIBLE_CHANNEL_REASON,
   RESERVED_GALLERY_SLOTS,
   UNDELIVERABLE_METHOD_REASON,
+  applyAddedOverlays,
   applyOriginalSizes,
   capShotsPerChannel,
   channelLimitViolations,
@@ -1223,6 +1226,68 @@ describe("planShots with output options (PHASE_15 item 3)", () => {
     const skipped: SkippedShot[] = [];
     expect(applyOriginalSizes([shot], flags("keep", {}, [{ id: "m_front" }]), skipped)).toEqual([shot]);
     expect(skipped).toEqual([]);
+  });
+
+  it("leaves a kept photo with added text off every spec that refuses overlays (P1)", () => {
+    const photos: PlanPhoto[] = [
+      { id: "m_front", angle: "front", width: 3000, height: 3000, addedOverlays: true },
+      { id: "m_45", angle: "45", width: 3000, height: 3000 },
+    ];
+    const picked = ["amazon.secondary", "ebay.listing", "google.merchant.lifestyle", "etsy.listing"];
+    const list = planShots(
+      profile({ photographedAngles: ["front", "45"], missingAnglesNeeded: [] }),
+      opts(picked, flags("keep", {}, photos), { mediaIdsByAngle: { front: "m_front", "45": "m_45" } }),
+    );
+    const front = originals(list).find((s) => s.sourceMediaId === "m_front")!;
+    for (const specId of front.channels) {
+      expect(refusesOverlays(getSpec(specId)), specId).toBe(false);
+    }
+    expect(front.channels).toEqual(expect.arrayContaining(["amazon.secondary", "etsy.listing"]));
+    const leftOut = list.skipped.filter((s) => s.reason === ADDED_OVERLAYS_REASON).map((s) => s.type);
+    expect(sorted(leftOut)).toEqual(["original_photo:ebay.listing", "original_photo:google.merchant.lifestyle"]);
+    // The clean photo keeps the specs it would have had anyway.
+    const other = originals(list).find((s) => s.sourceMediaId === "m_45")!;
+    const clean = planShots(
+      profile({ photographedAngles: ["front", "45"], missingAnglesNeeded: [] }),
+      opts(picked, flags("keep", {}, photos.map(({ addedOverlays: _flag, ...photo }) => photo)), {
+        mediaIdsByAngle: { front: "m_front", "45": "m_45" },
+      }),
+    );
+    expect(sorted(other.channels)).toEqual(sorted(originals(clean).find((s) => s.sourceMediaId === "m_45")!.channels));
+    expect(clean.skipped.some((s) => s.reason === ADDED_OVERLAYS_REASON)).toBe(false);
+  });
+
+  it("applyAddedOverlays drops an original left with no spec and never touches other shots", () => {
+    const original: Shot = {
+      id: "s01_original_photo",
+      type: "original_photo",
+      sourceMediaId: "m_front",
+      method: "deterministic",
+      channels: ["ebay.listing"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    };
+    const white: Shot = { ...original, id: "s00_amazon_main", type: "amazon_main", channels: ["ebay.listing"] };
+    const flagged = flags("keep", {}, [{ id: "m_front", addedOverlays: true }]);
+    const skipped: SkippedShot[] = [];
+    expect(applyAddedOverlays([white, original], flagged, skipped)).toEqual([white]);
+    expect(skipped).toEqual([{ type: "original_photo:ebay.listing", reason: ADDED_OVERLAYS_REASON }]);
+    // Unflagged, or no options at all: unchanged.
+    const none: SkippedShot[] = [];
+    expect(applyAddedOverlays([original], flags("keep", {}, [{ id: "m_front" }]), none)).toEqual([original]);
+    expect(applyAddedOverlays([original], undefined, none)).toEqual([original]);
+    expect(none).toEqual([]);
+  });
+
+  it("never covers a spec a flagged kept photo was left out of", () => {
+    const photos: PlanPhoto[] = [{ id: "m_front", angle: "front", width: 3000, height: 3000, addedOverlays: true }];
+    const list = planShots(
+      profile({ photographedAngles: ["front"], missingAnglesNeeded: [] }),
+      opts(["ebay.listing"], flags("keep", {}, photos), { mediaIdsByAngle: { front: "m_front" } }),
+    );
+    expect(list.shots.some((s) => s.channels.includes("ebay.listing"))).toBe(false);
+    expect(list.skipped).toContainEqual({ type: "original_photo:ebay.listing", reason: ADDED_OVERLAYS_REASON });
   });
 
   it("reserves a slot per original ahead of the gallery reservations", () => {

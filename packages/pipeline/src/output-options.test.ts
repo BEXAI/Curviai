@@ -250,6 +250,12 @@ describe("planFlagsOf", () => {
     expect(flags.keepMediaIds).toEqual(["ws/a/src/1.jpg", "ws/a/src/2.jpg"]);
   });
 
+  it("carries intake's added text flag only when it is set", () => {
+    const value = resolved({ background: "keep" }, { keepMediaIds: ["a", "b"] });
+    const flags = planFlagsOf(value, [{ id: "a", addedOverlays: true }, { id: "b", addedOverlays: false }]);
+    expect(flags.photos).toEqual([{ id: "a", addedOverlays: true }, { id: "b" }]);
+  });
+
   it("keeps every photo with Keep and none with Remove", () => {
     expect(keepMediaIdsFor({ background: "keep" }, ["a", "b"])).toEqual(["a", "b"]);
     expect(keepMediaIdsFor({ background: "remove" }, ["a", "b"])).toEqual([]);

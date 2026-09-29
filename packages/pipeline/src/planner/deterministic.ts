@@ -19,9 +19,11 @@ import {
   hasSpec,
   isSpecSelected,
   listSpecs,
+  refusesOverlays,
   requiresWhiteBackground,
 } from "@curvi/specs";
 import {
+  ADDED_OVERLAYS_REASON,
   GALLERY_SLOTS,
   SELLER_OFF_REASON,
   SOURCE_TOO_SMALL_REASON,
@@ -603,10 +605,11 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     skip("video_ugc_hook", "avatar", "Pro or Agency only");
   }
 
-  // Kept photos too small for a spec leave that spec, then a spec emptied
-  // only by the seller's switches gets the front image, before the limits
-  // and the trim see the plan.
-  const sized = applyOriginalSizes(shots, output, skipped);
+  // Kept photos too small for a spec, or with added text on a spec that
+  // refuses it, leave that spec, then a spec emptied only by the seller's
+  // switches gets the front image, before the limits and the trim see the
+  // plan.
+  const sized = applyAddedOverlays(applyOriginalSizes(shots, output, skipped), output, skipped);
   const covered = coverSellerOffSpecs(sized, skipped, output, { frontMediaId: frontMedia, frontUsable });
 
   // Channel file limits (amazon.secondary takes 8, amazon.main takes 1) and
@@ -760,7 +763,8 @@ export function skipSellerOffShots(
   return out;
 }
 
-/** The skipped type recorded for a kept photo too small for one spec. */
+/** The skipped type recorded for a kept photo left off one spec: too small
+ * for it, or flagged with added text it refuses (applyAddedOverlays). */
 export function originalTooSmallType(specId: string): string {
   return `original_photo:${specId}`;
 }
@@ -795,6 +799,45 @@ export function applyOriginalSizes(
         return true;
       }
       skipped.push({ type: originalTooSmallType(specId), reason: SOURCE_TOO_SMALL_REASON });
+      return false;
+    });
+    if (channels.length > 0) {
+      out.push(channels.length === shot.channels.length ? shot : { ...shot, channels });
+    }
+  }
+  return out;
+}
+
+/**
+ * Leaves each original_photo whose photo intake flagged with addedOverlays
+ * (text, borders, watermarks or stickers added on top) off every spec that
+ * refuses added text or overlays (refusesOverlays: eBay, Google), recording
+ * `original_photo:{specId}` with ADDED_OVERLAYS_REASON per spec. The per
+ * spec type is the too small one, so seller off cover never fills the spec
+ * with the same photo. An original left with no spec is dropped. Runs next to
+ * applyOriginalSizes. Pure: returns a new list; other shot types and
+ * unflagged photos pass through untouched.
+ */
+export function applyAddedOverlays(
+  shots: readonly Shot[],
+  flags: OutputPlanFlags | undefined,
+  skipped: SkippedShot[],
+): Shot[] {
+  const flagged = new Set(flags?.photos.filter((photo) => photo.addedOverlays === true).map((photo) => photo.id));
+  if (flagged.size === 0) {
+    return [...shots];
+  }
+  const out: Shot[] = [];
+  for (const shot of shots) {
+    if (shot.type !== "original_photo" || !flagged.has(shot.sourceMediaId)) {
+      out.push(shot);
+      continue;
+    }
+    const channels = shot.channels.filter((specId) => {
+      if (!hasSpec(specId) || !refusesOverlays(getSpec(specId))) {
+        return true;
+      }
+      skipped.push({ type: originalTooSmallType(specId), reason: ADDED_OVERLAYS_REASON });
       return false;
     });
     if (channels.length > 0) {
