@@ -48,6 +48,7 @@ import {
   creditsForShot,
   deserializeShotOutcome,
   deterministicPlan,
+  fillSceneCount,
   fitShotsToChannels,
   PLAN_FAILED_MESSAGE,
   runGeneratePack,
@@ -1177,6 +1178,90 @@ describe("every selected channel gets its files (2.11)", () => {
     // Without options the seed default holds.
     const plain = fitShotsToChannels({ shots: scenes.map((s) => ({ ...s })), skipped: [] }, fit);
     expect(plain.shots.filter((s) => s.type === "lifestyle")).toHaveLength(sceneCountOptions.default);
+  });
+
+  it("trims an LLM plan with more scenes than the hold paid for instead of rejecting it", () => {
+    const main: Shot = {
+      id: "s1",
+      type: "amazon_main",
+      sourceMediaId: "m1",
+      method: "deterministic",
+      channels: ["amazon.main"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    };
+    const scene: Shot = {
+      ...main,
+      type: "lifestyle",
+      method: "composite_generate",
+      channels: ["amazon.secondary"],
+      stylePreset: "kitchen_lifestyle",
+      credits: creditCosts.generativeStill,
+      priority: 4,
+    };
+    const flags = runPlanFlags(
+      resolveOutputOptions(normalizeOutputOptions({ sceneCount: 1 }), {
+        colorHex: "#FFFFFF",
+        brandSweepHex: "#FFFFFF",
+        keepMediaIds: [],
+      }),
+      [{ mediaId: "m1" }],
+    );
+    // The hold for one scene: the main image and that scene.
+    const hold = creditCosts.deterministic + creditCosts.generativeStill;
+    const result = validateLlmShotList(
+      {
+        shots: [main, ...[1, 2, 3].map((i) => ({ ...scene, id: `l${i}`, scene: `scene ${i}` }))],
+        skipped: [],
+      },
+      { budget: hold, mediaIds: ["m1"], channels: ["amazon"], mode: "listing", requireAmazonMain: true, output: flags },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.shotList.shots.map((s) => s.id)).toEqual(["s1", "l1"]);
+    expect(result.shotList.skipped.filter((s) => s.reason === SCENE_COUNT_REASON)).toHaveLength(2);
+  });
+
+  it("tops an LLM plan with fewer scenes up to the pack's scene count, ranked below every planned shot", () => {
+    const scene: Shot = {
+      id: "l1",
+      type: "lifestyle",
+      sourceMediaId: "m1",
+      method: "composite_generate",
+      channels: ["amazon.secondary"],
+      stylePreset: "kitchen_lifestyle",
+      scene: "kitchen counter",
+      credits: creditCosts.generativeStill,
+      priority: 4,
+    };
+    const flags = (sceneCount: number) =>
+      runPlanFlags(
+        resolveOutputOptions(normalizeOutputOptions({ sceneCount }), {
+          colorHex: "#FFFFFF",
+          brandSweepHex: "#FFFFFF",
+          keepMediaIds: [],
+        }),
+        [{ mediaId: "m1" }],
+      );
+    const plan = { shots: [scene], skipped: [] };
+    const filled = fillSceneCount(plan, demoProfile, flags(3));
+    const scenes = filled.shots.filter((s) => s.type === "lifestyle");
+    expect(scenes).toHaveLength(3);
+    expect(new Set(scenes.map((s) => s.scene)).size).toBe(3);
+    expect(scenes.slice(1).every((s) => s.priority === 5 && s.channels.join() === "amazon.secondary")).toBe(true);
+    expect(scenes.slice(1).every((s) => s.credits === creditCosts.generativeStill)).toBe(true);
+    // Enough scenes, or none to copy: unchanged.
+    expect(fillSceneCount(plan, demoProfile, flags(1))).toBe(plan);
+    const none = { shots: [{ ...scene, type: "amazon_main" as const }], skipped: [] };
+    expect(fillSceneCount(none, demoProfile, flags(4))).toBe(none);
+    // Without output options the pack is today's pack.
+    expect(fillSceneCount(plan, demoProfile, undefined)).toBe(plan);
+    // The budget trim drops the added scenes before any planned shot.
+    const fit = { channels: ["amazon"], mode: "listing" as const, profile: demoProfile, primaryMediaId: "m1" };
+    const tight = fitShotsToChannels(filled, { ...fit, budget: creditCosts.generativeStill * 2, output: flags(3) });
+    expect(tight.shots.map((s) => s.id)).toContain("l1");
+    expect(tight.shots.filter((s) => s.type === "lifestyle")).toHaveLength(2);
   });
 
   it("takes each photo's product box from the seller's tap, else the preflight", () => {
