@@ -87,6 +87,7 @@ import {
   preflightProductBoxOf,
   preflightRowsFor,
   sellerAnswersFor,
+  sellerAnswersFromChoices,
   preflightUpload as runPreflightUpload,
   reusableIntakeOf,
   type PreflightServiceDeps,
@@ -1686,7 +1687,9 @@ export class DbService implements Services {
       (existing.mode ?? input.mode) === input.mode &&
       JSON.stringify([...(existing.channels ?? input.channels)].sort()) ===
         JSON.stringify([...input.channels].sort()) &&
-      sameOutputOptions(existing.outputOptions, input);
+      sameOutputOptions(existing.outputOptions, input) &&
+      (existing.sellerNote ?? "") === (input.userDescription?.trim() ? input.userDescription : "") &&
+      (await this.uploadsRegisteredFor(workspaceId, existing, input));
     if (sameBody) {
       const job = await this.getJob(workspaceId, existing.id);
       if (job) {
@@ -1694,6 +1697,39 @@ export class DbService implements Services {
       }
     }
     return { outcome: "conflict", existingJobId: existing.id };
+  }
+
+  /**
+   * True when every photo this request uploads was registered by the job
+   * the key already names: the first attempt saved each upload as source
+   * media on its product (or found it already saved before the job). A
+   * reused key sent with photos the workspace never saved, or saved later
+   * for another product, is a different request, so it answers as a
+   * conflict instead of replaying another product's pack.
+   */
+  private async uploadsRegisteredFor(
+    workspaceId: string,
+    existing: { productId: string; createdAt: Date },
+    input: Pick<CreateJobInput, "uploads">,
+  ): Promise<boolean> {
+    const keys = [
+      ...new Set((input.uploads ?? []).map((u) => u.key).filter((key) => isWorkspaceSourceKey(workspaceId, key))),
+    ];
+    if (keys.length === 0) {
+      return true;
+    }
+    const rows = await this.db
+      .select({ r2Key: sourceMedia.r2Key, productId: sourceMedia.productId, createdAt: sourceMedia.createdAt })
+      .from(sourceMedia)
+      .where(and(eq(sourceMedia.workspaceId, workspaceId), inArray(sourceMedia.r2Key, keys)));
+    const byKey = new Map(rows.map((row) => [row.r2Key, row]));
+    return keys.every((key) => {
+      const row = byKey.get(key);
+      return (
+        row !== undefined &&
+        (row.productId === existing.productId || row.createdAt.getTime() <= existing.createdAt.getTime())
+      );
+    });
   }
 
   /**
@@ -1847,11 +1883,14 @@ export class DbService implements Services {
     );
     // The question step's taps, resolved against the questions stored for
     // that upload (PHASE_16 workstream 4). Never a reason to refuse a pack.
-    const sellerAnswers = sellerAnswersFor(
-      preflights,
-      merged.map((m) => m.r2Key),
-      input.sellerAnswers,
-    );
+    // An API caller has no preflight and sends seed choice values instead.
+    const sellerAnswers = input.sellerAnswers
+      ? sellerAnswersFor(
+          preflights,
+          merged.map((m) => m.r2Key),
+          input.sellerAnswers,
+        )
+      : sellerAnswersFromChoices(input.answers);
     const blocked = uploadRows
       .filter((u) => u.kind === "image")
       .map((u) => preflights.get(u.key))

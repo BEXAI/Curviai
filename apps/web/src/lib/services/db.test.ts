@@ -324,6 +324,32 @@ describe("DbService.createJob writes everything or nothing (Update.md 6.3)", () 
     expect(enqueued).toHaveLength(1);
   });
 
+  it("a reused Idempotency-Key with other photos or another note is a conflict, not a replay", async () => {
+    const w = await makeWorkspace(500);
+    const input = {
+      productId: "new",
+      channels: CHANNELS,
+      mode: "listing" as const,
+      idempotencyKey: `reuse-${w.id}`,
+      userDescription: "Blue bottle",
+      uploads: [{ key: srcKey(w.id, "first"), sha256: SHA, kind: "image" as const }],
+    };
+    const first = await service(w.user).createJob(w.id, input);
+    expect(first.outcome).toBe("created");
+    if (first.outcome !== "created") return;
+
+    const otherPhoto = await service(w.user).createJob(w.id, {
+      ...input,
+      uploads: [{ key: srcKey(w.id, "second"), sha256: SHA, kind: "image" as const }],
+    });
+    expect(otherPhoto).toEqual({ outcome: "conflict", existingJobId: first.job.id });
+    const otherNote = await service(w.user).createJob(w.id, { ...input, userDescription: "Red bottle" });
+    expect(otherNote).toEqual({ outcome: "conflict", existingJobId: first.job.id });
+    expect(await service(w.user).createJob(w.id, input)).toMatchObject({ outcome: "replayed", job: { id: first.job.id } });
+    expect((await countRows(w.id)).jobs).toBe(1);
+    expect(enqueued).toHaveLength(1);
+  });
+
   it("two submits racing with one Idempotency-Key make one job, one product and one hold", async () => {
     const w = await makeWorkspace(500);
     const input = {
@@ -352,6 +378,10 @@ describe("DbService.createJob writes everything or nothing (Update.md 6.3)", () 
       .insert(generationJobs)
       .values({ workspaceId: w.id, productId: w.productId, status: "queued", idempotencyKey: key, channels: CHANNELS, mode: "listing" })
       .returning();
+    // The winner saved the same photo on its product.
+    await db
+      .insert(sourceMedia)
+      .values({ workspaceId: w.id, productId: w.productId, r2Key: srcKey(w.id, "late"), kind: "image", sha256: SHA });
     const before = await countRows(w.id);
     const svc = service(w.user);
     const spy = vi.spyOn(svc as unknown as { replayFor: () => Promise<unknown> }, "replayFor").mockResolvedValueOnce(null);

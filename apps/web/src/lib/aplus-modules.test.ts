@@ -18,6 +18,7 @@ import { MAX_ENDORSEMENTS, MAX_SELLER_LINE_CHARS } from "@curvi/pipeline/seller-
 import { sellerDetailsProblem } from "@/components/app/new-pack-form";
 import { buildGeneratePackInput } from "@/lib/jobs/payload";
 import { NO_ENDORSEMENT_COPY, skippedCopy } from "@/lib/job-copy";
+import { shotTypeLabel } from "@/lib/library";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 import { endorsementLinesSchema } from "@/lib/validation/seller-inputs";
 
@@ -79,16 +80,28 @@ describe("A+ modules in the estimate", () => {
     ]) {
       expect(labels.some((label) => label.startsWith(name)), name).toBe(true);
     }
-    expect(labels.some((label) => label.startsWith("A plus reviews and awards module"))).toBe(false);
+    expect(labels.some((label) => label.startsWith("A plus press quotes and awards module"))).toBe(false);
     for (const label of labels) {
       expect(rule9Problems(label), label).toEqual([]);
     }
     const withEndorsements = estimatePackCredits(channels, "listing", "growth", { hasEndorsements: true });
-    expect(withEndorsements.lines.some((line) => line.label.startsWith("A plus reviews and awards module"))).toBe(true);
+    expect(withEndorsements.lines.some((line) => line.label.startsWith("A plus press quotes and awards module"))).toBe(true);
     // One more module fills the page, so the second hero banner makes way:
     // the page never holds more than seven A+ images.
     expect(withEndorsements.total - without.total).toBe(0);
     expect(creditCosts.deterministic).toBe(0.5);
+  });
+});
+
+describe("the endorsement module's name", () => {
+  it("never says reviews, which Amazon does not allow in A+ content", () => {
+    const estimate = estimatePackCredits(["amazon.aplus.basic_header"], "listing", "growth", { hasEndorsements: true });
+    const line = estimate.lines.find((l) => l.label.includes("press quotes"));
+    expect(line).toBeDefined();
+    for (const label of [line!.label, shotTypeLabel("aplus_endorsement")]) {
+      expect(label, label).not.toMatch(/review/i);
+      expect(rule9Problems(label), label).toEqual([]);
+    }
   });
 });
 

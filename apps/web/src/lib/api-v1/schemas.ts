@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import { BUNDLE_KEYS, LOOK_KEYS, OutputOptionsInput } from "@curvi/pipeline/output-options";
+import { channelChoices, moodChoices, questionSet } from "@curvi/pipeline/seed";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import {
   angleRoleSchema,
@@ -35,6 +36,29 @@ export const PhotoInput = z
   .refine((photo) => (photo.url === undefined) !== (photo.data === undefined), "Send a url or data for each photo, not both.");
 export type PhotoInput = z.infer<typeof PhotoInput>;
 
+/** Seed option values as a zod enum (rule 2: the choices live in the seed). */
+function seedEnum(values: readonly string[]) {
+  return z.enum(values as [string, ...string[]]);
+}
+
+/**
+ * The question step's answers for callers with no upload preflight
+ * (PHASE_16 workstream 5): the seed's channel and mood choices by value.
+ * The target, use and audience questions need the photo's inventory or
+ * model written options, so they are not offered here.
+ */
+export const PackAnswers = z
+  .object({
+    channels: seedEnum([...channelChoices.map((c) => c.value), questionSet.allOption.value])
+      .optional()
+      .describe("Where the seller will sell, as a marketplace name, or all."),
+    mood: seedEnum(moodChoices.map((m) => m.value))
+      .optional()
+      .describe("The scene mood. It sets the scene style and the first lifestyle scene unless the output options name a scene style."),
+  })
+  .strict();
+export type PackAnswers = z.infer<typeof PackAnswers>;
+
 export const CreatePackRequest = z
   .object({
     channels: z
@@ -56,6 +80,7 @@ export const CreatePackRequest = z
       .optional()
       .describe("A starting style. The server fills the output options from the look's preset; outputOptions fields sent with it win."),
     outputOptions: OutputOptionsInput.optional(),
+    answers: PackAnswers.optional().describe("Answers to the question step. They weigh more than the note."),
   })
   .strict();
 export type CreatePackRequest = z.input<typeof CreatePackRequest>;

@@ -336,6 +336,20 @@ describe("llms.txt", () => {
     expect(text).not.toMatch(/^- Files for\s*$/m);
   });
 
+  it("describes the pack sets, A+ modules, carousels and ad packs while they are live (PHASE_16)", () => {
+    const checks = [
+      ["packBundles", /Pack sets/],
+      ["aplusModules", /A\+ content modules/],
+      ["adsFormats", /carousels/],
+      ["adsFormats", /ad packs/],
+    ] as const;
+    for (const [key, pattern] of checks) {
+      expect(pattern.test(text), `${key} ${pattern}`).toBe(isLive(key));
+      expect(SITE_FEATURES.some((feature) => pattern.test(feature)), `${key} ${pattern}`).toBe(isLive(key));
+    }
+    expect(unqualifiedClaims(SITE_FEATURES.join(". "))).toEqual([]);
+  });
+
   it("lists the API, MCP server, CLI and skill, and says coming soon until they ship", () => {
     const line = text.split("\n").find((entry) => entry.includes(`/help#${AGENT_HELP_SLUG}`));
     expect(line).toBeDefined();

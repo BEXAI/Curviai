@@ -13,6 +13,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { sql, uploadPreflights, type Db, type UploadPreflight } from "@curvi/db";
 import { resolveSellerAnswers, SellerQuestion, type SellerAnswers } from "@curvi/pipeline/questions";
+import { channelChoices, moodChoices, questionSet } from "@curvi/pipeline/seed";
 import type { UploadPreflightArgs, UploadPreflightRun } from "@curvi/trigger/preflight";
 import { noteKey, PREFLIGHT_FRESH_MS, type PreflightIntake } from "@curvi/trigger/preflight-intake";
 import { isWorkspaceKey } from "@/lib/r2";
@@ -145,6 +146,37 @@ export function sellerAnswersFor(
     return null;
   }
   return resolveSellerAnswers(preflightQuestionsOf(preflights.get(sent.key)), sent.picks);
+}
+
+/**
+ * The questions a caller with no upload preflight may answer (the v1 API
+ * and MCP): channels and mood, each offering every seed choice, so any
+ * seed value resolves. Target, use and audience need the photo's inventory
+ * or model written options and are never offered here.
+ */
+export function choiceQuestions(): SellerQuestion[] {
+  return [
+    {
+      id: "channels",
+      kind: "channels",
+      options: [
+        ...channelChoices.map((c) => ({ value: c.value, label: c.label })),
+        { value: questionSet.allOption.value, label: questionSet.allOption.manyLabel },
+      ],
+    },
+    { id: "mood", kind: "mood", options: moodChoices.map((m) => ({ value: m.value, label: m.label })) },
+  ];
+}
+
+/** Answers sent by value with no preflight, resolved against choiceQuestions. */
+export function sellerAnswersFromChoices(sent: { channels?: string; mood?: string } | undefined): SellerAnswers | null {
+  if (!sent) {
+    return null;
+  }
+  const picks: Record<string, string> = {};
+  if (sent.channels !== undefined) picks.channels = sent.channels;
+  if (sent.mood !== undefined) picks.mood = sent.mood;
+  return resolveSellerAnswers(choiceQuestions(), picks);
 }
 
 /**

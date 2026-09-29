@@ -315,6 +315,7 @@ export async function createPack(ctx: ApiContext, rawBody: unknown, idempotencyK
       ...(request.comparisonFacts !== undefined ? { comparisonFacts: request.comparisonFacts } : {}),
       ...(request.endorsements !== undefined ? { endorsements: request.endorsements } : {}),
       ...(request.outputOptions !== undefined ? { outputOptions: request.outputOptions } : {}),
+      ...(request.answers !== undefined ? { answers: request.answers } : {}),
     });
   } catch (err) {
     if (err instanceof InlineRunnerClosedError) {

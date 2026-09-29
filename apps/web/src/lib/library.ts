@@ -130,7 +130,7 @@ const SHOT_TYPE_LABELS: Readonly<Partial<Record<string, string>>> = {
   aplus_ingredients: "A plus materials",
   aplus_results: "A plus results",
   aplus_how_to: "A plus how to use",
-  aplus_endorsement: "A plus reviews and awards",
+  aplus_endorsement: "A plus press quotes and awards",
   shopify_hero: "Shopify hero",
   collection_thumb: "Collection thumbnail",
   social_1x1: "Square post",
