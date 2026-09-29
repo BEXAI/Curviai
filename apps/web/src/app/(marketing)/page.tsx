@@ -145,6 +145,10 @@ export default function HomePage() {
                 titleMuted={homeProof.titleMuted}
                 lead={homeHero.proof}
               />
+              <div className="mt-6 rounded-2xl bg-white/[0.04] p-5 ring-1 ring-inset ring-teal-400/25">
+                <p className="font-display text-lg font-semibold text-white">{homeProof.differenceTitle}</p>
+                <p className="mt-2 text-sm leading-relaxed text-ink-200">{homeProof.difference}</p>
+              </div>
               <p className="mt-6 text-sm">
                 <Link href="/gallery" className="font-medium text-teal-brand underline-offset-4 hover:underline">
                   {homeProof.galleryLink}

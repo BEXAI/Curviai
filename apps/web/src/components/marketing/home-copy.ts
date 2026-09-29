@@ -57,6 +57,9 @@ export const homeProof = {
   title: "Your product stays.",
   titleMuted: "The background changes.",
   galleryLink: "See more before and after examples",
+  differenceTitle: "Your product is never redrawn. That is the difference.",
+  difference:
+    "Unlike general AI image generators that hallucinate your text, warp your logos, and distort your packaging, Curvi locks 100% of your original product pixels while automatically compiling channel-compliant, ready-to-list asset suites for Amazon, Shopify, and social channels. It ensures that the subject of your original photo remains unchanged.",
 };
 
 export const homeHowItWorks = {
