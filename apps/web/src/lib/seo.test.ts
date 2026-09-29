@@ -1,22 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { tiers } from "@curvi/pipeline/seed";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import robots from "@/app/robots";
+import sitemap from "@/app/sitemap";
 import { categories } from "@/components/marketing/categories";
+import { COMPETITOR_FACTS_CHECKED, imageGenerators, photoTools } from "@/components/marketing/competitor-facts";
+import { pillarPageTexts, pillarPages } from "@/components/marketing/pillar-copy";
+import { pillarMetadata } from "@/components/marketing/pillar-page";
 import { imageSpecs, specDisplayName, specSlug } from "@/components/marketing/spec-slug";
-import { buildLlmsTxt } from "./llms";
+import { buildLlmsFullTxt, buildLlmsTxt } from "./llms";
 import { comingSoonFileNames, joinList, specAvailability, unqualifiedClaims } from "./marketing-facts";
 import {
   DESCRIPTION_MAX,
   OG_IMAGE,
   SITE_DESCRIPTION,
   SITE_FEATURES,
+  SITE_KEYWORDS,
+  SITE_POSITIONING,
   SITE_SUMMARY,
   SITE_TITLE,
+  SITE_TITLE_MAX,
   TITLE_MAX,
   categoryPageSeo,
   channelPageSeo,
   faqPageJsonLd,
   fitDescription,
+  organizationJsonLd,
   pageMetadata,
   renderedTitle,
   serializeJsonLd,
@@ -29,16 +39,36 @@ const FORBIDDEN_COPY = /[‒-―←-⇿⟵-⟿]|\s-\s|--|\p{Extended_Pictographi
 
 describe("site level SEO copy", () => {
   it("targets the AI e-commerce keywords within search result limits", () => {
-    expect(SITE_TITLE.length).toBeLessThanOrEqual(TITLE_MAX);
+    expect(SITE_TITLE.length).toBeLessThan(SITE_TITLE_MAX);
+    expect(SITE_TITLE_MAX).toBeLessThanOrEqual(TITLE_MAX);
     expect(SITE_TITLE).toContain("AI E-Commerce");
+    expect(SITE_TITLE).toContain("Product Images");
     expect(SITE_TITLE).toContain("Shopify");
     expect(SITE_TITLE).toContain("Amazon");
+    expect(SITE_DESCRIPTION.length).toBeGreaterThanOrEqual(140);
     expect(SITE_DESCRIPTION.length).toBeLessThanOrEqual(DESCRIPTION_MAX);
-    expect(SITE_DESCRIPTION.toLowerCase()).toContain("ai e-commerce image optimization");
+    expect(SITE_DESCRIPTION).toContain("AI product images for e-commerce");
+    expect(SITE_DESCRIPTION).toMatch(/real product/);
+  });
+
+  it("covers the target search phrases in the keywords", () => {
+    const keywords = SITE_KEYWORDS.map((keyword) => keyword.toLowerCase());
+    for (const phrase of [
+      "e-commerce",
+      "ai e-commerce",
+      "ai products",
+      "ai images",
+      "ai product photography",
+      "ai product images for amazon",
+      "ai images for shopify",
+      "amazon main image white background ai",
+    ]) {
+      expect(keywords, phrase).toContain(phrase);
+    }
   });
 
   it("follows the copy rules", () => {
-    for (const text of [SITE_TITLE, SITE_DESCRIPTION, SITE_SUMMARY, ...SITE_FEATURES]) {
+    for (const text of [SITE_TITLE, SITE_DESCRIPTION, SITE_SUMMARY, SITE_POSITIONING, ...SITE_FEATURES, ...SITE_KEYWORDS]) {
       expect(text).not.toMatch(FORBIDDEN_COPY);
     }
   });
@@ -109,6 +139,88 @@ describe("programmatic SEO pages", () => {
   });
 });
 
+describe("guide pages", () => {
+  it("each has a unique path, a title and a description within limits", () => {
+    const paths = pillarPages.map((page) => page.path);
+    expect(new Set(paths).size).toBe(paths.length);
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        "/ai-product-images",
+        "/ai-ecommerce",
+        "/compare/ai-image-generators",
+        "/compare/ecommerce-photo-tools",
+      ]),
+    );
+    for (const page of pillarPages) {
+      expect(renderedTitle(page.title).length, page.title).toBeLessThanOrEqual(TITLE_MAX);
+      expect(page.description.length, page.description).toBeGreaterThanOrEqual(120);
+      expect(page.description.length, page.description).toBeLessThanOrEqual(DESCRIPTION_MAX);
+      expect(page.description).toMatch(/[.!?]$/);
+    }
+  });
+
+  it("sets canonical, Open Graph image and Twitter card for each page", () => {
+    for (const page of pillarPages) {
+      const meta = pillarMetadata(page);
+      expect(meta.alternates?.canonical).toBe(page.path);
+      expect(meta.openGraph).toMatchObject({ url: page.path, title: renderedTitle(page.title) });
+      expect(meta.openGraph?.images).toEqual([OG_IMAGE]);
+      expect(meta.twitter).toMatchObject({ card: "summary_large_image" });
+      expect(meta.robots).toBeUndefined();
+    }
+  });
+
+  it("opens with a quotable two or three sentence summary and asks its questions plainly", () => {
+    for (const page of pillarPages) {
+      // A sentence ends at a stop followed by a space or the end, so names
+      // such as Flair.ai do not count as two sentences.
+      const sentences = page.summary.match(/[.!?](?=\s|$)/g) ?? [];
+      expect(sentences.length, page.path).toBeGreaterThanOrEqual(2);
+      expect(sentences.length, page.path).toBeLessThanOrEqual(3);
+      expect(page.sections.length, page.path).toBeGreaterThanOrEqual(3);
+      expect(page.sections.some((section) => section.heading.endsWith("?")), page.path).toBe(true);
+      expect(page.faqs.length, page.path).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("follows the copy rules and sells nothing that is coming soon", () => {
+    for (const page of pillarPages) {
+      for (const text of pillarPageTexts(page)) {
+        expect(text, page.path).not.toMatch(FORBIDDEN_COPY);
+      }
+      for (const text of pillarPageTexts(page, { curviOnly: true })) {
+        expect(unqualifiedClaims(text), page.path).toEqual([]);
+      }
+    }
+  });
+
+  it("are in the sitemap", () => {
+    const urls = sitemap().map((entry) => new URL(entry.url).pathname);
+    for (const page of pillarPages) {
+      expect(urls).toContain(page.path);
+    }
+  });
+});
+
+describe("competitor facts", () => {
+  const verification = readFileSync(fileURLToPath(new URL("../../../../docs/verification.md", import.meta.url)), "utf8");
+
+  it("cite an official source for every tool, recorded in docs/verification.md with the date", () => {
+    expect(verification).toContain(COMPETITOR_FACTS_CHECKED);
+    for (const tool of [...imageGenerators, ...photoTools]) {
+      expect(tool.source, tool.name).toMatch(/^https:\/\//);
+      expect(verification, tool.name).toContain(new URL(tool.source).hostname.replace(/^www\./, ""));
+    }
+  });
+
+  it("appear in the comparison tables with their sources", () => {
+    const generators = pillarPages.find((page) => page.path === "/compare/ai-image-generators");
+    const tools = pillarPages.find((page) => page.path === "/compare/ecommerce-photo-tools");
+    expect(generators?.table?.sources?.map((source) => source.url)).toEqual(imageGenerators.map((tool) => tool.source));
+    expect(tools?.table?.sources?.map((source) => source.url)).toEqual(photoTools.map((tool) => tool.source));
+  });
+});
+
 describe("fitDescription", () => {
   it("returns short text unchanged", () => {
     expect(fitDescription("One sentence.")).toBe("One sentence.");
@@ -148,6 +260,24 @@ describe("JSON-LD", () => {
     vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_placeholder");
     const app = softwareApplicationJsonLd() as { offers: { price: number }[] };
     expect(app.offers.map((offer) => offer.price)).toEqual(tiers.map((tier) => tier.monthlyUsd));
+  });
+
+  it("lists only live features, none of the unshipped ones", () => {
+    const app = softwareApplicationJsonLd() as { featureList: string[]; applicationCategory: string };
+    expect(app.applicationCategory).toBe("BusinessApplication");
+    expect(app.featureList).toEqual(SITE_FEATURES);
+    for (const feature of app.featureList) {
+      expect(unqualifiedClaims(feature), feature).toEqual([]);
+      expect(feature, feature).not.toMatch(
+        /\bAPI\b|Shopify app|app store|\bbulk\b|\bbatch|\bvideos?\b|team seats?|white label|publish|integration/i,
+      );
+    }
+  });
+
+  it("describes the organization with the positioning facts", () => {
+    const org = organizationJsonLd() as { description: string; slogan: string };
+    expect(org.description).toBe(SITE_SUMMARY);
+    expect(org.slogan).toBe("Shot once. Ready everywhere.");
   });
 
   it("builds FAQ questions and answers", () => {
@@ -212,6 +342,41 @@ describe("llms.txt", () => {
   });
 });
 
+describe("llms.txt guides and llms-full.txt", () => {
+  const text = buildLlmsTxt();
+  const full = buildLlmsFullTxt();
+
+  it("links every guide page and the full text file", () => {
+    for (const page of pillarPages) {
+      expect(text).toContain(`${page.path})`);
+    }
+    expect(text).toMatch(/^## Optional$/m);
+    expect(text).toContain("/llms-full.txt)");
+  });
+
+  it("states the positioning and answers the assistant questions", () => {
+    expect(text).toContain(SITE_POSITIONING);
+    expect(text).toContain("Q: Will AI change my product in the photos?");
+    expect(text).toContain("Q: How do I make an Amazon compliant white background image?");
+  });
+
+  it("carries the full text of every guide with its competitor sources", () => {
+    for (const page of pillarPages) {
+      expect(full).toContain(`## ${page.h1}`);
+      expect(full).toContain(page.summary);
+    }
+    for (const tool of [...imageGenerators, ...photoTools]) {
+      expect(full).toContain(tool.source);
+    }
+  });
+
+  it("follows the copy rules outside markdown markers", () => {
+    for (const line of full.split("\n")) {
+      expect(line.replace(/^(- |#+ )/, "")).not.toMatch(FORBIDDEN_COPY);
+    }
+  });
+});
+
 describe("robots", () => {
   it("keeps the app and API out of every crawler group", () => {
     const rules = robots().rules;
@@ -221,6 +386,17 @@ describe("robots", () => {
       expect(group.disallow).toEqual(["/app/", "/api/"]);
     }
     const named = groups.flatMap((group) => (Array.isArray(group.userAgent) ? group.userAgent : []));
-    expect(named).toEqual(expect.arrayContaining(["GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended"]));
+    expect(named).toEqual(
+      expect.arrayContaining([
+        "GPTBot",
+        "OAI-SearchBot",
+        "ClaudeBot",
+        "Claude-SearchBot",
+        "PerplexityBot",
+        "Google-Extended",
+        "Applebot-Extended",
+        "MistralAI-User",
+      ]),
+    );
   });
 });

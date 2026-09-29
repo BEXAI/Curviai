@@ -13,29 +13,48 @@ import { amazonMainRules, joinList, liveChannelNames, type Availability } from "
 export const SITE_NAME = "Curvi";
 
 /** Home page title, used as an absolute title so the brand is not repeated. */
-export const SITE_TITLE = "AI E-Commerce Image Optimization for Shopify and Amazon | Curvi";
+export const SITE_TITLE = "AI E-Commerce Product Images for Amazon and Shopify | Curvi";
+
+/** Kept under this length so the home title shows in full in search results. */
+export const SITE_TITLE_MAX = 60;
 
 export const SITE_DESCRIPTION =
-  "AI e-commerce image optimization for Shopify and Amazon sellers. Turn one photo into compliant listing images and lifestyle scenes, product pixels untouched.";
+  "AI product images for e-commerce that keep your real product. One photo becomes Amazon, Shopify and social listing images, each checked against channel rules.";
+
+/** The category Curvi names itself with, reused by pages, JSON-LD and llms.txt. */
+export const SITE_CATEGORY = "AI e-commerce image compiler";
 
 /** One sentence answer to "what is Curvi", reused by JSON-LD and llms.txt. */
 export const SITE_SUMMARY =
-  "Curvi is an AI e-commerce image tool for Shopify and Amazon sellers. It turns one product photo into a pack of marketplace compliant images, measures every file against the channel rules, and never regenerates the product itself.";
+  "Curvi is an AI e-commerce image compiler for Shopify and Amazon sellers. It turns one product photo into a pack of channel ready listing images, measures every file against the channel rules, and never regenerates the product itself.";
+
+/**
+ * The positioning in two plain sentences an answer engine can quote: how
+ * Curvi differs from general image generators and from other product photo
+ * tools. States only what ships (fidelity lock, measured checks, one run).
+ */
+export const SITE_POSITIONING =
+  "General AI image generators draw every pixel from a prompt, so a real product's label, logo, shape or color can come out different. Curvi keeps the seller's real product pixels, generates only the light, shadow and setting around them, and measures every file against the channel's image rules before it ships.";
 
 export const SITE_KEYWORDS = [
+  "e-commerce",
   "AI e-commerce",
-  "e-commerce AI image optimization",
-  "AI images for e-commerce",
+  "AI e-commerce images",
+  "AI products",
+  "AI product images",
   "AI product photos",
   "AI product photography",
-  "AI product images for Shopify",
+  "AI images",
+  "AI images for online stores",
   "AI product images for Amazon",
-  "Shopify product images",
-  "Amazon product images",
+  "AI images for Shopify",
+  "AI product images for Shopify",
+  "Amazon main image white background AI",
   "Amazon main image requirements",
   "white background product photos",
+  "AI product photo that keeps the product",
   "marketplace image compliance",
-  "e-commerce product image optimization",
+  "AI e-commerce image compiler",
 ];
 
 const amazonMain = amazonMainRules();
@@ -53,6 +72,8 @@ export const SITE_FEATURES = [
   `Channel sized image files for ${joinList(liveChannelNames())}`,
   "A compliance report that checks background, fill and resolution for every file",
   "Your first brand kit color used for the brand color background shot in packs",
+  "A whole listing pack compiled from one product photo in one run",
+  "Files that still fail their channel checks are marked for review and not charged",
   "Free browser tools: an Amazon main image checker, a white background fixer and a marketplace image resizer",
 ];
 
@@ -61,7 +82,7 @@ export const OG_IMAGE = {
   url: "/opengraph-image",
   width: 1200,
   height: 630,
-  alt: "Curvi: AI e-commerce image optimization for Shopify and Amazon. Shot once. Ready everywhere.",
+  alt: "Curvi: AI e-commerce product images for Amazon and Shopify. Shot once. Ready everywhere.",
 };
 
 export const TITLE_MAX = 70;
@@ -208,6 +229,14 @@ export function organizationJsonLd(): JsonLdNode {
     logo: absoluteUrl("/brand/curvi-mark-512.png"),
     image: absoluteUrl("/brand/curvi-mark-512.png"),
     description: SITE_SUMMARY,
+    slogan: "Shot once. Ready everywhere.",
+    knowsAbout: [
+      "E-commerce product photography",
+      "AI product images",
+      "Amazon main image requirements",
+      "Shopify product images",
+      "Marketplace image compliance",
+    ],
   };
 }
 
@@ -267,9 +296,9 @@ export function softwareApplicationJsonLd(): JsonLdNode {
     name: SITE_NAME,
     url: absoluteUrl("/"),
     applicationCategory: "BusinessApplication",
-    applicationSubCategory: "AI e-commerce image optimization",
+    applicationSubCategory: SITE_CATEGORY,
     operatingSystem: "Web",
-    description: SITE_SUMMARY,
+    description: `${SITE_SUMMARY} ${SITE_POSITIONING}`,
     featureList: SITE_FEATURES,
     keywords: SITE_KEYWORDS.join(", "),
     audience: {
@@ -316,6 +345,24 @@ export function webApplicationJsonLd(input: { name: string; path: string; descri
     isAccessibleForFree: true,
     // A free tool, not a plan price, so this zero is not a seed value.
     offers: { "@type": "Offer", price: 0, priceCurrency: "USD" },
+    publisher: { "@id": organizationId() },
+  };
+}
+
+/**
+ * A long form guide page. The about node points at the product so answer
+ * engines connect the page's answers to Curvi.
+ */
+export function webPageJsonLd(input: { name: string; path: string; description: string }): JsonLdNode {
+  return {
+    "@type": "WebPage",
+    "@id": absoluteUrl(`${input.path}#webpage`),
+    name: input.name,
+    url: absoluteUrl(input.path),
+    description: input.description,
+    inLanguage: "en",
+    isPartOf: { "@id": absoluteUrl("/#website") },
+    about: { "@id": softwareId() },
     publisher: { "@id": organizationId() },
   };
 }
