@@ -20,11 +20,14 @@ import {
   CurviApiError,
   CurviClient,
   CurviNetworkError,
+  DEFAULT_BASE_URL,
   MAX_PACK_PHOTOS,
   type FetchLike,
   type PhotoSource,
 } from "./client.ts";
 import {
+  assertKeyTarget,
+  checkApiUrl,
   deleteConfig,
   maskKey,
   readConfig,
@@ -142,10 +145,12 @@ async function photoSource(deps: CliDeps, input: string | undefined): Promise<Ph
 }
 
 async function clientFor(deps: CliDeps, args: ParsedArgs): Promise<CurviClient> {
-  const auth = resolveAuth(deps.env, await readConfig(deps), stringFlag(args, "api-url"));
+  const stored = await readConfig(deps);
+  const auth = resolveAuth(deps.env, stored, stringFlag(args, "api-url"));
   if (!auth.apiKey) {
     throw new UsageError("Not signed in. Run curvi auth login, or set CURVI_API_KEY.");
   }
+  assertKeyTarget(auth, stored);
   return new CurviClient({
     apiKey: auth.apiKey,
     baseUrl: auth.apiUrl,
@@ -422,6 +427,9 @@ async function channels(deps: CliDeps, argv: string[]): Promise<number> {
 
 async function authLogin(deps: CliDeps, argv: string[]): Promise<number> {
   const args = parseArgs(argv, LOGIN_FLAGS);
+  const urlFlag = stringFlag(args, "api-url");
+  // Check the URL before asking for the key, so a refused URL never sees it.
+  if (urlFlag) checkApiUrl(urlFlag);
   const given = stringFlag(args, "key") ?? (await deps.readSecret("Paste your Curvi API key: "));
   const apiKey = given.trim();
   if (!apiKey) {
@@ -431,9 +439,10 @@ async function authLogin(deps: CliDeps, argv: string[]): Promise<number> {
     throw new UsageError("That does not look like an API key: it has spaces in it.");
   }
   const stored = await readConfig(deps);
-  const apiUrl = stringFlag(args, "api-url") ?? stored.apiUrl;
+  const apiUrl = urlFlag ?? stored.apiUrl;
+  const origin = checkApiUrl(apiUrl ?? DEFAULT_BASE_URL).origin;
   const path = await writeConfig(deps, { apiKey, ...(apiUrl ? { apiUrl } : {}) });
-  deps.stdout(`Saved key ${maskKey(apiKey)} to ${path}\n`);
+  deps.stdout(`Saved key ${maskKey(apiKey)} to ${path}\nThe key is sent only to ${origin}.\n`);
   if (deps.env.CURVI_API_KEY) {
     deps.stderr("CURVI_API_KEY is set, and it wins over the saved key while it stays set.\n");
   }
