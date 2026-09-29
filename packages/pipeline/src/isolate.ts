@@ -284,6 +284,120 @@ export function isolateTarget(
   };
 }
 
+/** A chosen piece must overlap its inventory box at least this much
+ * (intersection over union) to be the same piece. On the cutout the
+ * inventory was taken from the boxes are identical (IoU 1); the slack only
+ * matters when a fresh cutout of the same photo comes back slightly
+ * different (a shot subtask in another process). */
+export const COMPONENT_MATCH_IOU = 0.5;
+
+export interface ComponentIsolationResult {
+  /** The cutout with only the chosen pieces left; kept pixels are byte
+   * identical, every other pixel fully transparent (all four bytes zero). */
+  image: RawImage;
+  kept: number;
+  removed: number;
+  /** True when a chosen box matched no piece of this cutout. */
+  missing: boolean;
+}
+
+function intersection(a: PixelRect, b: PixelRect): number {
+  const w = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
+  const h = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+/** Intersection over union of two pixel rectangles. */
+export function rectIou(a: PixelRect, b: PixelRect): number {
+  const inter = intersection(a, b);
+  const union = a.width * a.height + b.width * b.height - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+/** True when rectangle a lies wholly inside rectangle b. */
+function rectInside(a: PixelRect, b: PixelRect): boolean {
+  return a.left >= b.left && a.top >= b.top && a.left + a.width <= b.left + b.width && a.top + a.height <= b.top + b.height;
+}
+
+/**
+ * Keeps exactly the cutout pieces the product inventory chose and zeroes the
+ * rest (the inventory stage, docs/phases/PHASE_13.md). Each significant piece
+ * is kept when its bounding box best matches a chosen box (IoU at least
+ * COMPONENT_MATCH_IOU and no closer to a removed box). A noise piece is kept
+ * only inside a kept piece's bounding box; a pixel whose alpha is at or
+ * under CUTOUT_ALPHA_THRESHOLD belongs to no piece and is kept inside a kept
+ * piece's box unless it also sits in a removed piece's box. Kept pixels are
+ * never altered (CLAUDE.md rule 3).
+ */
+export function isolateComponents(
+  cutout: RawImage,
+  keep: readonly PixelRect[],
+  remove: readonly PixelRect[] = [],
+  opts: { noiseShare?: number } = {},
+): ComponentIsolationResult {
+  const { width, height } = cutout;
+  const alpha = Buffer.alloc(width * height);
+  for (let i = 0; i < alpha.length; i++) {
+    alpha[i] = cutout.data[i * 4 + 3];
+  }
+  const { labels, components } = maskComponents({ data: alpha, width, height }, CUTOUT_ALPHA_THRESHOLD);
+  const minArea = significantArea(width, height, opts.noiseShare ?? NOISE_AREA_SHARE);
+  const keepFlag = new Uint8Array(components.length + 1);
+  const keptBoxes: BBox[] = [];
+  const removedBoxes: BBox[] = [];
+  const matchedKeep = new Set<number>();
+  for (const c of components) {
+    if (c.area < minArea) continue;
+    let bestKeep = 0;
+    let bestKeepIndex = -1;
+    keep.forEach((rect, i) => {
+      const iou = rectIou(c.bbox, rect);
+      if (iou > bestKeep) {
+        bestKeep = iou;
+        bestKeepIndex = i;
+      }
+    });
+    const bestRemove = remove.reduce((best, rect) => Math.max(best, rectIou(c.bbox, rect)), 0);
+    if (bestKeep >= COMPONENT_MATCH_IOU && bestKeep >= bestRemove) {
+      keepFlag[c.label] = 1;
+      keptBoxes.push(c.bbox);
+      matchedKeep.add(bestKeepIndex);
+    } else {
+      removedBoxes.push(c.bbox);
+    }
+  }
+  for (const c of components) {
+    if (c.area >= minArea) continue;
+    if (keptBoxes.some((b) => rectInside(c.bbox, b))) {
+      keepFlag[c.label] = 1;
+    }
+  }
+  const out = Buffer.from(cutout.data);
+  let removedPieces = 0;
+  for (const c of components) {
+    if (keepFlag[c.label] !== 1) removedPieces++;
+  }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const label = labels[i];
+      const kept =
+        label !== 0
+          ? keepFlag[label] === 1
+          : keptBoxes.some((b) => inRect(x, y, b)) && !removedBoxes.some((b) => inRect(x, y, b));
+      if (!kept) {
+        out.fill(0, i * 4, i * 4 + 4);
+      }
+    }
+  }
+  return {
+    image: { data: out, width, height, channels: 4 },
+    kept: components.length - removedPieces,
+    removed: removedPieces,
+    missing: keep.some((_, i) => !matchedKeep.has(i)),
+  };
+}
+
 /** Floor and ceil that forgive floating point noise (0.46 * 1000 is
  * 459.99999999999994), so a box lands on the pixel it names. */
 function floorPx(value: number): number {

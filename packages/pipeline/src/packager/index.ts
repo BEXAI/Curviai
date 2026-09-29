@@ -106,6 +106,8 @@ export interface PackResult {
     dropped: PackDroppedAsset[];
     /** The seller intent the pack enforced, when a product was isolated. */
     intent?: PackIntent;
+    /** What the product inventory found in each photo, when it ran. */
+    inventory?: PackInventoryPhoto[];
   };
 }
 
@@ -114,6 +116,22 @@ export interface PackResult {
 export interface PackIntent {
   featured: string[];
   removed: string[];
+}
+
+/** One piece the product inventory found in a photo, as the compliance
+ * report lists it: featured, removed from every image, or kept (an in the
+ * box photo, or a photo used whole). */
+export interface PackInventoryItem {
+  label: string;
+  color: string;
+  shape: string;
+  status: "featured" | "removed" | "kept";
+}
+
+/** The inventory of one photo, numbered from 1 in the pack's photo order. */
+export interface PackInventoryPhoto {
+  photo: number;
+  items: PackInventoryItem[];
 }
 
 /** Channel family of a spec id: "amazon.main" belongs to "amazon". */
@@ -129,6 +147,8 @@ export interface BuildPackOptions {
   writeFiles?: boolean;
   /** The seller intent the pack enforced, written into every report. */
   intent?: PackIntent | null;
+  /** The product inventory of the pack's photos, written into every report. */
+  inventory?: PackInventoryPhoto[] | null;
 }
 
 export async function buildPack(
@@ -312,6 +332,7 @@ export async function buildPack(
     files: fileReports,
     dropped,
     ...(opts.intent ? { intent: opts.intent } : {}),
+    ...(opts.inventory && opts.inventory.length > 0 ? { inventory: opts.inventory } : {}),
   };
   const reportPath = path.join(outDir, "compliance-report.json");
   await writeFile(reportPath, JSON.stringify(report, null, 2));
@@ -325,6 +346,7 @@ export async function buildPack(
       files: fileReports.filter((f) => f.channel === channel),
       dropped: dropped.filter((d) => d.channel === channel),
       ...(opts.intent ? { intent: opts.intent } : {}),
+      ...(report.inventory ? { inventory: report.inventory } : {}),
     };
     await writeZip(zipPath, [
       ...entries,

@@ -68,6 +68,19 @@ import {
   type NormalizedBox,
   type PackAsset,
   type SellerIntent,
+  analyzeInventory,
+  chooseInventoryTarget,
+  inventoryRecord,
+  matchProducts,
+  itemLabel,
+  noteSignals,
+  unionBox,
+  type IntakeProduct,
+  type InventoryDecision,
+  type CutoutInventory,
+  type JobInventory,
+  type PackInventoryPhoto,
+  type PhotoInventory,
   type PixelCheckReport,
   type PlanOptions,
   type RawImage,
@@ -271,6 +284,10 @@ export interface JobStore {
    * run's, so follow ups and retries keep what the seller asked for. The
    * runner never fails a pack because this failed. */
   saveSellerIntent?(jobId: string, intent: SellerIntent): Promise<void>;
+  /** Records what the product inventory found in each photo
+   * (generation_jobs.inventory), with the same liveness rule as
+   * saveSellerIntent. The runner never fails a pack because this failed. */
+  saveInventory?(jobId: string, inventory: JobInventory): Promise<void>;
   /** Delivers the files of a pack follow up (a retried shot or an added
    * angle) into a pack that was already delivered: uploads them and records
    * their asset_variants rows, only while the job is live, like savePack.
@@ -371,8 +388,14 @@ export class InMemoryJobStore implements JobStore {
   readonly followUps: StoredFollowUpFiles[] = [];
   readonly sellerIntents = new Map<string, SellerIntent>();
 
+  readonly inventories = new Map<string, JobInventory>();
+
   async saveSellerIntent(jobId: string, intent: SellerIntent): Promise<void> {
     this.sellerIntents.set(jobId, intent);
+  }
+
+  async saveInventory(jobId: string, inventory: JobInventory): Promise<void> {
+    this.inventories.set(jobId, inventory);
   }
 
   async setJobState(jobId: string, state: JobState, meta?: Record<string, unknown>): Promise<boolean> {
@@ -462,16 +485,36 @@ export interface ShotGenerateArgs {
 
 /**
  * The product in one photo a pack is for. With a box, the photo showed other
- * products too: the generator crops to the box before the cutout and keeps
- * only the cutout pieces that overlap it, and every delivered still must
- * hold a single product. Without a box the photo showed only this product
- * and is used whole, exactly as before.
+ * products too and every delivered still must hold only this product.
+ * Without a box the photo showed only this product and is used whole,
+ * exactly as before.
+ *
+ * With keep (a target the product inventory chose), the generator cuts out
+ * the whole photo once and keeps exactly the cutout pieces at those boxes,
+ * zeroing the others; box is then their union. Without keep (an intake only
+ * target, when no inventory ran), it crops to box before the cutout and
+ * keeps the pieces overlapping it.
  */
 export interface ProductTarget {
   label: string;
   box: NormalizedBox | null;
   /** The other products in the photo, which are removed from every image. */
   others: Array<{ label: string; box: NormalizedBox }>;
+  /** The inventory pieces the pack features, normalized to the upright
+   * working photo. */
+  keep?: NormalizedBox[];
+  /** True when the featured piece also holds another product (they touch):
+   * every shot of the photo is refused at no charge. */
+  touching?: boolean;
+}
+
+/** The whole photo cut out for the product inventory, and the provider
+ * spend it booked for the caller (zero once already booked). */
+export interface InventoryCutout {
+  /** The upright working photo's cutout, RGBA; null when the cutout was
+   * unusable or could not be made (the pack then runs without inventory). */
+  cutout: RawImage | null;
+  costMicros: number;
 }
 
 /**
@@ -493,6 +536,13 @@ export interface ShotGenerator {
    * generator without it is asked to generate that spec directly.
    */
   deriveForSpec?(args: ShotGenerateArgs, from: ShotGeneration, specId: string): Promise<ShotGeneration>;
+  /**
+   * Cuts out a whole photo for the product inventory, once per job and
+   * photo: the shots of that photo reuse the same cutout, so it is paid for
+   * once. Optional: a generator without a cutout (the demo) skips the
+   * inventory and the pack runs exactly as before. Never throws.
+   */
+  inventoryCutout?(args: { jobId: string; workspaceId: string; mediaId: string }): Promise<InventoryCutout>;
 }
 
 export interface ShotContext {
@@ -1015,6 +1065,149 @@ export function selectTargets(
     };
   });
   return selection;
+}
+
+/** How many photos the product inventory cuts out at once. Each holds a
+ * decoded RGBA copy of the working photo while it is analyzed. */
+const INVENTORY_CONCURRENCY = 2;
+
+/** One photo's product inventory: its pieces, how they reconcile with
+ * intake, and the product the pack features. */
+export interface PhotoInventoryResult {
+  record: PhotoInventory;
+  decision: InventoryDecision;
+}
+
+/**
+ * Picks the product each photo is for from the product inventory first, and
+ * from intake alone (selectTargets) for photos without one: the demo
+ * generator has no cutout, and a cutout that failed leaves its photo on the
+ * intake path, both exactly as before the inventory. The order of the rules
+ * is chooseInventoryTarget's (docs/phases/PHASE_13.md, inventory stage).
+ *
+ * A photo the inventory decided with nothing removed and nothing touching
+ * keeps the intake only target, so a photo of one product runs exactly as
+ * before. Otherwise its target carries the featured pieces (keep) and the
+ * removed ones (others), which the generator isolates on the same cutout.
+ */
+export function inventorySelection(
+  intake: IntakeResult,
+  judged: ReadonlyArray<{ mediaId: string; angle?: AngleRole }>,
+  cutouts: ReadonlyMap<string, CutoutInventory>,
+  note: string | undefined,
+  jobId: string,
+): { selection: TargetSelection; photos: PhotoInventoryResult[] } {
+  const legacy = selectTargets(intake, judged, jobId);
+  const selection: TargetSelection = { targets: { ...legacy.targets }, ambiguous: [...legacy.ambiguous] };
+  const photos: PhotoInventoryResult[] = [];
+  const mapped = intake.images.length === judged.length;
+  const signals = noteSignals(note, intake.sellerIntent ?? null);
+  judged.forEach((photo, i) => {
+    const inventory = cutouts.get(photo.mediaId);
+    const image = mapped ? intake.images[i] : undefined;
+    if (!inventory || image?.screenshot === true) {
+      return;
+    }
+    const products: IntakeProduct[] = image?.products ?? [];
+    const decision = chooseInventoryTarget({
+      objects: inventory.objects,
+      products,
+      signals,
+      multiItem: !!photo.angle && MULTI_ITEM_ANGLES.has(photo.angle),
+    });
+    const record = inventoryRecord({
+      mediaId: photo.mediaId,
+      inventory,
+      products,
+      distinctProducts: image ? image.distinctProducts : null,
+      decision,
+    });
+    photos.push({ record, decision });
+    if (decision.rule === "none") {
+      return;
+    }
+    selection.ambiguous = selection.ambiguous.filter((id) => id !== photo.mediaId);
+    if (decision.rule === "ambiguous" || decision.rule === "conflict") {
+      delete selection.targets[photo.mediaId];
+      selection.ambiguous.push(photo.mediaId);
+      return;
+    }
+    if (decision.removed.length === 0 && !decision.touching) {
+      // Nothing to take out: used whole, with the intake target (if any)
+      // the photo had before the inventory.
+      if (!legacy.targets[photo.mediaId]?.box) {
+        return;
+      }
+      delete selection.targets[photo.mediaId];
+      return;
+    }
+    const match = matchProducts(inventory.objects, products);
+    const featured = decision.featured.map((index) => inventory.objects[index]);
+    const keep = featured.map((o) => o.box);
+    selection.targets[photo.mediaId] = {
+      label: [...new Set(featured.map((o) => itemLabel(o, products, match)))].join(" and "),
+      box: unionBox(keep),
+      others: decision.removed.map((index) => ({
+        label: itemLabel(inventory.objects[index], products, match),
+        box: inventory.objects[index].box,
+      })),
+      keep,
+      ...(decision.touching ? { touching: true } : {}),
+    };
+  });
+  return { selection, photos };
+}
+
+/** The inventory as the compliance report lists it: per photo, numbered in
+ * the pack's photo order, each piece's label, color, shape and status. */
+export function packInventory(
+  photos: readonly PhotoInventoryResult[],
+  judged: ReadonlyArray<{ mediaId: string }>,
+): PackInventoryPhoto[] {
+  return photos.map(({ record }) => ({
+    photo: judged.findIndex((j) => j.mediaId === record.mediaId) + 1,
+    items: record.items.map((item) => ({
+      label: item.label,
+      color: item.colorName,
+      shape: item.shape,
+      status: item.status,
+    })),
+  }));
+}
+
+/**
+ * Cuts out and analyzes every camera photo for the product inventory, at
+ * most INVENTORY_CONCURRENCY at once, when the generator can cut out. A
+ * photo whose cutout fails is left out, so it keeps the intake only path.
+ * The provider spend of every cutout lands on the job's COGS through book.
+ */
+async function takeInventory(
+  deps: PipelineDeps,
+  input: GeneratePackInput,
+  judged: ReadonlyArray<{ mediaId: string }>,
+  screenshots: ReadonlySet<string>,
+  assertLive: () => Promise<void>,
+  book: (micros: number) => void,
+): Promise<Map<string, CutoutInventory>> {
+  const found = new Map<string, CutoutInventory>();
+  const cut = deps.generator.inventoryCutout?.bind(deps.generator);
+  const photos = judged.filter((photo) => !screenshots.has(photo.mediaId));
+  if (!cut || photos.length === 0) {
+    return found;
+  }
+  await assertLive();
+  await allSettledWithLimit(photos, INVENTORY_CONCURRENCY, async (photo) => {
+    try {
+      const result = await cut({ jobId: input.jobId, workspaceId: input.workspaceId, mediaId: photo.mediaId });
+      book(result.costMicros);
+      if (result.cutout) {
+        found.set(photo.mediaId, analyzeInventory(result.cutout));
+      }
+    } catch (err) {
+      console.warn(`[runner] job ${input.jobId} inventory of one photo failed; it keeps the intake path`, err);
+    }
+  });
+  return found;
 }
 
 /** The labels a pack features and removes, for the compliance report: only
@@ -1682,7 +1875,8 @@ export function extraItemsFailure(target: ProductTarget | undefined, generation:
     return null;
   }
   const pieces = significantComponents(generation.mask).length;
-  if (pieces <= 1) {
+  // A product the inventory found in several parts ships in as many.
+  if (pieces <= Math.max(1, target.keep?.length ?? 1)) {
     return null;
   }
   return { pass: false, fidelity: 0, issues: ["extra_items"], repairHint: SHOT_EXTRA_ITEMS };
@@ -2517,11 +2711,33 @@ export async function runGeneratePack(
     if (intakeBlock.length > 0) {
       throw new Error(`This upload was flagged for ${intakeBlock.join(", ")} and needs a manual review before a pack can run`);
     }
-    // The product each photo is for (docs/phases/PHASE_13.md). A photo with
-    // several products and no single match to the seller's note stops the
-    // pack here, before any paid generation; the failure path releases the
-    // held credits.
-    const selection = selectTargets(intake.value, judgedImages, input.jobId);
+    // Product inventory (docs/phases/PHASE_13.md): every camera photo is cut
+    // out once, split into its pieces and reconciled with intake, so how many
+    // products a photo shows and which one the pack features never rests on
+    // one model answer. The shots of each photo reuse the same cutout.
+    const cutouts = await takeInventory(deps, input, judgedImages, screenshots, assertLive, (micros) => {
+      costMicros += micros;
+    });
+    // The product each photo is for. A photo with several products and no
+    // single match to the seller's note stops the pack here, before any paid
+    // generation; the failure path releases the held credits.
+    const { selection, photos: inventoryPhotos } = inventorySelection(
+      intake.value,
+      judgedImages,
+      cutouts,
+      input.userDescription,
+      input.jobId,
+    );
+    if (inventoryPhotos.length > 0) {
+      try {
+        await store.saveInventory?.(input.jobId, {
+          version: 1,
+          photos: inventoryPhotos.map((photo) => photo.record),
+        });
+      } catch (inventoryErr) {
+        console.warn(`[runner] could not record the inventory for job ${input.jobId}`, inventoryErr);
+      }
+    }
     const ambiguous = selection.ambiguous.filter((mediaId) => !screenshots.has(mediaId));
     if (ambiguous.length > 0) {
       throw new Error(MULTIPLE_PRODUCTS_MESSAGE);
@@ -2780,6 +2996,7 @@ export async function runGeneratePack(
       outDir: deps.packOutDir,
       writeFiles: true,
       intent: enforcedIntent(targets, exclude),
+      inventory: packInventory(inventoryPhotos, judgedImages),
     });
     if (built.report.files.length === 0) {
       throw new Error("None of the shots in this pack could be delivered, so nothing was charged.");

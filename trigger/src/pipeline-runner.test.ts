@@ -2394,29 +2394,55 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     return { red, blue };
   }
 
-  async function liveRun(intakeOutput: unknown, photo: Buffer) {
-    const ai = makeAi({ intake: intakeWith(intakeOutput) });
+  async function liveRun(
+    intakeOutput: unknown,
+    photo: Buffer,
+    opts: { note?: string; angle?: "front" | "in_the_box"; analyze?: MockProvider } = {},
+  ) {
+    const ai = makeAi({ intake: intakeWith(intakeOutput), ...(opts.analyze ? { analyze: opts.analyze } : {}) });
     const cutout = new SegmentAllCutout();
     ai.registry.register(cutout);
     ai.routing[CUTOUT_TASK] = ["photoroom"];
     const mediaId = "ws/ws1/src/two-bottles.png";
     const loadMedia = async () => photo;
-    const generator = new LiveShotGenerator({
+    const live = new LiveShotGenerator({
       ai,
       wiring: { llmLive: true, imageProviders: [], cutoutLive: true },
       loadMedia,
     });
+    // Records every shot's target on its way to the live generator.
+    const calls: ShotGenerateArgs[] = [];
+    const generator: ShotGenerator = {
+      generate: (args) => {
+        calls.push(args);
+        return live.generate(args);
+      },
+      deriveForSpec: (args, from, specId) => live.deriveForSpec(args, from, specId),
+      inventoryCutout: (args) => live.inventoryCutout(args),
+    };
     const deps = makeDeps({ ai, generator, loadMedia, packOutDir: await mkdtemp(path.join(tmpdir(), "curvi-intent-")) });
     const summary = await runGeneratePack(
       {
         ...baseInput,
         channels: ["amazon.main"],
-        images: [{ mediaId, angle: "front" }],
-        userDescription: "Feature only the blue bottle",
+        images: [{ mediaId, angle: opts.angle ?? "front" }],
+        userDescription: opts.note ?? "Feature only the blue bottle",
       },
       deps,
     );
-    return { summary, deps, cutout };
+    return { summary, deps, cutout, calls };
+  }
+
+  /** Red and blue pixel counts over every delivered file. */
+  async function deliveredColors(deps: ReturnType<typeof makeDeps>) {
+    const delivered = deps.store.assets.filter((a) => a.status === "passed" && a.encoded);
+    const totals = { files: delivered.length, red: 0, blue: 0 };
+    for (const asset of delivered) {
+      const colors = countColors(await decodeToRgba(asset.encoded!.buffer));
+      totals.red += colors.red;
+      totals.blue += colors.blue;
+    }
+    return totals;
   }
 
   it("features the product the note matches, the second of two, and tells the judge and the report", async () => {
@@ -2446,17 +2472,14 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     expect(report.intent).toEqual({ featured: ["blue bottle"], removed: ["red bottle"] });
   });
 
-  it("hands the generator a cutout of the target alone: the other product never reaches the image", async () => {
+  it("hands the generator the target alone: the other product never reaches the image", async () => {
     const { summary, deps, cutout } = await liveRun(twoProducts("no", "yes"), await twoProductPhoto());
 
     expect(summary.state).toBe("done");
     expect(summary.passed).toBeGreaterThan(0);
-    // The cutout saw the blue product plus a margin: a sliver of red at most.
+    // One cutout of the whole photo, shared by the inventory and every shot.
     expect(cutout.inputs).toHaveLength(1);
-    expect(cutout.inputs[0].width).toBeLessThan(400);
-    expect(cutout.inputs[0].blue).toBe(150 * 200);
-    expect(cutout.inputs[0].red).toBeGreaterThan(0);
-    expect(cutout.inputs[0].red).toBeLessThan(150 * 200 * 0.1);
+    expect(cutout.inputs[0].width).toBe(400);
     // Every delivered image holds the blue product and not one red pixel.
     const delivered = deps.store.assets.filter((a) => a.status === "passed" && a.encoded);
     expect(delivered.length).toBeGreaterThan(0);
@@ -2474,6 +2497,136 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     expect(deps.store.assets.every((a) => a.status === "needs_review")).toBe(true);
     expect(deps.store.assets[0]?.verdict.repairHint).toBe(PRODUCT_TOUCHING);
     expect(deps.store.ledger.some((e) => e.reason === "charge")).toBe(false);
+  });
+
+  describe("product inventory", () => {
+    const productionNote = "Blue Gatorade only, delete the red gatorade fully";
+    /** The production answer: two products counted, no boxes, no intent. */
+    const noProducts = { images: [{ ...verdict }] };
+
+    it("features the blue bottle from the note alone when the model returns no products, with zero red delivered", async () => {
+      const { summary, deps, cutout, calls } = await liveRun(noProducts, await twoProductPhoto(), { note: productionNote });
+
+      expect(summary.state).toBe("done");
+      expect(summary.passed).toBeGreaterThan(0);
+      expect(cutout.inputs).toHaveLength(1);
+      for (const call of calls) {
+        expect(call.target?.label).toBe("blue tall object");
+        expect(call.target?.others.map((o) => o.label)).toEqual(["red tall object"]);
+      }
+      const colors = await deliveredColors(deps);
+      expect(colors.files).toBeGreaterThan(0);
+      expect(colors.red).toBe(0);
+      expect(colors.blue).toBeGreaterThan(0);
+
+      // The inventory is kept on the job and listed in the compliance report.
+      const inventory = deps.store.inventories.get(baseInput.jobId);
+      expect(inventory?.photos).toHaveLength(1);
+      const photo = inventory!.photos[0];
+      expect(photo.rule).toBe("note");
+      expect(photo.intakeCount).toBe(2);
+      expect(photo.countMatch).toBe(true);
+      expect(photo.items.map((i) => [i.colorName, i.shape, i.status])).toEqual([
+        ["red", "tall", "removed"],
+        ["blue", "tall", "featured"],
+      ]);
+      const report = JSON.parse(await readFile(summary.pack!.reportPath, "utf8")) as {
+        intent?: unknown;
+        inventory?: unknown;
+      };
+      expect(report.inventory).toEqual([
+        {
+          photo: 1,
+          items: [
+            { label: "red tall object", color: "red", shape: "tall", status: "removed" },
+            { label: "blue tall object", color: "blue", shape: "tall", status: "featured" },
+          ],
+        },
+      ]);
+      expect(report.intent).toEqual({ featured: ["blue tall object"], removed: ["red tall object"] });
+    });
+
+    it("books the one inventory cutout on the job, not again on a shot", async () => {
+      const { summary, deps } = await liveRun(noProducts, await twoProductPhoto(), { note: productionNote });
+      expect(summary.state).toBe("done");
+      const shotCutoutSpend = deps.store.assets.reduce((sum, a) => sum + (a.costMicros ?? 0), 0);
+      // The job's COGS holds the 20,000 micro cutout exactly once (the mock
+      // LLM calls cost nothing), and no shot books it again.
+      expect(summary.costMicros).toBe(20_000);
+      expect(shotCutoutSpend).toBe(0);
+    });
+
+    it("treats a model yes on red as ambiguous when the note names blue, and charges nothing", async () => {
+      const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+      const { summary, deps, calls } = await liveRun(twoProducts("yes", "no"), await twoProductPhoto(), {
+        note: productionNote,
+        analyze,
+      });
+      expect(summary.state).toBe("failed");
+      expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+      expect(analyze.calls).toHaveLength(0);
+      expect(calls).toHaveLength(0);
+      expect(summary.chargedCredits).toBe(0);
+      expect(summary.releasedCredits).toBe(baseInput.creditBudget);
+      expect(deps.store.inventories.get(baseInput.jobId)?.photos[0].rule).toBe("conflict");
+    });
+
+    it("takes the model's yes when it agrees with the note's color", async () => {
+      const { summary, deps, calls } = await liveRun(twoProducts("no", "yes"), await twoProductPhoto(), {
+        note: productionNote,
+      });
+      expect(summary.state).toBe("done");
+      expect(calls.every((c) => c.target?.label === "blue bottle")).toBe(true);
+      expect((await deliveredColors(deps)).red).toBe(0);
+    });
+
+    it("fails before any generation with nothing charged when two products and nothing picks one", async () => {
+      const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+      const { summary, calls } = await liveRun(noProducts, await twoProductPhoto(), { note: "", analyze });
+      expect(summary.state).toBe("failed");
+      expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+      expect(analyze.calls).toHaveLength(0);
+      expect(calls).toHaveLength(0);
+      expect(summary.chargedCredits).toBe(0);
+    });
+
+    it("runs a single product photo as before: no target, used whole", async () => {
+      const single = solidCanvas(400, 300, 255, 255, 255);
+      for (let y = 50; y < 250; y++) {
+        for (let x = 200; x < 350; x++) {
+          const o = (y * 400 + x) * 4;
+          single.data[o] = 30;
+          single.data[o + 1] = 40;
+          single.data[o + 2] = 200;
+        }
+      }
+      const { summary, deps, calls, cutout } = await liveRun(intakeFixture, await encodePng(single), { note: "" });
+      expect(summary.state).toBe("done");
+      expect(cutout.inputs).toHaveLength(1);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every((c) => c.target === undefined)).toBe(true);
+      const photo = deps.store.inventories.get(baseInput.jobId)!.photos[0];
+      expect(photo.rule).toBe("single_object");
+      expect(photo.items).toHaveLength(1);
+      expect(photo.items[0].status).toBe("featured");
+    });
+
+    it("keeps every product of an in the box photo", async () => {
+      const { summary, deps, calls } = await liveRun(noProducts, await twoProductPhoto(), {
+        note: "",
+        angle: "in_the_box",
+      });
+      expect(summary.state).toBe("done");
+      expect(calls.every((c) => c.target === undefined)).toBe(true);
+      expect(deps.store.inventories.get(baseInput.jobId)!.photos[0].rule).toBe("in_the_box");
+    });
+
+    it("skips the inventory in demo mode, where the generator has no cutout", async () => {
+      const deps = makeDeps({ ai: makeAi({ intake: intakeWith(intakeFixture) }) });
+      const summary = await runGeneratePack(baseInput, deps);
+      expect(summary.state).toBe("done");
+      expect(deps.store.inventories.size).toBe(0);
+    });
   });
 
   for (const [name, answer] of [
