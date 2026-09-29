@@ -194,7 +194,18 @@ export class ScenePlateBridge implements CostAwareProvider {
     return task === SCENE_PLATE_TASK || task === HARMONIZE_TASK;
   }
 
+  /**
+   * The inner adapter's estimate for the request it will actually receive.
+   * OpenAI prices by the size the bridge picks, so a plate is estimated at
+   * that size; its harmonize is a free pass through.
+   */
   estimateCostMicros(req: ProviderRequest): number | Promise<number> {
+    if (this.family === "openai") {
+      if (req.task === HARMONIZE_TASK) return 0;
+      const input = req.input as unknown as ScenePlateInput;
+      const openaiInput: OpenaiImageInput = { prompt: input.prompt, size: openaiSizeFor(input.width, input.height) };
+      return this.inner.estimateCostMicros?.({ ...req, input: openaiInput }) ?? 0;
+    }
     return this.inner.estimateCostMicros?.(req) ?? 0;
   }
 
@@ -480,7 +491,9 @@ export function wireLiveProviders(
       tasks: [SCENE_PLATE_TASK, HARMONIZE_TASK],
       apiKey,
       model: row.model,
-      priceTable: { perImageMicros: row.perImageMicros },
+      priceTable: { perImageMicros: row.perImageMicros, perImageMicrosBySize: row.perImageMicrosBySize },
+      quality: row.quality,
+      fetchFn: fetchFn as typeof fetch,
       ...(row.minTimeoutMs !== undefined ? { minTimeoutMs: row.minTimeoutMs } : {}),
     };
     const inner: CostAwareProvider =

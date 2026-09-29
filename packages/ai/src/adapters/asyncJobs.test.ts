@@ -320,3 +320,51 @@ describe("downloadBytes", () => {
     expect(busy.retryable).toBe(true);
   });
 });
+
+describe("BFL polling_url host check", () => {
+  /** A BFL fake whose create hands back pollingUrl; records every GET. */
+  function withPollingUrl(pollingUrl: string) {
+    const gets: Array<{ url: string; key: string | undefined }> = [];
+    const fetchFn: FetchLike = async (input, init) => {
+      if (init?.method === "POST") return jsonResponse({ id: "job1", polling_url: pollingUrl });
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      gets.push({ url: String(input), key: headers["x-key"] });
+      return jsonResponse({ status: "Ready", result: { sample: "https://x.test/a.png" } });
+    };
+    return { fetchFn, gets };
+  }
+
+  it.each([
+    ["http://api.bfl.ai/v1/get_result?id=job1", "plain http"],
+    ["https://evil.test/v1/get_result?id=job1", "another host"],
+    ["https://evilbfl.ai/v1/get_result?id=job1", "a lookalike host"],
+    ["https://api.bfl.ai.evil.test/poll", "a bfl.ai prefix on another host"],
+    ["not a url", "an invalid URL"],
+  ])("refuses %s (%s) without sending the key, billed and final", async (url) => {
+    const fake = withPollingUrl(url);
+    const err = (await bfl(fake.fetchFn)
+      .invoke(request)
+      .catch((e: unknown) => e)) as ProviderError;
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.retryable).toBe(false);
+    expect(err.billedCostMicros).toBe(PRICE);
+    expect(fake.gets).toEqual([]);
+  });
+
+  it.each(["https://api.bfl.ai/v1/get_result?id=job1", "https://api.eu1.bfl.ai/v1/get_result?id=job1", "https://bfl.ai/poll"])(
+    "polls the BFL host %s",
+    async (url) => {
+      const fake = withPollingUrl(url);
+      const res = await bfl(fake.fetchFn).invoke(request);
+      expect(res.costMicros).toBe(PRICE);
+      expect(fake.gets).toEqual([{ url, key: "test-key" }]);
+    },
+  );
+
+  it("polls a URL on the configured base origin", async () => {
+    const url = "http://localhost:4010/v1/get_result?id=job1";
+    const fake = withPollingUrl(url);
+    await bfl(fake.fetchFn, { baseUrl: "http://localhost:4010" }).invoke(request);
+    expect(fake.gets.map((g) => g.url)).toEqual([url]);
+  });
+});

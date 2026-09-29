@@ -20,6 +20,11 @@
  * (Ready, Error, Content Moderated, Request Moderated, Task not found) and
  * the result.sample field against https://docs.bfl.ai. Status names checked
  * against the integration guidelines on 2026-09-28.
+ *
+ * The polling_url must be used as returned (it can name a regional host),
+ * but it carries the x-key credential, so it is fetched only when it is
+ * https on bfl.ai or one of its subdomains, or on the configured base
+ * origin; anything else fails before the key leaves the process.
  */
 
 import type { CostAwareProvider } from "../router";
@@ -29,6 +34,7 @@ import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
 import {
   ASYNC_JOB_TIMEOUT_MARGIN_MS,
   billedFailure,
+  isHostOrSubdomain,
   reportBilled,
   requestJson,
   resolveApiKey,
@@ -49,6 +55,10 @@ export const BFL_DEFAULT_POLL = { pollIntervalMs: 500, pollTimeoutMs: 120_000 } 
 const BFL_MODERATED_STATUSES = new Set(["Content Moderated", "Request Moderated"]);
 /** Terminal failure statuses. */
 const BFL_FAILED_STATUSES = new Set(["Error", "Failed", "Task not found"]);
+
+/** Host a BFL polling_url may name, besides the configured base origin.
+ * Matches the host exactly or any subdomain, e.g. a regional api host. */
+const ALLOWED_BFL_HOST_SUFFIX = "bfl.ai";
 
 export interface BflFluxConfig extends AdapterCommonConfig {
   /** Model path segment from seed data, e.g. "flux-2-pro". */
@@ -169,6 +179,31 @@ export class BflFluxProvider implements CostAwareProvider {
     }
   }
 
+  /**
+   * Refuses a polling_url that would send the x-key credential anywhere but
+   * BFL: it must be https on bfl.ai or a subdomain, or share the configured
+   * base origin (a test server or proxy). Mirrors the fal gateway check.
+   */
+  private assertAllowedPollingUrl(raw: string, task: string): string {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw new ProviderError("BFL create response polling_url is not a valid URL", this.name, task, false);
+    }
+    const sameOrigin = url.origin === new URL(this.baseUrl).origin;
+    const knownBflHost = url.protocol === "https:" && isHostOrSubdomain(url.hostname.toLowerCase(), ALLOWED_BFL_HOST_SUFFIX);
+    if (!sameOrigin && !knownBflHost) {
+      throw new ProviderError(
+        `BFL create response polling_url points at disallowed host ${url.host}; refusing to forward credentials`,
+        this.name,
+        task,
+        false,
+      );
+    }
+    return url.toString();
+  }
+
   private async pollUntilReady<TOut>(
     created: CreateResponse,
     task: string,
@@ -177,10 +212,11 @@ export class BflFluxProvider implements CostAwareProvider {
     if (!created.polling_url) {
       throw new ProviderError("BFL create response had no polling_url", this.name, task, false);
     }
+    const pollingUrl = this.assertAllowedPollingUrl(created.polling_url, task);
     const deadline = this.now() + this.poll.pollTimeoutMs;
     for (let poll = 0; poll < this.poll.maxPolls && this.now() < deadline; poll++) {
       await sleepMs(this.poll.pollIntervalMs, signal);
-      const state = await requestJson<PollResponse>(this.fetchFn, this.name, task, created.polling_url, {
+      const state = await requestJson<PollResponse>(this.fetchFn, this.name, task, pollingUrl, {
         method: "GET",
         headers: { "x-key": this.apiKey },
         signal,

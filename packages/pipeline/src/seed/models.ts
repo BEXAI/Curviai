@@ -37,26 +37,42 @@ export interface ImageModelSeedRow {
   family: ImageProviderFamily;
   /** Model ID or path segment passed to the adapter. */
   model: string;
-  /** Flat per generated image price in USD micros (plan section 2.4). */
+  /** Flat per generated image price in USD micros (plan section 2.4); for
+   * a row with perImageMicrosBySize, the price of any size not listed. */
   perImageMicros: number;
   /** Per attempt timeout floor for a synchronous adapter, in ms. The router
    * default (60 s) is shorter than a slow generation, and a timed out sync
    * call is still paid for. OpenAI documents that complex prompts may take up
    * to 2 minutes (image generation guide, checked 2026-09-29). */
   minTimeoutMs?: number;
+  /** Per image price by request size, where the provider bills by size. */
+  perImageMicrosBySize?: Record<string, number>;
+  /** Request quality sent with every generation, where the provider takes one. */
+  quality?: string;
 }
 
 /**
  * Image generation chain in failover order (plan sections 1 and 2.4):
  * Nano Banana 2 default, FLUX.2 pro for plates, GPT Image 2 fallback.
  * Per image prices approximate a 1K to 2K plate: Nano Banana 2 $0.067 at
- * 1K, FLUX.2 pro $0.03 per MP taken at 2 MP, GPT Image 2 about $0.053 at
- * 1024 medium.
+ * 1K, FLUX.2 pro $0.03 per MP taken at 2 MP. GPT Image 2 bills output
+ * tokens ($30 per M), so it runs at medium quality (the API default is auto,
+ * which can pick high at $0.211) and is priced per size from the image
+ * generation guide's table, checked 2026-09-29: medium $0.053 at 1024x1024,
+ * $0.041 at 1024x1536 and 1536x1024. Other sizes take the dearest price.
  */
 export const imageModelSeedRows: ImageModelSeedRow[] = [
   { providerName: "gemini-image", family: "gemini", model: "gemini-3.1-flash-image", perImageMicros: 67_000, minTimeoutMs: 90_000 },
   { providerName: "bfl-flux", family: "bfl", model: "flux-2-pro", perImageMicros: 60_000 },
-  { providerName: "openai-image", family: "openai", model: "gpt-image-2", perImageMicros: 53_000, minTimeoutMs: 150_000 },
+  {
+    providerName: "openai-image",
+    family: "openai",
+    model: "gpt-image-2",
+    perImageMicros: 53_000,
+    perImageMicrosBySize: { "1024x1024": 53_000, "1024x1536": 41_000, "1536x1024": 41_000 },
+    quality: "medium",
+    minTimeoutMs: 150_000,
+  },
 ];
 
 export interface CutoutModelSeedRow {
