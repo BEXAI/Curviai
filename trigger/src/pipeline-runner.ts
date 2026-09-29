@@ -47,6 +47,7 @@ import {
   capShotsPerChannel,
   coverSellerOffSpecs,
   headerChecks,
+  lifestyleScenesFor,
   reservedSlotsFor,
   sellerOffShotTypes,
   skipSellerOffShots,
@@ -131,6 +132,7 @@ import {
   qcJudgePolicy,
   recipeSeedRows,
   SCENE_PLATE_TASK,
+  sceneCountOptions,
   type RecipeRow,
   type TierKey,
 } from "@curvi/pipeline/seed";
@@ -569,6 +571,9 @@ export interface ShotGenerateArgs {
    * the seller's tap (source_media.target_box), else the upload preflight's
    * productBox. The P1 crop fit trims around it; without one it falls back. */
   productBox?: NormalizedBox;
+  /** The shot's photo is a kept photo that shows other items (ShotContext
+   * otherItems), so it is never shipped as its own white file. */
+  otherItems?: boolean;
 }
 
 /**
@@ -2505,12 +2510,13 @@ export function extraItemsFailure(target: ProductTarget | undefined, generation:
 function outputArgs(
   ctx: ShotContext,
   shot: Shot,
-): Pick<ShotGenerateArgs, "output" | "reencodedAtUpload" | "productBox"> {
+): Pick<ShotGenerateArgs, "output" | "reencodedAtUpload" | "productBox" | "otherItems"> {
   const productBox = ctx.productBoxes?.[shot.sourceMediaId];
   return {
     ...(ctx.output ? { output: ctx.output } : {}),
     ...(ctx.reencoded?.includes(shot.sourceMediaId) ? { reencodedAtUpload: true } : {}),
     ...(productBox ? { productBox } : {}),
+    ...(ctx.otherItems?.includes(shot.sourceMediaId) ? { otherItems: true } : {}),
   };
 }
 
@@ -3049,7 +3055,7 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
     }
   }
   // Only the specs the seller picked are generated and charged.
-  const narrowed: Shot[] = [];
+  let narrowed: Shot[] = [];
   for (const shot of shots) {
     const kept = [...new Set(shot.channels.filter((c) => isSpecSelected(rules.channels, c)))];
     if (kept.length === 0) {
@@ -3058,6 +3064,10 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
     }
     narrowed.push(kept.length === shot.channels.length ? shot : { ...shot, channels: kept });
   }
+  // Scenes past the pack's scene count are skipped before the limits and
+  // the budget, as fitShotsToChannels would skip them, so a plan with more
+  // scenes than the hold paid for is trimmed, not rejected (PHASE_15 P1).
+  narrowed = capSceneCount(narrowed, rules.output, skipped);
   if (narrowed.length === 0) {
     return { ok: false, reason: "the plan has no shot for the selected channels" };
   }
@@ -3101,6 +3111,44 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
 /** The channel specs a shot list gives at least one file. */
 export function coveredSpecs(shots: readonly Shot[]): Set<string> {
   return new Set(shots.flatMap((shot) => shot.channels));
+}
+
+/**
+ * Tops a validated LLM plan up to the pack's scene count (PHASE_15 P1): the
+ * hold paid for exactly that many scenes, and the plan recipe may ask for
+ * fewer. Each missing scene copies the plan's last lifestyle shot with the
+ * next scene lifestyleScenesFor gives that the plan does not use yet. The
+ * added scenes rank below every planned shot, so the budget trim drops them
+ * first and they only take room the plan left. A plan with no lifestyle
+ * shot (the seller turned scenes off, or the plan made none) is unchanged,
+ * and so is every plan without output options (today's pack).
+ */
+export function fillSceneCount(
+  plan: RunnerPlan,
+  profile: ProductProfile,
+  output: Pick<OutputPlanFlags, "sceneCount"> | undefined,
+): RunnerPlan {
+  const count = sceneCountOf(output);
+  const scenes = plan.shots.filter((shot) => shot.type === "lifestyle");
+  const template = scenes.at(-1);
+  if (!output || !template || scenes.length >= count) {
+    return plan;
+  }
+  const used = new Set(scenes.map((shot) => shot.scene?.trim().toLowerCase()));
+  const candidates = [
+    ...new Set([...lifestyleScenesFor(profile, count), ...lifestyleScenesFor(profile, sceneCountOptions.max)]),
+  ].filter((scene) => !used.has(scene.trim().toLowerCase()));
+  const priority = Math.max(...plan.shots.map((shot) => shot.priority)) + 1;
+  const added = candidates.slice(0, count - scenes.length).map(
+    (scene, i): Shot => ({
+      ...template,
+      id: `${template.id}_scene${i + 2}`,
+      scene,
+      credits: creditsForShot(template),
+      priority,
+    }),
+  );
+  return added.length > 0 ? { shots: [...plan.shots, ...added], skipped: plan.skipped } : plan;
 }
 
 export interface FitOptions {
@@ -3849,7 +3897,7 @@ export async function runGeneratePack(
       : { ok: false, reason: KEPT_PHOTO_PLAN_REJECTION };
     let chosen: ShotList | null = null;
     if (check.ok) {
-      const fitted = fitShotsToChannels(check.shotList, fit);
+      const fitted = fitShotsToChannels(fillSceneCount(check.shotList, profile, flags), fit);
       const fittedSpecs = coveredSpecs(fitted.shots);
       const uncovered = fallback ? [...coveredSpecs(fallback.shots)].filter((specId) => !fittedSpecs.has(specId)) : [];
       if (uncovered.length === 0) {

@@ -157,6 +157,10 @@ export interface EncodeOptions {
    * a kept photo, whose pixels must hold the strict row on every spec
    * (PHASE_15 fidelity section). */
   fidelityKind?: QcKind;
+  /** The mask whose dilation marks what is not background for the exact
+   * background check, when it differs from the fidelity mask: the product
+   * inside an already white kept photo, whose own white must stay exact. */
+  backgroundMask?: RawMask;
 }
 
 /**
@@ -205,7 +209,7 @@ export async function encodeForSpec(
   const maxBytes = spec.maxBytes ?? Number.POSITIVE_INFINITY;
   const allows = (f: string): boolean => !spec.formats || (spec.formats as readonly string[]).includes(f);
   const solidRgb = exactBackgroundRgb(spec) ?? undefined;
-  const checkMask = solidRgb ? await dilate(mask, QC_EDGE_MARGIN_PX) : null;
+  const checkMask = solidRgb ? await dilate(opts.backgroundMask ?? mask, QC_EDGE_MARGIN_PX) : null;
   const kind = opts.fidelityKind ?? qcKindForSpec(spec);
   const fidelityOpts = { kind, ...(opts.erodePx !== undefined ? { erodePx: opts.erodePx } : {}) };
 
