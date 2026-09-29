@@ -263,6 +263,22 @@ describe("rule 3 on every live output", () => {
     { shot: shotOf("alt_angle_white", "deterministic", ["walmart.main"], { stylePreset: "none" }) },
     { shot: shotOf("alt_angle_white", "deterministic", ["tiktokshop.main"], { stylePreset: "none" }) },
     { shot: shotOf("social_9x16", "template", ["pinterest.pin"]) },
+    // The six A+ modules (PHASE_16 workstream 2), each through the live generator.
+    ...(
+      [
+        ["aplus_features", "Built for everyday use", ["Keeps drinks hot", "Dishwasher safe", "Fits cup holders"]],
+        ["aplus_pain_points", "No more cold coffee", ["Warm to the last sip", "No slipping handle", "Fits your cup holder"]],
+        ["aplus_ingredients", "What it is made of", ["Ceramic body", "Glazed finish"]],
+        ["aplus_results", "Every morning, sorted", ["Warm drinks at your desk", "A steady grip", "Easy cleanup after"]],
+        ["aplus_how_to", "How to use it", ["Pour in your drink", "Hold it by the handle", "Rinse after use"]],
+        ["aplus_endorsement", undefined, ["Loved by coffee fans", "Gift Guide pick 2026"]],
+      ] as const
+    ).map(([type, headline, callouts]) => ({
+      shot: shotOf(type, "template", ["amazon.aplus.basic_header"], {
+        callouts: [...callouts],
+        ...(headline ? { headline } : {}),
+      }),
+    })),
   ];
 
   for (const { shot } of cases) {

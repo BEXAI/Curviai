@@ -1,4 +1,4 @@
-export { RecipeRow, addedOverlaysIntake, qcJudgePolicy, recipeSeedRows } from "./recipes";
+export { RecipeRow, addedOverlaysIntake, aplusCopyRecipe, qcJudgePolicy, recipeSeedRows } from "./recipes";
 export {
   CUTOUT_TASK,
   HARMONIZE_TASK,
@@ -10,6 +10,8 @@ export {
 } from "./models";
 export type { CutoutModelSeedRow, ImageModelSeedRow, ImageProviderFamily, LlmPriceTable } from "./models";
 export {
+  aplusCopy,
+  aplusModules,
   backgroundSwatches,
   badgeStyle,
   canvasDefaults,
@@ -23,7 +25,15 @@ export {
   stillStyle,
   templates,
 } from "./templates";
-export type { BackgroundSwatchKey, PackBundle, PackBundleKey, PresetKey } from "./templates";
+export type {
+  AplusModuleKey,
+  AplusModuleLayout,
+  AplusModuleSeed,
+  BackgroundSwatchKey,
+  PackBundle,
+  PackBundleKey,
+  PresetKey,
+} from "./templates";
 export { DEFAULT_TEMPLATE_FONT, isTemplateFontKey, templateFonts } from "./fonts";
 export type { TemplateFontEntry, TemplateFontKey } from "./fonts";
 export { AUTO_STYLE_PRESET, MAX_BRAND_COLORS, brandPalette } from "./brand";

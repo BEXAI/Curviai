@@ -9,6 +9,7 @@
 import { z } from "zod";
 import {
   ANGLE_ROLES,
+  MAX_ENDORSEMENTS,
   MAX_SELLER_LINE_CHARS,
   MAX_SELLER_LINES,
   MAX_SKU_CHARS,
@@ -31,6 +32,12 @@ const sellerLine = z
 export const sellerLinesSchema = z
   .array(sellerLine)
   .max(MAX_SELLER_LINES, `Add at most ${MAX_SELLER_LINES} lines.`);
+
+/** Press quotes or awards for the A+ endorsement module (PHASE_16 workstream
+ * 2): at most three short lines, printed exactly as typed. */
+export const endorsementLinesSchema = z
+  .array(sellerLine)
+  .max(MAX_ENDORSEMENTS, `Add at most ${MAX_ENDORSEMENTS} quotes or awards.`);
 
 /** A SKU, or an empty string to clear it. */
 export const skuSchema = z

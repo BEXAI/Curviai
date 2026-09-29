@@ -22,7 +22,7 @@ describe("channel spec registry", () => {
   it("parses and validates the bundled registry", () => {
     const registry = loadRegistry();
     expect(registry.version).toBe(2);
-    expect(registry.specs.length).toBe(18);
+    expect(registry.specs.length).toBe(22);
   });
 
   it("contains the launch critical specs", () => {
@@ -111,6 +111,10 @@ describe("channel spec registry", () => {
       "pinterest.pin",
       "amazon.aplus.basic_header",
       "amazon.aplus.premium_full",
+      "amazon.aplus.wide_banner",
+      "amazon.aplus.single_image",
+      "amazon.aplus.four_images",
+      "amazon.aplus.quadrant_image",
       "shopify.hero_banner",
     ]) {
       expect(getSpec(id).exactSize).toBe(true);
@@ -215,7 +219,14 @@ describe("isSpecSelected, the one channel selection rule (Update.md 2.11)", () =
 
   it("selects every spec under a bare family or a group prefix", () => {
     expect(selectedSpecIds(["meta"])).toEqual(["meta.feed_1x1", "meta.feed_4x5", "meta.story_9x16"]);
-    expect(selectedSpecIds(["amazon.aplus"])).toEqual(["amazon.aplus.basic_header", "amazon.aplus.premium_full"]);
+    expect(selectedSpecIds(["amazon.aplus"])).toEqual([
+      "amazon.aplus.basic_header",
+      "amazon.aplus.premium_full",
+      "amazon.aplus.wide_banner",
+      "amazon.aplus.single_image",
+      "amazon.aplus.four_images",
+      "amazon.aplus.quadrant_image",
+    ]);
     // A partial name is not a prefix of whole segments, so it selects nothing.
     expect(isSpecSelected(["amazon.ma"], "amazon.main")).toBe(false);
     expect(isSpecSelected(["amaz"], "amazon.main")).toBe(false);
@@ -243,6 +254,31 @@ describe("isSpecSelected, the one channel selection rule (Update.md 2.11)", () =
     expect(isMarketplaceChannel("meta.feed_1x1")).toBe(false);
     expect(isMarketplaceChannel("pinterest.pin")).toBe(false);
     expect(isMarketplaceChannel("myspace")).toBe(false);
+  });
+});
+
+describe("A+ module sizes (PHASE_16 workstream 2, docs/verification.md 2026-09-29)", () => {
+  it("carries the standard A+ image slots at their exact sizes, JPG or PNG up to 2 MB", () => {
+    const sizes = Object.fromEntries(
+      listSpecs()
+        .filter((spec) => spec.id.startsWith("amazon.aplus."))
+        .map((spec) => [spec.id, `${spec.width}x${spec.height}`]),
+    );
+    expect(sizes).toEqual({
+      "amazon.aplus.basic_header": "970x600",
+      "amazon.aplus.premium_full": "1464x600",
+      "amazon.aplus.wide_banner": "970x300",
+      "amazon.aplus.single_image": "300x300",
+      "amazon.aplus.four_images": "220x220",
+      "amazon.aplus.quadrant_image": "135x135",
+    });
+    for (const spec of listSpecs().filter((s) => s.id.startsWith("amazon.aplus."))) {
+      expect(spec.exactSize).toBe(true);
+      expect(spec.maxBytes).toBe(2000000);
+      expect(spec.formats).toEqual(["jpg", "png"]);
+      expect(spec.textAllowed).toBe(true);
+      expect(isMarketplaceSpec(spec.id)).toBe(true);
+    }
   });
 });
 
@@ -274,6 +310,10 @@ describe("background and layout helpers", () => {
     expect(exact).toEqual([
       "amazon.aplus.basic_header",
       "amazon.aplus.premium_full",
+      "amazon.aplus.wide_banner",
+      "amazon.aplus.single_image",
+      "amazon.aplus.four_images",
+      "amazon.aplus.quadrant_image",
       "shopify.hero_banner",
       "meta.feed_1x1",
       "meta.feed_4x5",

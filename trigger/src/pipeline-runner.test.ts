@@ -35,6 +35,8 @@ import {
   type OutputOptionsInput,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
+import { APLUS_COPY_SHORT_REASON, NO_ENDORSEMENT_REASON } from "@curvi/pipeline/aplus";
+import { isAplusModuleType } from "@curvi/pipeline/schemas";
 import { createHash } from "node:crypto";
 import { creditCosts, CUTOUT_TASK, sceneCountOptions } from "@curvi/pipeline/seed";
 import type { Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
@@ -45,6 +47,9 @@ import path from "node:path";
 import {
   activeRecipe,
   allSettledWithLimit,
+  aplusCopyRecipeFor,
+  sellerTextOf,
+  withAplusModules,
   creditsForShot,
   deserializeShotOutcome,
   deterministicPlan,
@@ -96,6 +101,7 @@ import {
   type StoredPack,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
+import { seedRecipe } from "./recipes";
 
 // planShots passes through to the real planner unless a test switches it to
 // fail, to show a planner failure never sinks a valid LLM plan.
@@ -112,7 +118,7 @@ vi.mock("@curvi/pipeline", async (importOriginal) => {
     },
   };
 });
-import { demoProfile, DemoShotGenerator } from "./runtime";
+import { demoAplusCopy, demoProfile, DemoShotGenerator } from "./runtime";
 import { LiveShotGenerator, PRODUCT_TOUCHING } from "./live-runtime";
 
 const intakeKey = activeRecipe("intake").key;
@@ -120,6 +126,7 @@ const analyzeKey = activeRecipe("analyze").key;
 const planKey = activeRecipe("plan").key;
 const qcKey = activeRecipe("qc").key;
 const pickerKey = activeRecipe("pick").key;
+const copyKey = activeRecipe("copy").key;
 
 const intakeFixture = {
   images: [
@@ -139,6 +146,7 @@ interface AiOverrides {
   analyze?: MockProvider;
   plan?: MockProvider;
   qc?: MockProvider;
+  copy?: MockProvider;
 }
 
 function makeAi(overrides: AiOverrides = {}): AiDeps {
@@ -151,6 +159,7 @@ function makeAi(overrides: AiOverrides = {}): AiDeps {
       overrides.plan ??
       new MockProvider({ name: "mock-plan", tasks: [planKey], output: { notAShotList: true } }),
     qc: overrides.qc ?? new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict }),
+    copy: overrides.copy ?? new MockProvider({ name: "mock-copy", tasks: [copyKey], output: demoAplusCopy }),
   };
   const registry = new ProviderRegistry();
   for (const provider of Object.values(providers)) {
@@ -163,6 +172,7 @@ function makeAi(overrides: AiOverrides = {}): AiDeps {
       [analyzeKey]: [providers.analyze.name],
       [planKey]: [providers.plan.name],
       [qcKey]: [providers.qc.name],
+      [copyKey]: [providers.copy.name],
     },
     meter: new InMemoryCostMeter(),
     breakerStore: new InMemoryBreakerStore(),
@@ -1025,7 +1035,9 @@ describe("every selected channel gets its files (2.11)", () => {
     const charges = deps.store.ledger.filter((e) => e.reason === "charge");
     expect(charges).toHaveLength(summary.passed);
     expect(summary.pack!.files).toBe(outputCount(plan.shots));
-    expect(summary.pack!.files).toBeGreaterThan(summary.passed * 2);
+    // Each secondary shot ships to all three channels, so the pack holds at
+    // least two extra files per secondary shot.
+    expect(summary.pack!.files).toBeGreaterThanOrEqual(summary.passed + 2 * secondary.length);
     // Every channel output is on the shot's record.
     expect(deps.store.assets.every((a) => a.status === "passed")).toBe(true);
   });
@@ -3643,5 +3655,111 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
       const changed = await deserializeShotOutcome(serialized, ctx, { handoff });
       expect(changed.packAssets?.map((a) => a.specId)).toEqual(["shopify.product"]);
     });
+  });
+});
+
+describe("A+ modules in the runner (PHASE_16 workstream 2)", () => {
+  class ShotRecorder implements ShotGenerator {
+    private readonly demo = new DemoShotGenerator();
+    readonly calls: ShotGenerateArgs[] = [];
+    async generate(args: ShotGenerateArgs): Promise<ShotGeneration> {
+      this.calls.push(args);
+      return this.demo.generate(args);
+    }
+  }
+  const aplusInput: GeneratePackInput = { ...baseInput, channels: ["amazon"], creditBudget: 30 };
+  const moduleCalls = (generator: ShotRecorder) => generator.calls.filter((c) => isAplusModuleType(c.shot.type));
+
+  it("writes module copy through the copy recipe, books its spend and prints only guarded lines", async () => {
+    const copy = new MockProvider({
+      name: "mock-copy",
+      tasks: [copyKey],
+      costMicros: 1234,
+      output: {
+        modules: [
+          ...demoAplusCopy.modules.filter((m) => m.type !== "aplus_results"),
+          {
+            type: "aplus_results",
+            headline: "Warm for 6 hours",
+            lines: ["Warm drinks at your desk", "Hot for 6 hours", "Clinically proven grip", "Easy cleanup after", "A steady grip"],
+          },
+        ],
+      },
+    });
+    const generator = new ShotRecorder();
+    const deps = makeDeps({ ai: makeAi({ copy }), generator });
+    const summary = await runGeneratePack(aplusInput, deps);
+    expect(summary.state).toBe("done");
+    expect(copy.invocations).toBe(1);
+    expect(copy.calls[0].stepId).toBe("copy");
+    expect(summary.costMicros).toBeGreaterThanOrEqual(1234);
+
+    const results = moduleCalls(generator).find((c) => c.shot.type === "aplus_results")?.shot;
+    expect(results?.callouts).toEqual(["Warm drinks at your desk", "Easy cleanup after", "A steady grip"]);
+    // The headline held a figure the seller never typed, so it was dropped.
+    expect(results?.headline).toBeUndefined();
+    const features = moduleCalls(generator).find((c) => c.shot.type === "aplus_features")?.shot;
+    expect(features?.headline).toBe("Made for your daily coffee");
+    for (const call of moduleCalls(generator)) {
+      expect(call.shot.method).toBe("template");
+      expect(call.shot.credits).toBe(creditCosts.deterministic);
+    }
+    // No quote or award: the endorsement is skipped, never written.
+    expect(summary.skipped).toContainEqual({ type: "aplus_endorsement", reason: NO_ENDORSEMENT_REASON });
+  });
+
+  it("prints the seller's endorsement lines exactly as typed", async () => {
+    const copy = new MockProvider({ name: "mock-copy", tasks: [copyKey], output: demoAplusCopy });
+    const generator = new ShotRecorder();
+    const deps = makeDeps({ ai: makeAi({ copy }), generator });
+    const summary = await runGeneratePack(
+      { ...aplusInput, endorsements: ["Loved by coffee fans", "  Gift Guide pick 2026 "] },
+      deps,
+    );
+    expect(summary.state).toBe("done");
+    const endorsement = moduleCalls(generator).find((c) => c.shot.type === "aplus_endorsement")?.shot;
+    expect(endorsement?.callouts).toEqual(["Loved by coffee fans", "Gift Guide pick 2026"]);
+    expect(endorsement?.headline).toBeUndefined();
+  });
+
+  it("never fails the pack when the copy call fails: modules fall back to guarded planner lines or are skipped, not charged", async () => {
+    const copy = new MockProvider({ name: "mock-copy", tasks: [copyKey], failTimes: Infinity });
+    const generator = new ShotRecorder();
+    const deps = makeDeps({ ai: makeAi({ copy }), generator });
+    const summary = await runGeneratePack(aplusInput, deps);
+    expect(summary.state).toBe("done");
+    // demoProfile's features ("12 ounce capacity", "dishwasher safe") leave
+    // one guarded line, and it has one material: nothing reaches a minimum.
+    expect(moduleCalls(generator)).toEqual([]);
+    for (const type of ["aplus_features", "aplus_pain_points", "aplus_how_to", "aplus_ingredients", "aplus_results"]) {
+      expect(summary.skipped).toContainEqual({ type, reason: APLUS_COPY_SHORT_REASON });
+    }
+    const charged = deps.store.ledger.filter((e) => e.reason === "charge").map((e) => e.ref ?? "");
+    expect(charged.some((id) => /aplus_(features|pain|how|ingredients|results)/.test(id))).toBe(false);
+  });
+
+  it("runs the compiled version 2 when a job is assigned copy_generator version 1", () => {
+    const v1 = { ...seedRecipe("copy"), version: 1 };
+    expect(aplusCopyRecipeFor({ copy: v1 }).version).toBeGreaterThanOrEqual(2);
+    const v2 = seedRecipe("copy");
+    expect(aplusCopyRecipeFor({ copy: v2 })).toBe(v2);
+  });
+
+  it("reads every string the seller typed for the claims guard", () => {
+    expect(
+      sellerTextOf({ userDescription: "Holds 12 oz", boxContents: ["Mug"], comparisonFacts: [], endorsements: ["Award 2026"] }),
+    ).toEqual(["Holds 12 oz", "Mug", "Award 2026"]);
+  });
+
+  it("adds the deterministic modules to an LLM plan after its first banner", () => {
+    const fallback = fittedPlan(aplusInput);
+    const llmShots = fallback.shots.filter((s) => !isAplusModuleType(s.type));
+    const merged = withAplusModules({ shots: llmShots, skipped: [] }, fallback);
+    const types = merged.shots.map((s) => s.type);
+    const firstBanner = types.indexOf("aplus_banner");
+    const modules = fallback.shots.filter((s) => isAplusModuleType(s.type)).map((s) => s.type);
+    expect(modules.length).toBeGreaterThan(0);
+    expect(types.slice(firstBanner + 1, firstBanner + 1 + modules.length)).toEqual(modules);
+    expect(withAplusModules({ shots: llmShots, skipped: [] }, null).shots).toEqual(llmShots);
   });
 });

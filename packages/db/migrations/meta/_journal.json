@@ -176,6 +176,13 @@
       "when": 1790701400000,
       "tag": "0024_answers_keys_favorites",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790701500000,
+      "tag": "0025_product_endorsements",
+      "breakpoints": true
     }
   ]
 }

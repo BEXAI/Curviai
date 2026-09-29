@@ -284,6 +284,32 @@ export const CHANNEL_SPECS: readonly ChannelSpecAvailability[] = [
     status: "coming_soon",
     mentions: /A plus premium/i,
   },
+  // The standard A+ image slots (PHASE_16 workstream 2): in the registry,
+  // but no module targets them yet.
+  {
+    specId: "amazon.aplus.wide_banner",
+    files: "A plus wide banners",
+    status: "coming_soon",
+    mentions: /A plus wide banner/i,
+  },
+  {
+    specId: "amazon.aplus.single_image",
+    files: "A plus single images",
+    status: "coming_soon",
+    mentions: /A plus single image/i,
+  },
+  {
+    specId: "amazon.aplus.four_images",
+    files: "A plus four image rows",
+    status: "coming_soon",
+    mentions: /A plus four image/i,
+  },
+  {
+    specId: "amazon.aplus.quadrant_image",
+    files: "A plus quadrant images",
+    status: "coming_soon",
+    mentions: /A plus quadrant/i,
+  },
   { specId: "shopify.product", files: "product images", status: "live" },
   { specId: "shopify.hero_banner", files: "hero banners", status: "live" },
   { specId: "walmart.main", files: "main images", status: "live" },

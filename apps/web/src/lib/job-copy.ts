@@ -26,7 +26,22 @@ import {
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
 import { SCENE_COUNT_REASON } from "@curvi/pipeline/planner";
-import { backgroundSwatches, isFeatureLive, packBundles, shotMethodFeatures, stillStyle, type TierFeature } from "@curvi/pipeline/seed";
+import {
+  APLUS_CLAIMS_FLAG_REASON,
+  APLUS_COPY_SHORT_REASON,
+  APLUS_MODULE_CAP_REASON,
+  APLUS_NO_FACTS_REASON,
+  NO_ENDORSEMENT_REASON,
+} from "@curvi/pipeline/aplus";
+import {
+  aplusCopy,
+  backgroundSwatches,
+  isFeatureLive,
+  packBundles,
+  shotMethodFeatures,
+  stillStyle,
+  type TierFeature,
+} from "@curvi/pipeline/seed";
 import { getSpec, hasSpec, requiresWhiteBackground } from "@curvi/specs";
 import { specDisplayName } from "@/components/marketing/spec-slug";
 import { enlargeLimitClause, EXTRA_FAMILY_NAMES } from "@/lib/output-options-copy";
@@ -77,6 +92,45 @@ export const BUNDLE_OFF_COPY: SkippedCopy = {
   label: "Not in your set",
   note: "Not in the set you picked. Not charged.",
 };
+
+/** The A+ endorsement module without a press quote or award from the seller
+ * (PHASE_16 workstream 2): it never prints words a model wrote. */
+export const NO_ENDORSEMENT_COPY: SkippedCopy = {
+  label: "Needs details",
+  note: `Add a press quote or award to include this module. Amazon does not allow customer reviews in A+ content. ${NO_CHARGE}`,
+};
+
+/** Copy for the A+ module reasons (PHASE_16 workstream 2), or null. */
+function aplusModuleCopy(r: string): SkippedCopy | null {
+  if (r.includes(NO_ENDORSEMENT_REASON)) {
+    return NO_ENDORSEMENT_COPY;
+  }
+  if (r.includes(APLUS_CLAIMS_FLAG_REASON)) {
+    return {
+      label: "Left out",
+      note: `We leave the results module out when a product may carry a health or food claim. ${NO_CHARGE}`,
+    };
+  }
+  if (r.includes(APLUS_NO_FACTS_REASON)) {
+    return {
+      label: "Needs details",
+      note: `Your photos and notes did not give us enough to fill this module. Add a few product details in the notes. ${NO_CHARGE}`,
+    };
+  }
+  if (r.includes(APLUS_COPY_SHORT_REASON)) {
+    return {
+      label: "Skipped",
+      note: `We could not write enough lines for this module that we could stand behind, so we left it out. ${NO_CHARGE}`,
+    };
+  }
+  if (r.includes(APLUS_MODULE_CAP_REASON.toLowerCase())) {
+    return {
+      label: "Skipped",
+      note: `An A+ page holds at most ${aplusCopy.maxModulesPerDocument} modules, so this one was left out. ${NO_CHARGE}`,
+    };
+  }
+  return null;
+}
 
 /** What the shot copy knows about the pack's own stored choices. */
 export interface ShotCopyContext {
@@ -154,6 +208,10 @@ export function skippedCopy(
   }
   if (r.includes(ADDED_OVERLAYS_REASON)) {
     return ADDED_TEXT_COPY;
+  }
+  const aplus = aplusModuleCopy(r);
+  if (aplus) {
+    return aplus;
   }
   if (r.includes("needs photo")) {
     return { label: "Needs photo", note: `Add a photo of this angle to get this shot. ${NO_CHARGE}` };

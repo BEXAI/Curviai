@@ -18,7 +18,7 @@ import {
 } from "@curvi/pipeline/output-options";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { backgroundSwatches, entitlementsFor, stillStyle, tierByKey, type TierKey } from "@curvi/pipeline/seed";
-import { isAngleRole, printableSellerLines } from "@curvi/pipeline/seller-inputs";
+import { isAngleRole, printableEndorsements, printableSellerLines } from "@curvi/pipeline/seller-inputs";
 import type { PackAssetTreatment } from "@curvi/pipeline/treatment";
 import { filenameFor, getSpec, requiresWhiteBackground } from "@curvi/specs";
 import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
@@ -163,7 +163,10 @@ export class DemoStore {
   readonly jobIdByIdempotencyKey = new Map<string, string>();
   readonly extraProducts: ProductSummary[] = [];
   /** Seller inputs saved by demo packs, over the fixture values. */
-  readonly productEdits = new Map<string, Pick<ProductSummary, "sku" | "boxContents" | "comparisonFacts" | "outputDefaults">>();
+  readonly productEdits = new Map<
+    string,
+    Pick<ProductSummary, "sku" | "boxContents" | "comparisonFacts" | "endorsements" | "outputDefaults">
+  >();
   /** Photos each demo pack uploaded, per product. */
   readonly photoCounts = new Map<string, number>();
   /** Rename override for the demo workspace; null keeps the default name. */
@@ -651,6 +654,10 @@ export class DemoService implements Services {
         input.comparisonFacts !== undefined
           ? printableSellerLines(input.comparisonFacts)
           : (existingProduct?.comparisonFacts ?? []),
+      endorsements:
+        input.endorsements !== undefined
+          ? printableEndorsements(input.endorsements)
+          : (existingProduct?.endorsements ?? []),
     };
     const photos = (input.uploads ?? []).filter((u) => u.kind === "image");
 
@@ -680,6 +687,7 @@ export class DemoService implements Services {
       angles: photos.flatMap((u) => (isAngleRole(u.angle) ? [u.angle] : [])),
       boxContents: sellerInputs.boxContents,
       comparisonFacts: sellerInputs.comparisonFacts,
+      endorsements: sellerInputs.endorsements,
       output: outputEstimateInputs(output.resolved, packPhotos),
     });
     const creditsReserved = Math.ceil(shots.reduce((sum, shot) => sum + shot.credits, 0));

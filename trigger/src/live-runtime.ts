@@ -1568,6 +1568,7 @@ export class LiveShotGenerator implements ShotGenerator {
                 productPng: product.productPng,
                 maskPng: product.maskPng,
                 callouts: shot.callouts,
+                headline: shot.headline,
                 // The preset's card color, or the seller's color with
                 // Graphics follow your color, text flipped on a dark card.
                 ...templateCardColors(getSpec(shot.channels[0]), shot.stylePreset, args.output),

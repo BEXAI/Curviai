@@ -7,7 +7,11 @@
  * image pass rate is below 100 percent (Phase 4 acceptance) or mean fidelity
  * drops below threshold.
  *
- * Usage: pnpm --filter @curvi/pipeline eval [-- --stage main|stills]
+ * Usage: pnpm --filter @curvi/pipeline eval [-- --stage main|stills|aplus]
+ *
+ * The aplus stage (PHASE_16 workstream 2) renders every A+ module around
+ * each golden product with the still template renderer and requires the
+ * rule 3 fidelity check to pass on the shipped file.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -20,8 +24,11 @@ import { compositeShot, type HarmonizeInput, type ScenePlateInput } from "../src
 import { deriveQcErodePx, fidelityReport } from "../src/qc/fidelity";
 import { pixelChecks, QC_THRESHOLDS } from "../src/qc/pixelChecks";
 import { decodeToRgba, decodeMask, type RawImage } from "../src/raw";
-import type { Shot } from "../src/schemas";
-import { templates } from "../src/seed/templates";
+import { boundingBoxOfMask } from "../src/mask";
+import { APLUS_MODULE_SHOT_TYPES, type Shot } from "../src/schemas";
+import { qcKindForSpec } from "../src/qc/pixelChecks";
+import { stillStyle, templates } from "../src/seed/templates";
+import { renderTemplateStill } from "../src/templates/still";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
@@ -40,7 +47,7 @@ interface GoldenProduct {
 
 interface EvalRow {
   product: string;
-  stage: "main" | "stills";
+  stage: Stage;
   pass: boolean;
   backgroundWhiteShare: number | null;
   fillRatio: number | null;
@@ -334,6 +341,70 @@ async function evalStills(products: GoldenProduct[]): Promise<EvalRow[]> {
   return rows;
 }
 
+/** Fixed module copy for the aplus stage: the copy step's output shape. */
+const APLUS_EVAL_COPY: Record<(typeof APLUS_MODULE_SHOT_TYPES)[number], { headline?: string; lines: string[] }> = {
+  aplus_features: { headline: "Built for everyday use", lines: ["Leak proof lid", "Dishwasher safe", "Fits cup holders"] },
+  aplus_pain_points: { headline: "No more spills", lines: ["Stays shut in a bag", "Easy to hold", "Quick to clean"] },
+  aplus_ingredients: { headline: "What it is made of", lines: ["Stainless steel", "Bamboo lid"] },
+  aplus_results: { headline: "Every day, sorted", lines: ["Cold water at your desk", "Fewer bottles to buy", "A lid that stays shut"] },
+  aplus_how_to: { headline: "How to use it", lines: ["Fill with water", "Twist the lid shut", "Rinse after use"] },
+  aplus_endorsement: { lines: ["Loved by hikers", "Gift Guide pick 2026"] },
+};
+
+async function evalAplus(products: GoldenProduct[]): Promise<EvalRow[]> {
+  const spec = getSpec("amazon.aplus.basic_header");
+  const rows: EvalRow[] = [];
+  for (const product of products) {
+    // The renderer takes a cutout: the source with the mask as its alpha.
+    const rgba = await decodeToRgba(product.source);
+    const mask = await decodeMask(product.mask);
+    for (let i = 0; i < mask.data.length; i++) {
+      rgba.data[i * 4 + 3] = mask.data[i];
+    }
+    const productPng = await sharp(rgba.data, { raw: { width: rgba.width, height: rgba.height, channels: 4 } })
+      .png()
+      .toBuffer();
+    for (const type of APLUS_MODULE_SHOT_TYPES) {
+      const copy = APLUS_EVAL_COPY[type];
+      const render = await renderTemplateStill({
+        type,
+        spec,
+        productPng,
+        maskPng: product.mask,
+        callouts: copy.lines,
+        ...(copy.headline ? { headline: copy.headline } : {}),
+        backgroundHex: stillStyle.defaultBackgroundHex,
+        textHex: stillStyle.textHex,
+        accentHex: stillStyle.accentHex,
+      });
+      const shipped = await decodeToRgba(render.encoded.buffer);
+      // The runner's still erosion (trigger stillQcErosion): an upscaled
+      // product blends with the card within the resize kernel's reach
+      // (3 source pixels) times the scale, so that band is not compared.
+      const placed = boundingBoxOfMask(render.mask);
+      const source = boundingBoxOfMask(mask);
+      const up = placed && source ? Math.max(1, placed.width / source.width) : 1;
+      const erodePx = Math.max(deriveQcErodePx(), Math.ceil(3 * up) + 1);
+      const fidelity = await fidelityReport(render.productReference, shipped, render.mask, {
+        kind: qcKindForSpec(spec),
+        erodePx,
+      });
+      rows.push({
+        product: `${product.key}:${type}`,
+        stage: "aplus",
+        pass: fidelity.pass,
+        backgroundWhiteShare: null,
+        fillRatio: null,
+        longestSide: Math.max(shipped.width, shipped.height),
+        meanDeltaE: fidelity.meanDeltaE,
+        exactByteShare: fidelity.exactByteShare,
+        failedChecks: fidelity.pass ? [] : fidelity.issues.map(String),
+      });
+    }
+  }
+  return rows;
+}
+
 function printTable(rows: EvalRow[]): void {
   const headers = ["product", "pass", "bgWhite", "fill", "longSide", "meanDeltaE", "exactBytes", "failed"];
   const cells = rows.map((r) => [
@@ -355,7 +426,9 @@ function printTable(rows: EvalRow[]): void {
   }
 }
 
-function parseStage(argv: string[]): "main" | "stills" {
+type Stage = "main" | "stills" | "aplus";
+
+function parseStage(argv: string[]): Stage {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--stage" && argv[i + 1]) {
       return assertStage(argv[i + 1]);
@@ -367,9 +440,9 @@ function parseStage(argv: string[]): "main" | "stills" {
   return "main";
 }
 
-function assertStage(value: string): "main" | "stills" {
-  if (value !== "main" && value !== "stills") {
-    console.error(`Unknown stage "${value}". Use --stage main or --stage stills.`);
+function assertStage(value: string): Stage {
+  if (value !== "main" && value !== "stills" && value !== "aplus") {
+    console.error(`Unknown stage "${value}". Use --stage main, --stage stills or --stage aplus.`);
     process.exit(2);
   }
   return value;
@@ -381,7 +454,8 @@ async function main(): Promise<void> {
   console.log(`Golden set: ${GOLDEN_DIR}`);
 
   const products = await generateGoldenSet();
-  const rows = stage === "main" ? await evalMain(products) : await evalStills(products);
+  const rows =
+    stage === "main" ? await evalMain(products) : stage === "stills" ? await evalStills(products) : await evalAplus(products);
   printTable(rows);
 
   const passCount = rows.filter((r) => r.pass).length;

@@ -100,6 +100,7 @@ export default async function NewPackPage({
             sku: p.sku,
             boxContents: p.boxContents,
             comparisonFacts: p.comparisonFacts,
+            ...(p.endorsements && p.endorsements.length > 0 ? { endorsements: p.endorsements } : {}),
             ...(p.storedPhotoCount !== undefined ? { storedPhotoCount: p.storedPhotoCount } : {}),
             // Remembered choices prefill the form only while options are on.
             ...(outputOptionsEnabled && p.outputDefaults ? { outputDefaults: p.outputDefaults } : {}),

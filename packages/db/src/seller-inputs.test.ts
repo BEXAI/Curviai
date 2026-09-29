@@ -111,6 +111,27 @@ describe("0014 seller inputs", () => {
     expect(afterEditor.boxContents).toEqual(["Mug"]);
   });
 
+  it("0025: stores endorsements as an array, refuses any other shape, and keeps them in the workspace", async () => {
+    await db.update(products).set({ endorsements: ["Loved by 2,000 buyers"] }).where(eq(products.id, productA));
+    const [row] = await db.select().from(products).where(eq(products.id, productA));
+    expect(row.endorsements).toEqual(["Loved by 2,000 buyers"]);
+    await expect(
+      client.query(`update products set endorsements = '{"a": 1}'::jsonb where id = $1`, [productA]),
+    ).rejects.toThrow(/products_endorsements_array/);
+    await client.query("update products set endorsements = null where id = $1", [productA]);
+
+    await actAs(client, OWNER_B);
+    const hidden = await client.query("select endorsements from products where id = $1", [productA]);
+    expect(hidden.rows).toHaveLength(0);
+    await actAs(client, CLIENT_A);
+    await client.query(`update products set endorsements = '["Client"]'::jsonb where id = $1`, [productA]);
+    await actAs(client, EDITOR_A);
+    await client.query(`update products set endorsements = '["Award 2026"]'::jsonb where id = $1`, [productA]);
+    await actAsSuperuser(client);
+    const [after] = await db.select().from(products).where(eq(products.id, productA));
+    expect(after.endorsements).toEqual(["Award 2026"]);
+  });
+
   it("keeps owners of workspace A in their own lane", async () => {
     await actAs(client, OWNER_A);
     const rows = await client.query<{ workspace_id: string }>("select workspace_id from products");

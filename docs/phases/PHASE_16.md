@@ -63,6 +63,15 @@ Higgsfield's marketplace cards send the seller's photo through a generative imag
 
 **Tests.** Rule 3 fidelity per module; copy lint (rule 9) on generated slots; a claims test that results never contains a number the seller did not supply; endorsement skipped without input.
 
+**Implementation notes (built 2026-09-29, founder default: 0.5 credits per module).**
+- Shot types `aplus_pain_points`, `aplus_features`, `aplus_ingredients`, `aplus_results`, `aplus_how_to`, `aplus_endorsement` (method template, `creditCosts.deterministic`). `LlmShot` leaves them and the new optional `Shot.headline` out, so the shot planner's tool schema is unchanged; the runner adds the deterministic plan's modules to an LLM plan after its first banner (`withAplusModules`).
+- Seed `aplusModules` (spec, layout, min and max lines, compliance flags that drop it, brief) and `aplusCopy` (40 character slots, the 7 module page cap, claims guard words). `packBundles.aplus.aplusModules` holds all seven; modules join the `cards` extra family through the bundle only.
+- The planner considers a module only when its spec is picked: hero banner, then the modules the profile supports (`moduleSkipReason`), then the second banner, and `capAplusModules` keeps at most 7 A+ files (the second banner goes first). Results is skipped for a `medical_claim` or `food_claim` flag.
+- Every module renders at 970 x 600 (`amazon.aplus.basic_header`). The registry gains `amazon.aplus.wide_banner` (970 x 300), `single_image` (300 x 300), `four_images` (220 x 220) and `quadrant_image` (135 x 135), all coming soon in CHANNEL_SPECS until a module targets them.
+- Copy: `copy_generator` version 2 (version 1 retired, it never ran) writes every generated module in one call through packages/ai with a strict tool schema (`AplusCopyResult`), booked on the job. `applyAplusCopy` lints each line for rule 9 and drops any line with a figure or claim word the seller did not type; a module falls back to the planner's guarded lines (features, materials) or is skipped, never padded and never charged. A job assigned version 1 runs the compiled version 2.
+- Endorsement: Amazon's A+ guidelines do not allow customer reviews (docs/verification.md), so the seller input is press quotes or awards (`products.endorsements`, migration 0025, at most 3 lines of 40 characters), printed exactly as typed. Without one the module is skipped with "Add a press quote or award to include this module."
+- Rendering: `renderTemplateStill` places the real product with the fidelity gate and draws the headline (heading font) and lines (body font, dot, square, step number or quote bar). `pnpm --filter @curvi/pipeline eval -- --stage aplus` renders every module around the golden set and checks rule 3 (60 of 60 on 2026-09-29).
+
 ## 3. Pinterest pins, social carousels and ad creative packs
 
 **What the seller gets.**

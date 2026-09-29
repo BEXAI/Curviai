@@ -7,7 +7,7 @@
 import type { BrandStyle, GeneratePackInput } from "@curvi/trigger/runner";
 import type { PreflightIntake } from "@curvi/trigger/preflight-intake";
 import { isTemplateFontKey, presets, socialBadgeByTier, type TierKey } from "@curvi/pipeline/seed";
-import { isAngleRole, printableSellerLines } from "@curvi/pipeline/seller-inputs";
+import { isAngleRole, printableEndorsements, printableSellerLines } from "@curvi/pipeline/seller-inputs";
 import { ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 
 export interface PayloadProduct {
@@ -19,6 +19,8 @@ export interface PayloadProduct {
   sku?: string | null;
   boxContents?: string[] | null;
   comparisonFacts?: string[] | null;
+  /** Press quotes or awards for the A+ endorsement module (products.endorsements). */
+  endorsements?: string[] | null;
 }
 
 export interface PayloadMedia {
@@ -147,6 +149,7 @@ export function buildGeneratePackInput(args: {
 }): GeneratePackPayload {
   const brand = brandStyleFor(args.workspaceId, args.brandKit);
   const output = payloadOutputOf(args.outputOptions);
+  const endorsements = printableEndorsements(args.product.endorsements);
   return {
     jobId: args.jobId,
     workspaceId: args.workspaceId,
@@ -181,6 +184,7 @@ export function buildGeneratePackInput(args: {
     hasVideoSource: args.media.some((m) => m.kind === "video"),
     boxContents: printableSellerLines(args.product.boxContents),
     comparisonFacts: printableSellerLines(args.product.comparisonFacts),
+    ...(endorsements.length > 0 ? { endorsements } : {}),
     // The "Made with Curvi" badge on social exports, by plan (seed).
     socialBadge: socialBadgeByTier[args.tier] ?? false,
     ...(brand ? { brand } : {}),

@@ -52,6 +52,50 @@
       "textAllowed": true
     },
     {
+      "id": "amazon.aplus.wide_banner",
+      "verified": false,
+      "source": "A+ image with text overlay and wide banner, 970 x 300; Amazon Launchpad A+ guideline 2018 and secondary guides, checked 2026-09-29",
+      "width": 970,
+      "height": 300,
+      "exactSize": true,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
+      "id": "amazon.aplus.single_image",
+      "verified": false,
+      "source": "A+ single side image, three images and multiple image modules, 300 x 300; Amazon Launchpad A+ guideline 2018 and secondary guides, checked 2026-09-29",
+      "width": 300,
+      "height": 300,
+      "exactSize": true,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
+      "id": "amazon.aplus.four_images",
+      "verified": false,
+      "source": "A+ four images in a row, 220 x 220; secondary guides, checked 2026-09-29",
+      "width": 220,
+      "height": 220,
+      "exactSize": true,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
+      "id": "amazon.aplus.quadrant_image",
+      "verified": false,
+      "source": "A+ four image quadrant, 135 x 135; secondary guides, checked 2026-09-29",
+      "width": 135,
+      "height": 135,
+      "exactSize": true,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
       "id": "shopify.product",
       "verified": true,
       "source": "help.shopify.com product media types, Sept 2026",
