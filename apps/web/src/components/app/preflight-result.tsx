@@ -1,6 +1,13 @@
 "use client";
 
-import { chosenItem, readyLine, sizeShortfallLine, sizeShortfalls } from "@/lib/preflight/copy";
+import {
+  chosenItem,
+  keptPhotoHeadsUp,
+  readyLine,
+  sizeShortfallLine,
+  sizeShortfalls,
+  type PhotoOutputContext,
+} from "@/lib/preflight/copy";
 import type { PreflightView } from "@/lib/preflight/types";
 import { ProductChooser } from "./product-chooser";
 
@@ -16,6 +23,10 @@ interface PreflightResultProps {
   /** The photo's role shows several items on purpose (in the box). */
   multiItem?: boolean;
   photoLabel: string;
+  /** How the pack uses this photo (PHASE_15): a kept photo that feeds no
+   * cutout needs no product choice and never blocks on size; its heads ups
+   * say what happens instead. Absent means today's pack. */
+  output?: PhotoOutputContext;
 }
 
 /**
@@ -33,6 +44,7 @@ export function PreflightResult({
   onChoose,
   multiItem,
   photoLabel,
+  output,
 }: PreflightResultProps) {
   if (checking) {
     return (
@@ -64,8 +76,11 @@ export function PreflightResult({
     );
   }
   const ready = readyLine(view, selected, chosen);
-  const short = sizeShortfalls(view, selected, chosen);
-  const showChooser = view.status === "choose" && !multiItem;
+  const kept = output?.kept === true;
+  // A kept photo's size lines come from keptPhotoHeadsUp (left out, never blocked).
+  const short = kept ? [] : sizeShortfalls(view, selected, chosen, output);
+  const headsUp = keptPhotoHeadsUp(view, selected, chosen, output);
+  const showChooser = view.status === "choose" && !multiItem && (output === undefined || output.feedsCutout);
   return (
     <div className="mt-1 space-y-1">
       {showChooser ? (
@@ -88,6 +103,11 @@ export function PreflightResult({
             </p>
           ))
         : null}
+      {headsUp.map((line) => (
+        <p key={line} className="text-xs text-amber-700" data-testid="preflight-kept">
+          {line}
+        </p>
+      ))}
       {view.notice ? (
         <p className="text-xs text-ink-500" data-testid="preflight-notice">
           {view.notice}

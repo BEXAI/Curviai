@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState, type FocusEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, Card, CardContent, Input, Label, Select, Textarea, cn } from "@curvi/ui";
+import { LOOK_PRESETS, type OutputPlanFlags } from "@curvi/pipeline/output-options";
 import type { TierKey } from "@curvi/pipeline/seed";
 import { OutOfCreditsDialog } from "@/components/app/paywall";
 import {
@@ -23,8 +24,53 @@ import { intentFor, type SubmitIntent } from "@/lib/submit-intent";
 import { track } from "@/lib/track";
 import { requestPhotoImport } from "@/lib/url-import/client";
 import { IMPORT_TITLE_MAX, sellerNotesFrom, type ImportedImage, type ImportedProduct } from "@/lib/url-import/types";
-import { chosenItem, PREFLIGHT_UNAVAILABLE_NOTICE, preflightBlockReason } from "@/lib/preflight/copy";
+import {
+  KEEP_PHOTOS_INSTEAD_LABEL,
+  KEEP_PHOTOS_PAUSED_COPY,
+  conflictCopy,
+  conflictLines,
+  leftOutAfterPauseLine,
+  type ConflictLine,
+} from "@/lib/output-options-copy";
+import {
+  RESIZE_ONLY_BADGE,
+  addedSpaceSpecIds,
+  backgroundSummaryLine,
+  conflictContextOf,
+  effectiveChoices,
+  formConflicts,
+  formPhotos,
+  holdLine,
+  initialOutputForm,
+  isResizeOnly,
+  leaveOut,
+  lookDifferenceLine,
+  optionsIntentKey,
+  outputFormReducer,
+  outputOptionsBody,
+  packCreatedOutputProps,
+  packLookChangedProps,
+  PACK_LOOK_CHANGED_EVENT,
+  pauseBlocksSubmit,
+  photoOutputContext,
+  planningPhotos,
+  previewFrames,
+  resolveFormOutput,
+  rowConflicts,
+  totalLine,
+  withoutWhiteRequired,
+  type FormPhoto,
+  type OutputFormAction,
+} from "@/lib/output-options-form";
+import { outputEstimateInputs } from "@/lib/services/output-options";
+import {
+  chosenItem,
+  PREFLIGHT_UNAVAILABLE_NOTICE,
+  preflightBlockReason,
+  type PhotoOutputContext,
+} from "@/lib/preflight/copy";
 import type { PreflightBox, PreflightView } from "@/lib/preflight/types";
+import { OutputOptionsPanel } from "./output-options-panel";
 import { PreflightResult } from "./preflight-result";
 import { ProductLinkImport } from "./product-link-import";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
@@ -38,6 +84,10 @@ export interface ChannelOption {
   availability?: "available" | "coming_soon" | "upgrade_required";
   /** The cheapest plan that includes an upgrade_required channel. */
   upgradeTo?: TierKey | null;
+  /** The registry rule requires white, whatever color is picked ("Stays white"). */
+  requiresWhite?: boolean;
+  /** Width by height is the only size the spec takes ("Set shape, 1080 by 1920"). */
+  exactSize?: { width: number; height: number } | null;
 }
 
 function isPickable(channel: ChannelOption): boolean {
@@ -56,6 +106,9 @@ export interface ProductOption {
   sku?: string | null;
   boxContents?: string[];
   comparisonFacts?: string[];
+  /** Photos already stored for the product (capped at MAX_PACK_PHOTOS), for
+   * the estimate when the seller adds none. */
+  storedPhotoCount?: number;
 }
 
 interface NewPackFormProps {
@@ -68,9 +121,20 @@ interface NewPackFormProps {
   /** Product to preselect, e.g. from "New pack for this product". Anything
    * not in `products` is ignored. */
   initialProductId?: string | null;
-  /** True while the cutout service is unavailable (the new pack preflight):
-   * every shot needs it, so Create pack is disabled. */
+  /** True while the cutout service is unavailable (the new pack preflight).
+   * Create pack is disabled for a pack that needs a cutout; with output
+   * options on, a pack that keeps its photos can still start. */
   packsPaused?: boolean;
+  /** Section 3 "How your images look" (docs/phases/PHASE_15.md): the env
+   * flag and the kill switch are both on. Off, the form renders and submits
+   * exactly as before PHASE_15, with no outputOptions in the body. */
+  outputOptionsEnabled?: boolean;
+  /** The workspace's brand kit colors, in kit order. */
+  brandColors?: string[];
+  /** The plan includes brand kits (seed tierEntitlements). */
+  brandKitsAllowed?: boolean;
+  /** Set while scenes are paused: the scenes extra is forced off and shows this. */
+  scenesPausedNote?: string | null;
 }
 
 const DEFAULT_CHANNELS = ["amazon.main", "amazon.secondary", "shopify.product", "meta.feed_1x1"];
@@ -183,15 +247,58 @@ export interface PhotoItem {
   preflightFailure?: string;
   /** The product the seller tapped in the chooser. */
   chosen?: number | null;
+  /** Object URL of the picked file, for the thumbnail and the preview strip.
+   * Revoked when the photo is removed and when the form unmounts. */
+  previewUrl?: string;
 }
 
 /** Why this photo cannot start a pack right now, or null (a photo whose
  * check could not run never blocks: the pack checks it again). */
-export function photoBlockReason(photo: PhotoItem, selected: readonly string[]): string | null {
+export function photoBlockReason(
+  photo: PhotoItem,
+  selected: readonly string[],
+  output?: PhotoOutputContext,
+): string | null {
   if (photo.kind !== "image" || photo.phase !== "uploaded" || !photo.preflight) {
     return null;
   }
-  return preflightBlockReason(photo.preflight, selected, photo.chosen, { multiItem: photo.angle === "in_the_box" });
+  return preflightBlockReason(photo.preflight, selected, photo.chosen, {
+    multiItem: photo.angle === "in_the_box",
+    ...(output ? { output } : {}),
+  });
+}
+
+/** The id the options use for a form photo: its R2 key once uploaded. */
+export function formPhotoId(photo: Pick<PhotoItem, "id" | "key">): string {
+  return photo.key ?? `local_photo_${photo.id}`;
+}
+
+/** The form's image photos as the options see them, in pack order. */
+export function optionPhotosOf(photos: readonly PhotoItem[]): FormPhoto[] {
+  return photos
+    .filter((p) => p.kind === "image" && p.phase !== "error")
+    .map((p) => ({
+      id: formPhotoId(p),
+      angle: p.angle,
+      ...(p.preflight?.photo ? { width: p.preflight.photo.width, height: p.preflight.photo.height } : {}),
+      ...(p.preflight?.status === "choose" && p.angle !== "in_the_box" ? { otherItems: true } : {}),
+    }));
+}
+
+/** The gray chip under a channel row: "Stays white" or "Set shape, 1080 by 1920". */
+export function channelChip(channel: Pick<ChannelOption, "requiresWhite" | "exactSize">): string | null {
+  if (channel.requiresWhite) return "Stays white";
+  if (channel.exactSize) return `Set shape, ${channel.exactSize.width} by ${channel.exactSize.height}`;
+  return null;
+}
+
+/** True while focus is in a field that brings up a phone keyboard, so the
+ * sticky bar never covers what is being typed. */
+function isTextEntry(target: EventTarget | null): boolean {
+  if (typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) return false;
+  if (target instanceof HTMLTextAreaElement) return true;
+  if (!(target instanceof HTMLInputElement)) return false;
+  return !["checkbox", "radio", "file", "color", "button", "submit", "range"].includes(target.type);
 }
 
 /** The product box the pack is for, from the chooser: the seller's tap or
@@ -217,9 +324,24 @@ export function NewPackForm({
   paywall,
   initialProductId,
   packsPaused = false,
+  outputOptionsEnabled = false,
+  brandColors,
+  brandKitsAllowed = false,
+  scenesPausedNote = null,
 }: NewPackFormProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Thumbnail object URLs by local photo id, revoked on remove and unmount.
+  const previewUrls = useRef(new Map<number, string>());
+  useEffect(() => {
+    const urls = previewUrls.current;
+    return () => {
+      for (const url of urls.values()) {
+        URL.revokeObjectURL(url);
+      }
+      urls.clear();
+    };
+  }, []);
   // One Idempotency-Key per submission intent (Update.md 6.1): a retry of the
   // same contents reuses it, any change to the contents gets a new one.
   const intentRef = useRef<SubmitIntent | null>(null);
@@ -262,20 +384,93 @@ export function NewPackForm({
   const comparisonFacts = useMemo(() => sellerLinesFromText(comparisonText), [comparisonText]);
   const photoAngles = photos.filter((p) => p.kind === "image" && p.phase !== "error").map((p) => p.angle);
   const anglesKey = photoAngles.join(",");
+  const selectedProduct = products.find((p) => p.id === productId) ?? null;
+
+  // Section 3 "How your images look" (PHASE_15). The seller's choices stay
+  // as picked; the pack is sent and estimated with the effective ones, which
+  // apply the scenes pause and concept mode.
+  const optionsOn = outputOptionsEnabled;
+  const [outputForm, dispatchOutput] = useReducer(outputFormReducer, undefined, initialOutputForm);
+  const [colorProblem, setColorProblem] = useState<string | null>(null);
+  const [pauseLeftOut, setPauseLeftOut] = useState<string | null>(null);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const choices = useMemo(
+    () =>
+      effectiveChoices(outputForm.choices, {
+        conceptMode: effectiveMode === "concept",
+        scenesPaused: scenesPausedNote !== null,
+      }),
+    [outputForm.choices, effectiveMode, scenesPausedNote],
+  );
+  const optionsKey = optionsIntentKey(choices);
+  const usableBrand = useMemo(() => brandColors ?? [], [brandColors]);
+  const storedPhotoCount = selectedProduct?.storedPhotoCount ?? 0;
+  const output = useMemo(() => {
+    // The pack's photos in pack order (uploads, else the stored ones), and
+    // the same list with a front placeholder while there is none yet.
+    const parsed: FormPhoto[] = formPhotos(optionPhotosOf(photos), storedPhotoCount, MAX_PACK_PHOTOS);
+    const planned = planningPhotos(parsed);
+    const current = resolveFormOutput({
+      choices,
+      lookBase: outputForm.lookBase,
+      brandColors: usableBrand,
+      brandKitsAllowed,
+      photos: planned,
+    });
+    const estimateInputs = outputEstimateInputs(current.resolved, parsed);
+    return { planned, parsed, current, estimateInputs };
+  }, [photos, storedPhotoCount, choices, outputForm.lookBase, usableBrand, brandKitsAllowed]);
+  const flags: OutputPlanFlags | null = optionsOn ? output.current.flags : null;
+
   const estimate = useMemo(
     () =>
       estimatePackCredits(selected, effectiveMode, tier, {
         angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
         hasBoxContents: boxContents.length > 0,
         hasComparisonFacts: comparisonFacts.length > 0,
+        ...(optionsOn ? output.estimateInputs : {}),
       }),
-    [selected, effectiveMode, tier, anglesKey, boxContents, comparisonFacts],
+    [selected, effectiveMode, tier, anglesKey, boxContents, comparisonFacts, optionsOn, output],
   );
+  // The difference between looks, for the summary: this pack as Keep my photo and as Marketplace ready.
+  const lookTotals = useMemo(() => {
+    if (!optionsOn) return null;
+    const base = {
+      angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
+      hasBoxContents: boxContents.length > 0,
+      hasComparisonFacts: comparisonFacts.length > 0,
+    };
+    const keep = resolveFormOutput({
+      choices: effectiveChoices(LOOK_PRESETS.keep_photo, { scenesPaused: scenesPausedNote !== null }),
+      brandColors: usableBrand,
+      brandKitsAllowed,
+      photos: output.planned,
+    });
+    return {
+      keep: estimatePackCredits(selected, effectiveMode, tier, {
+        ...base,
+        ...outputEstimateInputs(keep.resolved, output.parsed),
+      }).total,
+      marketplace: estimatePackCredits(selected, effectiveMode, tier, base).total,
+    };
+  }, [optionsOn, anglesKey, boxContents, comparisonFacts, scenesPausedNote, usableBrand, brandKitsAllowed, output, selected, effectiveMode, tier]);
+
+  const conflicts = optionsOn && effectiveMode !== "concept" ? formConflicts(selected, output.current.resolved, output.planned) : [];
+  const conflictContext = conflictContextOf(choices.background, output.planned);
+  const headsUp: ConflictLine[] = conflictLines(conflicts, conflictContext);
+  const photoOutput = (photo: PhotoItem): PhotoOutputContext | undefined =>
+    flags && effectiveMode !== "concept" ? photoOutputContext(formPhotoId(photo), selected, flags) : undefined;
+  // With options on, the cutout pause stops only a pack that needs a cutout.
+  const pauseBlocks = optionsOn && flags ? pauseBlocksSubmit(packsPaused, selected, flags) : packsPaused;
+  // Concept packs are normalized to today's pack by the server, so they send none.
+  const sendsOptions = optionsOn && effectiveMode === "listing";
+
   const detailsProblem = sellerDetailsProblem(sku, boxContents, comparisonFacts);
-  const selectedProduct = products.find((p) => p.id === productId) ?? null;
   const uploading = photos.some((p) => p.phase === "uploading");
   const checking = photos.some((p) => p.phase === "uploaded" && p.preflightPhase === "checking");
-  const blockReason = photos.map((p) => photoBlockReason(p, selected)).find((reason) => reason !== null) ?? null;
+  const blockReason =
+    photos.map((p) => photoBlockReason(p, selected, photoOutput(p))).find((reason) => reason !== null) ?? null;
   const uploaded = photos.filter((p) => p.phase === "uploaded" && p.key && p.sha256);
   const attachKey =
     uploaded.length > 0 && selectedProduct ? `${uploaded.map((p) => p.key).join("|")}:${selectedProduct.id}` : null;
@@ -304,38 +499,93 @@ export function NewPackForm({
     );
   }
 
+  /** Leave it out: untick these channels, visibly, from a heads up line. */
+  function leaveChannelsOut(specIds: readonly string[]) {
+    setSelected((current) => leaveOut(current, specIds));
+  }
+
+  function applyOutput(action: OutputFormAction) {
+    if (action.type === "look") {
+      const changed = packLookChangedProps(outputForm.lookBase, action.look);
+      if (changed) track(PACK_LOOK_CHANGED_EVENT, changed);
+    }
+    dispatchOutput(action);
+    setSubmitError(null);
+  }
+
+  /** "Keep my photos instead" while cutouts are paused: the Keep look, every
+   * extra off, the white required channels unticked and named. */
+  function keepPhotosInstead() {
+    applyOutput({ type: "keep_instead" });
+    const next = withoutWhiteRequired(selected);
+    setSelected(next.selected);
+    setPauseLeftOut(leftOutAfterPauseLine(next.leftOut));
+  }
+
   function renderChannel(channel: ChannelOption) {
     const pickable = isPickable(channel);
     const label = channelLabel(channel.id);
+    const chip = optionsOn && pickable ? channelChip(channel) : null;
+    const lines =
+      optionsOn && selected.includes(channel.id)
+        ? rowConflicts(conflicts, channel.id).map((c) => conflictCopy(c, conflictContext))
+        : [];
     return (
       <div
         key={channel.id}
-        className={cn(
-          "flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-sm",
-          pickable ? "text-ink-700 hover:bg-ink-50" : "text-ink-400",
-        )}
+        className={cn("rounded-lg px-2 py-1.5 text-sm", pickable ? "text-ink-700 hover:bg-ink-50" : "text-ink-400")}
         data-testid={`channel-${channel.id}`}
       >
-        <label className={cn("flex items-center gap-2", pickable ? "cursor-pointer" : "cursor-not-allowed")}>
-          <input
-            type="checkbox"
-            checked={pickable && selected.includes(channel.id)}
-            disabled={!pickable}
-            onChange={() => toggleChannel(channel.id)}
-            className="h-4 w-4 rounded border-ink-300 accent-ink-900"
-          />
-          {label}
-        </label>
-        {channel.availability === "coming_soon" ? <ComingSoonBadge /> : null}
-        {channel.availability === "upgrade_required" ? (
-          <Link
-            href="/app/billing"
-            className="shrink-0 text-xs font-medium text-ink-900 underline"
-            data-testid="channel-upgrade"
+        <div className="flex items-center justify-between gap-2">
+          <label
+            className={cn(
+              "flex min-w-0 items-center gap-2",
+              optionsOn && "min-h-11",
+              pickable ? "cursor-pointer" : "cursor-not-allowed",
+            )}
           >
-            {channel.upgradeTo ? `${planName(channel.upgradeTo)} plan` : "Upgrade"}
-          </Link>
-        ) : null}
+            <input
+              type="checkbox"
+              checked={pickable && selected.includes(channel.id)}
+              disabled={!pickable}
+              onChange={() => toggleChannel(channel.id)}
+              className={cn("rounded border-ink-300 accent-ink-900", optionsOn ? "h-5 w-5" : "h-4 w-4")}
+            />
+            {label}
+          </label>
+          {chip ? (
+            <span className="shrink-0 rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-600" data-testid="row-chip">
+              {chip}
+            </span>
+          ) : null}
+          {channel.availability === "coming_soon" ? <ComingSoonBadge /> : null}
+          {channel.availability === "upgrade_required" ? (
+            <Link
+              href="/app/billing"
+              className="shrink-0 text-xs font-medium text-ink-900 underline"
+              data-testid="channel-upgrade"
+            >
+              {channel.upgradeTo ? `${planName(channel.upgradeTo)} plan` : "Upgrade"}
+            </Link>
+          ) : null}
+        </div>
+        {lines.map((line) => (
+          <p key={line.text} className="mt-1 pl-7 text-xs text-amber-700" data-testid="row-heads-up">
+            {line.text}
+            {line.leaveOutLabel && line.specIds.length > 0 ? (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={() => leaveChannelsOut(line.specIds)}
+                  className="inline-flex min-h-11 items-center font-medium underline"
+                >
+                  {line.leaveOutLabel}
+                </button>
+              </>
+            ) : null}
+          </p>
+        ))}
       </div>
     );
   }
@@ -357,7 +607,12 @@ export function NewPackForm({
       if (kind === "image") {
         taken.push(angle);
       }
-      added.push({ item: { id: ++photoSeq.current, name: file.name, phase: "uploading", kind, angle }, file });
+      const id = ++photoSeq.current;
+      const previewUrl = optionsOn && kind === "image" ? objectUrlFor(id, file) : undefined;
+      added.push({
+        item: { id, name: file.name, phase: "uploading", kind, angle, ...(previewUrl ? { previewUrl } : {}) },
+        file,
+      });
     }
     if (added.length === 0) {
       return;
@@ -368,7 +623,23 @@ export function NewPackForm({
     }
   }
 
+  /** A thumbnail URL for a picked file, remembered so it can be revoked. */
+  function objectUrlFor(id: number, file: File): string | undefined {
+    try {
+      const url = URL.createObjectURL(file);
+      previewUrls.current.set(id, url);
+      return url;
+    } catch {
+      return undefined;
+    }
+  }
+
   function removePhoto(id: number) {
+    const url = previewUrls.current.get(id);
+    if (url) {
+      URL.revokeObjectURL(url);
+      previewUrls.current.delete(id);
+    }
     setPhotos((current) => current.filter((p) => p.id !== id));
   }
 
@@ -502,7 +773,7 @@ export function NewPackForm({
   }
 
   async function submit() {
-    if (packsPaused) return;
+    if (pauseBlocks) return;
     setSubmitError(null);
     if (uploading || submitting || checking) {
       return;
@@ -521,6 +792,10 @@ export function NewPackForm({
     }
     if (detailsProblem) {
       setSubmitError(detailsProblem);
+      return;
+    }
+    if (sendsOptions && colorProblem) {
+      setSubmitError(colorProblem);
       return;
     }
     const uploads = uploaded.map((p) => {
@@ -547,6 +822,8 @@ export function NewPackForm({
           angles: uploads.map((u) => u.angle ?? ""),
           targets: uploads.map((u) => u.targetBox ?? null),
           ...details,
+          // Any change to the image choices is a new intent (PHASE_15).
+          ...(sendsOptions ? { options: optionsKey } : {}),
         }),
       },
       () => crypto.randomUUID(),
@@ -568,6 +845,7 @@ export function NewPackForm({
           newProductTitle: productId === "new" && newProductTitle.trim() ? newProductTitle.trim() : undefined,
           userDescription: description.trim() ? description.trim() : undefined,
           ...details,
+          ...(sendsOptions ? { outputOptions: outputOptionsBody(outputForm.lookBase, choices) } : {}),
         }),
       });
       const data = (await response.json().catch(() => ({}))) as {
@@ -596,6 +874,9 @@ export function NewPackForm({
         product_is_new: productId === "new",
         photo_count: uploads.filter((u) => u.kind === "image").length,
         replayed: data.replayed === true,
+        ...(sendsOptions
+          ? packCreatedOutputProps(outputForm.lookBase, choices, output.parsed.length)
+          : {}),
       });
       intentRef.current = null;
       // Stay in the submitting state until the job page takes over, so a
@@ -612,6 +893,16 @@ export function NewPackForm({
   }
 
   const overBalance = estimateOverBalanceLine(estimate.total, creditBalance);
+  const createDisabled = submitting || uploading || checking || blockReason !== null || pauseBlocks;
+  const hold = optionsOn ? holdLine(estimate.total) : null;
+  const lookDifference = lookTotals ? lookDifferenceLine(lookTotals.keep, lookTotals.marketplace) : null;
+  const backgroundLine =
+    optionsOn && effectiveMode !== "concept" ? backgroundSummaryLine(choices, output.current.resolved.colorHex) : null;
+  const resizeOnly = optionsOn && effectiveMode !== "concept" && isResizeOnly(choices);
+  const frontPreview =
+    photos.find((p) => p.kind === "image" && p.phase !== "error" && p.angle === "front" && p.previewUrl)?.previewUrl ??
+    photos.find((p) => p.kind === "image" && p.phase !== "error" && p.previewUrl)?.previewUrl ??
+    null;
   const buttonLabel = uploading
     ? "Uploading photo"
     : checking
@@ -620,9 +911,37 @@ export function NewPackForm({
         ? "Starting"
         : "Create pack";
 
+  // The phone bar hides while a field that raises the keyboard has focus.
+  const focusProps = optionsOn
+    ? {
+        onFocusCapture: (event: FocusEvent<HTMLDivElement>) => setTyping(isTextEntry(event.target)),
+        onBlurCapture: () => setTyping(false),
+      }
+    : {};
+
   return (
-    <div className="grid gap-8 lg:grid-cols-[1fr_20rem]">
-      <div className="space-y-8">
+    <div className={cn("grid gap-8 lg:grid-cols-[1fr_20rem]", optionsOn && "pb-28 lg:pb-0")} {...focusProps}>
+      <div className="min-w-0 space-y-8">
+        {optionsOn && packsPaused ? (
+          <div
+            role="status"
+            className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+            data-testid="preflight-banner"
+            data-verdict="packs_paused"
+          >
+            <p>{KEEP_PHOTOS_PAUSED_COPY}</p>
+            {pauseBlocks ? (
+              <Button variant="outline" className="mt-3 min-h-11" onClick={keepPhotosInstead} data-testid="keep-photos-instead">
+                {KEEP_PHOTOS_INSTEAD_LABEL}
+              </Button>
+            ) : null}
+            {pauseLeftOut ? (
+              <p className="mt-2" data-testid="pause-left-out">
+                {pauseLeftOut}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <section>
           <h2 className="text-lg font-semibold text-ink-950">1. Add your product</h2>
           <ProductLinkImport
@@ -693,6 +1012,15 @@ export function NewPackForm({
                     className="flex flex-wrap items-center gap-3 rounded-lg border border-ink-200 bg-white px-3 py-2"
                     data-testid="photo-item"
                   >
+                    {optionsOn && photo.previewUrl ? (
+                      <img
+                        src={photo.previewUrl}
+                        alt=""
+                        decoding="async"
+                        className="size-12 shrink-0 rounded-md bg-ink-50 object-cover"
+                        data-testid="photo-thumb"
+                      />
+                    ) : null}
                     <div className="min-w-0 flex-1" aria-live="polite">
                       <p className="truncate text-sm font-medium text-ink-900">{photo.name}</p>
                       {photo.phase === "uploading" ? (
@@ -718,6 +1046,7 @@ export function NewPackForm({
                           }}
                           multiItem={photo.angle === "in_the_box"}
                           photoLabel={`photo ${index + 1}`}
+                          output={photoOutput(photo)}
                         />
                       ) : null}
                       {photo.phase === "error" ? (
@@ -894,7 +1223,9 @@ export function NewPackForm({
         </section>
 
         <section>
-          <h2 className="text-lg font-semibold text-ink-950">3. How it is made</h2>
+          <h2 className="text-lg font-semibold text-ink-950">
+            {optionsOn ? "3. How your images look" : "3. How it is made"}
+          </h2>
           {CONCEPT_MODE_AVAILABLE ? (
             <div className="mt-3 grid gap-4 sm:grid-cols-2" role="group" aria-label="Pack mode">
               <button
@@ -928,7 +1259,7 @@ export function NewPackForm({
                 </p>
               </button>
             </div>
-          ) : (
+          ) : optionsOn ? null : (
             <div className="mt-3 rounded-xl border border-ink-200 bg-white p-4" data-testid="listing-mode">
               <p className="font-medium text-ink-900">Listing Mode</p>
               <p className="mt-1 text-xs text-ink-500">
@@ -937,13 +1268,42 @@ export function NewPackForm({
               </p>
             </div>
           )}
+          {optionsOn ? (
+            <OutputOptionsPanel
+              state={outputForm}
+              onAction={applyOutput}
+              tier={tier}
+              brandColors={usableBrand}
+              brandKitsAllowed={brandKitsAllowed}
+              colorHex={output.current.resolved.colorHex}
+              headsUp={headsUp}
+              onLeaveOut={leaveChannelsOut}
+              addedSpace={addedSpaceSpecIds(selected, choices).length > 0}
+              frames={previewFrames(selected)}
+              photoUrl={frontPreview}
+              hasPhoto={output.parsed.length > 0}
+              scenesPausedNote={scenesPausedNote}
+              conceptMode={effectiveMode === "concept"}
+              onColorProblem={setColorProblem}
+            />
+          ) : null}
         </section>
       </div>
 
-      <div>
+      <div className={cn(optionsOn && "hidden lg:block")}>
         <Card className="sticky top-6">
           <CardContent className="p-6">
             <h2 className="text-lg font-semibold text-ink-950">Pack summary</h2>
+            {backgroundLine ? (
+              <p className="mt-2 text-sm text-ink-700" data-testid="summary-background">
+                {backgroundLine}
+                {resizeOnly ? (
+                  <span className="ml-2 rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-600">
+                    {RESIZE_ONLY_BADGE}
+                  </span>
+                ) : null}
+              </p>
+            ) : null}
             <ul className="mt-4 space-y-2 text-sm text-ink-600">
               {estimate.lines.map((line) => (
                 <li key={line.label} className="flex items-baseline justify-between gap-3">
@@ -955,10 +1315,24 @@ export function NewPackForm({
             <div className="mt-4 border-t border-ink-100 pt-4">
               <p className="flex items-baseline justify-between text-sm">
                 <span className="font-semibold text-ink-900">Estimated credits</span>
-                <span className="text-2xl font-bold text-ink-950" data-testid="credit-estimate">
+                <span
+                  className="text-2xl font-bold text-ink-950"
+                  data-testid="credit-estimate"
+                  {...(optionsOn ? { "aria-live": "polite" as const } : {})}
+                >
                   {estimate.total}
                 </span>
               </p>
+              {hold ? (
+                <p className="mt-1 text-xs text-ink-500" data-testid="hold-line">
+                  {hold}
+                </p>
+              ) : null}
+              {lookDifference ? (
+                <p className="mt-1 text-xs text-ink-500" data-testid="look-difference">
+                  {lookDifference}
+                </p>
+              ) : null}
               <p
                 className={cn("mt-1 text-xs", creditBalance < 0 ? "text-amber-700" : "text-ink-400")}
                 data-testid="credit-balance-line"
@@ -975,8 +1349,8 @@ export function NewPackForm({
               variant="secondary"
               size="lg"
               className="mt-5 w-full"
-              disabled={submitting || uploading || checking || blockReason !== null || packsPaused}
-              aria-disabled={submitting || uploading || checking || blockReason !== null || packsPaused}
+              disabled={createDisabled}
+              aria-disabled={createDisabled}
               onClick={() => void submit()}
               data-testid="create-pack"
             >
@@ -995,6 +1369,66 @@ export function NewPackForm({
           </CardContent>
         </Card>
       </div>
+
+      {optionsOn ? (
+        <div
+          className={cn(
+            "fixed inset-x-0 bottom-0 z-30 border-t border-ink-200 bg-white px-4 pt-3 lg:hidden",
+            "pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
+            typing && "hidden",
+          )}
+          data-testid="summary-bar"
+        >
+          {summaryOpen ? (
+            <div id="summary-bar-details" className="max-h-[50vh] overflow-y-auto pb-3 text-sm text-ink-600">
+              {backgroundLine ? <p className="text-ink-700">{backgroundLine}</p> : null}
+              <ul className="mt-2 space-y-1.5">
+                {estimate.lines.map((line) => (
+                  <li key={line.label} className="flex items-baseline justify-between gap-3">
+                    <span>{line.label}</span>
+                    <span className="font-medium text-ink-900">{line.credits}</span>
+                  </li>
+                ))}
+              </ul>
+              {hold ? <p className="mt-2 text-xs">{hold}</p> : null}
+              {lookDifference ? <p className="mt-1 text-xs">{lookDifference}</p> : null}
+              <p className={cn("mt-1 text-xs", creditBalance < 0 && "text-amber-700")}>
+                {creditBalanceLine(creditBalance)}
+              </p>
+              {overBalance ? <p className="mt-1 text-xs text-amber-700">{overBalance}</p> : null}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            aria-expanded={summaryOpen}
+            aria-controls="summary-bar-details"
+            onClick={() => setSummaryOpen((open) => !open)}
+            className="flex min-h-11 w-full items-center justify-between gap-3 text-left"
+          >
+            <span className="text-base font-semibold text-ink-950" aria-live="polite" data-testid="bar-total">
+              {totalLine(estimate.total)}
+            </span>
+            <span className="text-xs text-ink-500">{summaryOpen ? "Hide details" : "Show details"}</span>
+          </button>
+          {blockReason && !submitError ? <p className="mb-2 text-xs text-amber-700">{blockReason}</p> : null}
+          {submitError ? (
+            <p className="mb-2 text-xs text-red-600" role="alert">
+              {submitError}
+            </p>
+          ) : null}
+          <Button
+            variant="secondary"
+            size="lg"
+            className="mt-1 w-full"
+            disabled={createDisabled}
+            aria-disabled={createDisabled}
+            onClick={() => void submit()}
+            data-testid="create-pack-bar"
+          >
+            {buttonLabel}
+          </Button>
+        </div>
+      ) : null}
       <OutOfCreditsDialog copy={outOfCredits} onClose={() => setOutOfCredits(null)} />
     </div>
   );

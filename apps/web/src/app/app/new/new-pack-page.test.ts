@@ -6,7 +6,9 @@ import { listSpecs } from "@curvi/specs";
 import { creditBalanceLine, submitFailureSpendsKey } from "@/components/app/new-pack-form";
 import { checkChannelEntitlements } from "@/lib/entitlements";
 import { isSpecLive } from "@/lib/marketing-facts";
-import { PACKS_PAUSED_COPY } from "@/lib/provider-preflight";
+import { KEEP_PHOTOS_PAUSED_COPY, whiteRequiredCopy } from "@/lib/output-options-copy";
+import { LISTING_MODE_LINE } from "@/lib/output-options-form";
+import { PACKS_PAUSED_COPY, SCENES_PAUSED_COPY } from "@/lib/provider-preflight";
 import { newPackChannelOptions } from "./channel-options";
 
 // The new pack form must never offer a channel createJob refuses: a channel
@@ -29,7 +31,13 @@ vi.mock("next/link", () => ({
     React.createElement("a", { href, ...rest }, children),
 }));
 
-const page = vi.hoisted(() => ({ plan: "growth", creditBalance: 40 }));
+const page = vi.hoisted(() => ({
+  plan: "growth",
+  creditBalance: 40,
+  options: false,
+  brandColors: ["#1F2A44"] as string[],
+  storedPhotoCount: undefined as number | undefined,
+}));
 
 vi.mock("@/lib/services", () => ({
   getServices: () => ({
@@ -40,7 +48,25 @@ vi.mock("@/lib/services", () => ({
       creditBalance: page.creditBalance,
       role: "owner",
     }),
-    listProducts: async () => [],
+    listProducts: async () =>
+      page.storedPhotoCount === undefined
+        ? []
+        : [
+            {
+              id: "00000000-0000-4000-8000-000000000201",
+              title: "Stored mug",
+              mode: "listing",
+              storedPhotoCount: page.storedPhotoCount,
+            },
+          ],
+    outputOptionsEnabled: async () => page.options,
+    getBrandKit: async () => ({
+      name: "Kit",
+      colors: page.brandColors,
+      fonts: { heading: "Inter", body: "Inter" },
+      stylePreset: "auto",
+      hasLogo: false,
+    }),
   }),
 }));
 
@@ -168,6 +194,17 @@ describe("/app/new", () => {
     expect(pin).not.toContain('checked=""');
   });
 
+  it("renders exactly as before PHASE_15 while output options are off", async () => {
+    const html = await renderPage();
+    expect(html).toContain("3. How it is made");
+    expect(html).not.toContain("How your images look");
+    expect(html).not.toContain('role="switch"');
+    expect(html).not.toContain('role="radiogroup"');
+    expect(html).not.toContain('data-testid="row-chip"');
+    expect(html).not.toContain('data-testid="summary-bar"');
+    expect(html).toContain('data-testid="listing-mode"');
+  });
+
   it("does the same on a plan that includes video, since video does not ship yet", async () => {
     page.plan = "agency";
     try {
@@ -251,6 +288,104 @@ describe("/app/new", () => {
     } finally {
       preflight.verdict = "ok";
     }
+  });
+});
+
+describe("/app/new with output options on", () => {
+  async function renderOn(): Promise<string> {
+    page.options = true;
+    try {
+      return await renderPage();
+    } finally {
+      page.options = false;
+    }
+  }
+
+  it("shows section 3 with the looks as a radiogroup and the switch", async () => {
+    const html = await renderOn();
+    expect(html).toContain("3. How your images look");
+    expect(html).toContain('role="radiogroup"');
+    expect(html.match(/role="radio"/g)?.length).toBe(3);
+    expect(html).toMatch(/<button[^>]*role="switch"[^>]*aria-checked="true"/);
+    expect(html).toContain("Remove the background");
+    expect(html).toContain(LISTING_MODE_LINE);
+    expect(html).toContain('data-testid="summary-bar"');
+    expect(html).toContain('data-testid="summary-background"');
+    expect(html).toContain("Background: removed, on white");
+    expect(html).not.toContain('data-testid="listing-mode"');
+  });
+
+  it("carries the registry flags as chips on channel rows", async () => {
+    const html = await renderOn();
+    expect(channelRow(html, "amazon.main")).toContain("Stays white");
+    expect(channelRow(html, "meta.story_9x16")).toContain("Set shape, 1080 by 1920");
+    expect(channelRow(html, "shopify.product")).not.toContain('data-testid="row-chip"');
+  });
+
+  it("shows no heads up for today's pack on white", async () => {
+    const html = await renderOn();
+    expect(html).not.toContain('data-testid="heads-up"');
+    expect(html).not.toContain('data-testid="row-heads-up"');
+  });
+
+  it("offers brand colors from the kit on a plan with brand kits", async () => {
+    const html = await renderOn();
+    expect(html).toContain("Brand color 1, #1F2A44");
+    expect(html).not.toContain('data-testid="brand-look-unavailable"');
+  });
+
+  it("disables Brand look with the plan that includes brand kits on Free", async () => {
+    page.plan = "free";
+    try {
+      const html = await renderOn();
+      expect(html).toContain("Brand kits come with the Starter plan.");
+      expect(html).not.toContain("Brand color 1");
+    } finally {
+      page.plan = "growth";
+    }
+  });
+
+  it("asks for a brand color when the kit has none", async () => {
+    page.brandColors = [];
+    try {
+      const html = await renderOn();
+      expect(html).toContain("Add a brand color first.");
+      expect(html).toContain('href="/app/brand"');
+    } finally {
+      page.brandColors = ["#1F2A44"];
+    }
+  });
+
+  it("moves the cutout pause into the form with Keep my photos instead", async () => {
+    preflight.verdict = "packs_paused";
+    try {
+      const html = await renderOn();
+      expect(html).toContain(KEEP_PHOTOS_PAUSED_COPY);
+      expect(html).not.toContain(PACKS_PAUSED_COPY);
+      expect(html).toContain('data-testid="keep-photos-instead"');
+      // Marketplace ready needs a cutout, so it still cannot start.
+      expect(createButton(html)).toContain('disabled=""');
+    } finally {
+      preflight.verdict = "ok";
+    }
+  });
+
+  it("turns the scenes extra off and says why while scenes are paused", async () => {
+    preflight.verdict = "scenes_paused";
+    try {
+      const html = await renderOn();
+      const scenes = html.slice(html.indexOf('data-testid="extra-scenes"'), html.indexOf('data-testid="extra-backdrops"'));
+      expect(scenes).toContain('disabled=""');
+      expect(scenes).not.toContain('checked=""');
+      expect(scenes).toContain(SCENES_PAUSED_COPY);
+      expect(createButton(html)).not.toContain('disabled=""');
+    } finally {
+      preflight.verdict = "ok";
+    }
+  });
+
+  it("names the white channels in their copy", () => {
+    expect(whiteRequiredCopy("walmart.main").leaveOut).toBe("Leave Walmart out");
   });
 });
 
