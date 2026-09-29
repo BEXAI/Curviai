@@ -4,6 +4,14 @@ import { useCallback, useMemo, useState } from "react";
 import { filenameFor, type ChannelSpec } from "@curvi/specs";
 import { Button, Card, CardContent, buttonVariants, cn } from "@curvi/ui";
 import { EmailGate } from "./email-gate";
+import {
+  RESIZER_PAD_HEX,
+  resizerLayout,
+  resizerSizeLine,
+  resizerSpecs,
+  resizerTooSmallLine,
+  resizerWhiteLine,
+} from "./resizer-plan";
 import { imageSpecs, specDisplayName, specSlug } from "./spec-slug";
 import { resizerGateCopy } from "./tool-copy";
 
@@ -13,12 +21,6 @@ interface ResizedResult {
   width: number;
   height: number;
   dataUrl: string;
-}
-
-function targetDims(spec: ChannelSpec): { width: number; height: number } {
-  const width = spec.width ?? spec.minWidth ?? spec.minLongSide ?? 1600;
-  const height = spec.height ?? spec.minHeight ?? spec.minLongSide ?? width;
-  return { width, height };
 }
 
 function filenameForSpec(spec: ChannelSpec): string {
@@ -33,18 +35,23 @@ function filenameForSpec(spec: ChannelSpec): string {
 }
 
 /**
- * Client side resize with white padding to each selected channel spec.
- * Downloads use the spec filename convention where one exists. Previews are
- * free; the downloads sit behind the email gate.
+ * Client side resize to each selected channel spec, by the same rules a
+ * pack uses for a kept photo (resizer-plan.ts): the photo keeps its shape
+ * where the channel allows it and gets white space only where the channel
+ * needs a set shape. Channels that require a white background are not
+ * offered, since a resize cannot remove one. Downloads use the spec
+ * filename convention where one exists. Previews are free; the downloads
+ * sit behind the email gate.
  */
 export function MarketplaceResizer() {
-  const specs = useMemo(() => imageSpecs(), []);
+  const { usable: specs, needsPack } = useMemo(() => resizerSpecs(imageSpecs()), []);
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(["amazon.main", "shopify.product", "meta.feed_1x1"]),
+    () => new Set(["amazon.secondary", "shopify.product", "meta.feed_1x1"]),
   );
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [fileLabel, setFileLabel] = useState<string | null>(null);
   const [results, setResults] = useState<ResizedResult[]>([]);
+  const [skipped, setSkipped] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -64,6 +71,7 @@ export function MarketplaceResizer() {
     if (!file) return;
     setError(null);
     setResults([]);
+    setSkipped([]);
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -83,32 +91,36 @@ export function MarketplaceResizer() {
     setError(null);
     try {
       const out: ResizedResult[] = [];
+      const tooSmall: string[] = [];
+      const photo = { width: image.naturalWidth, height: image.naturalHeight };
       for (const spec of specs) {
         if (!selected.has(spec.id)) continue;
-        const { width, height } = targetDims(spec);
+        const layout = resizerLayout(spec, photo);
+        if (layout.tooSmall) {
+          tooSmall.push(resizerTooSmallLine(spec.id, photo));
+          continue;
+        }
         const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = layout.canvasWidth;
+        canvas.height = layout.canvasHeight;
         const ctx = canvas.getContext("2d");
         if (!ctx) {
           throw new Error("Canvas is not available in this browser");
         }
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, width, height);
-        const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-        const dw = Math.round(image.naturalWidth * scale);
-        const dh = Math.round(image.naturalHeight * scale);
+        ctx.fillStyle = RESIZER_PAD_HEX;
+        ctx.fillRect(0, 0, layout.canvasWidth, layout.canvasHeight);
         ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(image, Math.round((width - dw) / 2), Math.round((height - dh) / 2), dw, dh);
+        ctx.drawImage(image, layout.drawX, layout.drawY, layout.drawWidth, layout.drawHeight);
         out.push({
           specId: spec.id,
           filename: filenameForSpec(spec),
-          width,
-          height,
+          width: layout.canvasWidth,
+          height: layout.canvasHeight,
           dataUrl: canvas.toDataURL("image/jpeg", 0.92),
         });
       }
       setResults(out);
+      setSkipped(tooSmall);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Resize failed");
     } finally {
@@ -141,7 +153,6 @@ export function MarketplaceResizer() {
             <legend className="text-sm font-semibold text-ink-900">Pick your channels</legend>
             <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {specs.map((spec) => {
-                const dims = targetDims(spec);
                 const checked = selected.has(spec.id);
                 return (
                   <label
@@ -159,20 +170,32 @@ export function MarketplaceResizer() {
                     />
                     <span>
                       <span className="block font-medium text-ink-900">{specDisplayName(spec.id)}</span>
-                      <span className="block text-xs text-ink-500">
-                        {dims.width} by {dims.height} px
-                      </span>
+                      <span className="block text-xs text-ink-500">{resizerSizeLine(spec)}</span>
                     </span>
                   </label>
                 );
               })}
             </div>
+            {needsPack.length > 0 ? (
+              <ul className="mt-3 space-y-1 text-xs text-ink-500" data-testid="resizer-needs-pack">
+                {needsPack.map((spec) => (
+                  <li key={spec.id}>{resizerWhiteLine(spec.id)}</li>
+                ))}
+              </ul>
+            ) : null}
           </fieldset>
 
           <Button variant="secondary" size="lg" disabled={!image || selected.size === 0 || busy} onClick={generate}>
             {busy ? "Resizing" : `Resize for ${selected.size} channel${selected.size === 1 ? "" : "s"}`}
           </Button>
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
+          {skipped.length > 0 ? (
+            <ul className="space-y-1 text-sm text-amber-700" data-testid="resizer-too-small">
+              {skipped.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -181,7 +204,8 @@ export function MarketplaceResizer() {
           <CardContent className="pt-6">
             <h2 className="text-lg font-semibold text-ink-950">Your resized files</h2>
             <p className="mt-1 text-sm text-ink-500">
-              White padded to fit, exported as jpg, named the way each channel expects. Replace SKU1
+              Your photo keeps its shape where a channel allows it, with white space added only where a
+              channel needs a set shape. Exported as jpg, named the way each channel expects. Replace SKU1
               and product with your own SKU and slug after download.
             </p>
             <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
