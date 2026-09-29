@@ -63,6 +63,7 @@ function exampleShare(): PublicShare {
     images: [],
     inGallery: false,
     illustration: true,
+    sizedForChannels: false,
   };
 }
 
@@ -96,7 +97,7 @@ export class DemoShareStore implements ShareStore {
     }
     return files.files
       .filter((f) => f.kind === "image" && f.url)
-      .map((f) => ({ ref: f.id, src: f.url!, alt: f.name }));
+      .map((f) => ({ ref: f.id, src: f.url!, alt: f.name, specId: f.specId }));
   }
 
   async getStatus(workspace: ShareWorkspace, jobId: string): Promise<ShareStatus | null> {
@@ -179,6 +180,7 @@ export class DemoShareStore implements ShareStore {
       images: record.kind === "pack" ? record.images : [],
       inGallery: record.inGallery,
       illustration: true,
+      sizedForChannels: false,
     };
   }
 
