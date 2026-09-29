@@ -266,7 +266,7 @@ describe("planShots", () => {
     }
   });
 
-  it("plans 2 to 4 lifestyle scenes", () => {
+  it("plans between the seeded scene bounds of lifestyle scenes", () => {
     const none = planShots(profile({ useContexts: [] }), baseOpts);
     const count = none.shots.filter((s) => s.type === "lifestyle").length;
     expect(count).toBeGreaterThanOrEqual(2);
@@ -287,7 +287,7 @@ describe("planShots lifestyle scenes by category (Update.md 2.16)", () => {
   const apparel = (useContexts: string[], photographedAngles: ProductProfile["photographedAngles"] = ["front", "back"]) =>
     profile({ category: "apparel", useContexts, photographedAngles });
 
-  it("gives apparel with no contexts 2 to 4 scenes including ghost style", () => {
+  it("gives apparel with no contexts the default scenes including ghost style", () => {
     const scenes = lifestyleScenes(planShots(apparel([]), baseOpts));
     expect(scenes.length).toBeGreaterThanOrEqual(2);
     expect(scenes.length).toBeLessThanOrEqual(4);

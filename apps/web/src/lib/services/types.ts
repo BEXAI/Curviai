@@ -6,7 +6,7 @@
  * the view types.
  */
 
-import type { OutputOptionsInput } from "@curvi/pipeline/output-options";
+import type { OutputOptionsInput, PhotoBackgroundChoice } from "@curvi/pipeline/output-options";
 import type { ComplianceReportView } from "@/lib/compliance-report";
 import type { OutputOptionsSummary } from "@/lib/job-copy";
 import type { PreflightBox, PreflightOutcome } from "@/lib/preflight/types";
@@ -217,6 +217,9 @@ export interface CreateJobInput {
     /** The product the seller tapped in the chooser, saved as
      * source_media.target_box and sent to the runner as the photo's target. */
     targetBox?: PreflightBox;
+    /** Background per photo (PHASE_15 P1), resolved into keepMediaIds:
+     * pack (or absent) follows the pack's switch. */
+    background?: PhotoBackgroundChoice;
   }>;
   /** Title for the product created when productId is "new". */
   newProductTitle?: string;

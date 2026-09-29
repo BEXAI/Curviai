@@ -88,9 +88,11 @@ import { r2TrustStorage } from "@/lib/trust/storage";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
 import {
+  hasPhotoBackgroundOverride,
   isNonDefaultOutput,
   outputEstimateInputs,
   parseStoredOutputOptions,
+  photoBackgroundsOf,
   readStoredOutputOptions,
   resolveJobOutput,
   type OutputPhoto,
@@ -1688,7 +1690,10 @@ export class DbService implements Services {
     if (!brandKitRead && input.outputOptions?.color?.kind === "brand") {
       return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
     }
-    const wantsOptions = input.mode !== "concept" && isNonDefaultRequest(input.outputOptions);
+    const photoBackgrounds = photoBackgroundsOf(input.uploads);
+    const wantsOptions =
+      input.mode !== "concept" &&
+      (isNonDefaultRequest(input.outputOptions) || hasPhotoBackgroundOverride(input.outputOptions, photoBackgrounds));
     const output = resolveJobOutput({
       input: input.outputOptions,
       mode: input.mode,
@@ -1696,6 +1701,7 @@ export class DbService implements Services {
       brandColors,
       brandKitsAllowed: entitlementsFor(tier).brandKits > 0,
       photos,
+      photoBackgrounds,
     });
     if (!output.ok) {
       return { outcome: "rejected", reason: output.reason, message: output.message };

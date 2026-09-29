@@ -44,6 +44,9 @@ const JobRequest = z.object({
         angle: angleRoleSchema.optional(),
         // The product the seller tapped in the chooser at upload.
         targetBox: targetBoxSchema.optional(),
+        // Background per photo (PHASE_15 P1): pack follows the pack's
+        // switch; remove or keep overrides it for this photo only.
+        background: z.enum(["pack", "remove", "keep"]).optional(),
       }),
     )
     .max(8)

@@ -38,6 +38,7 @@ import { planDemoShots } from "./demo-plan";
 import {
   INVALID_OPTIONS_MESSAGE,
   outputEstimateInputs,
+  photoBackgroundsOf,
   resolveJobOutput,
   type OutputPhoto,
 } from "./output-options";
@@ -651,6 +652,7 @@ export class DemoService implements Services {
       brandColors: DEMO_BRAND_KIT.colors,
       brandKitsAllowed: entitlementsFor(DEMO_TIER).brandKits > 0,
       photos: packPhotos,
+      photoBackgrounds: photoBackgroundsOf(photos),
     });
     if (!output.ok) {
       return { outcome: "rejected", reason: output.reason, message: output.message };
