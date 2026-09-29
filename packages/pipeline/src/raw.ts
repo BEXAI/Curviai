@@ -3,7 +3,7 @@
  * interleaved RGBA, masks are single channel where 255 means product.
  */
 import sharp from "sharp";
-import { stillStyle } from "./seed/templates";
+import { jpegEncoding, stillStyle } from "./seed/templates";
 
 export interface RawImage {
   data: Buffer;
@@ -143,11 +143,17 @@ export async function prepareWorkingSource(buffer: Buffer, maxSide: number): Pro
 
 /**
  * JPEG of a raw canvas. Any transparency is flattened onto flattenHex, seed
- * white unless the caller placed the canvas on another color.
+ * white unless the caller placed the canvas on another color. Optimized
+ * Huffman coding is off above seed jpegEncoding.optimiseCodingMaxMegapixels,
+ * where its whole image coefficient buffer would not fit a small worker.
  */
 export async function encodeJpeg(img: RawImage, quality = 90, flattenHex: string = stillStyle.whiteHex): Promise<Buffer> {
+  const optimiseCoding = img.width * img.height <= jpegEncoding.optimiseCodingMaxMegapixels * 1_000_000;
   // 4:4:4 keeps chroma blocks small so flat regions stay exactly their color.
-  return rawToSharp(img).flatten({ background: flattenHex }).jpeg({ quality, chromaSubsampling: "4:4:4" }).toBuffer();
+  return rawToSharp(img)
+    .flatten({ background: flattenHex })
+    .jpeg({ quality, chromaSubsampling: "4:4:4", optimiseCoding })
+    .toBuffer();
 }
 
 /**

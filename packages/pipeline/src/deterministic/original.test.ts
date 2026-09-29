@@ -509,6 +509,43 @@ describe("makeOriginalFit: color and format fixtures", () => {
     expect((await makeOriginalFit(opaque, getSpec("etsy.listing"), OPTS)).passthrough).toBeDefined();
   });
 
+  it("proves a kept PNG with partial alpha exactly: a translucent part at 180 and a soft shadow", async () => {
+    const rgba = photoPixels(W, H, 4);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const o = (y * W + x) * 4;
+        if (x >= 300 && x < 700 && y >= 200 && y < 600) rgba[o + 3] = 180;
+        // A shadow that fades from 250 to 10 across the bottom band.
+        if (y >= H - 150) rgba[o + 3] = Math.round(250 - (240 * (y - (H - 150))) / 150);
+      }
+    }
+    const png = await sharp(rgba, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer();
+    for (const [specId, opts] of [
+      ["etsy.listing", {}],
+      ["etsy.listing", { fit: "pad" }],
+      ["amazon.main", { fit: "pad" }],
+      ["google.merchant.lifestyle", { edgeMatch: true }],
+    ] as const) {
+      const result = await rendered(png, specId, opts);
+      expect(result.treatment.alphaFilledHex).toBeDefined();
+      expect(result.placement.alphaFill).toBeDefined();
+      const reference = await referenceFor(png, result);
+      const report = await fidelityReport(reference, result.raw, result.mask, { kind: "main", exact: true, erodePx: 0 });
+      expect(report.issues, `${specId} ${JSON.stringify(opts)}`).toEqual([]);
+      // Interior pixels at 180 are compared, not left out of the mask.
+      const { left, top, width } = result.placement;
+      const at = (top + Math.round((400 * result.placement.height) / H)) * result.width + left + Math.round((500 * width) / W);
+      expect(result.mask.data[at]).toBe(180);
+    }
+    // Without the flatten color the reference keeps the unblended RGB and the proof fails.
+    const plain = await rendered(png, "etsy.listing");
+    const { alphaFill: _dropped, ...unflattened } = plain.placement;
+    const stale = await buildProductReferenceFromEncoded(png, unflattened, { width: plain.width, height: plain.height });
+    expect((await fidelityReport(stale, plain.raw, plain.mask, { kind: "main", exact: true, erodePx: 0 })).issues).toContain(
+      "not_exact",
+    );
+  });
+
   it("renders a grayscale JPEG instead of passing it through", async () => {
     const gray = await sharp(photoPixels(W, H), { raw: { width: W, height: H, channels: 3 } }).toColourspace("b-w").jpeg().toBuffer();
     expect((await sharp(gray).metadata()).channels).toBe(1);
@@ -621,6 +658,27 @@ describe("already white photos", () => {
     expect(report.exactByteShare).toBe(1);
   });
 
+  it("proves a transparent PNG with a translucent part exactly on the white main", async () => {
+    const box = { left: 700, top: 300, width: 1000, height: 1200 };
+    const { mask } = await studioPhoto(2400, 1800, box);
+    const rgba = photoPixels(2400, 1800, 4);
+    for (let y = 0; y < 1800; y++) {
+      for (let x = 0; x < 2400; x++) {
+        const inBox = x >= box.left && x < box.left + box.width && y >= box.top && y < box.top + box.height;
+        const glass = x >= 900 && x < 1300 && y >= 600 && y < 1000;
+        rgba[(y * 2400 + x) * 4 + 3] = !inBox ? 0 : glass ? 180 : 255;
+      }
+    }
+    const bytes = await sharp(rgba, { raw: { width: 2400, height: 1800, channels: 4 } }).png().toBuffer();
+    const spec = getSpec("amazon.main");
+    const made = await makeAlreadyWhite(bytes, mask, spec, { maxUpscale: MAX_SOURCE_UPSCALE, edgeMarginPx: 2 });
+    if (!made.ok) throw new Error(made.reason);
+    expect(made.treatment.alphaFilledHex).toBe("#FFFFFF");
+    const reference = await buildProductReferenceFromEncoded(bytes, made.placement, { width: made.width, height: made.height });
+    const report = await fidelityReport(reference, made.raw, made.mask, { kind: "main", exact: true, erodePx: 0 });
+    expect(report.issues).toEqual([]);
+  });
+
   it("refuses a photo on off white, and reports a fill it cannot reach", async () => {
     const spec = getSpec("amazon.main");
     const { bytes, mask } = await studioPhoto(2400, 1800, { left: 700, top: 300, width: 1000, height: 1200 });
@@ -646,10 +704,12 @@ describe("memory on an 80 MP photo", () => {
     expect(result.width * result.height).toBeLessThanOrEqual(originalFit.maxMegapixels * 1_000_000);
   });
 
-  // Runs in its own process so the peak is this render's alone. Set
-  // CURVI_RSS_TEST=1 to run it; it takes several seconds.
-  it.runIf(process.env.CURVI_RSS_TEST === "1")(
-    "keeps peak RSS under the worker budget",
+  // Runs in its own process so the peak is this output's alone: the source, the render,
+  // the rule 3 reference, the encode and the shipped decode, all held at
+  // once as the runner holds them. It takes a few seconds; CURVI_RSS_TEST=0
+  // skips it.
+  it.skipIf(process.env.CURVI_RSS_TEST === "0")(
+    "keeps peak RSS under the seeded worker budget",
     async () => {
       const dir = await mkdtemp(path.join(tmpdir(), "curvi-rss-"));
       const here = path.dirname(fileURLToPath(import.meta.url));
@@ -669,23 +729,34 @@ import sharp from ${JSON.stringify(resolve("sharp"))};
 import { getSpec } from ${JSON.stringify(resolve("@curvi/specs"))};
 import { makeOriginalFit } from ${JSON.stringify(path.join(here, "original.ts"))};
 import { buildProductReferenceFromEncoded } from ${JSON.stringify(path.join(here, "whiten.ts"))};
+import { decodeToRgba, encodeJpeg } from ${JSON.stringify(path.join(here, "..", "raw.ts"))};
+import { fidelityReport } from ${JSON.stringify(path.join(here, "..", "qc", "fidelity.ts"))};
 // As on Render: no operation cache, one libvips thread (glibc without jemalloc).
 sharp.cache(false);
 sharp.concurrency(1);
-const bytes = await readFile(${JSON.stringify(photo)});
-const before = process.resourceUsage().maxRSS;
+// The process at rest (its peak so far, the loader included), before the
+// source is loaded: everything above it is this output's.
+const rest = process.resourceUsage().maxRSS / 1024;
 const started = Date.now();
-const result = await makeOriginalFit(bytes, getSpec("google.merchant.lifestyle"), { fit: "auto", padRgb: [255, 255, 255], maxUpscale: 1.5, maxMegapixels: 16 });
+const bytes = await readFile(${JSON.stringify(photo)});
+const result = await makeOriginalFit(bytes, getSpec("google.merchant.lifestyle"), { fit: "auto", padRgb: [255, 255, 255], maxUpscale: ${MAX_SOURCE_UPSCALE}, maxMegapixels: ${originalFit.maxMegapixels} });
 if (result.passthrough) throw new Error("expected a render");
 const reference = await buildProductReferenceFromEncoded(bytes, result.placement, { width: result.width, height: result.height });
-console.log(JSON.stringify({ before: before / 1024, peak: process.resourceUsage().maxRSS / 1024, ms: Date.now() - started, bytes: bytes.length, out: [result.width, result.height], ref: reference.width }));
+const exact = await fidelityReport(reference, result.raw, result.mask, { kind: "main", exact: true, erodePx: 0 });
+const encoded = await encodeJpeg(result.raw, 90);
+const shipped = await decodeToRgba(encoded);
+// Pure noise never passes a JPEG fidelity row; this is here for its memory, as the runner runs it.
+const after = await fidelityReport(reference, shipped, result.mask, { kind: "main" });
+if (!exact.pass || after.maskArea === 0 || shipped.width !== result.width) throw new Error("the 80 MP render did not prove out");
+const peak = process.resourceUsage().maxRSS / 1024;
+console.log(JSON.stringify({ rest, peak, added: peak - rest, ms: Date.now() - started, bytes: bytes.length, out: [result.width, result.height], shipped: encoded.length }));
 `,
       );
       try {
         const { stdout } = await execFileAsync("npx", ["tsx", script], { cwd: path.join(here, "..", ".."), maxBuffer: 1 << 20 });
-        const facts = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { peak: number; ms: number };
+        const facts = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { added: number; ms: number };
         console.log(`80 MP render: ${stdout.trim()}`);
-        expect(facts.peak).toBeLessThan(RSS_LIMIT_MB);
+        expect(facts.added).toBeLessThan(originalFit.peakRssAddedMb);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
@@ -693,6 +764,3 @@ console.log(JSON.stringify({ before: before / 1024, peak: process.resourceUsage(
     300_000,
   );
 });
-
-/** The 512 MB worker budget less headroom for the runner's own heap. */
-const RSS_LIMIT_MB = 448;

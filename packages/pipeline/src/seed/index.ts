@@ -13,6 +13,7 @@ export {
   backgroundSwatches,
   badgeStyle,
   canvasDefaults,
+  jpegEncoding,
   lifestyleFallbackScenes,
   originalFit,
   presets,

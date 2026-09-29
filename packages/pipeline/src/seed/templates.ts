@@ -178,6 +178,23 @@ export const originalFit = {
   /** Match my photo's edges (P1): the width in pixels of the photo's outer
    * ring whose median color fills the added space. */
   edgeRingPx: 2,
+  /** Memory (512 MB workers): the most RSS, in MB, one kept output of an
+   * 80 MP photo may add above the resting process while its source, the
+   * render, the reference, the encode and the shipped decode are all held,
+   * as the runner holds them. The 512 MB worker less 128 MB for the runner at
+   * rest. A test holds it; if it fails, maxMegapixels drops to 12. */
+  peakRssAddedMb: 384,
+} as const;
+
+/**
+ * JPEG encoding (raw.ts encodeJpeg). libjpeg's optimized Huffman coding
+ * holds every DCT coefficient of the image until the end, about 180 MB more
+ * peak memory on a 16 MP kept photo, for files about 6 percent smaller.
+ * Above this size it is off, so a kept photo at the originalFit cap fits a
+ * 512 MB worker; every generated canvas is under it and encodes as before.
+ */
+export const jpegEncoding = {
+  optimiseCodingMaxMegapixels: 8,
 } as const;
 
 /**
