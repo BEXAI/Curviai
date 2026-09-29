@@ -9,6 +9,7 @@ import {
   BUNDLE_KEYS,
   BUNDLE_OFF_REASON,
   LOOK_PRESETS,
+  compactExtras,
   normalizeOutputOptions,
   outputOptionsKey,
   resolveOutputOptions,
@@ -55,7 +56,7 @@ describe("the bundle action", () => {
     const listing = picked("listing");
     expect(listing.lookBase).toBe("marketplace");
     expect(listing.choices.bundle).toBe("listing");
-    expect(listing.choices.extras).toEqual(packBundles.listing.extras);
+    expect(listing.choices.extras).toEqual(compactExtras(packBundles.listing.extras));
     expect(customChipText(listing)).toBeNull();
     const back = picked("everything", listing);
     expect(back.choices).toEqual(initialOutputForm().choices);
@@ -93,7 +94,7 @@ describe("the bundle action", () => {
     const keep = outputFormReducer(listing, { type: "look", look: "keep_photo" });
     expect(keep.choices.bundle).toBe("listing");
     const removed = outputFormReducer(keep, { type: "background", background: "remove" });
-    expect(removed.choices.extras).toEqual(packBundles.listing.extras);
+    expect(removed.choices.extras).toEqual(compactExtras(packBundles.listing.extras));
     const instead = outputFormReducer(listing, { type: "keep_instead" });
     expect(instead.choices.bundle).toBe("listing");
     expect(instead.lookBase).toBe("keep_photo");

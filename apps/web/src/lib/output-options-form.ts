@@ -29,6 +29,7 @@ import {
   bundleExtrasFor,
   bundleHoldsFamily,
   bundleOf,
+  compactExtras,
   lookOf,
   lookPresetFor,
   keepMediaIdsFor,
@@ -60,6 +61,7 @@ import {
 import { showsLightEdge } from "@curvi/pipeline/edge";
 import {
   backgroundSwatches,
+  adsFormats,
   creditCosts,
   entitlementsFor,
   keepBackgroundPhrases,
@@ -235,7 +237,10 @@ export function outputFormReducer(state: OutputFormState, action: OutputFormActi
     case "extra":
       // A family the bundle holds nothing of stays off (the server turns it off too).
       if (action.on && !bundleHoldsFamily(bundleOf(state.choices), action.family)) return state;
-      return { ...state, choices: { ...state.choices, extras: { ...state.choices.extras, [action.family]: action.on } } };
+      return {
+        ...state,
+        choices: { ...state.choices, extras: compactExtras({ ...state.choices.extras, [action.family]: action.on }) },
+      };
     case "fit":
       // Trim keeps the P0 fit at auto, so the heads ups and the estimate
       // judge the photo as one that keeps its shape.
@@ -899,20 +904,34 @@ export function extraRows(): ExtraRow[] {
       line: `Graphics with your benefits, sizes, box contents and comparisons. ${flat} each.`,
     },
     { family: "cards", title: "Social posts and banners", line: `Social posts and banners. ${flat} each.` },
+    {
+      family: "ads",
+      title: "Pins, carousels and ads",
+      line: `A moodboard pin, a swipe carousel and ${adsFormats.adPack.minVariants} to ${adsFormats.adPack.maxVariants} ads for the social channels you picked. ${flat} each, and a carousel with a scene is ${still} for the whole carousel.`,
+    },
   ];
 }
+
+/** Extra families that start off in every look (the ads family, PHASE_16),
+ * so turning one off is never counted as a change. */
+const OFF_UNLESS_ON: readonly ExtraFamily[] = ["ads"];
 
 export const EXTRAS_WITH_KEEP_NOTE =
   "These are made from a cut out copy of your product. Your own photos stay as they are.";
 
-/** How many extra families are off. */
+/** How many extra families that start on are off. The ads family starts
+ * off, so it never counts. */
 export function extrasOffCount(extras: OutputExtras): number {
-  return EXTRA_FAMILY_KEYS.filter((family) => !extras[family]).length;
+  return EXTRA_FAMILY_KEYS.filter((family) => !OFF_UNLESS_ON.includes(family) && !extras[family]).length;
 }
 
 /** "Resize only": Keep with every extra off. */
 export function isResizeOnly(choices: Pick<OutputChoices, "background" | "extras">): boolean {
-  return choices.background === "keep" && extrasOffCount(choices.extras) === EXTRA_FAMILY_KEYS.length;
+  return (
+    choices.background === "keep" &&
+    extrasOffCount(choices.extras) === EXTRA_FAMILY_KEYS.length - OFF_UNLESS_ON.length &&
+    OFF_UNLESS_ON.every((family) => choices.extras[family] !== true)
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -1118,6 +1118,94 @@ exports[`planner bundles > plans the aplus bundle for every channel preset 1`] =
     },
   },
   {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
     "channels": "video",
     "plan": {
       "shots": [],
@@ -1206,7 +1294,7 @@ exports[`planner bundles > plans the aplus bundle for every channel preset 1`] =
     },
   },
   {
-    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,video",
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
     "plan": {
       "shots": [
         {
@@ -2917,6 +3005,7 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
         {
           "channels": [
             "meta.story_9x16",
+            "meta.reels_9x16",
           ],
           "credits": 0.5,
           "id": "s03_social_9x16",
@@ -3101,6 +3190,103 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
     },
   },
   {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktok.ad_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
     "channels": "video",
     "plan": {
       "shots": [
@@ -3198,7 +3384,7 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
     },
   },
   {
-    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,video",
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
     "plan": {
       "shots": [
         {
@@ -3537,6 +3723,8 @@ exports[`planner bundles > plans the everything bundle for every channel preset 
         {
           "channels": [
             "meta.story_9x16",
+            "meta.reels_9x16",
+            "tiktok.ad_9x16",
           ],
           "credits": 0.5,
           "id": "s24_social_9x16",
@@ -5163,6 +5351,94 @@ exports[`planner bundles > plans the listing bundle for every channel preset 1`]
     },
   },
   {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
     "channels": "video",
     "plan": {
       "shots": [],
@@ -5251,7 +5527,7 @@ exports[`planner bundles > plans the listing bundle for every channel preset 1`]
     },
   },
   {
-    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,video",
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
     "plan": {
       "shots": [
         {
@@ -6601,6 +6877,94 @@ exports[`planner bundles > plans the main bundle for every channel preset 1`] = 
     },
   },
   {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
     "channels": "video",
     "plan": {
       "shots": [],
@@ -6689,7 +7053,7 @@ exports[`planner bundles > plans the main bundle for every channel preset 1`] = 
     },
   },
   {
-    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,video",
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
     "plan": {
       "shots": [
         {

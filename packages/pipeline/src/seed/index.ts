@@ -19,6 +19,7 @@ export {
 } from "./models";
 export type { CutoutModelSeedRow, ImageModelSeedRow, ImageProviderFamily, LlmPriceTable } from "./models";
 export {
+  adsFormats,
   aplusCopy,
   aplusModules,
   backgroundSwatches,
@@ -35,6 +36,7 @@ export {
   templates,
 } from "./templates";
 export type {
+  CarouselBeat,
   AplusModuleKey,
   AplusModuleLayout,
   AplusModuleSeed,

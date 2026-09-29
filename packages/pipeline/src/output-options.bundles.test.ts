@@ -59,7 +59,13 @@ describe("packBundles seed", () => {
       transparentPng: true,
       graphics: true,
       cards: true,
+      // PHASE_16 workstream 3: shown in Everything, off until the seller turns it on.
+      ads: false,
     });
+    expect(bundleHoldsFamily("everything", "ads")).toBe(true);
+    for (const key of BUNDLE_KEYS.filter((k) => k !== "everything")) {
+      expect(bundleHoldsFamily(key, "ads"), key).toBe(false);
+    }
   });
 
   it("holds the Amazon main image and the white front image in every bundle", () => {

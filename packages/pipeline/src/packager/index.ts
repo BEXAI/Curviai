@@ -72,6 +72,84 @@ export interface PackAsset {
    * and an already white file never carry the badge (founder decision 6),
    * and an unchanged file is checked from its header only. */
   treatment?: PackAssetTreatment;
+  /** The ads format group the file belongs to (PHASE_16 workstream 3): a
+   * carousel slide ships as carousel/NN, an ad variant under
+   * ads/{placement}/, and the ad copy goes into that zip's ads CSV. */
+  group?: PackGroup;
+}
+
+/** Where an ads format file sits in its channel's pack (PHASE_16 workstream 3). */
+export type PackGroup =
+  | { kind: "carousel"; carouselId: string; slideIndex: number }
+  | { kind: "ad"; variantKey: string; headline: string; cta: string };
+
+/** The CSV of headlines and calls to action each zip with ad variants carries. */
+export const ADS_CSV_NAME = "ads/ads.csv";
+
+/**
+ * The pack group of a planned shot: carousel slides and ad variants get
+ * one, every other shot none. The runner passes it with each file.
+ */
+export function packGroupFor(shot: {
+  type: string;
+  carouselId?: string;
+  slideIndex?: number;
+  variantKey?: string;
+  headline?: string;
+  cta?: string;
+}): PackGroup | undefined {
+  if (shot.type === "carousel_slide" && shot.carouselId && shot.slideIndex) {
+    return { kind: "carousel", carouselId: shot.carouselId, slideIndex: shot.slideIndex };
+  }
+  if (shot.type === "ad_variant" && shot.variantKey) {
+    return { kind: "ad", variantKey: shot.variantKey, headline: shot.headline ?? "", cta: shot.cta ?? "" };
+  }
+  return undefined;
+}
+
+/** A path segment safe inside a zip: letters, digits, dot, dash and underscore. */
+function zipSegment(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9._-]/g, "").replace(/^\.+/, "");
+  return cleaned === "" ? "file" : cleaned;
+}
+
+/** The placement folder of an ad file: the spec id without its family, "feed_4x5". */
+export function adPlacementFolder(specId: string): string {
+  return zipSegment(specId.split(".").slice(1).join("_") || specId);
+}
+
+/**
+ * A grouped file's name inside its channel zip: carousel/01.jpg for the
+ * first carousel (carousel-{id}/01.jpg for another), ads/{placement}/v1.jpg
+ * for an ad variant. Null for a file with no group.
+ */
+export function groupedFileName(specId: string, group: PackGroup | undefined, format: string): string | null {
+  if (!group) {
+    return null;
+  }
+  const ext = extensionFor(format);
+  if (group.kind === "carousel") {
+    const folder = group.carouselId === "c1" ? "carousel" : `carousel-${zipSegment(group.carouselId)}`;
+    return `${folder}/${String(group.slideIndex).padStart(2, "0")}.${ext}`;
+  }
+  return `ads/${adPlacementFolder(specId)}/${zipSegment(group.variantKey)}.${ext}`;
+}
+
+/** One CSV field, quoted when it holds a comma, quote or line break. A field
+ * a spreadsheet would read as a formula (=, +, -, @ first) gets a leading
+ * apostrophe, so opening the CSV never runs anything. */
+function csvField(raw: string): string {
+  const value = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  return /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
+
+/** The ads CSV: one row per ad file with its placement, file, headline and call to action. */
+export function adsCsv(rows: ReadonlyArray<{ specId: string; file: string; headline: string; cta: string }>): string {
+  const lines = [["placement", "file", "headline", "call_to_action"].join(",")];
+  for (const row of rows) {
+    lines.push([row.specId, row.file, row.headline, row.cta].map(csvField).join(","));
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 /** Kept photos and already white files ship the seller's own pixels, so the
@@ -89,6 +167,8 @@ export interface PackFileReport {
   badge: boolean;
   notes: string[];
   checks: CheckItem[];
+  /** The ads format group, for carousel slides and ad variants. */
+  group?: PackGroup;
   measured: Pick<
     PixelCheckReport,
     "width" | "height" | "longestSide" | "backgroundWhiteShare" | "fillRatio" | "bytes" | "format"
@@ -210,7 +290,7 @@ export async function buildPack(
       continue;
     }
     const n = asset.n ?? nextN(counters, asset.specId);
-    const name = fileNameFor(spec, asset, n, format);
+    const name = groupedFileName(asset.specId, asset.group, format) ?? fileNameFor(spec, asset, n, format);
     const taken = namesPerChannel.get(channel) ?? new Set<string>();
     if (taken.has(name)) {
       dropped.push({
@@ -350,6 +430,7 @@ export async function buildPack(
       badge,
       notes,
       checks,
+      ...(asset.group ? { group: asset.group } : {}),
       measured,
       pass,
     });
@@ -380,8 +461,15 @@ export async function buildPack(
       ...(opts.intent ? { intent: opts.intent } : {}),
       ...(report.inventory ? { inventory: report.inventory } : {}),
     };
+    const adRows = fileReports
+      .filter((f) => f.channel === channel && f.group?.kind === "ad")
+      .map((f) => {
+        const group = f.group as Extract<PackGroup, { kind: "ad" }>;
+        return { specId: f.specId, file: f.file, headline: group.headline, cta: group.cta };
+      });
     await writeZip(zipPath, [
       ...entries,
+      ...(adRows.length > 0 ? [{ name: ADS_CSV_NAME, buffer: Buffer.from(adsCsv(adRows)) }] : []),
       { name: "compliance-report.json", buffer: Buffer.from(JSON.stringify(channelReport, null, 2)) },
     ]);
     zips.push({ channel, path: zipPath, files: entries.map((e) => e.name) });

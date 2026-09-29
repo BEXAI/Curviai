@@ -319,6 +319,14 @@ function lineFor(shot: Shot, context: LineContext): { key: string; name: LineNam
       return { key: "social", name: { one: "Social crop", many: (n) => `Social crops, ${n}` } };
     case "social_2x3":
       return { key: "social_2x3", name: { one: "Pinterest pin" } };
+    case "pin_moodboard":
+      return { key: "pin_moodboard", name: { one: "Moodboard pin" } };
+    case "carousel_slide":
+      // A carousel is one line: its slides share one canvas, and with scenes
+      // on its one scene is charged on the first slide (founder decision 4).
+      return { key: "carousel", name: { one: "Carousel, 1 slide", many: (n) => `Carousel, ${n} slides` } };
+    case "ad_variant":
+      return { key: "ad_variant", name: { one: "Ad", many: (n) => `Ads, ${n} versions` } };
     case "video_spin":
       return { key: "video_spin", name: { one: "Spin video" } };
     case "video_hero_6s":

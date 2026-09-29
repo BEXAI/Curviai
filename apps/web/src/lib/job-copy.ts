@@ -27,6 +27,14 @@ import {
 } from "@curvi/pipeline/output-options";
 import { SCENE_COUNT_REASON } from "@curvi/pipeline/planner";
 import {
+  AD_PLACEMENT_SHORT_REASON,
+  ADS_NO_COPY_REASON,
+  CAROUSEL_INCOMPLETE_REASON,
+  CAROUSEL_SEAM_REASON,
+  CAROUSEL_TOO_SHORT_REASON,
+} from "@curvi/pipeline/ads";
+import { isAdsShotType } from "@curvi/pipeline/schemas";
+import {
   APLUS_CLAIMS_FLAG_REASON,
   APLUS_COPY_SHORT_REASON,
   APLUS_MODULE_CAP_REASON,
@@ -99,6 +107,38 @@ export const NO_ENDORSEMENT_COPY: SkippedCopy = {
   label: "Needs details",
   note: `Add a press quote or award to include this module. Amazon does not allow customer reviews in A+ content. ${NO_CHARGE}`,
 };
+
+/** Copy for the ads format reasons (PHASE_16 workstream 3), or null. */
+function adsFormatCopy(r: string, shotType: string | null | undefined): SkippedCopy | null {
+  if (r.includes(CAROUSEL_TOO_SHORT_REASON)) {
+    return {
+      label: "Needs details",
+      note: `We need a few product benefits or features to fill a carousel. Add them in the notes. ${NO_CHARGE}`,
+    };
+  }
+  if (r.includes(CAROUSEL_SEAM_REASON)) {
+    return { label: "Skipped", note: `This carousel could not be laid out without cutting your product at a swipe. ${NO_CHARGE}` };
+  }
+  if (r.includes(CAROUSEL_INCOMPLETE_REASON)) {
+    return {
+      label: "Skipped",
+      note: `A carousel ships whole or not at all, and this one could not be made whole. ${NO_CHARGE}`,
+    };
+  }
+  if (r.includes(AD_PLACEMENT_SHORT_REASON)) {
+    return {
+      label: "Skipped",
+      note: `Too few of your product's lines are short enough for this placement's text limit. ${NO_CHARGE}`,
+    };
+  }
+  if (r.includes(ADS_NO_COPY_REASON) && isAdsShotType(shotType?.split(":")[0] ?? "")) {
+    return {
+      label: "Needs details",
+      note: `We could not find enough lines about your product that we could stand behind. Add a few benefits in the notes. ${NO_CHARGE}`,
+    };
+  }
+  return null;
+}
 
 /** Copy for the A+ module reasons (PHASE_16 workstream 2), or null. */
 function aplusModuleCopy(r: string): SkippedCopy | null {
@@ -208,6 +248,10 @@ export function skippedCopy(
   }
   if (r.includes(ADDED_OVERLAYS_REASON)) {
     return ADDED_TEXT_COPY;
+  }
+  const ads = adsFormatCopy(r, shotType);
+  if (ads) {
+    return ads;
   }
   const aplus = aplusModuleCopy(r);
   if (aplus) {
@@ -757,11 +801,16 @@ export function outputOptionsSummary(
   if (bundle !== DEFAULT_BUNDLE) {
     lines.push(`Set: ${packBundles[bundle].label}.`);
   }
-  const off = EXTRA_FAMILY_KEYS.filter((family) => bundleHoldsFamily(bundle, family) && !resolved.extras[family]).map(
-    (family) => EXTRA_FAMILY_NAMES[family],
-  );
+  // The ads family starts off (PHASE_16 workstream 3), so it reads as a
+  // choice only when the seller turned it on.
+  const off = EXTRA_FAMILY_KEYS.filter(
+    (family) => family !== "ads" && bundleHoldsFamily(bundle, family) && !resolved.extras[family],
+  ).map((family) => EXTRA_FAMILY_NAMES[family]);
   if (off.length > 0) {
     lines.push(`Turned off: ${off.join(", ")}.`);
+  }
+  if (resolved.extras.ads === true) {
+    lines.push(`Added: ${EXTRA_FAMILY_NAMES.ads}.`);
   }
   return { look: stored?.look ?? "marketplace", lines };
 }

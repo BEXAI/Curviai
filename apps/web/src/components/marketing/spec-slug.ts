@@ -37,7 +37,9 @@ export function specDisplayName(id: string): string {
     "meta.feed_1x1": "Meta feed square",
     "meta.feed_4x5": "Meta feed portrait",
     "meta.story_9x16": "Meta story",
+    "meta.reels_9x16": "Meta Reels",
     "pinterest.pin": "Pinterest pin",
+    "tiktok.ad_9x16": "TikTok ad",
     "video.amazon_listing": "Amazon listing video",
     "video.social_9x16": "Social vertical video",
   };

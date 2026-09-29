@@ -38,6 +38,7 @@ export const EXTRA_FAMILY_NAMES: Readonly<Record<ExtraFamily, string>> = {
   transparentPng: "transparent PNG",
   graphics: "graphics",
   cards: "social posts and banners",
+  ads: "pins, carousels and ads",
 };
 
 /** The enlarge limit in words: 1.5 reads "1.5", 2 reads "2". */

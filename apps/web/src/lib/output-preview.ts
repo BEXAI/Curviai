@@ -66,3 +66,34 @@ export function isTurnedOffShot(shot: Pick<JobShotView, "status" | "label">): bo
 export function boardShots<T extends Pick<JobShotView, "status" | "label">>(shots: readonly T[]): T[] {
   return shots.filter((shot) => !isTurnedOffShot(shot));
 }
+
+/** One card of a grouped section, with the title the group gives it. */
+export interface GroupedShot<T> {
+  shot: T;
+  title: string;
+}
+
+/**
+ * The board's sections (PHASE_16 workstream 3): the carousel's slides
+ * together in slide order ("Slide 1" ...), and the ad variants together
+ * ("Ad 1" ...), each in plan order, which is the order the planner numbered
+ * them. Every other shot stays in the main grid. A skipped entry for a whole
+ * format (the carousel left out) stays in the main grid too, so its reason
+ * shows where the other left out shots are.
+ */
+export function boardSections<T extends Pick<JobShotView, "shotType" | "status">>(
+  shots: readonly T[],
+): { shots: T[]; carousel: GroupedShot<T>[]; ads: GroupedShot<T>[] } {
+  const out: { shots: T[]; carousel: GroupedShot<T>[]; ads: GroupedShot<T>[] } = { shots: [], carousel: [], ads: [] };
+  for (const shot of shots) {
+    const type = baseShotType(shot.shotType);
+    if (shot.status !== "skipped" && type === "carousel_slide") {
+      out.carousel.push({ shot, title: `Slide ${out.carousel.length + 1}` });
+    } else if (shot.status !== "skipped" && type === "ad_variant") {
+      out.ads.push({ shot, title: `Ad ${out.ads.length + 1}` });
+    } else {
+      out.shots.push(shot);
+    }
+  }
+  return out;
+}

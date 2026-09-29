@@ -263,6 +263,7 @@ const CHANNEL_NAMES: readonly { family: string; name: string }[] = [
   { family: "google", name: "Google Merchant" },
   { family: "meta", name: "Meta" },
   { family: "pinterest", name: "Pinterest" },
+  { family: "tiktok", name: "TikTok" },
 ];
 
 /**
@@ -321,7 +322,11 @@ export const CHANNEL_SPECS: readonly ChannelSpecAvailability[] = [
   { specId: "meta.feed_1x1", files: "feed squares", status: "live" },
   { specId: "meta.feed_4x5", files: "feed portraits", status: "live" },
   { specId: "meta.story_9x16", files: "stories", status: "live" },
+  // PHASE_16 workstream 3: the story card for every 9:16 placement, and the
+  // ad pack when the seller turns the ads extra on.
+  { specId: "meta.reels_9x16", files: "Reels", status: "live" },
   { specId: "pinterest.pin", files: "pins", status: "live" },
+  { specId: "tiktok.ad_9x16", files: "in feed ads", status: "live" },
 ];
 
 export function familyOf(specId: string): string {

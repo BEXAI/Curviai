@@ -137,6 +137,8 @@ const MAX_CALLOUTS = 5;
 // Layout proportions. All relative to the canvas so every channel size works.
 const LAYOUT = {
   marginOfShort: 0.06,
+  /** The most of the canvas one safe zone edge may take from a template. */
+  maxSafeZoneShare: 0.4,
   /** Portrait canvases at or above this height over width stack text below the product. */
   stackAspect: 1.15,
   infographic: {
@@ -227,14 +229,18 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
   const product = await loadProduct(input.productPng, input.maskPng);
   const { width: W, height: H } = canvasSize(spec);
   const canvas = new Canvas(W, H, bg);
-  const safeTop = Math.min(spec.safeZone?.top ?? 0, Math.floor(H / 4));
-  const safeBottom = Math.min(spec.safeZone?.bottom ?? 0, Math.floor(H / 4));
+  // The safe zone (the platform's own interface) is kept clear, up to a
+  // share of the canvas per edge so a template always keeps room to draw.
+  const safeTop = Math.min(spec.safeZone?.top ?? 0, Math.floor(H * LAYOUT.maxSafeZoneShare));
+  const safeBottom = Math.min(spec.safeZone?.bottom ?? 0, Math.floor(H * LAYOUT.maxSafeZoneShare));
+  const safeLeft = Math.min(spec.safeZone?.left ?? 0, Math.floor(W * LAYOUT.maxSafeZoneShare));
+  const safeRight = Math.min(spec.safeZone?.right ?? 0, Math.floor(W * LAYOUT.maxSafeZoneShare));
   const short = Math.min(W, H);
   const margin = Math.round(short * LAYOUT.marginOfShort);
   const content: BBox = {
-    left: margin,
+    left: safeLeft + margin,
     top: safeTop + margin,
-    width: W - 2 * margin,
+    width: W - safeLeft - safeRight - 2 * margin,
     height: H - safeTop - safeBottom - 2 * margin,
   };
 
@@ -304,7 +310,7 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
  * The brand font for this copy, or the default when the brand font lacks a
  * glyph the copy needs (renderText would drop it and print a wrong word).
  */
-function pickFont(key: string | null | undefined, copy: string[]): opentype.Font | null {
+export function pickFont(key: string | null | undefined, copy: string[]): opentype.Font | null {
   const brand = loadBrandTemplateFont(key);
   const fallback = loadTemplateFont();
   if (!brand || brand === fallback || !fallback) {
@@ -413,7 +419,7 @@ export function sanitizeCallout(raw: string): string {
 
 // Spec handling
 
-function canvasSize(spec: ChannelSpec): { width: number; height: number } {
+export function canvasSize(spec: ChannelSpec): { width: number; height: number } {
   let width = spec.width ?? spec.minWidth;
   let height = spec.height ?? spec.minHeight;
   if (width === undefined && height === undefined) {
@@ -435,9 +441,9 @@ function canvasSize(spec: ChannelSpec): { width: number; height: number } {
   return { width, height };
 }
 
-type StillFormat = "jpg" | "png" | "webp";
+export type StillFormat = "jpg" | "png" | "webp";
 
-function pickFormat(spec: ChannelSpec): StillFormat {
+export function pickFormat(spec: ChannelSpec): StillFormat {
   const allowed: readonly string[] = spec.formats ?? ["jpg", "png"];
   for (const f of ["jpg", "png", "webp"] as const) {
     if (allowed.includes(f)) {
@@ -454,7 +460,7 @@ function pickFormat(spec: ChannelSpec): StillFormat {
  * then higher qualities are tried, and lossless PNG after those when the
  * spec allows it. Otherwise the still needs review.
  */
-async function encodeKeepingProduct(
+export async function encodeKeepingProduct(
   raw: RawImage,
   spec: ChannelSpec,
   format: StillFormat,
@@ -522,7 +528,7 @@ async function encodeForSpec(raw: RawImage, spec: ChannelSpec, format: StillForm
 
 // Product handling
 
-interface Product {
+export interface Product {
   /** RGBA crop of the product bounding box, alpha limited by the mask. */
   data: Buffer;
   width: number;
@@ -531,7 +537,7 @@ interface Product {
   crop: BBox;
 }
 
-async function loadProduct(productPng: Buffer, maskPng: Buffer): Promise<Product> {
+export async function loadProduct(productPng: Buffer, maskPng: Buffer): Promise<Product> {
   const rgba = await decodeToRgba(productPng);
   const mask = await decodeMask(maskPng);
   if (rgba.width !== mask.width || rgba.height !== mask.height) {
@@ -557,7 +563,7 @@ async function loadProduct(productPng: Buffer, maskPng: Buffer): Promise<Product
 }
 
 /** Largest product placement inside box, keeping aspect, centered. */
-function fitInto(product: Product, box: BBox): BBox {
+export function fitInto(product: Product, box: BBox): BBox {
   const scale = Math.min(box.width / product.width, box.height / product.height);
   const width = Math.max(1, Math.min(box.width, Math.round(product.width * scale)));
   const height = Math.max(1, Math.min(box.height, Math.round(product.height * scale)));
@@ -832,7 +838,7 @@ async function layoutAplusModule(canvas: Canvas, product: Product, content: BBox
 
 // Text
 
-interface TextBlock {
+export interface TextBlock {
   /** Single channel coverage, 255 is solid text. */
   coverage: Buffer;
   width: number;
@@ -849,7 +855,7 @@ interface TextBlock {
  * aligned, line height from the font's own metrics. Characters the font has
  * no glyph for are dropped rather than drawn as boxes.
  */
-async function renderText(text: string, sizePx: number, maxWidth: number, font: opentype.Font): Promise<TextBlock> {
+export async function renderText(text: string, sizePx: number, maxWidth: number, font: opentype.Font): Promise<TextBlock> {
   const clean = Array.from(text)
     .filter((ch) => ch === " " || font.charToGlyphIndex(ch) > 0)
     .join("")
@@ -915,7 +921,7 @@ interface Rgb {
   b: number;
 }
 
-class Canvas {
+export class Canvas {
   readonly data: Buffer;
   /** Pixels touched by text or decoration, to prove they never meet the product. */
   private readonly decoration: Uint8Array;
@@ -977,6 +983,43 @@ class Canvas {
         this.blend(x, y, Math.round((hits * 255) / 16), c);
       }
     }
+  }
+
+  /**
+   * Repaints every pixel's background from a function of its position, or
+   * from an RGBA source (the ads formats' continuous background and scene
+   * layer). Background is never decoration, so a product may sit on it.
+   */
+  paintBackground(color: (x: number, y: number) => Rgb): void {
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        const c = color(x, y);
+        const o = (y * this.width + x) * 4;
+        this.data[o] = c.r;
+        this.data[o + 1] = c.g;
+        this.data[o + 2] = c.b;
+        this.data[o + 3] = 255;
+      }
+    }
+  }
+
+  /** The box around every text, line or logo pixel drawn, or null when none was. */
+  decorationBounds(): BBox | null {
+    let left = this.width;
+    let top = this.height;
+    let right = -1;
+    let bottom = -1;
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        if (this.decoration[y * this.width + x]) {
+          if (x < left) left = x;
+          if (x > right) right = x;
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+        }
+      }
+    }
+    return right < 0 ? null : { left, top, width: right - left + 1, height: bottom - top + 1 };
   }
 
   /** True when no text, line or logo pixel was drawn inside box. */

@@ -229,7 +229,7 @@ export interface PackBundle {
   label: string;
   shotTypes: readonly Shot["type"][];
   aplusModules?: readonly Shot["type"][];
-  extras: Readonly<Record<"scenes" | "backdrops" | "transparentPng" | "graphics" | "cards", boolean>>;
+  extras: Readonly<Record<"scenes" | "backdrops" | "transparentPng" | "graphics" | "cards" | "ads", boolean>>;
   maxSecondary?: number;
 }
 
@@ -258,7 +258,7 @@ export const packBundles = {
     key: "main",
     label: "Main image only",
     shotTypes: MAIN_SHOT_TYPES,
-    extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: false },
+    extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: false, ads: false },
     maxSecondary: 0,
   },
   listing: {
@@ -275,7 +275,7 @@ export const packBundles = {
       "in_the_box",
       "comparison",
     ],
-    extras: { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: false },
+    extras: { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: false, ads: false },
   },
   aplus: {
     key: "aplus",
@@ -290,14 +290,15 @@ export const packBundles = {
       "aplus_how_to",
       "aplus_endorsement",
     ],
-    extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: true },
+    extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: true, ads: false },
     maxSecondary: 0,
   },
   everything: {
     key: "everything",
     label: "Everything",
     shotTypes: Shot.shape.type.options,
-    extras: { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: true },
+    // The ads family (PHASE_16 workstream 3) is shown here but starts off.
+    extras: { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: true, ads: false },
   },
 } as const satisfies Record<string, PackBundle>;
 
@@ -470,4 +471,65 @@ export const aplusCopy = {
     "instant results",
     "permanent",
   ],
+} as const;
+
+// ---------------------------------------------------------------------------
+// Ads formats (PHASE_16 workstream 3): the moodboard pin, the carousel and the
+// static ad pack. Every size, safe zone and text limit comes from the
+// registry; these are the layout choices and the words the planner may print.
+
+/** One beat of the carousel story, in slide order. */
+export type CarouselBeat = "hook" | "benefit" | "details" | "in_the_box" | "cta";
+
+/**
+ * The formats of the ads extra family, seed data per CLAUDE.md rule 2.
+ * - lineMaxChars: the longest line printed on an ads image, the Shot
+ *   schema's 40 character cap. A placement whose registry text limit is
+ *   shorter (Facebook feed headlines, 27) takes only headlines that fit.
+ * - pin: the 2:3 moodboard pin, the product (on its scene when scenes are
+ *   on) with one short line.
+ * - carousel: slides of one wide canvas cut into equal parts (founder
+ *   decision 4). The story runs hook, benefits (one slide each, at most
+ *   maxBenefitSlides), details (up to maxDetailLines features), in the box
+ *   (only with the seller's lines), then the call to action. Fewer than
+ *   minSlides and the carousel is skipped; never more than maxSlides (the
+ *   largest carousel docs/verification.md names: Pinterest's 10 for the
+ *   sales objective; Meta's own card limit is not verified yet).
+ * - adPack: static ad variants, each a headline and a call to action,
+ *   rendered for every picked placement inside its safe zone. The variant
+ *   count is the most the product's usable headlines allow, from
+ *   minVariants to maxVariants; fewer than minVariants and the pack is
+ *   skipped. Calls to action are plain phrases, one per variant in order.
+ */
+export const adsFormats = {
+  lineMaxChars: 40,
+  pin: {
+    specId: "pinterest.pin",
+  },
+  carousel: {
+    specId: "meta.feed_4x5",
+    minSlides: 3,
+    maxSlides: 10,
+    maxBenefitSlides: 3,
+    maxDetailLines: 3,
+    beats: ["hook", "benefit", "details", "in_the_box", "cta"] as readonly CarouselBeat[],
+    callToAction: "Shop now",
+    /** The continuous background runs from the card color at the first
+     * slide's left edge to the card color mixed this much with the accent
+     * at the last slide's right edge. */
+    gradientAccentShare: 0.14,
+  },
+  adPack: {
+    placements: [
+      "meta.feed_1x1",
+      "meta.feed_4x5",
+      "meta.story_9x16",
+      "meta.reels_9x16",
+      "tiktok.ad_9x16",
+      "pinterest.pin",
+    ],
+    minVariants: 4,
+    maxVariants: 6,
+    callsToAction: ["Shop now", "See the details", "Get yours today", "Take a closer look", "Find out more", "Order yours"],
+  },
 } as const;

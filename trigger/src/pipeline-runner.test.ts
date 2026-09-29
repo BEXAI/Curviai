@@ -50,6 +50,9 @@ import {
   aplusCopyRecipeFor,
   sellerTextOf,
   withAplusModules,
+  withAdsShots,
+  carouselRunOrder,
+  runInCarouselOrder,
   creditsForShot,
   deserializeShotOutcome,
   deterministicPlan,
@@ -1929,7 +1932,7 @@ describe("selection is by channel spec (2.11)", () => {
   it("a bare family still selects every spec in it", async () => {
     const summary = await runGeneratePack({ ...baseInput, channels: ["meta"], creditBudget: 10 }, makeDeps());
     const specs = new Set((await packReport(summary)).map((f) => f.specId));
-    expect([...specs].sort()).toEqual(["meta.feed_1x1", "meta.feed_4x5", "meta.story_9x16"]);
+    expect([...specs].sort()).toEqual(["meta.feed_1x1", "meta.feed_4x5", "meta.reels_9x16", "meta.story_9x16"]);
   });
 });
 
@@ -3826,5 +3829,119 @@ describe("A+ modules in the runner (PHASE_16 workstream 2)", () => {
     expect(modules.length).toBeGreaterThan(0);
     expect(types.slice(firstBanner + 1, firstBanner + 1 + modules.length)).toEqual(modules);
     expect(withAplusModules({ shots: llmShots, skipped: [] }, null).shots).toEqual(llmShots);
+  });
+});
+
+describe("ads formats in a pack (PHASE_16 workstream 3)", () => {
+  const adsOutput = (input: OutputOptionsInput): ResolvedOutputOptions =>
+    resolveOutputOptions(normalizeOutputOptions(input), { colorHex: "#FFFFFF", brandSweepHex: "#FFFFFF", keepMediaIds: [] });
+
+  it("ships the carousel as a numbered folder and the ad variants by placement", async () => {
+    const input: GeneratePackInput = {
+      ...baseInput,
+      channels: ["meta", "pinterest", "tiktok"],
+      creditBudget: 60,
+      output: adsOutput({ extras: { ads: true, scenes: false } }),
+    };
+    const summary = await runGeneratePack(input, makeDeps());
+    expect(summary.state).toBe("done");
+    const files = await packReport(summary);
+    const carousel = files.filter((f) => f.file.startsWith("carousel/")).map((f) => f.file.replace(/\.\w+$/, ""));
+    expect(carousel.length).toBeGreaterThanOrEqual(3);
+    expect(carousel).toEqual(carousel.map((_, i) => `carousel/${String(i + 1).padStart(2, "0")}`));
+    for (const placement of ["feed_1x1", "feed_4x5", "story_9x16", "reels_9x16"]) {
+      const count = files.filter((f) => f.channel === "meta" && f.file.startsWith(`ads/${placement}/`)).length;
+      expect(count, placement).toBeGreaterThanOrEqual(4);
+    }
+    expect(files.filter((f) => f.channel === "tiktok" && f.file.startsWith("ads/ad_9x16/")).length).toBeGreaterThanOrEqual(4);
+    expect(files.some((f) => f.channel === "pinterest" && f.file.startsWith("ads/pin/"))).toBe(true);
+    expect(summary.chargedCredits).toBeLessThanOrEqual(input.creditBudget);
+    // Off (the default), the same pack makes none of them.
+    const off = await runGeneratePack({ ...input, jobId: "job-ads-off", output: adsOutput({}) }, makeDeps());
+    const offFiles = await packReport(off);
+    expect(offFiles.some((f) => f.file.startsWith("carousel/") || f.file.startsWith("ads/"))).toBe(false);
+  });
+
+  it("adds the deterministic plan's ads formats to an LLM plan", () => {
+    const main: Shot = {
+      id: "s1",
+      type: "amazon_main",
+      sourceMediaId: "m1",
+      method: "deterministic",
+      channels: ["amazon.main"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    };
+    const ad: Shot = { ...main, id: "s9_ad_variant", type: "ad_variant", method: "template", channels: ["tiktok.ad_9x16"], variantKey: "v1" };
+    const fallback = { shots: [main, ad], skipped: [{ type: "ad_variant:meta.feed_4x5", reason: "short" }] };
+    const merged = withAdsShots({ shots: [main], skipped: [] }, fallback);
+    expect(merged.shots.map((s) => s.type)).toEqual(["amazon_main", "ad_variant"]);
+    expect(merged.skipped).toEqual([{ type: "ad_variant:meta.feed_4x5", reason: "short" }]);
+    expect(withAdsShots({ shots: [main], skipped: [] }, null).shots).toEqual([main]);
+  });
+
+  it("runs a scene carousel's first slide before its other slides, and returns outcomes in plan order", async () => {
+    const slide = (i: number, method: Shot["method"]): Shot => ({
+      id: `c${i}-${method}`,
+      type: "carousel_slide",
+      sourceMediaId: "m1",
+      method,
+      channels: ["meta.feed_4x5"],
+      stylePreset: "none",
+      credits: 0,
+      priority: 7,
+      carouselId: "c1",
+      slideIndex: i,
+      slideCount: 3,
+    });
+    const other: Shot = { ...slide(1, "template"), id: "social", type: "social_4x5" };
+    const scenes = [slide(1, "composite_generate"), slide(2, "composite_generate"), other, slide(3, "composite_generate")];
+    const [first, second] = carouselRunOrder(scenes);
+    expect(first.map((s) => s.id)).toEqual(["c1-composite_generate", "social"]);
+    expect(second.map((s) => s.id)).toEqual(["c2-composite_generate", "c3-composite_generate"]);
+    // Template carousels need no second pass.
+    expect(carouselRunOrder([slide(1, "template"), slide(2, "template")])[1]).toEqual([]);
+
+    const calls: string[][] = [];
+    const outcomes = await runInCarouselOrder(scenes, { jobId: "j", workspaceId: "w" }, async (shots) => {
+      calls.push(shots.map((s) => s.id));
+      return shots.map((s) => ({ shotId: s.id }) as ShotOutcome);
+    });
+    expect(calls).toEqual([
+      ["c1-composite_generate", "social"],
+      ["c2-composite_generate", "c3-composite_generate"],
+    ]);
+    expect(outcomes.map((o) => o.shotId)).toEqual(scenes.map((s) => s.id));
+  });
+
+  it("drops a whole carousel when the budget cannot keep every slide", () => {
+    const slides: Shot[] = [1, 2, 3].map((i) => ({
+      id: `c${i}`,
+      type: "carousel_slide",
+      sourceMediaId: "m1",
+      method: "template",
+      channels: ["meta.feed_4x5"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 7,
+      carouselId: "c1",
+      slideIndex: i,
+      slideCount: 3,
+    }));
+    const flags = runPlanFlags(adsOutput({ extras: { ads: true } }), [{ mediaId: "m1" }]);
+    const fitted = fitShotsToChannels(
+      { shots: slides.map((s) => ({ ...s })), skipped: [] },
+      {
+        channels: ["meta.feed_4x5"],
+        mode: "listing",
+        budget: creditCosts.deterministic * 2,
+        profile: demoProfile,
+        primaryMediaId: "m1",
+        output: flags,
+      },
+    );
+    expect(fitted.shots.filter((s) => s.type === "carousel_slide")).toEqual([]);
+    expect(fitted.skipped.filter((s) => s.type === "carousel_slide").length).toBe(3);
   });
 });

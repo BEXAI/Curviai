@@ -223,7 +223,9 @@ export async function makeOriginalFit(
     canvasH = canvas.height;
     const zoneTop = spec.safeZone?.top ?? 0;
     const zoneH = Math.max(1, canvasH - zoneTop - (spec.safeZone?.bottom ?? 0));
-    left = Math.floor((canvasW - placedW) / 2);
+    const zoneLeft = spec.safeZone?.left ?? 0;
+    const zoneW = Math.max(1, canvasW - zoneLeft - (spec.safeZone?.right ?? 0));
+    left = zoneLeft + Math.max(0, Math.floor((zoneW - placedW) / 2));
     top = zoneTop + Math.max(0, Math.floor((zoneH - placedH) / 2));
   }
   const placement: ProductPlacement = {
@@ -497,7 +499,8 @@ export function keptScale(
   if (fit === "pad") {
     const canvas = canvasSizeFor(spec);
     const safeHeight = canvas.height - (spec.safeZone?.top ?? 0) - (spec.safeZone?.bottom ?? 0);
-    return placed(Math.min(canvas.width / w, Math.max(1, safeHeight) / h, byMegapixels, 1));
+    const safeWidth = canvas.width - (spec.safeZone?.left ?? 0) - (spec.safeZone?.right ?? 0);
+    return placed(Math.min(Math.max(1, safeWidth) / w, Math.max(1, safeHeight) / h, byMegapixels, 1));
   }
   const bounds = dimensionBounds(spec);
   const long = Math.max(w, h);
