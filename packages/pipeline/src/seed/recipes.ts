@@ -132,6 +132,15 @@ export const qcJudgePolicy = {
   exemptShotTypes: ["original_photo"],
 } as const satisfies { exemptShotTypes: readonly Shot["type"][] };
 
+/**
+ * The first intake recipe whose prompt asks for addedOverlays (version 5
+ * above). The tool schema requires the field under strict tool use, so an
+ * older active row still gets an answer, but a guess: the runner and the
+ * preflight read the flag only from this version on, so the worker can ship
+ * before the re-seed.
+ */
+export const addedOverlaysIntake = { key: "intake_normalizer", minVersion: 5 } as const;
+
 export const recipeSeedRows: RecipeRow[] = [
   {
     key: "intake_normalizer",

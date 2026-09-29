@@ -24,7 +24,14 @@ import {
   type ShotGenerator,
 } from "./pipeline-runner";
 import { CUTOUT_PREVIEW_LONG_SIDE, runUploadPreflight, unionBox } from "./preflight";
-import { noteKey, PREFLIGHT_FRESH_MS, reusablePreflightIntake, type PreflightIntake } from "./preflight-intake";
+import {
+  intakeAsksAddedOverlays,
+  noteKey,
+  PREFLIGHT_FRESH_MS,
+  reusablePreflightIntake,
+  trustedIntakeAnswer,
+  type PreflightIntake,
+} from "./preflight-intake";
 import { demoProfile, DemoShotGenerator } from "./runtime";
 
 // docs/phases/PHASE_14.md workstream 4 and item 3.2, runner side.
@@ -231,6 +238,23 @@ describe("reusablePreflightIntake", () => {
   it("keeps the added text flag on a reused answer", () => {
     const flagged = { preflight: preflightOf({ ...twoProductsImage, addedOverlays: true }) };
     expect(reusablePreflightIntake([flagged], undefined, recipe, now)?.images[0].addedOverlays).toBe(true);
+  });
+});
+
+describe("trustedIntakeAnswer", () => {
+  const answer = { images: [{ ...twoProductsImage, addedOverlays: true }] };
+
+  it("keeps the added text flag from a recipe that asks for it", () => {
+    expect(intakeAsksAddedOverlays(intakeRecipe)).toBe(true);
+    expect(trustedIntakeAnswer(answer, intakeRecipe)).toBe(answer);
+  });
+
+  it("clears a guessed flag from an older recipe, so the worker can ship before the re-seed", () => {
+    const older = { key: intakeRecipe.key, version: 4 };
+    expect(intakeAsksAddedOverlays(older)).toBe(false);
+    expect(trustedIntakeAnswer(answer, older).images[0].addedOverlays).toBe(false);
+    expect(trustedIntakeAnswer(answer, { key: "other_recipe", version: 9 }).images[0].addedOverlays).toBe(false);
+    expect(answer.images[0].addedOverlays).toBe(true);
   });
 });
 

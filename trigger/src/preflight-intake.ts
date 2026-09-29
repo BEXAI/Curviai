@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { IntakeImageResult, SellerIntent, type IntakeResult } from "@curvi/pipeline/schemas";
+import { addedOverlaysIntake } from "@curvi/pipeline/seed";
 
 /** How long a preflight answer is reused. */
 export const PREFLIGHT_FRESH_MS = 24 * 60 * 60 * 1000;
@@ -24,6 +25,26 @@ export interface PreflightIntake {
   recipe: { key: string; version: number };
   /** When the preflight asked, ISO 8601. */
   at: string;
+}
+
+/** True when this intake recipe's prompt asks for addedOverlays
+ * (addedOverlaysIntake). */
+export function intakeAsksAddedOverlays(recipe: { key: string; version: number }): boolean {
+  return recipe.key === addedOverlaysIntake.key && recipe.version >= addedOverlaysIntake.minVersion;
+}
+
+/**
+ * The intake answer with addedOverlays kept only when the recipe asked for
+ * it. Strict tool use makes every recipe version answer the field, so under
+ * an older prompt the model guesses, and a guessed true would leave a clean
+ * kept photo out of eBay and Google. Pure: returns the answer untouched when
+ * the recipe asked or nothing is flagged.
+ */
+export function trustedIntakeAnswer(intake: IntakeResult, recipe: { key: string; version: number }): IntakeResult {
+  if (intakeAsksAddedOverlays(recipe) || !intake.images.some((image) => image.addedOverlays === true)) {
+    return intake;
+  }
+  return { ...intake, images: intake.images.map((image) => ({ ...image, addedOverlays: false })) };
 }
 
 /** A stable key for the seller's note: a sha256 of the trimmed text, so an

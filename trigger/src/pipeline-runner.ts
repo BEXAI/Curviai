@@ -165,7 +165,7 @@ import {
 } from "./shot-outputs";
 import { isTerminal, JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 import { DEFAULT_SHOT_CONCURRENCY, withShotClassSlot } from "./shot-concurrency";
-import { reusablePreflightIntake, type PreflightIntake } from "./preflight-intake";
+import { reusablePreflightIntake, trustedIntakeAnswer, type PreflightIntake } from "./preflight-intake";
 
 export type { JobState } from "./state";
 export { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
@@ -3628,8 +3628,14 @@ export async function runGeneratePack(
     // is never the product, so it is never kept either.
     // A kept photo intake saw added text on is left out of the specs that
     // refuse it (applyAddedOverlays).
+    // Only an intake recipe that asks for the flag is trusted with it
+    // (trustedIntakeAnswer), so a worker ahead of the re-seed ships as before.
     const flags = output
-      ? runPlanFlags(output, images, addedOverlayMediaIds(intake.value, judged, input.jobId))
+      ? runPlanFlags(
+          output,
+          images,
+          addedOverlayMediaIds(trustedIntakeAnswer(intake.value, intakeRecipe), judged, input.jobId),
+        )
       : undefined;
     const keptIds = flags?.keepMediaIds ?? [];
     // The photos a cutout shot needs; the others (kept photos no shot cuts
