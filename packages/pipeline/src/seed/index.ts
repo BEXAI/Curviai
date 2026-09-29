@@ -35,6 +35,7 @@ export {
   stillStyle,
   templates,
 } from "./templates";
+export { variationOptions } from "./variations";
 export type {
   CarouselBeat,
   AplusModuleKey,

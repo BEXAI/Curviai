@@ -51,6 +51,7 @@ import {
   type AplusModuleSeed,
 } from "../seed/templates";
 import { capAplusModules, moduleSkipReason, plannedModuleLines } from "../aplus-copy";
+import { applyVariations } from "../variations";
 import { ProductProfile, Shot, ShotList, type ShotMethod } from "../schemas";
 import { printableEndorsements, printableSellerLines } from "../seller-inputs";
 import { dropIncompleteCarousels, planAdsShots, sellerTextFor } from "./ads";
@@ -710,9 +711,18 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   // Channel file limits (amazon.secondary takes 8, amazon.main takes 1) and
   // rule 6, the credit budget, which keeps a file for every picked spec it
   // can afford (trimToBudget).
+  // Scene variations (PHASE_16 workstream 6): each lifestyle shot carries
+  // the seller's version count and its extra versions' credits, so the trim
+  // and the estimate see what the pack makes. It still takes one slot.
   // A carousel that lost a slide to a limit or the trim ships no slide.
   const kept = dropIncompleteCarousels(
-    fitLimitsAndBudget(covered, opts.creditBudget, skipped, specSelected, reservedSlotsFor(covered, sceneCountOf(output))),
+    fitLimitsAndBudget(
+      applyVariations(covered, output),
+      opts.creditBudget,
+      skipped,
+      specSelected,
+      reservedSlotsFor(covered, sceneCountOf(output)),
+    ),
     skipped,
   );
 

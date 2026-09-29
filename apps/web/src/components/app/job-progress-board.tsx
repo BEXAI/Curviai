@@ -10,6 +10,8 @@ import {
   type PackActionResult,
 } from "@/components/app/pack-actions";
 import { ComplianceReportPanel } from "@/components/app/compliance-report-panel";
+import { GalleryGrid } from "@/components/app/gallery-grid";
+import { VersionPick } from "@/components/app/version-pick";
 import { InventoryCard } from "@/components/app/inventory-card";
 import { JobOptionsCard } from "@/components/app/job-options-card";
 import { OutputPreview } from "@/components/app/output-preview";
@@ -28,6 +30,8 @@ import {
   previewAspect,
   type GroupedShot,
 } from "@/lib/output-preview";
+import { galleryItemsFromJob } from "@/lib/library";
+import { REUSE_LABEL, reuseHref } from "@/lib/reuse";
 import { track } from "@/lib/track";
 import type { JobShotView, JobView } from "@/lib/services/types";
 
@@ -249,6 +253,15 @@ export function ShotCard({
         <div className="mt-3 min-h-6">
           <ComplianceBadge shot={shot} />
         </div>
+        {shot.version ? (
+          <VersionPick
+            jobId={job.id}
+            shotId={shot.shotId}
+            version={shot.version}
+            canPick={canManage && job.status === "done" && shot.status === "done"}
+            onDone={onAction}
+          />
+        ) : null}
         {canManage && shot.action === "retry" ? (
           <RetryShotButton jobId={job.id} shot={shot} title={title} onDone={onAction} />
         ) : null}
@@ -520,17 +533,25 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
                 >
                   New pack for this product
                 </Link>
+                <Link href={reuseHref(job.id)} className={buttonVariants({ size: "sm", variant: "outline" })} data-testid="reuse-pack">
+                  {REUSE_LABEL}
+                </Link>
               </div>
             </CardContent>
           </Card>
         ) : null}
         {job.status === "failed" || job.status === "canceled" ? (
-          <Link
-            href={`/app/new?product=${encodeURIComponent(job.productId)}`}
-            className={buttonVariants({ size: "sm", variant: "outline" })}
-          >
-            Try this product again
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href={`/app/new?product=${encodeURIComponent(job.productId)}`}
+              className={buttonVariants({ size: "sm", variant: "outline" })}
+            >
+              Try this product again
+            </Link>
+            <Link href={reuseHref(job.id)} className={buttonVariants({ size: "sm", variant: "outline" })} data-testid="reuse-pack">
+              {REUSE_LABEL}
+            </Link>
+          </div>
         ) : null}
         {planned.length > 0 ? (
           <div className="flex items-center gap-3">
@@ -592,6 +613,19 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
         canManage={canManage}
         onAction={onAction}
       />
+      {job.status === "done" && galleryItemsFromJob(job).length > 0 ? (
+        <section className="space-y-3" aria-labelledby="pack-gallery-title">
+          <h2 id="pack-gallery-title" className="text-lg font-semibold text-ink-950">
+            Gallery
+          </h2>
+          <GalleryGrid
+            items={galleryItemsFromJob(job)}
+            canFavorite={canManage}
+            emptyText="No images match these filters."
+            testId="pack-gallery"
+          />
+        </section>
+      ) : null}
 
       {job.status === "done" || job.followUpRunning ? <PackDownloads jobId={job.id} /> : null}
       {job.status === "done" ? <ComplianceReportPanel jobId={job.id} /> : null}

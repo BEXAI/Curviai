@@ -59,6 +59,9 @@ export const RATE_LIMIT_POLICIES = {
   // Anonymous email capture on the free tools: IP only, since there is no
   // user. A person leaves one email; a few retries and a shared office fit.
   "leads.create": { user: { limit: 20, windowSeconds: HOUR }, ip: { limit: 20, windowSeconds: HOUR } },
+  // Favorites and picking scene versions (PHASE_16 workstream 6): one small
+  // row write each, tapped through a gallery. Generous, but bounded.
+  "assets.write": { user: { limit: 600, windowSeconds: HOUR }, ip: { limit: 1200, windowSeconds: HOUR } },
   // Publishing and unpublishing a share page.
   "shares.write": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
   // Public share page images: each one is a storage read plus a re-encode on

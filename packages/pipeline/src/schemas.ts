@@ -4,6 +4,7 @@
  * z.toJSONSchema via jsonSchemaFor below.
  */
 import { z } from "zod";
+import { variationOptions } from "./seed/variations";
 
 export const Hex = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
@@ -43,7 +44,15 @@ export const Shot = z.object({
   /** An ad variant's key within its pack ("v1" to "v6"). */
   variantKey: z.string().max(12).optional(),
   /** The call to action an ad variant or a carousel's last slide prints. */
-  cta: z.string().max(40).optional()
+  cta: z.string().max(40).optional(),
+  /** Versions of this lifestyle scene the pack makes (PHASE_16 workstream
+   * 6), set by applyVariations when the seller asks for more than one; its
+   * credits already hold the extra ones. Absent is one. Never asked of the
+   * shot planner: LlmShot leaves it out. */
+  variations: z.number().int().min(variationOptions.min + 1).max(variationOptions.max).optional(),
+  /** Which extra version of its scene this shot is (2 to 4), set only on the
+   * shots expandVariations adds at run time. Absent is the scene itself. */
+  variation: z.number().int().min(variationOptions.min + 1).max(variationOptions.max).optional(),
 });
 
 export const ShotList = z.object({ shots: z.array(Shot).max(40), skipped: z.array(z.object({ type: z.string(), reason: z.string() })) });
@@ -101,6 +110,8 @@ export const LlmShot = Shot.extend({ type: Shot.shape.type.exclude(NOT_LLM_SHOT_
   slideCount: true,
   variantKey: true,
   cta: true,
+  variations: true,
+  variation: true,
 });
 
 export const LlmShotList = z.object({ shots: z.array(LlmShot).max(40), skipped: z.array(z.object({ type: z.string(), reason: z.string() })) });

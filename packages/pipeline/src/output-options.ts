@@ -44,6 +44,7 @@ import {
   type PackBundleKey,
   type PresetKey,
 } from "./seed/templates";
+import { variationOptions } from "./seed/variations";
 
 /** A six digit hex color, like #1F2A44. */
 export const HEX = /^#[0-9A-Fa-f]{6}$/;
@@ -228,6 +229,20 @@ export type ProductSize = z.infer<typeof ProductSize>;
 
 const SceneCount = z.number().int().min(sceneCountOptions.min).max(sceneCountOptions.max);
 
+// Scene variations (PHASE_16 workstream 6): versions made of each lifestyle
+// scene, the seller picks which ones ship.
+
+/** Versions of each lifestyle scene a pack makes unless the seller asks for more. */
+export const DEFAULT_VARIATIONS: number = variationOptions.default;
+
+const Variations = z.number().int().min(variationOptions.min).max(variationOptions.max);
+
+/** Versions of each lifestyle scene the pack makes; absent (every row before
+ * PHASE_16) is the seed default. */
+export function variationsOf(options?: { variations?: number } | null): number {
+  return options?.variations ?? DEFAULT_VARIATIONS;
+}
+
 /** The P1 choices' defaults: today's pack, with the seeded scene count. */
 export const P1_DEFAULTS: OutputP1Choices = {
   sceneCount: sceneCountOptions.default,
@@ -296,6 +311,8 @@ export const OutputOptionsInput = z
     graphicsColor: z.boolean().default(P1_DEFAULTS.graphicsColor),
     /** How much the pack makes (PHASE_16 workstream 1); today's pack by default. */
     bundle: Bundle.default(DEFAULT_BUNDLE),
+    /** Versions of each lifestyle scene (PHASE_16 workstream 6); one by default. */
+    variations: Variations.default(DEFAULT_VARIATIONS),
   })
   .strict();
 /** The request shape, before defaults. */
@@ -312,6 +329,9 @@ export interface NormalizedOutputOptions extends OutputP1Choices {
   /** The pack bundle (PHASE_16); absent is today's pack (DEFAULT_BUNDLE), so
    * a pack that keeps the default reads exactly as before. Read it with bundleOf. */
   bundle?: BundleKey;
+  /** Versions of each lifestyle scene (PHASE_16); absent is the seed default,
+   * so a pack that keeps it reads exactly as before. Read it with variationsOf. */
+  variations?: number;
 }
 
 /** The choices a look fixes: normalized options without lookBase. The
@@ -354,6 +374,7 @@ export function normalizeOutputOptions(input?: OutputOptionsInput | null): Norma
     enlarge: parsed.enlarge,
     graphicsColor: parsed.graphicsColor,
     ...(bundle !== DEFAULT_BUNDLE ? { bundle } : {}),
+    ...(parsed.variations !== DEFAULT_VARIATIONS ? { variations: parsed.variations } : {}),
   };
 }
 
@@ -416,6 +437,7 @@ function choicesOf(options: NormalizedOutputOptions | OutputChoices): OutputChoi
     enlarge: options.enlarge,
     graphicsColor: options.graphicsColor,
     ...(bundleOf(options) !== DEFAULT_BUNDLE ? { bundle: bundleOf(options) } : {}),
+    ...(variationsOf(options) !== DEFAULT_VARIATIONS ? { variations: variationsOf(options) } : {}),
   };
 }
 
@@ -438,7 +460,8 @@ export function lookPresetFor(look: LookKey, bundle: BundleKey = DEFAULT_BUNDLE)
 /** The look the choices amount to: the preset key on an exact match with
  * that look's preset for the same bundle, otherwise custom. */
 export function lookOf(options: NormalizedOutputOptions | OutputChoices): Look {
-  const key = canonicalJson(choicesOf(options));
+  // Variations ride along like the bundle: a look never sets them.
+  const key = canonicalJson({ ...choicesOf(options), variations: undefined });
   const bundle = bundleOf(options);
   for (const look of LOOK_KEYS) {
     if (canonicalJson(choicesOf(lookPresetFor(look, bundle))) === key) {
@@ -499,6 +522,8 @@ export const ResolvedOutputOptions = z
     graphicsColor: z.boolean().optional(),
     /** The pack bundle (PHASE_16); absent is today's pack. Read with bundleOf. */
     bundle: Bundle.optional(),
+    /** Versions of each lifestyle scene (PHASE_16); absent is one. Read with variationsOf. */
+    variations: Variations.optional(),
   })
   .strict();
 export type ResolvedOutputOptions = z.infer<typeof ResolvedOutputOptions>;
@@ -639,12 +664,14 @@ export interface OutputPlanFlags {
    * images past its maxSecondary, are skipped with BUNDLE_OFF_REASON. Absent
    * is today's pack. */
   bundle?: BundleKey;
+  /** Versions of each lifestyle scene (PHASE_16 workstream 6); absent is one. */
+  variations?: number;
 }
 
 /** The plan flags for resolved options and the pack's photos. No hex, no free text. */
 export function planFlagsOf(
   resolved: Pick<ResolvedOutputOptions, "background" | "keepMediaIds" | "extras" | "fit"> &
-    Pick<P1Fields, "sceneCount" | "enlarge"> & { bundle?: BundleKey },
+    Pick<P1Fields, "sceneCount" | "enlarge"> & { bundle?: BundleKey; variations?: number },
   photos: readonly PlanPhoto[],
 ): OutputPlanFlags {
   const bundle = bundleOf(resolved);
@@ -656,6 +683,7 @@ export function planFlagsOf(
     sceneCount: sceneCountOf(resolved),
     enlarge: resolved.enlarge ?? P1_DEFAULTS.enlarge,
     ...(bundle !== DEFAULT_BUNDLE ? { bundle } : {}),
+    ...(variationsOf(resolved) !== DEFAULT_VARIATIONS ? { variations: variationsOf(resolved) } : {}),
     photos: photos.map((photo) => ({
       id: photo.id,
       ...(photo.angle !== undefined ? { angle: photo.angle } : {}),

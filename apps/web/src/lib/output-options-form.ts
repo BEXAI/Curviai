@@ -30,8 +30,10 @@ import {
   bundleHoldsFamily,
   bundleOf,
   compactExtras,
+  DEFAULT_VARIATIONS,
   lookOf,
   lookPresetFor,
+  variationsOf,
   keepMediaIdsFor,
   keptMaxUpscale,
   normalizeOutputOptions,
@@ -70,6 +72,7 @@ import {
   sceneCountOptions,
   stillStyle,
   tiers,
+  variationOptions,
   type PresetKey,
   type TierKey,
 } from "@curvi/pipeline/seed";
@@ -181,7 +184,10 @@ export type OutputFormAction =
   /** A bundle card (PHASE_16 workstream 1): how much the pack makes. The
    * Extra images switches move to the bundle's start; every other choice,
    * the look included, stays. */
-  | { type: "bundle"; bundle: BundleKey };
+  | { type: "bundle"; bundle: BundleKey }
+  /** Versions of each scene (PHASE_16 workstream 6). Like the bundle, a look
+   * never sets it and a look card keeps it. */
+  | { type: "variations"; count: number };
 
 function copyChoices(choices: OutputChoices): OutputChoices {
   return { ...choices, color: { ...choices.color }, extras: { ...choices.extras } };
@@ -198,9 +204,22 @@ export function withBundle(choices: OutputChoices, bundle: BundleKey): OutputCho
   };
 }
 
-/** A look card's choices for the pack's current bundle. */
+/** The choices with this many versions of each scene; the default is left
+ * out, as the schema leaves it out. */
+export function withVariations(choices: OutputChoices, count: number): OutputChoices {
+  const { variations: _previous, ...rest } = copyChoices(choices);
+  const clamped = clampVariations(count);
+  return { ...rest, ...(clamped !== DEFAULT_VARIATIONS ? { variations: clamped } : {}) };
+}
+
+function clampVariations(count: number): number {
+  return Math.min(variationOptions.max, Math.max(variationOptions.min, Math.round(count)));
+}
+
+/** A look card's choices for the pack's current bundle, keeping the
+ * seller's versions of each scene. */
 function lookChoices(look: LookKey, choices: OutputChoices): OutputChoices {
-  return copyChoices(lookPresetFor(look, bundleOf(choices)));
+  return withVariations(copyChoices(lookPresetFor(look, bundleOf(choices))), variationsOf(choices));
 }
 
 /** The form's first state: Marketplace ready, today's pack. */
@@ -267,6 +286,9 @@ export function outputFormReducer(state: OutputFormState, action: OutputFormActi
     case "bundle":
       if (bundleOf(state.choices) === action.bundle) return state;
       return { ...state, choices: withBundle(state.choices, action.bundle) };
+    case "variations":
+      if (variationsOf(state.choices) === clampVariations(action.count)) return state;
+      return { ...state, choices: withVariations(state.choices, action.count) };
   }
 }
 
@@ -351,6 +373,10 @@ export function outputOptionsBody(
     // Only a bundle other than today's pack rides along, so an unchanged
     // form sends the same body, and the same Idempotency-Key, as before.
     ...(bundleOf(choices) !== DEFAULT_BUNDLE ? { bundle: bundleOf(choices) } : {}),
+    // Versions of each scene ride only with scenes on and past the default.
+    ...(choices.extras.scenes && variationsOf(choices) !== DEFAULT_VARIATIONS
+      ? { variations: variationsOf(choices) }
+      : {}),
   };
 }
 
@@ -982,6 +1008,27 @@ export function sceneCountFromValue(value: string): number | typeof SCENES_OFF |
   if (value === SCENES_OFF) return SCENES_OFF;
   const n = Number(value);
   return Number.isInteger(n) && n >= sceneCountOptions.min && n <= sceneCountOptions.max ? n : null;
+}
+
+export const VARIATIONS_LABEL = "Versions of each scene";
+
+/** The helper under Versions of each scene, priced from the seed. */
+export function variationsHelper(): string {
+  return `Pick the ones you like after the pack is made. Only the ones you pick go in your files. Each extra version is ${creditsText(creditCosts.generativeStill)}.`;
+}
+
+/** "1, 2, 3, 4", from seed variationOptions. */
+export function variationSelectOptions(): Array<{ value: string; label: string }> {
+  return Array.from({ length: variationOptions.max - variationOptions.min + 1 }, (_, i) => {
+    const n = variationOptions.min + i;
+    return { value: String(n), label: String(n) };
+  });
+}
+
+/** Parses a Versions of each scene Select value. */
+export function variationsFromValue(value: string): number | null {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= variationOptions.min && n <= variationOptions.max ? n : null;
 }
 
 /** Plain names for the seeded scene presets; a new preset needs a name here. */

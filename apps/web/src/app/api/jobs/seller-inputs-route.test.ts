@@ -135,6 +135,7 @@ describe("POST /api/jobs output options (PHASE_15)", () => {
       enlarge: true,
       graphicsColor: false,
       bundle: "everything",
+      variations: 1,
     });
   });
 

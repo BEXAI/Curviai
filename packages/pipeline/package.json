@@ -22,7 +22,8 @@
     "./share-image": "./src/share-image.ts",
     "./size-gate": "./src/size-gate.ts",
     "./testing": "./src/qc/testing.ts",
-    "./treatment": "./src/treatment.ts"
+    "./treatment": "./src/treatment.ts",
+    "./variations": "./src/variations.ts"
   },
   "scripts": {
     "test": "vitest run",

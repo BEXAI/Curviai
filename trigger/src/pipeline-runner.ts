@@ -37,6 +37,8 @@ import {
   type SpendCaps,
 } from "@curvi/ai";
 import { createHash } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import {
   applyAddedOverlays,
   applyAplusCopy,
@@ -158,6 +160,7 @@ import {
   type TierKey,
 } from "@curvi/pipeline/seed";
 import { PackAssetTreatment } from "@curvi/pipeline/treatment";
+import { applyVariations, expandVariations, isExtraVariation } from "@curvi/pipeline/variations";
 import {
   getSpec,
   hasSpec,
@@ -332,6 +335,26 @@ export interface StoredPack {
   channels: string[];
   files: number;
   reportPath: string;
+  /** The extra versions of lifestyle scenes (PHASE_16 workstream 6), one
+   * batch per version number. They are stored unpicked, never zipped and
+   * never counted in files; the seller picks which ones ship. */
+  variations?: StoredVariationFiles[];
+}
+
+/** The files of one extra scene version number, as buildPack wrote them
+ * under outDir/files/{channel}/{file}. */
+export interface StoredVariationFiles {
+  variation: number;
+  outDir: string;
+  files: Array<{
+    file: string;
+    channel: string;
+    specId: string;
+    /** The extra version's shot id. */
+    ref: string;
+    width: number | null;
+    height: number | null;
+  }>;
 }
 
 /** Minimal persistence interface. The app wires this to @curvi/db; tests and
@@ -3305,6 +3328,9 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
 
   shots = coverSellerOffSpecs(shots, skipped, opts.output, { frontMediaId: opts.primaryMediaId, frontUsable });
   shots = capShotsPerChannel(shots, skipped, reservedSlotsFor(shots, sceneCountOf(opts.output)));
+  // Scene variations (PHASE_16 workstream 6): the extra versions join each
+  // lifestyle shot's credits before the trim, as in planShots.
+  shots = applyVariations(shots, opts.output);
   shots = trimShotsToBudget(shots, opts.budget, skipped);
   // A carousel ships whole or not at all (PHASE_16 workstream 3).
   shots = dropIncompleteCarousels(shots, skipped);
@@ -4154,7 +4180,15 @@ export async function runGeneratePack(
       const applied = applyAplusCopy(shotList.shots, copy, { sellerText: sellerTextOf(input) });
       shotList = { shots: applied.shots, skipped: [...shotList.skipped, ...applied.skipped] };
     }
-    plannedShots = shotList.shots.length;
+    // Scene variations (PHASE_16 workstream 6): each marked lifestyle shot
+    // runs as the scene itself plus one shot per extra version, each its own
+    // generation around the same real product through the same checks. The
+    // plan's credits already hold them, one generativeStill per version.
+    const runList = expandVariations(shotList.shots);
+    const extraVariationOf = new Map(
+      runList.filter(isExtraVariation).map((shot) => [shot.id, shot.variation as number] as const),
+    );
+    plannedShots = runList.length;
     skipped = [
       ...conceptExcluded.map((channel) => ({
         type: channel,
@@ -4163,7 +4197,7 @@ export async function runGeneratePack(
       ...shotList.skipped,
     ];
     try {
-      await store.savePlan?.({ jobId: input.jobId, workspaceId: input.workspaceId, shots: shotList.shots, skipped });
+      await store.savePlan?.({ jobId: input.jobId, workspaceId: input.workspaceId, shots: runList, skipped });
     } catch (planErr) {
       console.warn(`[runner] could not record the plan for job ${input.jobId}`, planErr);
     }
@@ -4248,8 +4282,8 @@ export async function runGeneratePack(
       });
     // A carousel's scene layer is made by its first slide before the others run.
     const ordered = (shots: Shot[], c: ShotContext) => runInCarouselOrder(shots, c, runShots);
-    const firstPass = await ordered(shotList.shots, ctx);
-    const outcomes = await retryTransientShots(firstPass, shotList.shots, ctx, ordered, deps, runStartedAt);
+    const firstPass = await ordered(runList, ctx);
+    const outcomes = await retryTransientShots(firstPass, runList, ctx, ordered, deps, runStartedAt);
     costMicros += outcomes.reduce((sum, o) => sum + o.costMicros, 0);
 
     // QC accounting, part one: release every shot that needs review now.
@@ -4279,18 +4313,58 @@ export async function runGeneratePack(
     // atomically with the rows that deliver the pack.
     await advance(transition(state, "qc_done"));
     await assertLive();
-    const packAssets = passing
-      .flatMap((o) => o.packAssets ?? [])
-      .map((asset) => (input.socialBadge && badgeEligible(asset.specId) ? { ...asset, badge: true } : asset));
+    const badged = (outcome: ShotOutcome): ShotPackAsset[] =>
+      (outcome.packAssets ?? []).map((asset) =>
+        input.socialBadge && badgeEligible(asset.specId) ? { ...asset, badge: true } : asset,
+      );
+    // The pack ships the scene itself; an extra version waits unpicked.
+    const packAssets = passing.filter((o) => !extraVariationOf.has(o.shotId)).flatMap(badged);
     const families = [...selectedFamilies(effectiveChannels)];
+    const packIntent = enforcedIntent(targets, exclude);
+    const packInventoryPhotos = packInventory(inventoryPhotos, judgedImages);
     const built = await buildPack(packAssets, families, {
       outDir: deps.packOutDir,
       writeFiles: true,
-      intent: enforcedIntent(targets, exclude),
-      inventory: packInventory(inventoryPhotos, judgedImages),
+      intent: packIntent,
+      inventory: packInventoryPhotos,
     });
     if (built.report.files.length === 0) {
       throw new Error("None of the shots in this pack could be delivered, so nothing was charged.");
+    }
+    // Each extra version number is packaged on its own, with the same
+    // checks, so its files meet the channel rules the day the seller picks
+    // them; they never enter the channel zips.
+    const variationBatches: StoredVariationFiles[] = [];
+    const variationDropped: typeof built.report.dropped = [];
+    const extraPassing = passing.filter((o) => extraVariationOf.has(o.shotId));
+    for (const variation of [...new Set(extraPassing.map((o) => extraVariationOf.get(o.shotId)!))].sort((a, b) => a - b)) {
+      const assets = extraPassing.filter((o) => extraVariationOf.get(o.shotId) === variation).flatMap(badged);
+      const batchDir = path.join(built.outDir, "variations", `v${variation}`);
+      await mkdir(batchDir, { recursive: true });
+      const batch = await buildPack(assets, families, {
+        outDir: batchDir,
+        writeFiles: true,
+        intent: packIntent,
+        inventory: packInventoryPhotos,
+      });
+      variationDropped.push(...batch.report.dropped);
+      const files = batch.report.files.flatMap((f) =>
+        f.ref === null
+          ? []
+          : [
+              {
+                file: f.file,
+                channel: f.channel,
+                specId: f.specId,
+                ref: f.ref,
+                width: f.measured?.width ?? null,
+                height: f.measured?.height ?? null,
+              },
+            ],
+      );
+      if (files.length > 0) {
+        variationBatches.push({ variation, outDir: batch.outDir, files });
+      }
     }
     const toSave: StoredPack = {
       jobId: input.jobId,
@@ -4299,6 +4373,7 @@ export async function runGeneratePack(
       channels: built.report.channels,
       files: built.report.files.length,
       reportPath: built.reportPath,
+      ...(variationBatches.length > 0 ? { variations: variationBatches } : {}),
     };
     await assertLive();
     await store.savePack(toSave);
@@ -4310,11 +4385,14 @@ export async function runGeneratePack(
     // amazon.secondary over the channel image limit, is released like a
     // shot that needs review (Update.md 2.10, 2.12). The heartbeat keeps
     // the reconciler off the job while the charges land.
-    const delivered = new Set(
-      built.report.files.map((f) => f.ref).filter((ref): ref is string => ref !== null),
-    );
+    // An extra scene version counts as delivered once its files are stored
+    // (unpicked): the seller asked and paid for it, at the seed price.
+    const delivered = new Set([
+      ...built.report.files.map((f) => f.ref).filter((ref): ref is string => ref !== null),
+      ...variationBatches.flatMap((batch) => batch.files.map((f) => f.ref)),
+    ]);
     const droppedFor = new Map<string, string>();
-    for (const drop of built.report.dropped) {
+    for (const drop of [...built.report.dropped, ...variationDropped]) {
       if (drop.ref !== null && !droppedFor.has(drop.ref)) {
         droppedFor.set(drop.ref, drop.reason);
       }

@@ -12,6 +12,8 @@ import {
   BUNDLE_OFF_REASON,
   bundleHoldsFamily,
   bundleOf,
+  DEFAULT_VARIATIONS,
+  variationsOf,
   DEFAULT_BUNDLE,
   DEFAULT_OUTPUT_OPTIONS,
   EXTRA_FAMILY_KEYS,
@@ -811,6 +813,11 @@ export function outputOptionsSummary(
   }
   if (resolved.extras.ads === true) {
     lines.push(`Added: ${EXTRA_FAMILY_NAMES.ads}.`);
+  }
+  // Versions of each scene (PHASE_16 workstream 6), only past the default.
+  const variations = variationsOf(stored);
+  if (resolved.extras.scenes && variations !== DEFAULT_VARIATIONS) {
+    lines.push(`${variations} versions of each scene. You pick the ones that ship.`);
   }
   return { look: stored?.look ?? "marketplace", lines };
 }
