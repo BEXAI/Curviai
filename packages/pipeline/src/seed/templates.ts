@@ -58,6 +58,13 @@ export const canvasDefaults = {
 } as const;
 
 /**
+ * How many lifestyle scenes a pack may plan (PHASE_15 P1 "Number of
+ * scenes", founder decision 4). The planner plans exactly the chosen count
+ * for every category; "Off" in the form turns the scenes family off instead.
+ */
+export const sceneCountOptions = { min: 1, max: 4, default: 3 } as const;
+
+/**
  * Colors for deterministic and template stills (gray sweep, brand sweep
  * fallback, template backgrounds and text). Seed data per CLAUDE.md rule 2,
  * so no renderer hardcodes a color. Template backgrounds follow the shot's
