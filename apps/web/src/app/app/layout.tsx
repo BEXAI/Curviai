@@ -6,6 +6,7 @@ import { AppNav } from "@/components/app/app-nav";
 import { PastDueBanner } from "@/components/app/billing-actions";
 import { PackReadyNotice } from "@/components/app/pack-ready-notice";
 import { HeaderCreditBalance } from "@/components/app/paywall";
+import { SiteFooter } from "@/components/marketing/site-footer";
 import { Wordmark } from "@/components/marketing/site-header";
 import { loadPastDueNotice } from "@/lib/billing/account";
 import { lowBalanceThreshold } from "@/lib/billing/paywall";
@@ -46,7 +47,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     loadHeaderBalance(demo || Boolean(user)),
   ]);
   return (
-    <div className="theme-dark min-h-screen bg-night text-ink-900">
+    <div className="theme-dark flex min-h-screen flex-col bg-night text-ink-900">
       <header className="border-b border-ink-100 bg-white">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-3">
           <Link href="/" aria-label="Curvi home page">
@@ -84,7 +85,8 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         </div>
       ) : null}
       {pastDue ? <PastDueBanner message={pastDue} /> : null}
-      <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">{children}</main>
+      <SiteFooter />
       {demo || user ? <PackReadyNotice /> : null}
     </div>
   );
