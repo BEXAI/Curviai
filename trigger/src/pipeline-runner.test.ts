@@ -3770,6 +3770,7 @@ describe("A+ modules in the runner (PHASE_16 workstream 2)", () => {
       tasks: [copyKey],
       costMicros: 1234,
       output: {
+        ads: { headlines: [], callsToAction: [] },
         modules: [
           ...demoAplusCopy.modules.filter((m) => m.type !== "aplus_results"),
           {
@@ -3886,6 +3887,53 @@ describe("ads formats in a pack (PHASE_16 workstream 3)", () => {
     const off = await runGeneratePack({ ...input, jobId: "job-ads-off", output: adsOutput({}) }, makeDeps());
     const offFiles = await packReport(off);
     expect(offFiles.some((f) => f.file.startsWith("carousel/") || f.file.startsWith("ads/"))).toBe(false);
+  });
+
+  it("rewords the planned ad variants from the copy recipe without changing the plan", async () => {
+    class PlanStore extends InMemoryJobStore {
+      readonly plans: Shot[][] = [];
+      async savePlan(plan: { shots: Shot[] }): Promise<void> {
+        this.plans.push(plan.shots);
+      }
+    }
+    const headlines = [
+      "A mug for slow mornings",
+      "Your desk coffee companion",
+      "Coffee that travels with you",
+      "Easy grip for busy days",
+      "Pour, sip and repeat",
+      "The mug that fits your day",
+      "Made for your daily coffee",
+      "Morning coffee done right",
+    ];
+    const callsToAction = ["Get yours", "See the mug"];
+    const input: GeneratePackInput = {
+      ...baseInput,
+      channels: ["meta", "pinterest", "tiktok"],
+      creditBudget: 60,
+      output: adsOutput({ extras: { ads: true, scenes: false } }),
+    };
+    const plainStore = new PlanStore();
+    const plain = await runGeneratePack(input, makeDeps({ store: plainStore }));
+    const copy = new MockProvider({
+      name: "mock-copy",
+      tasks: [copyKey],
+      output: { ...demoAplusCopy, ads: { headlines, callsToAction } },
+    });
+    const store = new PlanStore();
+    const summary = await runGeneratePack({ ...input, jobId: "job-ad-copy" }, makeDeps({ ai: makeAi({ copy }), store }));
+    expect(summary.state).toBe("done");
+    expect(copy.calls).toHaveLength(1);
+    const variants = store.plans[0].filter((s) => s.type === "ad_variant");
+    expect(variants.length).toBeGreaterThan(0);
+    for (const variant of variants) {
+      expect(headlines).toContain(variant.headline);
+      expect(callsToAction).toContain(variant.cta);
+    }
+    // Only words change: the same shots, channels and credits as the planner's.
+    const shape = (shots: Shot[]) => shots.map((s) => [s.id, s.type, s.channels.join(","), s.credits]);
+    expect(shape(store.plans[0])).toEqual(shape(plainStore.plans[0]));
+    expect(summary.chargedCredits).toBe(plain.chargedCredits);
   });
 
   it("adds the deterministic plan's ads formats to an LLM plan", () => {

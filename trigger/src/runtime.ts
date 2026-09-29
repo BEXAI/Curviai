@@ -19,7 +19,7 @@ import {
   QC_THRESHOLDS,
   qcKindForSpec,
   solidCanvas,
-  type AplusCopyResult,
+  type PackCopyResult,
   type ProductProfile,
   type RawImage,
   type RawMask,
@@ -75,8 +75,10 @@ export const demoProfile: ProductProfile = {
 };
 
 /** The demo copy_generator answer: A+ module copy for demoProfile, only
- * facts the profile holds, so it passes the claims guard. */
-export const demoAplusCopy: AplusCopyResult = {
+ * facts the profile holds, so it passes the claims guard. The ads lists are
+ * empty, so demo ad variants keep the planner's lines. */
+export const demoAplusCopy: PackCopyResult = {
+  ads: { headlines: [], callsToAction: [] },
   modules: [
     {
       type: "aplus_features",

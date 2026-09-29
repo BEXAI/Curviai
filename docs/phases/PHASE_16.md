@@ -255,18 +255,24 @@ Recorded 2026-09-29 on the integration branch `p16/integration` (head 38bd279 be
 
 ### Known gaps
 
-As of 38bd279. The fix passes that run beside this docs commit may close some of these; check the branch log before acting on one.
+Updated after the review fixes merged into p16/integration (fix-other, fix-trigger, fix-webapi, fix-webui, fix-pipeline, fix-docs). Those passes closed: the bundle seam in `validateLlmShotList`, a scene carousel shipping without slide 1, the ads hold for the richest carousel, the idempotency replay on other photos or notes, the "Reviews" label, API retries overwriting a cleaned photo, the unkeyed MCP body size, the workspace cap on brand palette calls, the question step skip and toggles, gallery transparency, and ad copy from the recipe (copy_generator v3, now wired in the runner copy step).
 
-- `validateLlmShotList` in trigger/src/pipeline-runner.ts does not know bundles, so an LLM plan with shots outside the bundle can fall back to the deterministic plan.
 - A small bundle with only non marketplace channels can plan zero shots and show "About 0 credits".
 - The all files zip does not include `ads/ads.csv` and can give a picked extra version a `-2` suffix. Picking a version does not update the compliance report.
 - The TikTok safe zone and the A+ sizes other than 970 x 600 come from secondary sources (`tiktok.ad_9x16` is marked verified false).
 - Question channel and mood keywords are English only.
-- Marketing copy (home, pricing, llms.txt) does not yet describe bundles, A+ modules, carousels, ad packs or scene versions as live. The "Done when" copy item is open.
+- Marketing copy: llms.txt, llms-full.txt and the JSON-LD now describe pack sets, A+ modules and ads formats behind `FEATURES.packBundles`, `aplusModules` and `adsFormats`. The home page, the pricing page and the seed `includeLines` still do not, and the seed `featureStatus.apiAccess` is live while `FEATURES.agentApi` is coming soon. The "Done when" copy item is open.
+- The help article and llms.txt say the API and MCP server are coming soon, while /app/settings/api hands Growth workspaces working keys. A founder decision is needed: flip `FEATURES.agentApi` when the API ships, or gate the routes until then.
+- Ad placements dropped on a sparse profile (`AD_PLACEMENT_SHORT_REASON`, `ADS_NO_COPY_REASON`) are not refilled from recipe copy, because the plan, estimate and hold are fixed before any model call. The pin headline and the carousel CTA slide still use the planner's lines.
+- A carousel slide dropped at packaging time still lets the other slides ship. A per slide retry of a needs review carousel slide in follow-up.ts could ship that one slide alone; the web app should block it or retry the whole carousel.
+- No `workspace_day` spend cap exists for any LLM call. Brand palette spend is logged, not metered against the workspace.
+- API photo cleanup race: a refused request can delete a photo key a concurrent request with the same photo skipped writing. The retry stores it again. The R2 status for a failed `If-None-Match` put was not confirmed against a live bucket; any status other than 412 fails safe as a 503.
+- API answers cover channels and mood only (no target, use or audience), and the CLI has no `--answer` flag yet. Idempotency does not compare title, sku, box contents, comparison facts, endorsements, answers or photo order, and photos are fetched before the key is checked.
+- With ads on, the estimate shows the most the seed allows (for example "Carousel, 7 slides"); an "up to" wording may read better.
 
 ### Needs a live run
 
-- `pnpm eval` with live keys for `copy_generator` v2, `question_planner` v1 and `brand_palette_namer` v1 (none has live fixtures yet), and the `--stage aplus` and `--stage questions` golden sets (the A+ fidelity stage passed 60 of 60 offline on 2026-09-29). There is no eval stage for the ads formats yet.
+- `pnpm eval` with live keys for `copy_generator` v3 (v2 plus ad lines, now the active copy recipe; production needs a recipe re-seed), `question_planner` v1 and `brand_palette_namer` v1 (none has live fixtures yet), and the `--stage aplus` and `--stage questions` golden sets (the A+ fidelity stage passed 60 of 60 offline on 2026-09-29). There is no eval stage for the ads formats yet.
 - A scene carousel against a real image provider, with the R2 cutout cache shared across shot subtasks.
 - The MCP server against real clients (only the spec's message shapes are tested).
 - `pnpm e2e`: not run on the integration branch. Earlier reports named pre existing failures in e2e/home-hero.spec.ts (3) and e2e/claims.spec.ts (1). There are no Playwright specs yet for /app/library, Make this pack again, version picking, the Carousel and Ads sections or /app/settings/api.

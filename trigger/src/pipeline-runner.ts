@@ -53,6 +53,10 @@ import {
   packGroupFor,
   isAplusModuleType,
   needsAplusCopy,
+  applyAdCopy,
+  needsAdCopy,
+  packCopyRequest,
+  PackCopyResult,
   NO_ENDORSEMENT_REASON,
   printableEndorsements,
   applyBrandStylePreset,
@@ -150,6 +154,7 @@ import {
   type OutputPlanFlags,
 } from "@curvi/pipeline/output-options";
 import {
+  adCopyRecipe,
   aplusCopyRecipe,
   creditCosts,
   HARMONIZE_TASK,
@@ -4193,31 +4198,58 @@ export async function runGeneratePack(
     // with no figure or claim word the seller did not type. A failed or
     // refused call never fails the pack: a module falls back to the
     // planner's own lines, or is skipped and never charged.
-    if (needsAplusCopy(shotList.shots)) {
+    // Ad copy (PHASE_16 workstream 3): copy_generator version 3 or later
+    // (adCopyRecipe) also rewords the planned ad variants in the same call.
+    // applyAdCopy only swaps words, so the plan, estimate and hold stand.
+    const copyRecipe = aplusCopyRecipeFor(recipes);
+    const writesAdCopy = copyRecipe.key === adCopyRecipe.key && copyRecipe.version >= adCopyRecipe.minVersion;
+    if (needsAplusCopy(shotList.shots) || (writesAdCopy && needsAdCopy(shotList.shots))) {
       await assertLive();
+      const ctx = { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "copy" };
       let copy: AplusCopyResult | null = null;
+      let packCopy: PackCopyResult | null = null;
       try {
-        const answer = await bookedLlm(
-          llmJson<AplusCopyResult>(
-            deps.ai,
-            aplusCopyRecipeFor(recipes),
-            AplusCopyResult,
-            aplusCopyRequest(
-              profile,
-              shotList.shots.map((shot) => shot.type).filter(isAplusModuleType),
-              wrapUserDescription(input.userDescription),
+        if (writesAdCopy) {
+          const answer = await bookedLlm(
+            llmJson<PackCopyResult>(
+              deps.ai,
+              copyRecipe,
+              PackCopyResult,
+              packCopyRequest(profile, shotList.shots, wrapUserDescription(input.userDescription)),
+              ctx,
+              undefined,
+              PackCopyResult,
             ),
-            { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "copy" },
-            undefined,
-            AplusCopyResult,
-          ),
-        );
-        copy = answer.value;
+          );
+          packCopy = answer.value;
+          copy = answer.value;
+        } else {
+          const answer = await bookedLlm(
+            llmJson<AplusCopyResult>(
+              deps.ai,
+              copyRecipe,
+              AplusCopyResult,
+              aplusCopyRequest(
+                profile,
+                shotList.shots.map((shot) => shot.type).filter(isAplusModuleType),
+                wrapUserDescription(input.userDescription),
+              ),
+              ctx,
+              undefined,
+              AplusCopyResult,
+            ),
+          );
+          copy = answer.value;
+        }
       } catch (copyErr) {
-        console.warn(`[runner] job ${input.jobId} A+ copy call failed; modules use the planner's lines`, copyErr);
+        console.warn(`[runner] job ${input.jobId} copy call failed; modules and ads use the planner's lines`, copyErr);
       }
-      const applied = applyAplusCopy(shotList.shots, copy, { sellerText: sellerTextOf(input) });
-      shotList = { shots: applied.shots, skipped: [...shotList.skipped, ...applied.skipped] };
+      const sellerText = sellerTextOf(input);
+      const applied = applyAplusCopy(shotList.shots, copy, { sellerText });
+      shotList = {
+        shots: applyAdCopy(applied.shots, packCopy, { sellerText }),
+        skipped: [...shotList.skipped, ...applied.skipped],
+      };
     }
     // Scene variations (PHASE_16 workstream 6): each marked lifestyle shot
     // runs as the scene itself plus one shot per extra version, each its own
