@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
-import { renderPieceThumbnails } from "./contact-sheet";
+import { renderCutoutPreview, renderPieceThumbnails } from "./contact-sheet";
 import { analyzeInventory, chooseInventoryTarget, noteSignals, piecesInBox } from "./inventory";
 import { uprightSize, type RawImage } from "./raw";
 import type { IntakeProduct } from "./schemas";
@@ -106,6 +106,30 @@ describe("renderPieceThumbnails", () => {
       expect(Math.abs(data[o + 2] - want[2])).toBeLessThan(40);
     }
     expect(await renderPieceThumbnails(img, [])).toEqual([]);
+  });
+});
+
+describe("renderCutoutPreview (PHASE_15 P1)", () => {
+  it("draws one piece as an alpha PNG, never enlarged", async () => {
+    const img = twoBottles();
+    const inv = analyzeInventory(img);
+    const blue = inv.objects.find((o) => o.color.name !== "red") ?? inv.objects[1];
+    const png = await renderCutoutPreview(img, blue.pixelBox, { longSide: 640 });
+    expect(png).not.toBeNull();
+    const meta = await sharp(png!).metadata();
+    expect(meta.format).toBe("png");
+    expect(meta.hasAlpha).toBe(true);
+    // Smaller than 640 already, so drawn at its own size.
+    expect(Math.max(meta.width!, meta.height!)).toBeLessThan(640);
+    const small = await renderCutoutPreview(img, blue.pixelBox, { longSide: 64 });
+    const smallMeta = await sharp(small!).metadata();
+    expect(Math.max(smallMeta.width!, smallMeta.height!)).toBe(64);
+  });
+
+  it("draws every opaque pixel without a piece, and nothing for an empty cutout", async () => {
+    const whole = await renderCutoutPreview(twoBottles(), null, { longSide: 640 });
+    expect(whole).not.toBeNull();
+    expect(await renderCutoutPreview(cutout(20, 20, []), null, { longSide: 640 })).toBeNull();
   });
 });
 

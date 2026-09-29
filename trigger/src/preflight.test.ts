@@ -7,7 +7,7 @@ import {
   type RoutingTable,
 } from "@curvi/ai";
 import { MockProvider } from "@curvi/ai/testing";
-import { analyzeInventory, encodePng, type IntakeImageResult, type RawImage } from "@curvi/pipeline";
+import { analyzeInventory, decodeToRgba, encodePng, type IntakeImageResult, type RawImage } from "@curvi/pipeline";
 import { CUTOUT_TASK } from "@curvi/pipeline/seed";
 import { cacheCutouts, cutoutCacheKey, type CachedCutout, type CutoutCacheStore } from "./cutout-cache";
 import {
@@ -23,7 +23,7 @@ import {
   type PipelineDeps,
   type ShotGenerator,
 } from "./pipeline-runner";
-import { runUploadPreflight } from "./preflight";
+import { CUTOUT_PREVIEW_LONG_SIDE, runUploadPreflight } from "./preflight";
 import { noteKey, PREFLIGHT_FRESH_MS, reusablePreflightIntake, type PreflightIntake } from "./preflight-intake";
 import { demoProfile, DemoShotGenerator } from "./runtime";
 
@@ -388,6 +388,31 @@ describe("runUploadPreflight", () => {
     const run = await runUploadPreflight(deps, { preflightId: "pf-2", workspaceId: WS, mediaKey: KEY, note: "the blue one only" });
     expect(run.rule).toBe("note");
     expect(run.items.filter((i) => i.featured).map((i) => i.label)).toEqual(["blue bottle"]);
+  });
+
+  it("draws the cutout preview of the one product the pack is for (PHASE_15 P1)", async () => {
+    const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
+    const run = await runUploadPreflight(deps, { preflightId: "pf-8", workspaceId: WS, mediaKey: KEY, note: "the blue one only" });
+    expect(run.preview).not.toBeNull();
+    const preview = await decodeToRgba(run.preview!);
+    expect(Math.max(preview.width, preview.height)).toBeLessThanOrEqual(CUTOUT_PREVIEW_LONG_SIDE);
+    let clear = 0;
+    let red = 0;
+    for (let i = 0; i < preview.width * preview.height; i++) {
+      const [r, g, b, a] = [0, 1, 2, 3].map((c) => preview.data[i * 4 + c]);
+      if (a === 0) clear++;
+      else if (r > 150 && g < 80 && b < 80) red++;
+    }
+    // Only the blue bottle's own pixels, on a clear background.
+    expect(clear).toBeGreaterThan(0);
+    expect(red).toBe(0);
+  });
+
+  it("draws no cutout preview while the photo needs the chooser", async () => {
+    const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
+    const run = await runUploadPreflight(deps, { preflightId: "pf-9", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(run.rule).toBe("ambiguous");
+    expect(run.preview).toBeNull();
   });
 
   it("returns intake only and says so when the cutout provider is unavailable", async () => {

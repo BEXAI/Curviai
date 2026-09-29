@@ -30,6 +30,7 @@ import {
   pickerNumbering,
   PICKER_MAX_PIECES,
   PICKER_MIN_PIECES,
+  renderCutoutPreview,
   renderPieceThumbnails,
   uprightSize,
   type InventoryDecision,
@@ -48,6 +49,10 @@ import { noteKey, type PreflightIntake } from "./preflight-intake";
 import { recipeFor, seedJobRecipes, type JobRecipes } from "./recipes";
 
 export { noteKey, PREFLIGHT_FRESH_MS, preflightFresh, type PreflightIntake } from "./preflight-intake";
+
+/** Longest side of the cutout preview the form shows on the chosen color
+ * (PHASE_15 P1): enough for the preview strip, far below any output. */
+export const CUTOUT_PREVIEW_LONG_SIDE = 640;
 
 export interface UploadPreflightArgs {
   /** A fresh id for this check: the job id every metered call carries. */
@@ -91,6 +96,10 @@ export interface UploadPreflightRun {
   rule: InventoryDecision["rule"] | null;
   /** One JPEG per item, in the same order, when the chooser is needed. */
   thumbnails: Buffer[];
+  /** An alpha PNG of the one product the photo is for, at most
+   * CUTOUT_PREVIEW_LONG_SIDE, drawn from the cutout already made (PHASE_15
+   * P1 cutout preview); null when there is no cutout or no single product. */
+  preview: Buffer | null;
   /** Provider spend of every call above, in USD micros. */
   costMicros: number;
 }
@@ -114,6 +123,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
     items: [],
     rule: null,
     thumbnails: [],
+    preview: null,
     costMicros: 0,
   };
   const { preflightId, workspaceId, mediaKey } = args;
@@ -203,6 +213,18 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
     colorName: object.color.name,
     featured: decision.featured.includes(object.index),
   }));
+  // The cutout preview: the one product the pack is for, when the rules
+  // settled on one (a photo that needs the chooser gets none).
+  const featured = order.filter((object) => decision.featured.includes(object.index));
+  const product = featured.length === 1 ? featured[0] : order.length === 1 ? order[0] : null;
+  if (product) {
+    run.preview = await renderCutoutPreview(cutout, product.pixelBox, { longSide: CUTOUT_PREVIEW_LONG_SIDE }).catch(
+      (err: unknown) => {
+        console.warn(`[preflight] could not draw the cutout preview for ${preflightId}`, err);
+        return null;
+      },
+    );
+  }
   if (order.length >= PICKER_MIN_PIECES && order.length <= PICKER_MAX_PIECES) {
     run.thumbnails = await renderPieceThumbnails(
       cutout,

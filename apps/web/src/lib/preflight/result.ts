@@ -28,9 +28,11 @@ export interface StoredPreflightItem extends Omit<PreflightItemView, "thumbUrl">
   thumbKey: string | null;
 }
 
-/** What upload_preflights.result holds. */
-export interface StoredPreflight extends Omit<PreflightView, "key" | "items"> {
+/** What upload_preflights.result holds: object keys, never signed urls or bytes. */
+export interface StoredPreflight extends Omit<PreflightView, "key" | "items" | "previewUrl"> {
   items: StoredPreflightItem[];
+  /** The cutout preview's object key (ws/{id}/cache/preview/...), when one was stored. */
+  previewKey?: string | null;
 }
 
 /** What every image channel spec needs from a photo, from the registry. */
@@ -45,7 +47,11 @@ function longSideOf(box: PreflightBox, photo: { width: number; height: number } 
   return photo ? Math.round(Math.max(box.width * photo.width, box.height * photo.height)) : null;
 }
 
-export function storedPreflightOf(run: UploadPreflightRun, thumbKeys: ReadonlyArray<string | null> = []): StoredPreflight {
+export function storedPreflightOf(
+  run: UploadPreflightRun,
+  thumbKeys: ReadonlyArray<string | null> = [],
+  previewKey: string | null = null,
+): StoredPreflight {
   const base: StoredPreflight = {
     status: "unavailable",
     found: null,
@@ -102,20 +108,25 @@ export function storedPreflightOf(run: UploadPreflightRun, thumbKeys: ReadonlyAr
     items: status === "choose" ? items : [],
     preselect,
     productLongSide,
+    // The preview shows one product, so a photo that needs the chooser has none.
+    ...(previewKey && status === "ready" ? { previewKey } : {}),
   };
 }
 
-/** The stored verdict as the form sees it, with each thumbnail signed. */
+/** The stored verdict as the form sees it, with each thumbnail and the
+ * cutout preview signed. */
 export async function preflightViewOf(
   key: string,
   stored: StoredPreflight,
   sign: (thumbKey: string) => Promise<string | null>,
 ): Promise<PreflightView> {
+  const { previewKey, ...rest } = stored;
   const items = await Promise.all(
-    stored.items.map(async ({ thumbKey, ...item }) => ({
+    rest.items.map(async ({ thumbKey, ...item }) => ({
       ...item,
       thumbUrl: thumbKey ? await sign(thumbKey).catch(() => null) : null,
     })),
   );
-  return { ...stored, key, items };
+  const previewUrl = previewKey ? await sign(previewKey).catch(() => null) : null;
+  return { ...rest, key, items, ...(previewUrl ? { previewUrl } : {}) };
 }

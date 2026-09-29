@@ -46,6 +46,17 @@ export function preflightThumbKey(workspaceId: string, uploadKey: string, prefli
   return `ws/${workspaceId}/preflight/${upload}/${preflightId}-${number}.jpg`;
 }
 
+/**
+ * Where a preflight's cutout preview lives (PHASE_15 P1): the workspace's
+ * cache prefix next to the cutout cache (ws/{id}/cache/cutout/), kept as
+ * long as that cache. The form reads it through a signed url only while
+ * the preflight row is fresh, like the cutout the pack reuses.
+ */
+export function preflightPreviewKey(workspaceId: string, uploadKey: string, preflightId: string): string {
+  const upload = createHash("sha256").update(uploadKey).digest("hex").slice(0, 32);
+  return `ws/${workspaceId}/cache/preview/${upload}/${preflightId}.png`;
+}
+
 function isFresh(row: Pick<UploadPreflight, "updatedAt">, now: Date): boolean {
   const age = now.getTime() - row.updatedAt.getTime();
   return age >= 0 && age < PREFLIGHT_FRESH_MS;
@@ -100,7 +111,17 @@ export async function preflightUpload(
       }
     }
   }
-  const stored = storedPreflightOf(run, thumbKeys);
+  let previewKey: string | null = null;
+  if (run.preview && deps.putObject) {
+    const key = preflightPreviewKey(workspaceId, input.key, preflightId);
+    try {
+      await deps.putObject(key, run.preview, "image/png");
+      previewKey = key;
+    } catch (err) {
+      console.warn(`[preflight] could not store a cutout preview for workspace ${workspaceId}`, err);
+    }
+  }
+  const stored = storedPreflightOf(run, thumbKeys, previewKey);
   const values = {
     noteKey: noteKey(note),
     status: stored.status,
