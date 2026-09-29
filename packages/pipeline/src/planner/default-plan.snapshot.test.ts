@@ -1,11 +1,12 @@
 /**
- * PHASE_15 guard: with no output options the deterministic planner plans
- * exactly the shots it planned before seller controls existed, for every
- * channel preset. The snapshot was captured on the pre PHASE_15 planner and
- * must not change.
+ * PHASE_15 guard: with no output options, and with the default options
+ * (Marketplace ready), the deterministic planner plans exactly the shots it
+ * planned before seller controls existed, for every channel preset. The
+ * snapshot was captured on the pre PHASE_15 planner and must not change.
  */
 import { describe, expect, it } from "vitest";
 import { listSpecs } from "@curvi/specs";
+import { DEFAULT_OUTPUT_OPTIONS, planFlagsOf, resolveOutputOptions } from "../output-options";
 import type { ProductProfile } from "../schemas";
 import { planShots, type PlanOptions } from "./deterministic";
 
@@ -55,7 +56,7 @@ const PROFILES: Record<string, ProductProfile> = {
 };
 
 /** Plans every preset for one product; `extra` adds plan options. */
-export function planPresets(product: ProductProfile, extra: Partial<PlanOptions> = {}) {
+function planPresets(product: ProductProfile, extra: Partial<PlanOptions> = {}) {
   return CHANNEL_PRESETS.map((channels) => ({
     channels: channels.join(","),
     plan: planShots(product, {
@@ -74,6 +75,21 @@ describe("default plan snapshot", () => {
   for (const [name, product] of Object.entries(PROFILES)) {
     it(`plans today's shots for every channel preset: ${name}`, () => {
       expect(planPresets(product)).toMatchSnapshot();
+    });
+
+    it(`plans the same shots with the default options: ${name}`, () => {
+      const resolved = resolveOutputOptions(DEFAULT_OUTPUT_OPTIONS, {
+        colorHex: "#FFFFFF",
+        brandSweepHex: "#FFFFFF",
+        keepMediaIds: [],
+      });
+      const photos = [
+        { id: "m_front", angle: "front", width: 3000, height: 3000 },
+        { id: "m_45", angle: "45", width: 3000, height: 3000 },
+        { id: "m_back", angle: "back" },
+        { id: "m_pack", angle: "packaging", width: 400, height: 300 },
+      ];
+      expect(planPresets(product, { output: planFlagsOf(resolved, photos) })).toEqual(planPresets(product));
     });
   }
 });
