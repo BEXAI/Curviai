@@ -7,7 +7,10 @@
  * image pass rate is below 100 percent (Phase 4 acceptance) or mean fidelity
  * drops below threshold.
  *
- * Usage: pnpm --filter @curvi/pipeline eval [-- --stage main|stills]
+ * Usage: pnpm --filter @curvi/pipeline eval [-- --stage main|stills|questions]
+ *
+ * The questions stage (PHASE_16 workstream 4) runs the question step's
+ * golden set in eval/questions.ts: no images, no provider.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -22,6 +25,7 @@ import { pixelChecks, QC_THRESHOLDS } from "../src/qc/pixelChecks";
 import { decodeToRgba, decodeMask, type RawImage } from "../src/raw";
 import type { Shot } from "../src/schemas";
 import { templates } from "../src/seed/templates";
+import { runQuestionEval } from "./questions";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
@@ -355,7 +359,9 @@ function printTable(rows: EvalRow[]): void {
   }
 }
 
-function parseStage(argv: string[]): "main" | "stills" {
+type Stage = "main" | "stills" | "questions";
+
+function parseStage(argv: string[]): Stage {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--stage" && argv[i + 1]) {
       return assertStage(argv[i + 1]);
@@ -367,9 +373,9 @@ function parseStage(argv: string[]): "main" | "stills" {
   return "main";
 }
 
-function assertStage(value: string): "main" | "stills" {
-  if (value !== "main" && value !== "stills") {
-    console.error(`Unknown stage "${value}". Use --stage main or --stage stills.`);
+function assertStage(value: string): Stage {
+  if (value !== "main" && value !== "stills" && value !== "questions") {
+    console.error(`Unknown stage "${value}". Use --stage main, --stage stills or --stage questions.`);
     process.exit(2);
   }
   return value;
@@ -378,6 +384,10 @@ function assertStage(value: string): "main" | "stills" {
 async function main(): Promise<void> {
   const stage = parseStage(process.argv.slice(2));
   console.log(`Curvi pipeline eval, stage: ${stage}`);
+  if (stage === "questions") {
+    await questionsMain();
+    return;
+  }
   console.log(`Golden set: ${GOLDEN_DIR}`);
 
   const products = await generateGoldenSet();
@@ -411,6 +421,28 @@ async function main(): Promise<void> {
 
   if (passRate < 1 || meanDeltaE > deltaEThreshold) {
     console.error("Eval failed: pass rate below 100 percent or fidelity dropped.");
+    process.exit(1);
+  }
+}
+
+async function questionsMain(): Promise<void> {
+  const rows = runQuestionEval();
+  for (const row of rows) {
+    console.log(`${row.pass ? "pass" : "FAIL"}  ${row.scenario}  [${row.asked || "nothing asked"}]`);
+    for (const failure of row.failed) console.log(`      ${failure}`);
+  }
+  const passCount = rows.filter((r) => r.pass).length;
+  await mkdir(OUTPUT_DIR, { recursive: true });
+  const reportPath = path.join(OUTPUT_DIR, "questions-report.json");
+  await writeFile(
+    reportPath,
+    JSON.stringify({ generatedAt: new Date().toISOString(), stage: "questions", passCount, rows }, null, 2),
+  );
+  console.log("");
+  console.log(`Pass rate: ${passCount}/${rows.length}`);
+  console.log(`Report: ${reportPath}`);
+  if (passCount < rows.length) {
+    console.error("Eval failed: a question step scenario regressed.");
     process.exit(1);
   }
 }

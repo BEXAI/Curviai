@@ -88,6 +88,18 @@ import { OutputOptionsPanel } from "./output-options-panel";
 import { PackBundleCards } from "./pack-bundle-cards";
 import { PreflightResult } from "./preflight-result";
 import { ProductLinkImport } from "./product-link-import";
+import { QuestionStep } from "./question-step";
+import type { SellerQuestion } from "@curvi/pipeline/questions";
+import {
+  channelsAfterAnswer,
+  knownKinds,
+  QUESTION_STEP_COPY,
+  questionSourcePhoto,
+  sellerAnswersBody,
+  targetPickOf,
+  targetValueOf,
+  visibleQuestions,
+} from "@/lib/question-step";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 
 export interface ChannelOption {
@@ -287,6 +299,9 @@ export interface PhotoItem {
   preflightFailure?: string;
   /** The product the seller tapped in the chooser. */
   chosen?: number | null;
+  /** The seller answered the question step's "Which product" with every
+   * item (PHASE_16 workstream 4): the photo needs no single pick. */
+  targetAll?: boolean;
   /** Object URL of the picked file, for the thumbnail and the preview strip.
    * Revoked when the photo is removed and when the form unmounts. */
   previewUrl?: string;
@@ -305,7 +320,7 @@ export function photoBlockReason(
     return null;
   }
   return preflightBlockReason(photo.preflight, selected, photo.chosen, {
-    multiItem: photo.angle === "in_the_box",
+    multiItem: photo.angle === "in_the_box" || photo.targetAll === true,
     ...(output ? { output } : {}),
   });
 }
@@ -347,7 +362,12 @@ function isTextEntry(target: EventTarget | null): boolean {
  * the note's preselected pick. None for a photo that shows several items on
  * purpose (in the box) or had nothing to choose. */
 export function photoTargetBox(photo: PhotoItem): PreflightBox | undefined {
-  if (photo.kind !== "image" || photo.angle === "in_the_box" || photo.preflight?.status !== "choose") {
+  if (
+    photo.kind !== "image" ||
+    photo.angle === "in_the_box" ||
+    photo.targetAll === true ||
+    photo.preflight?.status !== "choose"
+  ) {
     return undefined;
   }
   return chosenItem(photo.preflight, photo.chosen)?.box;
@@ -445,6 +465,10 @@ export function NewPackForm({
   const [pauseLeftOut, setPauseLeftOut] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [typing, setTyping] = useState(false);
+  // The question step (PHASE_16 workstream 4): taps by question id, and
+  // whether the seller chose "Skip, use my note".
+  const [questionPicks, setQuestionPicks] = useState<Record<string, string>>({});
+  const [questionsSkipped, setQuestionsSkipped] = useState(false);
   const choices = useMemo(
     () =>
       effectiveChoices(outputForm.choices, {
@@ -557,6 +581,44 @@ export function NewPackForm({
   const blockReason =
     photos.map((p) => photoBlockReason(p, selected, photoOutput(p))).find((reason) => reason !== null) ?? null;
   const uploaded = photos.filter((p) => p.phase === "uploaded" && p.key && p.sha256);
+  // The question step: the front photo's questions, less what the form knows.
+  const questionPhoto = questionSourcePhoto(photos);
+  const questions = questionPhoto
+    ? visibleQuestions(
+        questionPhoto.preflight,
+        knownKinds({
+          photoAngle: questionPhoto.angle,
+          optionsOn: optionsOn && effectiveMode !== "concept",
+          scenesOn: choices.extras.scenes,
+          scenePreset: outputForm.more.scenePreset,
+        }),
+      )
+    : [];
+  const questionsShown = questions.length > 0 && !questionsSkipped;
+  // The target question replaces the chooser of its own photo while shown.
+  const chooserInStep = questionsShown && questions.some((q) => q.kind === "target") ? questionPhoto?.id : undefined;
+  const questionValues: Record<string, string | null> = Object.fromEntries(
+    questions.map((q) => [q.id, q.kind === "target" && questionPhoto ? targetValueOf(questionPhoto) : (questionPicks[q.id] ?? null)]),
+  );
+  const answersBody = sellerAnswersBody({ photo: questionPhoto, questions, picks: questionPicks, skipped: questionsSkipped });
+
+  function pickAnswer(question: SellerQuestion, value: string) {
+    setSubmitError(null);
+    if (question.kind === "target") {
+      const pick = targetPickOf(value);
+      if (pick && questionPhoto) updatePhoto(questionPhoto.id, pick);
+      return;
+    }
+    setQuestionPicks((current) => ({ ...current, [question.id]: value }));
+    if (question.kind === "channels") {
+      setSelected((current) =>
+        channelsAfterAnswer(current, value, question, (id) => {
+          const channel = channels.find((c) => c.id === id);
+          return channel ? { pickable: isPickable(channel), marketplace: channel.marketplace } : null;
+        }),
+      );
+    }
+  }
   const attachKey =
     uploaded.length > 0 && selectedProduct ? `${uploaded.map((p) => p.key).join("|")}:${selectedProduct.id}` : null;
   const needsAttachConfirm = attachKey !== null && confirmedAttach !== attachKey;
@@ -818,9 +880,11 @@ export function NewPackForm({
       setPhotos((current) =>
         current.map((p) => {
           if (p.id !== id || p.key !== key) return p;
-          // A tap survives a second check when that product is still there.
+          // A tap survives a second check when that product is still there,
+          // and "every item" while the photo still holds several.
           const keep = p.chosen != null && view.items.some((item) => item.number === p.chosen) ? p.chosen : null;
-          return { ...p, preflightPhase: "done", preflight: view, preflightNote: note, chosen: keep };
+          const targetAll = p.targetAll === true && view.status === "choose";
+          return { ...p, preflightPhase: "done", preflight: view, preflightNote: note, chosen: keep, targetAll };
         }),
       );
     } catch {
@@ -934,6 +998,8 @@ export function NewPackForm({
           // Any change to the image choices is a new intent (PHASE_15).
           ...(sendsOptions ? { options: optionsKey } : {}),
           ...(uploads.some((u) => u.background) ? { backgrounds: uploads.map((u) => u.background ?? "") } : {}),
+          // Any change to the answers is a new intent (PHASE_16).
+          ...(answersBody ? { answers: answersBody } : {}),
         }),
       },
       () => crypto.randomUUID(),
@@ -956,6 +1022,7 @@ export function NewPackForm({
           userDescription: description.trim() ? description.trim() : undefined,
           ...details,
           ...(sendsOptions ? { outputOptions: outputOptionsBody(outputForm.lookBase, choices, outputForm.more) } : {}),
+          ...(answersBody ? { sellerAnswers: answersBody } : {}),
         }),
       });
       const data = (await response.json().catch(() => ({}))) as {
@@ -1159,10 +1226,11 @@ export function NewPackForm({
                           selected={selected}
                           chosen={photo.chosen ?? null}
                           onChoose={(number) => {
-                            updatePhoto(photo.id, { chosen: number });
+                            updatePhoto(photo.id, { chosen: number, targetAll: false });
                             setSubmitError(null);
                           }}
-                          multiItem={photo.angle === "in_the_box"}
+                          multiItem={photo.angle === "in_the_box" || photo.targetAll === true}
+                          hideChooser={photo.id === chooserInStep}
                           photoLabel={`photo ${index + 1}`}
                           output={photoOutput(photo)}
                         />
@@ -1314,6 +1382,24 @@ export function NewPackForm({
               <p className="mt-1 text-xs text-ink-400">
                 Optional. The analyzer reads this as seller notes when planning your shots.
               </p>
+              {questionsShown ? (
+                <QuestionStep
+                  questions={questions}
+                  items={questionPhoto?.preflight?.items ?? []}
+                  values={questionValues}
+                  onPick={pickAnswer}
+                  onSkip={() => setQuestionsSkipped(true)}
+                />
+              ) : questions.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setQuestionsSkipped(false)}
+                  className="mt-2 inline-flex min-h-11 items-center text-sm font-medium text-ink-700 underline"
+                  data-testid="question-reopen"
+                >
+                  {QUESTION_STEP_COPY.reopen}
+                </button>
+              ) : null}
               {keepHint ? (
                 <p className="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-amber-800" data-testid="keep-background-hint">
                   <span>{keepHint}</span>

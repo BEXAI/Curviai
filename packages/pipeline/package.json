@@ -12,6 +12,7 @@
     "./ingest": "./src/ingest/index.ts",
     "./output-options": "./src/output-options.ts",
     "./planner": "./src/planner/deterministic.ts",
+    "./questions": "./src/questions.ts",
     "./reveal": "./src/reveal/side-by-side.ts",
     "./schemas": "./src/schemas.ts",
     "./seed": "./src/seed/index.ts",

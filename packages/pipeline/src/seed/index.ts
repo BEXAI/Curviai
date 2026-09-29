@@ -1,5 +1,14 @@
 export { RecipeRow, addedOverlaysIntake, qcJudgePolicy, recipeSeedRows } from "./recipes";
 export {
+  QUESTION_KINDS,
+  channelChoices,
+  defaultChannelChoices,
+  defaultMoodChoices,
+  moodChoices,
+  questionSet,
+} from "./questions";
+export type { ChannelChoice, MoodChoice, QuestionKind } from "./questions";
+export {
   CUTOUT_TASK,
   HARMONIZE_TASK,
   SCENE_PLATE_TASK,

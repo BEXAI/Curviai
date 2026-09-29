@@ -11,7 +11,12 @@
  *    runtime's inventory cutout (the R2 cutout cache keeps it, so the pack
  *    reuses it), split into pieces and decided by chooseInventoryTarget
  *    with the note, plus a thumbnail of each piece for the chooser when the
- *    photo holds 2 to 6 of them.
+ *    photo holds 2 to 6 of them;
+ * 4. the question step (PHASE_16 workstream 4): at most four short
+ *    questions with labeled options, none the photo or the note already
+ *    answers (openQuestionKinds), picked by the question_planner recipe and
+ *    kept to seed and inventory options by finalizeQuestions. The model
+ *    failing leaves the deterministic questions; the step never blocks.
  *
  * Every provider call goes through @curvi/ai (metered, capped, with
  * failover); the spend comes back as costMicros for the web app to book on
@@ -22,20 +27,31 @@
 import {
   analyzeInventory,
   chooseInventoryTarget,
+  finalizeQuestions,
   IntakeResult,
   IntakeToolResult,
   itemLabel,
   matchProducts,
   noteSignals,
+  openQuestionKinds,
   pickerNumbering,
   PICKER_MAX_PIECES,
   PICKER_MIN_PIECES,
+  QuestionPlanAnswer,
+  QuestionPlanTool,
+  questionPlannerChoices,
   renderCutoutPreview,
   renderPieceThumbnails,
+  targetQuestionOpen,
   uprightSize,
+  type IntakeImageResult,
   type InventoryDecision,
   type NormalizedBox,
+  type QuestionItem,
+  type SellerIntent,
+  type SellerQuestion,
 } from "@curvi/pipeline";
+import { questionSet } from "@curvi/pipeline/seed";
 import { isWorkspaceObjectKey } from "./object-keys";
 import {
   failureSpendMicros,
@@ -104,6 +120,10 @@ export interface UploadPreflightRun {
    * CUTOUT_PREVIEW_LONG_SIDE, drawn from the cutout already made (PHASE_15
    * P1 cutout preview); null when there is no cutout or no single product. */
   preview: Buffer | null;
+  /** The question step's questions (PHASE_16 workstream 4), at most
+   * questionSet.maxQuestions; empty when intake could not answer, the photo
+   * is blocked, or nothing is left to ask. */
+  questions: SellerQuestion[];
   /** Provider spend of every call above, in USD micros. */
   costMicros: number;
 }
@@ -141,6 +161,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
     thumbnails: [],
     productBox: null,
     preview: null,
+    questions: [],
     costMicros: 0,
   };
   const { preflightId, workspaceId, mediaKey } = args;
@@ -154,7 +175,8 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
   run.photo = await uprightSize(bytes);
 
   // 1. Intake, exactly as a pack runs it, on this one photo.
-  const recipe = recipeFor(await recipesFor(deps, preflightId), "intake");
+  const recipes = await recipesFor(deps, preflightId);
+  const recipe = recipeFor(recipes, "intake");
   const loadOnce = async () => bytes;
   const blocks = await visionBlocks({ loadMedia: loadOnce }, [{ mediaId: mediaKey }], workspaceId, 1);
   let intake: IntakeResult | null = null;
@@ -193,10 +215,87 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
   }
 
   // 3. The inventory, on the live runtime's cutout.
+  await takePreflightInventory(deps, args, run, image, intake.sellerIntent ?? null);
+
+  // 4. The questions, from what intake and the inventory found.
+  run.questions = await planPreflightQuestions(deps, recipes, args, run, image, intake.sellerIntent ?? null);
+  return run;
+}
+
+/**
+ * The questions for one checked photo: the kinds openQuestionKinds leaves
+ * open, asked of the question_planner recipe through llmJson (metered and
+ * capped by @curvi/ai, spend added to the run), then kept to the seed and
+ * the photo's items by finalizeQuestions. No call when nothing is open; a
+ * failed or out of shape answer gives the deterministic questions.
+ */
+async function planPreflightQuestions(
+  deps: PipelineDeps,
+  recipes: JobRecipes,
+  args: UploadPreflightArgs,
+  run: UploadPreflightRun,
+  image: IntakeImageResult,
+  intent: SellerIntent | null,
+): Promise<SellerQuestion[]> {
+  const items: QuestionItem[] = run.items.map((item) => ({
+    number: item.number,
+    label: item.label,
+    colorName: item.colorName,
+  }));
+  const targetOpen = targetQuestionOpen(run.rule, items.length, { min: PICKER_MIN_PIECES, max: PICKER_MAX_PIECES });
+  const open = openQuestionKinds({ targetOpen, note: args.note, intent });
+  if (open.length === 0) {
+    return [];
+  }
+  const targetItems = targetOpen ? items : [];
+  let raw: unknown = null;
+  try {
+    const answer = await llmJson<unknown>(
+      deps.ai,
+      recipeFor(recipes, "question"),
+      QuestionPlanAnswer,
+      {
+        openKinds: open,
+        maxQuestions: questionSet.maxQuestions,
+        items: targetItems.map((item) => ({ number: item.number, label: item.label, color: item.colorName })),
+        products: (image.products ?? []).map((product) => product.label),
+        sellerIntent: intent
+          ? { featureOnly: intent.featureOnly, exclude: intent.exclude, styleNotes: intent.styleNotes }
+          : null,
+        ...questionPlannerChoices(),
+        userDescription: wrapUserDescription(args.note),
+      },
+      { jobId: args.preflightId, workspaceId: args.workspaceId, stepId: "preflight:questions" },
+      undefined,
+      QuestionPlanTool,
+    );
+    run.costMicros += answer.costMicros;
+    raw = answer.value;
+  } catch (err) {
+    run.costMicros += failureSpendMicros(err);
+    console.warn(
+      `[preflight] question planner failed for ${args.preflightId}; asking the deterministic questions`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+  return finalizeQuestions(raw, open, targetItems);
+}
+
+/** Step 3 of the preflight: the inventory on the live runtime's cutout,
+ * written onto the run (cutout, items, rule, product box, preview and
+ * thumbnails). */
+async function takePreflightInventory(
+  deps: PipelineDeps,
+  args: UploadPreflightArgs,
+  run: UploadPreflightRun,
+  image: IntakeImageResult,
+  intent: SellerIntent | null,
+): Promise<void> {
+  const { preflightId, workspaceId, mediaKey } = args;
   const cut = deps.generator.inventoryCutout?.bind(deps.generator);
   if (!cut) {
     run.cutout = "unavailable";
-    return run;
+    return;
   }
   let cutout;
   try {
@@ -209,7 +308,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
   }
   if (!cutout) {
     run.cutout = "unavailable";
-    return run;
+    return;
   }
   run.cutout = "done";
   const inventory = analyzeInventory(cutout);
@@ -217,7 +316,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
   const decision = chooseInventoryTarget({
     objects: inventory.objects,
     products,
-    signals: noteSignals(args.note, intake.sellerIntent ?? null),
+    signals: noteSignals(args.note, intent),
   });
   run.rule = decision.rule;
   const match = matchProducts(inventory.objects, products);
@@ -253,5 +352,4 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
       return [];
     });
   }
-  return run;
 }

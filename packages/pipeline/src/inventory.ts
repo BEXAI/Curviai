@@ -602,6 +602,7 @@ export function matchProducts(objects: readonly InventoryObject[], products: rea
 export type InventoryRule =
   | "seller"
   | "in_the_box"
+  | "answer"
   | "model"
   | "note"
   | "single_object"
@@ -635,6 +636,48 @@ export interface InventoryChoiceInput {
    * piece; a box that holds none (a cutout that came out different) leaves
    * the photo to the other rules. */
   chosenBox?: NormalizedBox | null;
+  /** The seller's answer to "Which product is this pack for?" (PHASE_16
+   * workstream 4, answerFor): outweighs the note and the model's pick. */
+  answer?: InventoryAnswer | null;
+}
+
+/** A target answer as the rules read it: every product, or the signals of
+ * the one product the seller picked. */
+export type InventoryAnswer = { all: true } | { all: false; signals: NoteSignals };
+
+/**
+ * The signals of a picked product (answerSignals): its label's words and
+ * phrase, and its measured color when known, on the wanted side; the other
+ * items' labels on the excluded side. Words and colors on both sides are
+ * dropped, as in noteSignals, so "blue sports drink bottle" against "red
+ * sports drink bottle" turns on the colors alone.
+ */
+export function answerSignals(target: { label: string; color: string | null; others: readonly string[] }): NoteSignals {
+  const want = wordsOf(target.label.slice(0, 200));
+  const exclude = target.others.flatMap((o) => wordsOf(o.slice(0, 200)));
+  const measured = COLOR_NAMES.find((c) => c === target.color);
+  const wantColorSet = new Set<ColorName>(measured ? [measured] : colorsIn(want));
+  const excludeColorSet = new Set(colorsIn(exclude));
+  const wantWordSet = new Set(productWords(want));
+  const excludeWordSet = new Set(productWords(exclude));
+  const onlyIn = <T>(a: Set<T>, b: Set<T>): T[] => [...a].filter((x) => !b.has(x)).sort();
+  return {
+    wantColors: onlyIn(wantColorSet, excludeColorSet),
+    excludeColors: onlyIn(excludeColorSet, wantColorSet),
+    wantWords: onlyIn(wantWordSet, excludeWordSet),
+    excludeWords: onlyIn(excludeWordSet, wantWordSet),
+    wantPhrases: [phraseOf(target.label)].filter(Boolean),
+    excludePhrases: target.others.map(phraseOf).filter(Boolean),
+  };
+}
+
+/** The rules' reading of a job's target answer, or null without one. */
+export function answerFor(
+  target: { value: string; label: string; color: string | null; others: readonly string[] } | null | undefined,
+  allValue: string,
+): InventoryAnswer | null {
+  if (!target) return null;
+  return target.value === allValue ? { all: true } : { all: false, signals: answerSignals(target) };
 }
 
 /** The pieces a box the seller chose holds: those at least
@@ -674,7 +717,11 @@ function holdsExcludedColor(object: InventoryObject, signals: NoteSignals): bool
 /** Picks the pieces a photo's pack features; see the module comment for the
  * order of the rules. */
 export function chooseInventoryTarget(input: InventoryChoiceInput): InventoryDecision {
-  const { objects, products, signals } = input;
+  const { objects, products } = input;
+  // A picked product outweighs the note: its signals stand in for the note's
+  // in every rule below (PHASE_16 workstream 4).
+  const answer = input.answer ?? null;
+  const signals = answer && !answer.all ? answer.signals : input.signals;
   const all = objects.map((o) => o.index);
   const decide = (rule: InventoryRule, featured: number[], touching = false): InventoryDecision => ({
     rule,
@@ -706,6 +753,13 @@ export function chooseInventoryTarget(input: InventoryChoiceInput): InventoryDec
   }
   // 1. In the box photos keep every piece.
   if (input.multiItem) return decide("in_the_box", all);
+
+  // 1b. The seller's answer to the question step: every product, or the
+  // one piece the picked product's label and color single out.
+  if (answer?.all) return decide("answer", all);
+  if (answer && noteCandidates && noteCandidates.length === 1) {
+    return decide("answer", noteCandidates, touchingOf(noteCandidates));
+  }
 
   // 2. The model's single yes, checked against the note's colors.
   const yes = products

@@ -16,7 +16,7 @@ import {
 } from "./copy";
 import { demoPreflight } from "./demo";
 import { sizeNeeds, storedPreflightOf } from "./result";
-import { preflightProductBoxOf } from "./service";
+import { preflightProductBoxOf, preflightQuestionsOf } from "./service";
 import type { PreflightView } from "./types";
 
 // docs/phases/PHASE_14.md workstream 4 and item 3.2: what the form says
@@ -41,6 +41,7 @@ function run(overrides: Partial<UploadPreflightRun> = {}, image: Record<string, 
     items: [],
     rule: null,
     thumbnails: [],
+    questions: [],
     costMicros: 1000,
     ...overrides,
   } as UploadPreflightRun;
@@ -62,6 +63,22 @@ describe("storedPreflightOf", () => {
     );
     expect(stored).toMatchObject({ status: "ready", found: "silver watch", problem: null, productLongSide: 1000 });
     expect(stored.sizes.find((s) => s.specId === "amazon.main")).toMatchObject({ measure: "product" });
+  });
+
+  it("stores the question step's questions with the verdict, never on a blocked photo (PHASE_16)", () => {
+    const questions: UploadPreflightRun["questions"] = [
+      { id: "mood", kind: "mood", options: [{ value: "gym", label: "Gym" }, { value: "studio", label: "Studio" }] },
+    ];
+    expect(storedPreflightOf(run({ items: twoItems, questions })).questions).toEqual(questions);
+    expect(storedPreflightOf(run({})).questions).toBeUndefined();
+    expect(storedPreflightOf(run({ moderation: ["weapons"], questions })).questions).toBeUndefined();
+    const row = (status: string, result: unknown) =>
+      ({ status, result }) as unknown as Parameters<typeof preflightQuestionsOf>[0];
+    expect(preflightQuestionsOf(row("choose", { questions: [...questions, { id: "x", kind: "nope", options: [] }] }))).toEqual(
+      questions,
+    );
+    expect(preflightQuestionsOf(row("blocked", { questions }))).toEqual([]);
+    expect(preflightQuestionsOf(undefined)).toEqual([]);
   });
 
   it("keeps the inventory's product box for the crop fit (PHASE_15 P1)", () => {

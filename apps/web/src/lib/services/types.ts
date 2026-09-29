@@ -236,6 +236,11 @@ export interface CreateJobInput {
   comparisonFacts?: string[];
   /** The seller's output options (PHASE_15). Absent means today's pack. */
   outputOptions?: OutputOptionsInput;
+  /** The question step's taps (PHASE_16 workstream 4): the upload the
+   * questions were asked about and question id to option value. Resolved
+   * against the questions stored for that upload; absent or skipped means
+   * the note alone. */
+  sellerAnswers?: { key: string; picks: Record<string, string> };
 }
 
 export type CreateJobResult =
