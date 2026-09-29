@@ -49,6 +49,9 @@ import {
   InMemoryJobStore,
   isSpendCapBlock,
   MULTIPLE_PRODUCTS_MESSAGE,
+  moderationBlockedMessage,
+  moderationBlockReasons,
+  NO_SELLABLE_PRODUCT_MESSAGE,
   SHOT_EXTRA_ITEMS,
   ShotFailedAfterSpendError,
   ShotUnavailableError,
@@ -590,24 +593,94 @@ describe("runGeneratePack hard failures", () => {
     const summary = await runGeneratePack(baseInput, deps);
 
     expect(summary.state).toBe("failed");
-    expect(summary.error).toContain("weapons");
+    expect(summary.error).toBe(moderationBlockedMessage(["weapons"]));
+    expect(summary.error).not.toMatch(/manual review/i);
     expect(summary.plannedShots).toBe(0);
+    expect(summary.chargedCredits).toBe(0);
     expect(summary.releasedCredits).toBe(baseInput.creditBudget);
   });
+});
 
-  it("blocks products the analyzer flags as possible counterfeits", async () => {
+describe("brands and logos are always allowed (PHASE_14 workstream 2)", () => {
+  const cleanFlags = { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false };
+  const intakeOf = (image: Record<string, unknown>) =>
+    new MockProvider({
+      name: "mock-intake",
+      tasks: [intakeKey],
+      output: { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, screenshot: false, flags: cleanFlags, ...image }] },
+    });
+
+  it("runs a Rolex style branded watch on white to done, even with an old possible_counterfeit answer", async () => {
     const analyze = new MockProvider({
       name: "mock-analyze",
       tasks: [analyzeKey],
-      output: { ...demoProfile, complianceFlags: ["possible_counterfeit"] },
+      output: {
+        ...demoProfile,
+        name: "Oyster Perpetual style steel watch",
+        preserveLogos: ["ROLEX crown logo"],
+        preserveText: [{ text: "ROLEX", location: "dial" }],
+        complianceFlags: ["possible_counterfeit"],
+      },
     });
-    const deps = makeDeps({ ai: makeAi({ analyze }) });
-    const summary = await runGeneratePack(baseInput, deps);
+    const intake = intakeOf({
+      products: [{ label: "silver watch", box: { x: 0.2, y: 0.1, width: 0.6, height: 0.8 }, matchesIntent: "yes" }],
+    });
+    const deps = makeDeps({ ai: makeAi({ intake, analyze }) });
+    const summary = await runGeneratePack({ ...baseInput, userDescription: "Rolex Submariner, official photo" }, deps);
 
+    expect(summary.state).toBe("done");
+    expect(summary.error).toBeUndefined();
+    expect(summary.passed).toBeGreaterThan(0);
+    expect(summary.chargedCredits).toBeGreaterThan(0);
+  });
+
+  it("never blocks on a brand or a logo alone", () => {
+    const intake = { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, flags: cleanFlags }] };
+    const profile = { ...demoProfile, preserveLogos: ["ROLEX"], complianceFlags: ["possible_counterfeit" as const] };
+    expect(moderationBlockReasons(intake, profile)).toEqual([]);
+    const claims = { ...demoProfile, complianceFlags: ["medical_claim" as const, "child_product" as const, "none" as const] };
+    expect(moderationBlockReasons(intake, claims)).toEqual([]);
+  });
+
+  it("still blocks nudity from intake and adult content from the analyzer, with a plain message", async () => {
+    const nude = await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake: intakeOf({ flags: { ...cleanFlags, nudity: true } }) }) }));
+    expect(nude.state).toBe("failed");
+    expect(nude.error).toBe(moderationBlockedMessage(["nudity"]));
+    expect(nude.chargedCredits).toBe(0);
+    expect(nude.releasedCredits).toBe(baseInput.creditBudget);
+
+    const analyze = new MockProvider({
+      name: "mock-analyze",
+      tasks: [analyzeKey],
+      output: { ...demoProfile, complianceFlags: ["possible_counterfeit", "weapon"] },
+    });
+    const armed = await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ analyze }) }));
+    expect(armed.state).toBe("failed");
+    expect(armed.error).toBe(moderationBlockedMessage(["weapons"]));
+    expect(armed.error).not.toMatch(/counterfeit|manual review/i);
+    expect(armed.chargedCredits).toBe(0);
+  });
+
+  it("runs a watch worn on a wrist when intake says the person is not the main subject", async () => {
+    const intake = intakeOf({
+      products: [{ label: "silver watch on a wrist", box: { x: 0.3, y: 0.2, width: 0.4, height: 0.5 }, matchesIntent: "yes" }],
+    });
+    const summary = await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
+    expect(summary.state).toBe("done");
+    expect(summary.passed).toBeGreaterThan(0);
+  });
+
+  it("says what intake saw when it finds no product for sale", async () => {
+    const intake = intakeOf({
+      sellableProduct: false,
+      distinctProducts: 0,
+      sharpEnough: false,
+      boundingBoxes: [{ label: "empty cafe table", x: 0, y: 0, width: 1, height: 1 }],
+    });
+    const summary = await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
     expect(summary.state).toBe("failed");
-    expect(summary.error).toContain("counterfeit");
-    expect(summary.plannedShots).toBe(0);
-    expect(summary.releasedCredits).toBe(baseInput.creditBudget);
+    expect(summary.error).toBe(`${NO_SELLABLE_PRODUCT_MESSAGE}. Not sharp. Intake saw: empty cafe table`);
+    expect(summary.chargedCredits).toBe(0);
   });
 });
 
@@ -2511,6 +2584,35 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
       expect(colors.red).toBe(0);
       expect(colors.blue).toBeGreaterThan(0);
     }
+  });
+
+  it("runs a cluttered photo of two products with a note naming one (PHASE_14 item 3.1)", async () => {
+    // The cafe photo: a watch and a pair of sneakers share the frame, and
+    // the note names the watch. Intake version 4 calls it sellable and lists
+    // both; the inventory features the watch and removes the sneakers.
+    const cafe = {
+      images: [
+        {
+          ...verdict,
+          products: [
+            { label: "white sneakers", box: redBox, matchesIntent: "no" },
+            { label: "silver watch", box: blueBox, matchesIntent: "yes" },
+          ],
+        },
+      ],
+      sellerIntent: { featureOnly: "the watch", exclude: [], mustKeep: [], styleNotes: null },
+    };
+    const { summary, deps, calls } = await liveRun(cafe, await twoProductPhoto(), { note: "the watch" });
+
+    expect(summary.state).toBe("done");
+    expect(summary.passed).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call.target?.label).toBe("silver watch");
+    }
+    const colors = await deliveredColors(deps);
+    expect(colors.files).toBeGreaterThan(0);
+    expect(colors.red).toBe(0);
+    expect(colors.blue).toBeGreaterThan(0);
   });
 
   it("refuses the shot at no charge when the picked product touches the other one", async () => {

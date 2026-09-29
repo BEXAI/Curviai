@@ -2290,7 +2290,13 @@ export function wrapUserDescription(description: string | undefined | null): str
 }
 
 /** Moderation gate (plan 4.5.2): intake flags and analyzer compliance flags
- * that block generation outright. Returns the reasons, empty when clean. */
+ * that block generation outright. Returns the reasons, empty when clean.
+ *
+ * Brands and logos are always allowed (docs/phases/PHASE_14.md workstream
+ * 2): possible_counterfeit stays in the ProductProfile enum so stored
+ * answers still parse, but it never blocks, and nothing here looks at a
+ * brand or a logo. Only nudity or adult content, weapons, drugs, prohibited
+ * goods and a person as the main subject stop a pack. */
 export function moderationBlockReasons(
   intake: IntakeResult,
   profile: ProductProfile | null,
@@ -2304,13 +2310,43 @@ export function moderationBlockReasons(
     if (image.flags.realPersonMainSubject) reasons.add("a real person as the main subject");
   }
   for (const flag of profile?.complianceFlags ?? []) {
-    if (flag === "none") continue;
-    if (flag === "possible_counterfeit") reasons.add("a possible counterfeit");
-    else if (flag === "prohibited") reasons.add("prohibited goods");
+    if (flag === "prohibited") reasons.add("prohibited goods");
     else if (flag === "adult") reasons.add("adult content");
     else if (flag === "weapon") reasons.add("weapons");
+    // "none", "possible_counterfeit" and the claim flags never block.
   }
   return [...reasons];
+}
+
+/** Stored job error when moderation stops a pack. There is no review
+ * queue: the web app (apps/web job-copy.ts) matches the prefix and the
+ * first category to plain copy that names it and asks for another photo. */
+export const MODERATION_BLOCKED_PREFIX = "Moderation stopped this pack, nothing was charged. The upload shows";
+
+export function moderationBlockedMessage(reasons: readonly string[]): string {
+  return `${MODERATION_BLOCKED_PREFIX} ${reasons.join(", ")}`;
+}
+
+/** Stored job error when intake finds no product for sale. The labels
+ * intake gave, and whether the photo was blurry, ride along after fixed
+ * markers so the web app can say what was seen (PHASE_14 item 3.3). */
+export const NO_SELLABLE_PRODUCT_MESSAGE = "Intake found no sellable product in the uploaded images";
+
+export function noSellableProductMessage(verdicts: IntakeResult["images"]): string {
+  const labels = new Set<string>();
+  for (const verdict of verdicts) {
+    for (const product of verdict.products ?? []) labels.add(product.label.trim());
+    for (const box of verdict.boundingBoxes ?? []) labels.add(box.label.trim());
+  }
+  labels.delete("");
+  let message = NO_SELLABLE_PRODUCT_MESSAGE;
+  if (verdicts.length > 0 && verdicts.every((verdict) => !verdict.sharpEnough)) {
+    message += ". Not sharp";
+  }
+  if (labels.size > 0) {
+    message += `. Intake saw: ${[...labels].slice(0, 4).join("; ")}`;
+  }
+  return message;
 }
 
 /** Concept packs never target marketplace channels (plan 2.7); the web
@@ -2846,7 +2882,7 @@ export async function runGeneratePack(
       throw new Error(SCREENSHOT_UPLOAD_MESSAGE);
     }
     if (!cameraVerdicts.some((img) => img.sellableProduct)) {
-      throw new Error("Intake found no sellable product in the uploaded images");
+      throw new Error(noSellableProductMessage(cameraVerdicts));
     }
     const judged = judgedImages.map((image) => image.mediaId);
     const screenshots = screenshotMediaIds(intake.value, judged, input.jobId);
@@ -2866,7 +2902,7 @@ export async function runGeneratePack(
     // reach generation. Credits release through the failure path.
     const intakeBlock = moderationBlockReasons(intake.value, null);
     if (intakeBlock.length > 0) {
-      throw new Error(`This upload was flagged for ${intakeBlock.join(", ")} and needs a manual review before a pack can run`);
+      throw new Error(moderationBlockedMessage(intakeBlock));
     }
     // Product inventory (docs/phases/PHASE_13.md): every camera photo is cut
     // out once, split into its pieces and reconciled with intake, so how many
@@ -2962,7 +2998,7 @@ export async function runGeneratePack(
     }
     const profileBlock = moderationBlockReasons(intake.value, analysis.value);
     if (profileBlock.length > 0) {
-      throw new Error(`This product was flagged for ${profileBlock.join(", ")} and needs a manual review before a pack can run`);
+      throw new Error(moderationBlockedMessage(profileBlock));
     }
     // A photo the seller marked with a role is that angle, whatever the
     // analyzer saw, so the planner plans it from that exact photo.

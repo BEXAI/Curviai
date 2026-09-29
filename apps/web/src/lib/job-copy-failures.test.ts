@@ -6,11 +6,17 @@ import {
   ProviderError,
   ProviderTimeoutError,
 } from "@curvi/ai";
-import { JobAbandonedError, MULTIPLE_PRODUCTS_MESSAGE, PLAN_FAILED_MESSAGE } from "@curvi/trigger/runner";
+import {
+  JobAbandonedError,
+  moderationBlockedMessage,
+  MULTIPLE_PRODUCTS_MESSAGE,
+  noSellableProductMessage,
+  PLAN_FAILED_MESSAGE,
+} from "@curvi/trigger/runner";
 import { IllegalTransitionError } from "@curvi/trigger/state";
 import { SETTLED_JOB_MESSAGES } from "@/lib/jobs/enqueue";
 import { RECONCILED_JOB_ERROR } from "@/lib/services/reconcile";
-import { JOB_ERROR_COPY, jobErrorKind, needsReviewNote, publicJobError, type JobErrorKind } from "./job-copy";
+import { JOB_ERROR_COPY, jobErrorKind, needsReviewNote, noProductCopy, publicJobError, type JobErrorKind } from "./job-copy";
 
 // enqueue.ts schedules inline packs with next/server's after(); only its
 // settled messages are read here.
@@ -133,8 +139,17 @@ const CASES: Array<[string, JobErrorKind]> = [
   // Intake and analysis gates (trigger/src/pipeline-runner.ts).
   ["Intake found no sellable product in the uploaded images", "noProduct"],
   [MULTIPLE_PRODUCTS_MESSAGE, "multipleProducts"],
-  ["This upload was flagged for weapons, adult content and needs a manual review before a pack can run", "flagged"],
+  // Moderation (PHASE_14 workstream 2): each category by name, no review queue.
+  [moderationBlockedMessage(["nudity"]), "blockedAdult"],
+  [moderationBlockedMessage(["adult content"]), "blockedAdult"],
+  [moderationBlockedMessage(["weapons"]), "blockedWeapons"],
+  [moderationBlockedMessage(["drugs"]), "blockedDrugs"],
+  [moderationBlockedMessage(["prohibited goods"]), "blockedProhibited"],
+  [moderationBlockedMessage(["a real person as the main subject"]), "blockedPerson"],
+  // Older jobs stored the "manual review" wording; they read the same lines.
+  ["This upload was flagged for weapons, adult content and needs a manual review before a pack can run", "blockedAdult"],
   ["This product was flagged for regulated goods and needs a manual review before a pack can run", "flagged"],
+  ["This product was flagged for a possible counterfeit and needs a manual review before a pack can run", "flagged"],
   ["Intake response failed schema validation", "readFailed"],
   ["Product analysis response failed schema validation", "readFailed"],
   [PLAN_FAILED_MESSAGE, "planFailed"],
@@ -333,6 +348,7 @@ describe("seller copy guard", () => {
       "fal-gateway: 503",
       "Unexpected token < in JSON at position 0",
       "something nobody has seen before",
+      "Intake found no sellable product in the uploaded images. Intake saw: {json} 500 ml; <b>openai</b> status [x]",
     ];
     for (const raw of hostile) {
       assertSellerSafe(publicJobError(raw) ?? "", raw);
@@ -349,6 +365,61 @@ describe("seller copy guard", () => {
   it("falls back to the generic line only for messages it does not know", () => {
     expect(jobErrorKind("something nobody has seen before")).toBe("generic");
     expect(publicJobError("something nobody has seen before")).toBe(JOB_ERROR_COPY.generic);
+  });
+});
+
+describe("moderation and no product copy (PHASE_14 workstream 2, item 3.3)", () => {
+  const flags = { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false };
+
+  it("never mentions a manual review, and names the category with what to do", () => {
+    for (const text of Object.values(JOB_ERROR_COPY)) {
+      expect(text).not.toMatch(/manual review|flagged for/i);
+    }
+    const weapons = publicJobError(moderationBlockedMessage(["weapons"]));
+    expect(weapons).toContain("weapons");
+    expect(weapons).toContain("Nothing was charged");
+    expect(weapons).toContain("use a different photo");
+    const adult = publicJobError(moderationBlockedMessage(["nudity"]));
+    expect(adult).toContain("nudity or adult content");
+    expect(adult).toContain("use a different photo");
+  });
+
+  it("gives the plain photo tips when intake saw nothing to name", () => {
+    const raw = noSellableProductMessage([{ sellableProduct: false, distinctProducts: 0, sharpEnough: true, flags }]);
+    const text = publicJobError(raw) ?? "";
+    expect(text).toBe(JOB_ERROR_COPY.noProduct);
+    expect(text).toContain("one product on a plain background");
+    expect(text).toContain("the whole product in the frame");
+    expect(text).toContain("A note that names the product");
+    expect(text).toContain("Nothing was charged");
+  });
+
+  it("says what intake saw and that the photo was blurry, in plain words", () => {
+    const raw = noSellableProductMessage([
+      {
+        sellableProduct: false,
+        distinctProducts: 0,
+        sharpEnough: false,
+        flags,
+        boundingBoxes: [{ label: "Coffee cup", x: 0, y: 0, width: 1, height: 1 }],
+        products: [
+          { label: "laptop (closed) #2", box: { x: 0, y: 0, width: 1, height: 1 }, matchesIntent: "unclear" },
+        ],
+      },
+    ]);
+    const text = publicJobError(raw) ?? "";
+    expect(jobErrorKind(raw)).toBe("noProduct");
+    expect(text).toContain("We saw laptop closed and coffee cup");
+    expect(text).toContain("The photo also looked blurry.");
+    expect(text).toContain("one product on a plain background");
+    expect(text).toContain("Nothing was charged");
+    assertSellerSafe(text, raw);
+    expect(noProductCopy(raw)).toBe(text);
+  });
+
+  it("keeps a label that sounds like another failure on the no product line", () => {
+    const raw = "Intake found no sellable product in the uploaded images. Intake saw: phone screenshot; more than one product";
+    expect(jobErrorKind(raw)).toBe("noProduct");
   });
 });
 
