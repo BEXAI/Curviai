@@ -60,6 +60,7 @@ import {
   HarmonizeAspectError,
   pixelChecks,
   planRetry,
+  encodeJpeg,
   encodeVisionJpeg,
   mediaIdsByAngle,
   NO_BOX_CONTENTS_REASON,
@@ -126,11 +127,14 @@ import {
   ResolvedOutputOptions,
   sceneCountOf,
   SELLER_OFF_REASON,
+  specAcceptsImage,
   type OutputPlanFlags,
+  type PlannedImageKind,
 } from "@curvi/pipeline/output-options";
 import {
   creditCosts,
   HARMONIZE_TASK,
+  CUTOUT_TASK,
   qcJudgePolicy,
   recipeSeedRows,
   SCENE_PLATE_TASK,
@@ -184,6 +188,12 @@ export const SHOT_PROVIDER_TROUBLE = "Our image provider had trouble with this s
  * credits are released (docs/phases/PHASE_14.md 1.3).
  */
 export const SHOT_SCENE_PAUSED = "Paused, the scene service is unavailable, not charged.";
+/**
+ * Plain copy for a shot left out because background removal is unavailable
+ * (every cutout provider failing, out of quota or behind an open breaker).
+ * Its credits are released; kept photos still work.
+ */
+export const SHOT_CUTOUT_PAUSED = "Paused, background removal is unavailable, not charged.";
 /** Plain copy for a shot an image provider's safety system declined (Update.md 5.4). */
 export const SHOT_CONTENT_BLOCKED = "The image service declined to make this scene, so this shot needs review.";
 /** Plain copy for a passing shot the packager left out because its channel
@@ -1813,19 +1823,26 @@ export async function llmJson<T>(
   }
   const call = (strict: boolean) => {
     if (outputSchema) {
-      // Forced tool call per plan 5.2. With strict tool use the API
+      // Structured output per plan 5.2. With strict tool use the API
       // guarantees the tool input matches the schema (structured outputs
       // docs, checked 2026-09-28); without it the model can emit a shape
       // that fails safeParse, which is how intake failed in production.
+      // tool_choice stays "auto": Claude Opus 5.5, the seeded fallback of
+      // analyze and plan, answers 400 to a forced "tool" or "any" choice
+      // (define tools docs, forcing tool use, checked 2026-09-29), so a
+      // forced choice would make the failover step fail every time. The tool
+      // description tells the model to call it, and a reply without the tool
+      // call is retried once below.
       input.tools = [
         {
           name: "emit_result",
-          description: "Return the task result as structured data matching the schema exactly.",
+          description:
+            "Always call this tool exactly once to return the task result, as structured data matching the schema exactly. Do not answer in plain text.",
           input_schema: strict ? strictToolSchema(outputSchema) : z.toJSONSchema(outputSchema),
           ...(strict ? { strict: true } : {}),
         },
       ];
-      input.toolChoice = { type: "tool", name: "emit_result" };
+      input.toolChoice = { type: "auto" };
     }
     return callWithFailover<LlmTaskInput, unknown>(
       ai.registry,
@@ -1848,29 +1865,45 @@ export async function llmJson<T>(
   // Billed spend of a strict request the API refused, kept on the books of
   // the retry that follows it.
   let strictFailureMicros = 0;
+  let usedStrict = Boolean(outputSchema);
   try {
-    result = await call(Boolean(outputSchema));
+    result = await call(usedStrict);
   } catch (err) {
     // A 400 on the strict request means the API refused the schema or the
-    // strict flag for this model. Retry once as a plain forced tool call, so
+    // strict flag for this model. Retry once as a plain (non strict) tool call, so
     // a schema the grammar compiler rejects never takes packs down.
     if (!outputSchema || !isBadRequest(err)) {
       throw err;
     }
     console.warn(`[runner] ${recipe.key} rejected the strict tool schema, retrying without strict:`, errorText(err));
     strictFailureMicros = failureSpendMicros(err);
+    usedStrict = false;
     result = await call(false);
   }
 
-  const raw = extractJsonOutput(result.output);
-  let parsed = schema.safeParse(raw);
-  if (!parsed.success) {
-    // Some models return nested arrays or objects as JSON strings in tool
-    // input. Parse those and validate again before giving up.
-    const repaired = parseNestedJsonStrings(raw);
-    if (repaired !== raw) {
-      parsed = schema.safeParse(repaired);
+  const parseOutput = (output: unknown) => {
+    const extracted = extractJsonOutput(output);
+    let attempt = schema.safeParse(extracted);
+    if (!attempt.success) {
+      // Some models return nested arrays or objects as JSON strings in tool
+      // input. Parse those and validate again before giving up.
+      const repaired = parseNestedJsonStrings(extracted);
+      if (repaired !== extracted) {
+        attempt = schema.safeParse(repaired);
+      }
     }
+    return { extracted, attempt };
+  };
+  let { extracted: raw, attempt: parsed } = parseOutput(result.output);
+  // With tool_choice auto the model can, rarely, answer in text without
+  // calling the tool. When that text does not parse either, ask once more;
+  // the first answer's spend stays on the books.
+  if (!parsed.success && outputSchema && missedToolCall(result.output)) {
+    console.warn(`[runner] ${recipe.key} answered without calling emit_result for job ${ctx.jobId}, asking once more`);
+    const missedMicros = result.costMicros + result.billedFailureMicros;
+    strictFailureMicros += missedMicros;
+    result = await call(usedStrict);
+    ({ extracted: raw, attempt: parsed } = parseOutput(result.output));
   }
   if (!parsed.success) {
     // Log where the answer broke the schema (paths and codes only, never the
@@ -1897,10 +1930,26 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** True for a provider 400 (the adapters format HTTP errors as "<provider>
- * responded <status>: <body>"). */
-function isBadRequest(err: unknown): boolean {
+/** True when the chain's first provider answered 400 (the adapters format
+ * HTTP errors as "<provider> responded <status>: <body>"). Only the primary
+ * counts: a 400 from a later fallback after the primary timed out or was
+ * overloaded says nothing about the strict schema, and rerunning the whole
+ * chain without strict would only repeat the outage. */
+export function isBadRequest(err: unknown): boolean {
+  if (err instanceof AllProvidersFailedError) {
+    const first = err.errors[0];
+    return first !== undefined && /responded 400\b/.test(first.message);
+  }
   return /responded 400\b/.test(errorText(err));
+}
+
+/** True for an Anthropic adapter shaped output with no tool call. Raw JSON
+ * outputs (mock and demo providers) have no toolUse field and never count. */
+function missedToolCall(output: unknown): boolean {
+  if (!output || typeof output !== "object" || !("toolUse" in output)) {
+    return false;
+  }
+  return (output as { toolUse?: unknown }).toolUse === null || (output as { toolUse?: unknown }).toolUse === undefined;
 }
 
 /** Copies a value, replacing string leaves that hold a JSON object or array
@@ -2274,6 +2323,12 @@ export function isSceneChainFailure(err: unknown): boolean {
   return errors.length > 0 && errors.every((e) => e.task === SCENE_PLATE_TASK || e.task === HARMONIZE_TASK);
 }
 
+/** True when a failed call came from the cutout chain (background removal). */
+export function isCutoutChainFailure(err: unknown): boolean {
+  const errors = providerErrorsOf(err);
+  return errors.length > 0 && errors.every((e) => e.task === CUTOUT_TASK);
+}
+
 function errorDetail(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -2348,6 +2403,12 @@ async function runOutput(
         console.warn(`[runner] shot ${shot.id} for ${specId} paused: the scene service is unavailable`);
         return { ...stop(SHOT_SCENE_PAUSED, true, errorDetail(error)), transient: isTransientChainFailure(error) };
       }
+      // The cutout chain is down the same way: background removal is paused
+      // for this shot, and a kept photo would still work.
+      if (isCutoutChainFailure(error) && isProviderChainUnavailable(error)) {
+        console.warn(`[runner] shot ${shot.id} for ${specId} paused: background removal is unavailable`);
+        return { ...stop(SHOT_CUTOUT_PAUSED, true, errorDetail(error)), transient: isTransientChainFailure(error) };
+      }
       // A provider outage on this shot (for example every image or cutout
       // provider failing) ends this shot only; its siblings carry on.
       console.error(`[runner] shot ${shot.id} for ${specId} failed on attempt ${attempt}`, error);
@@ -2398,6 +2459,10 @@ async function runOutput(
       verdict = deterministicVerdict(pixel, fidelity, !fidelityOk);
     } else {
       try {
+        // The judge sees the shipped image first and the product reference
+        // second, as its prompt describes; without them its verdict has no
+        // visual basis and would pay for regenerations on a guess.
+        const images = await judgeImageBlocks(checked.shipped, generation.productReference);
         const judged = await llmJson<QCVerdict>(
           deps.ai,
           recipeFor(ctx.recipes, "qc"),
@@ -2416,11 +2481,16 @@ async function runOutput(
             attempt,
           },
           { jobId: ctx.jobId, workspaceId: ctx.workspaceId, stepId: `${shot.id}:${specId}:qc:${attempt}` },
-          undefined,
+          images,
           QCVerdict,
         );
         spent.micros += judged.costMicros;
         verdict = judged.value ?? deterministicVerdict(pixel, fidelity);
+        if (images.length === 0 && !verdict.pass) {
+          // A judge that could not be shown the image never fails a shot on
+          // its own: the deterministic checks decide it.
+          verdict = deterministicVerdict(pixel, fidelity);
+        }
       } catch (err) {
         spent.micros += failureSpendMicros(err);
         // A cap reached at the judge ends this shot, not the whole pack.
@@ -2458,6 +2528,12 @@ async function runOutput(
     if (judgeExempt && !effective.pass) {
       return { summary: summary("needs_review"), stopShot: false };
     }
+    // A pixel pipeline or template render comes out the same on a rerun, so
+    // a judge only failure (the checks passed) goes to review instead of
+    // paying for renders that cannot change.
+    if (!effective.pass && pixel.pass && fidelityOk && RERUN_INVARIANT_METHODS.has(shot.method)) {
+      return { summary: summary("needs_review"), stopShot: false };
+    }
     // Spend cap: accepted work stands, but no further attempts are funded.
     let decision = planRetry(attempt, effective);
     if (
@@ -2484,6 +2560,35 @@ async function runOutput(
     attempt = decision.nextAttempt;
     repairHint = decision.repairHint;
   }
+}
+
+/** Shot methods whose render a retry cannot change. */
+const RERUN_INVARIANT_METHODS: ReadonlySet<Shot["method"]> = new Set<Shot["method"]>(["deterministic", "template"]);
+
+/** Longest side of each image the QC judge sees, kept small for cost. */
+export const JUDGE_IMAGE_MAX_SIDE = 768;
+
+/**
+ * The QC judge's image blocks: the shipped image, then the product
+ * reference when the generation has one. Empty when the shipped image cannot
+ * be encoded, and the judge then runs on the metrics alone.
+ */
+export async function judgeImageBlocks(shipped: RawImage, reference: RawImage | undefined): Promise<unknown[]> {
+  const block = async (image: RawImage): Promise<unknown | null> => {
+    try {
+      const jpeg = await encodeVisionJpeg(await encodeJpeg(image), JUDGE_IMAGE_MAX_SIDE);
+      return { type: "image", source: { type: "base64", media_type: "image/jpeg", data: jpeg.toString("base64") } };
+    } catch (err) {
+      console.warn("[runner] could not encode an image for the QC judge", errorText(err));
+      return null;
+    }
+  };
+  const first = await block(shipped);
+  if (!first) {
+    return [];
+  }
+  const second = reference ? await block(reference) : null;
+  return second ? [first, second] : [first];
 }
 
 /** The seller intent the QC judge sees for a shot: the product the image
@@ -2994,6 +3099,57 @@ export const PACKSHOT_TYPES: ReadonlySet<Shot["type"]> = new Set<Shot["type"]>([
   "sweep_brand",
 ]);
 
+type LlmShotType = LlmShotList["shots"][number]["type"];
+
+/**
+ * The one method each shot type is made with, and the kind of image it is
+ * for matching it to a spec's rules (null for a type whose spec is fixed,
+ * such as the A+ banner or a social crop). It mirrors the deterministic
+ * planner shot for shot (a test holds them together), and the LLM plan is
+ * normalized to it: generateLive refuses any other pairing (a template
+ * collection_thumb, a deterministic social crop), and a paid method on a crop
+ * type would draw a scene and charge a generative still for it.
+ */
+export const SHOT_TYPE_RULES: Readonly<Record<LlmShotType, { method: Shot["method"]; kind: PlannedImageKind | null }>> =
+  {
+    amazon_main: { method: "deterministic", kind: "white" },
+    alt_angle_white: { method: "deterministic", kind: "white" },
+    cutout_png: { method: "deterministic", kind: "transparent" },
+    sweep_gray: { method: "deterministic", kind: "colored" },
+    sweep_brand: { method: "deterministic", kind: "colored" },
+    lifestyle: { method: "composite_generate", kind: "generated" },
+    infographic: { method: "template", kind: "text" },
+    dimensions: { method: "template", kind: "text" },
+    in_the_box: { method: "template", kind: "text" },
+    comparison: { method: "template", kind: "text" },
+    aplus_banner: { method: "template", kind: null },
+    shopify_hero: { method: "composite_generate", kind: null },
+    collection_thumb: { method: "deterministic", kind: null },
+    social_1x1: { method: "template", kind: null },
+    social_4x5: { method: "template", kind: null },
+    social_9x16: { method: "template", kind: null },
+    social_2x3: { method: "template", kind: null },
+    video_spin: { method: "video_generate", kind: null },
+    video_hero_6s: { method: "video_generate", kind: null },
+    video_lifestyle_15s: { method: "video_generate", kind: null },
+    video_ugc_hook: { method: "avatar", kind: null },
+  };
+
+/** Whether a spec's registry rules take this shot type's kind of image
+ * (specAcceptsImage, the check the deterministic planner's galleryFor makes):
+ * no text on a spec that refuses it, nothing but white on a white only main.
+ * Unknown specs pass here; the plan check rejects them on its own. */
+export function shotSpecAccepts(type: LlmShotType, specId: string): boolean {
+  const kind = SHOT_TYPE_RULES[type].kind;
+  if (kind === null || !hasSpec(specId)) {
+    return true;
+  }
+  return specAcceptsImage(getSpec(specId), kind);
+}
+
+/** Why a planned shot is skipped when none of its picked specs takes it. */
+export const LLM_NO_COMPATIBLE_CHANNEL = "no selected channel takes this kind of image";
+
 export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanCheck {
   // LlmShotList leaves out the deterministic only types (original_photo),
   // so a plan that names one fails here.
@@ -3013,15 +3169,18 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
       ),
     ),
   ];
-  // Packshots (white main, alternate angles, the transparent cutout and the
-  // plain sweeps) are always made from the real photo by the pixel
-  // pipeline. An image model asked for a "cutout" draws a studio and a fake
-  // checkerboard, so the planner's method is overruled for these types.
-  const packshotsFixed = parsed.data.shots.map((shot) =>
-    PACKSHOT_TYPES.has(shot.type) && shot.method !== "deterministic"
-      ? { ...shot, method: "deterministic" as const, stylePreset: "none", scene: undefined }
-      : shot,
-  );
+  // Every shot type has one method (SHOT_TYPE_RULES), and the planner's
+  // pick is overruled to it. Packshots (white main, alternate angles, the
+  // transparent cutout and the plain sweeps) are always made from the real
+  // photo by the pixel pipeline: an image model asked for a "cutout" draws a
+  // studio and a fake checkerboard, so they also lose any scene.
+  const packshotsFixed = parsed.data.shots.map((shot) => {
+    if (PACKSHOT_TYPES.has(shot.type) && shot.method !== "deterministic") {
+      return { ...shot, method: "deterministic" as const, stylePreset: "none", scene: undefined };
+    }
+    const method = SHOT_TYPE_RULES[shot.type].method;
+    return shot.method === method ? shot : { ...shot, method };
+  });
   for (const shot of packshotsFixed) {
     if (excluded.has(shot.method)) {
       skipped.push({ type: shot.type, reason: PROVIDER_NOT_ENABLED });
@@ -3067,9 +3226,17 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
   // Only the specs the seller picked are generated and charged.
   let narrowed: Shot[] = [];
   for (const shot of shots) {
-    const kept = [...new Set(shot.channels.filter((c) => isSpecSelected(rules.channels, c)))];
-    if (kept.length === 0) {
+    const picked = [...new Set(shot.channels.filter((c) => isSpecSelected(rules.channels, c)))];
+    if (picked.length === 0) {
       skipped.push({ type: shot.type, reason: CHANNEL_NOT_SELECTED });
+      continue;
+    }
+    // A spec whose rules refuse this kind of image (an infographic on a spec
+    // with no text, a scene on a white only main) would be refused at
+    // generation or fail QC, so the shot keeps only the specs that take it.
+    const kept = picked.filter((c) => shotSpecAccepts(shot.type as LlmShotType, c));
+    if (kept.length === 0) {
+      skipped.push({ type: shot.type, reason: LLM_NO_COMPATIBLE_CHANNEL });
       continue;
     }
     narrowed.push(kept.length === shot.channels.length ? shot : { ...shot, channels: kept });
@@ -3883,20 +4050,33 @@ export async function runGeneratePack(
     }
     // A kept photo is planned by the deterministic planner only (PHASE_15
     // item 13): the plan call is skipped and never paid for.
-    const planned =
-      keptIds.length > 0
-        ? null
-        : await bookedLlm(
-            llmJson<unknown>(
-              deps.ai,
-              recipeFor(recipes, "plan"),
-              { safeParse: (data: unknown) => ({ success: true, data }) },
-              { profile, options: planOptions },
-              { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "plan" },
-              undefined,
-              LlmShotList,
-            ),
-          );
+    // A planner call that throws (timeouts, overload, an open breaker) falls
+    // back to the deterministic plan too, so a pack that needs no LLM plan
+    // never fails on it. A spend cap block still stops the pack, and so does
+    // any failure when there is no fallback plan to run.
+    let planned: LlmCall<unknown> | null = null;
+    let plannerUnavailable: string | null = null;
+    if (keptIds.length === 0) {
+      try {
+        planned = await bookedLlm(
+          llmJson<unknown>(
+            deps.ai,
+            recipeFor(recipes, "plan"),
+            { safeParse: (data: unknown) => ({ success: true, data }) },
+            { profile, options: planOptions },
+            { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "plan" },
+            undefined,
+            LlmShotList,
+          ),
+        );
+      } catch (planErr) {
+        if (!fallback || isSpendCapBlock(planErr)) {
+          throw planErr;
+        }
+        plannerUnavailable = `planner unavailable: ${errorText(planErr)}`;
+        console.warn(`[runner] job ${input.jobId} shot planner failed, using the deterministic plan: ${errorText(planErr)}`);
+      }
+    }
     const check: LlmPlanCheck = planned
       ? validateLlmShotList(planned.raw, {
           budget: input.creditBudget,
@@ -3907,7 +4087,7 @@ export async function runGeneratePack(
           excludeMethods,
           ...(flags ? { output: flags } : {}),
         })
-      : { ok: false, reason: KEPT_PHOTO_PLAN_REJECTION };
+      : { ok: false, reason: plannerUnavailable ?? KEPT_PHOTO_PLAN_REJECTION };
     let chosen: ShotList | null = null;
     if (check.ok) {
       const fitted = fitShotsToChannels(fillSceneCount(check.shotList, profile, flags), fit);

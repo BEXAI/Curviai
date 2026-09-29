@@ -11,6 +11,14 @@ import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3
 import type { PackFileHandoff } from "./pipeline-runner";
 import { optionalEnv } from "./runtime";
 
+/**
+ * Socket timeouts for every R2 client in the worker: connecting may take at
+ * most 10 s, and a socket idle for 60 s (a half open connection) fails the
+ * request instead of hanging it forever. Transfers that keep moving are never
+ * cut off.
+ */
+export const R2_REQUEST_TIMEOUTS = { connectionTimeout: 10_000, requestTimeout: 60_000 } as const;
+
 export interface PackUploader {
   bucket: string;
   upload(localPath: string, key: string): Promise<{ bytes: number }>;
@@ -47,6 +55,9 @@ export function buildR2Uploader(): PackUploader | null {
     region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
+    // A stalled socket to R2 fails instead of hanging the shot, and with it
+    // the process wide queue kept photo shots wait in.
+    requestHandler: R2_REQUEST_TIMEOUTS,
   });
   return {
     bucket,
@@ -82,6 +93,9 @@ export function buildR2Handoff(): PackFileHandoff | null {
     region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
+    // A stalled socket to R2 fails instead of hanging the shot, and with it
+    // the process wide queue kept photo shots wait in.
+    requestHandler: R2_REQUEST_TIMEOUTS,
   });
   return {
     async put(key, bytes, contentType) {

@@ -394,3 +394,14 @@ describe("outputOptionsSummary", () => {
     }
   });
 });
+
+describe("the cutout pause copy (audit trigger)", () => {
+  it("says background removal is paused and points to Keep my photos", async () => {
+    const { SHOT_CUTOUT_PAUSED } = await import("@curvi/trigger/runner");
+    const { CUTOUT_PAUSED_NOTE } = await import("./job-copy");
+    const note = needsReviewNote(SHOT_CUTOUT_PAUSED);
+    expect(note).toContain(CUTOUT_PAUSED_NOTE);
+    expect(note).toContain("Keep my photos");
+    expect(note).not.toContain("had trouble");
+  });
+});

@@ -42,6 +42,7 @@ import {
   HARMONIZE_TASK,
   SCENE_PLATE_TASK,
   canvasDefaults,
+  imageModelSeedRows,
   llmModelPrices,
   recipeSeedRows,
   sceneDefaults,
@@ -946,7 +947,10 @@ describe("harmonize shape guard in the provider chain (2.14)", () => {
     const registered = registry.get("gemini-image") as CostAwareProvider;
     expect(registered).toBeDefined();
     expect(registered).not.toBeInstanceOf(ScenePlateBridge);
-    expect(registered.minTimeoutMs).toBe(ASYNC_JOB_TIMEOUT_MARGIN_MS);
+    // The seeded sync floor (Gemini 90 s) plus the download margin.
+    const seeded = imageModelSeedRows.find((row) => row.family === "gemini")!.minTimeoutMs ?? 0;
+    expect(seeded).toBeGreaterThan(60_000);
+    expect(registered.minTimeoutMs).toBe(seeded + ASYNC_JOB_TIMEOUT_MARGIN_MS);
   });
 });
 

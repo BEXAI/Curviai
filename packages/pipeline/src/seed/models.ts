@@ -39,6 +39,11 @@ export interface ImageModelSeedRow {
   model: string;
   /** Flat per generated image price in USD micros (plan section 2.4). */
   perImageMicros: number;
+  /** Per attempt timeout floor for a synchronous adapter, in ms. The router
+   * default (60 s) is shorter than a slow generation, and a timed out sync
+   * call is still paid for. OpenAI documents that complex prompts may take up
+   * to 2 minutes (image generation guide, checked 2026-09-29). */
+  minTimeoutMs?: number;
 }
 
 /**
@@ -49,9 +54,9 @@ export interface ImageModelSeedRow {
  * 1024 medium.
  */
 export const imageModelSeedRows: ImageModelSeedRow[] = [
-  { providerName: "gemini-image", family: "gemini", model: "gemini-3.1-flash-image", perImageMicros: 67_000 },
+  { providerName: "gemini-image", family: "gemini", model: "gemini-3.1-flash-image", perImageMicros: 67_000, minTimeoutMs: 90_000 },
   { providerName: "bfl-flux", family: "bfl", model: "flux-2-pro", perImageMicros: 60_000 },
-  { providerName: "openai-image", family: "openai", model: "gpt-image-2", perImageMicros: 53_000 },
+  { providerName: "openai-image", family: "openai", model: "gpt-image-2", perImageMicros: 53_000, minTimeoutMs: 150_000 },
 ];
 
 export interface CutoutModelSeedRow {

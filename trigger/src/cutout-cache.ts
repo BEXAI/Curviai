@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { Provider, ProviderRegistry, ProviderRequest, ProviderResponse } from "@curvi/ai";
 import { CUTOUT_TASK } from "@curvi/pipeline/seed";
+import { R2_REQUEST_TIMEOUTS } from "./r2";
 
 /** How long a cached cutout is reused: the preflight's own freshness. */
 export const CUTOUT_CACHE_FRESH_MS = 24 * 60 * 60 * 1000;
@@ -129,6 +130,9 @@ export function r2CutoutCacheStore(readEnv: ReadEnv = readEnvDefault): CutoutCac
     region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
+    // A stalled socket to R2 fails instead of hanging the shot, and with it
+    // the process wide queue kept photo shots wait in.
+    requestHandler: R2_REQUEST_TIMEOUTS,
   });
   return {
     async get(key) {
