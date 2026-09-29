@@ -260,7 +260,15 @@ export async function makeOriginalFit(
     opts.padRgb,
     opts.edgeMatch ? originalFit.edgeRingPx : 0,
   );
-  return { width: canvasW, height: canvasH, placement, treatment: treatmentWith(padRgb), raw, mask, preferPng: facts.lossless };
+  return {
+    width: canvasW,
+    height: canvasH,
+    placement: withAlphaFill(placement, facts, padRgb),
+    treatment: treatmentWith(padRgb),
+    raw,
+    mask,
+    preferPng: facts.lossless,
+  };
 }
 
 /** The treatment of a rendered or unchanged kept photo. */
@@ -378,7 +386,20 @@ async function renderCropped(
     opts.padRgb,
     opts.edgeMatch ? originalFit.edgeRingPx : 0,
   );
-  return { ...canvas, placement, treatment: treatmentWith(padRgb), raw, mask, preferPng: facts.lossless };
+  return {
+    ...canvas,
+    placement: withAlphaFill(placement, facts, padRgb),
+    treatment: treatmentWith(padRgb),
+    raw,
+    mask,
+    preferPng: facts.lossless,
+  };
+}
+
+/** The placement with the flat color partial alpha was composited over, so
+ * buildProductReferenceFromEncoded flattens the same way. */
+function withAlphaFill(placement: ProductPlacement, facts: SourceFacts, padRgb: Rgb): ProductPlacement {
+  return facts.realAlpha ? { ...placement, alphaFill: padRgb } : placement;
 }
 
 /**
@@ -780,7 +801,7 @@ export async function makeAlreadyWhite(
     productMask,
     width: canvas.width,
     height: canvas.height,
-    placement,
+    placement: withAlphaFill(placement, facts, white),
     fillRatio,
     treatment,
   };

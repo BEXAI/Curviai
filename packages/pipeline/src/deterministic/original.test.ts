@@ -509,6 +509,43 @@ describe("makeOriginalFit: color and format fixtures", () => {
     expect((await makeOriginalFit(opaque, getSpec("etsy.listing"), OPTS)).passthrough).toBeDefined();
   });
 
+  it("proves a kept PNG with partial alpha exactly: a translucent part at 180 and a soft shadow", async () => {
+    const rgba = photoPixels(W, H, 4);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const o = (y * W + x) * 4;
+        if (x >= 300 && x < 700 && y >= 200 && y < 600) rgba[o + 3] = 180;
+        // A shadow that fades from 250 to 10 across the bottom band.
+        if (y >= H - 150) rgba[o + 3] = Math.round(250 - (240 * (y - (H - 150))) / 150);
+      }
+    }
+    const png = await sharp(rgba, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer();
+    for (const [specId, opts] of [
+      ["etsy.listing", {}],
+      ["etsy.listing", { fit: "pad" }],
+      ["amazon.main", { fit: "pad" }],
+      ["google.merchant.lifestyle", { edgeMatch: true }],
+    ] as const) {
+      const result = await rendered(png, specId, opts);
+      expect(result.treatment.alphaFilledHex).toBeDefined();
+      expect(result.placement.alphaFill).toBeDefined();
+      const reference = await referenceFor(png, result);
+      const report = await fidelityReport(reference, result.raw, result.mask, { kind: "main", exact: true, erodePx: 0 });
+      expect(report.issues, `${specId} ${JSON.stringify(opts)}`).toEqual([]);
+      // Interior pixels at 180 are compared, not left out of the mask.
+      const { left, top, width } = result.placement;
+      const at = (top + Math.round((400 * result.placement.height) / H)) * result.width + left + Math.round((500 * width) / W);
+      expect(result.mask.data[at]).toBe(180);
+    }
+    // Without the flatten color the reference keeps the unblended RGB and the proof fails.
+    const plain = await rendered(png, "etsy.listing");
+    const { alphaFill: _dropped, ...unflattened } = plain.placement;
+    const stale = await buildProductReferenceFromEncoded(png, unflattened, { width: plain.width, height: plain.height });
+    expect((await fidelityReport(stale, plain.raw, plain.mask, { kind: "main", exact: true, erodePx: 0 })).issues).toContain(
+      "not_exact",
+    );
+  });
+
   it("renders a grayscale JPEG instead of passing it through", async () => {
     const gray = await sharp(photoPixels(W, H), { raw: { width: W, height: H, channels: 3 } }).toColourspace("b-w").jpeg().toBuffer();
     expect((await sharp(gray).metadata()).channels).toBe(1);
@@ -619,6 +656,27 @@ describe("already white photos", () => {
     const reference = await buildProductReferenceFromEncoded(bytes, made.placement, { width: made.width, height: made.height });
     const report = await fidelityReport(reference, made.raw, made.mask, { kind: "main", erodePx: 0 });
     expect(report.exactByteShare).toBe(1);
+  });
+
+  it("proves a transparent PNG with a translucent part exactly on the white main", async () => {
+    const box = { left: 700, top: 300, width: 1000, height: 1200 };
+    const { mask } = await studioPhoto(2400, 1800, box);
+    const rgba = photoPixels(2400, 1800, 4);
+    for (let y = 0; y < 1800; y++) {
+      for (let x = 0; x < 2400; x++) {
+        const inBox = x >= box.left && x < box.left + box.width && y >= box.top && y < box.top + box.height;
+        const glass = x >= 900 && x < 1300 && y >= 600 && y < 1000;
+        rgba[(y * 2400 + x) * 4 + 3] = !inBox ? 0 : glass ? 180 : 255;
+      }
+    }
+    const bytes = await sharp(rgba, { raw: { width: 2400, height: 1800, channels: 4 } }).png().toBuffer();
+    const spec = getSpec("amazon.main");
+    const made = await makeAlreadyWhite(bytes, mask, spec, { maxUpscale: MAX_SOURCE_UPSCALE, edgeMarginPx: 2 });
+    if (!made.ok) throw new Error(made.reason);
+    expect(made.treatment.alphaFilledHex).toBe("#FFFFFF");
+    const reference = await buildProductReferenceFromEncoded(bytes, made.placement, { width: made.width, height: made.height });
+    const report = await fidelityReport(reference, made.raw, made.mask, { kind: "main", exact: true, erodePx: 0 });
+    expect(report.issues).toEqual([]);
   });
 
   it("refuses a photo on off white, and reports a fill it cannot reach", async () => {
