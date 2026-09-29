@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { normalizeOutputOptions, resolveOutputOptions } from "@curvi/pipeline/output-options";
 import type { Shot } from "@curvi/pipeline/schemas";
-import { creditCosts } from "@curvi/pipeline/seed";
+import { creditCosts, stillStyle } from "@curvi/pipeline/seed";
 import { buildShotViews, RERUN_NOT_RUN_NOTE, type ShotStepRow } from "./job-shots";
 import {
   angleLabel,
@@ -12,6 +13,7 @@ import {
   retryShotFor,
   specsWithRoom,
   storedShot,
+  withAddedPhoto,
 } from "./shot-ops";
 
 const SHOT: Shot = {
@@ -128,6 +130,75 @@ describe("planAngleShots", () => {
         existingFilesBySpec: { "amazon.secondary": 8 },
       }),
     ).toEqual([]);
+  });
+
+  describe("with the pack's stored output options (PHASE_15)", () => {
+    const keep = resolveOutputOptions(normalizeOutputOptions({ background: "keep" }), {
+      colorHex: stillStyle.whiteHex,
+      brandSweepHex: stillStyle.fallbackBrandHex,
+      keepMediaIds: ["ws/w/src/front.jpg"],
+    });
+    const remove = resolveOutputOptions(normalizeOutputOptions({ color: { kind: "swatch", key: "sand" } }), {
+      colorHex: "#EADFCF",
+      brandSweepHex: stillStyle.fallbackBrandHex,
+      keepMediaIds: [],
+    });
+
+    it("plans an added angle on a Keep pack as the seller's own photo, on the gallery specs", () => {
+      const shots = planAngleShots({ ...base, angle: "back", output: withAddedPhoto(keep, base.mediaKey) });
+      expect(shots).toHaveLength(1);
+      expect(shots[0]).toMatchObject({
+        id: base.shotId,
+        type: "original_photo",
+        sourceMediaId: base.mediaKey,
+        credits: creditCosts.deterministic,
+      });
+      expect(shots[0].channels).toEqual(["amazon.secondary", "shopify.product"]);
+    });
+
+    it("adds the made white copy for channels that require white after the kept photo", () => {
+      const shots = planAngleShots({
+        ...base,
+        angle: "front",
+        shotId: "skipped_01_amazon_main",
+        output: withAddedPhoto(keep, base.mediaKey),
+      });
+      expect(shots.map((s) => [s.id, s.type])).toEqual([
+        ["skipped_01_amazon_main", "original_photo"],
+        ["skipped_01_amazon_main_amazon_main", "amazon_main"],
+      ]);
+      expect(shots[1].channels).toEqual(["amazon.main"]);
+    });
+
+    it("plans today's white angle on a Remove pack, whatever the color", () => {
+      const shots = planAngleShots({ ...base, angle: "back", output: remove });
+      expect(shots.map((s) => s.type)).toEqual(["alt_angle_white"]);
+    });
+
+    it("leaves out a kept photo too small for a channel", () => {
+      const shots = planAngleShots({
+        ...base,
+        angle: "back",
+        output: withAddedPhoto(keep, base.mediaKey),
+        photoSize: { width: 300, height: 300 },
+      });
+      // Amazon's gallery needs a longer side than 1.5 times 300 pixels.
+      expect(shots.flatMap((s) => s.channels)).not.toContain("amazon.secondary");
+      const amazonOnly = planAngleShots({
+        ...base,
+        channels: ["amazon.secondary"],
+        angle: "back",
+        output: withAddedPhoto(keep, base.mediaKey),
+        photoSize: { width: 300, height: 300 },
+      });
+      expect(amazonOnly).toEqual([]);
+    });
+
+    it("keeps the added photo only on a Keep pack", () => {
+      expect(withAddedPhoto(keep, base.mediaKey).keepMediaIds).toEqual(["ws/w/src/front.jpg", base.mediaKey]);
+      expect(withAddedPhoto(withAddedPhoto(keep, base.mediaKey), base.mediaKey).keepMediaIds).toHaveLength(2);
+      expect(withAddedPhoto(remove, base.mediaKey)).toBe(remove);
+    });
   });
 });
 

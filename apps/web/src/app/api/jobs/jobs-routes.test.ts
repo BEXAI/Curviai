@@ -159,6 +159,17 @@ describe("POST /api/jobs", () => {
     expect(response.headers.get("Retry-After")).toBe("60");
   });
 
+  it.each([
+    ["invalid_options", 400],
+    ["upgrade_required", 402],
+    ["feature_unavailable", 422],
+  ] as const)("answers an output options refusal of %s with %i and the service's copy", async (reason, status) => {
+    vi.mocked(services.createJob).mockResolvedValue({ outcome: "rejected", reason, message: "Pick another color." });
+    const response = await post(jobBody({ outputOptions: { background: "keep" } }));
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error: "Pick another color.", reason });
+  });
+
   it("still lets any other service error through", async () => {
     vi.mocked(services.createJob).mockRejectedValue(new Error("boom"));
     await expect(post(jobBody())).rejects.toThrow("boom");

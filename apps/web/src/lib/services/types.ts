@@ -6,7 +6,9 @@
  * the view types.
  */
 
+import type { OutputOptionsInput } from "@curvi/pipeline/output-options";
 import type { ComplianceReportView } from "@/lib/compliance-report";
+import type { OutputOptionsSummary } from "@/lib/job-copy";
 import type { PreflightBox, PreflightOutcome } from "@/lib/preflight/types";
 
 export type {
@@ -62,6 +64,10 @@ export interface ProductSummary {
   boxContents: string[];
   /** Comparison facts the seller can back up, one printable line each. */
   comparisonFacts: string[];
+  /** Stored photos a pack of this product would run on, capped at
+   * MAX_PACK_PHOTOS. Set by listProducts, so the form can estimate a Keep
+   * pack that sends no new uploads. */
+  storedPhotoCount?: number;
 }
 
 /** One pack in a product's history. */
@@ -142,6 +148,10 @@ export interface JobView {
   /** What the product inventory found in each photo, in photo order, and
    * which product the pack featured. Null or absent when none ran. */
   inventory?: InventoryPhotoView[] | null;
+  /** The "Your choices" card: the look and one line per choice
+   * (outputOptionsSummary in lib/job-copy.ts). Absent when the stored
+   * options could not be read. */
+  outputOptions?: OutputOptionsSummary;
 }
 
 /** One product the inventory found in a photo, as the pack page lists it. */
@@ -217,6 +227,8 @@ export interface CreateJobInput {
   sku?: string;
   boxContents?: string[];
   comparisonFacts?: string[];
+  /** The seller's output options (PHASE_15). Absent means today's pack. */
+  outputOptions?: OutputOptionsInput;
 }
 
 export type CreateJobResult =
@@ -242,7 +254,10 @@ export type CreateJobResult =
         | "mode_unavailable"
         /** An upload failed the server side ingest check (wrong type,
          * over a cap, unreadable). The seller uploads a different file. */
-        | "invalid_upload";
+        | "invalid_upload"
+        /** The output options name something that is not there, such as a
+         * brand color the kit no longer has. The seller picks again. */
+        | "invalid_options";
       message: string;
     };
 
@@ -399,6 +414,10 @@ export interface Services {
    * inventory with the chooser, and the size gate. Demo mode simulates it. */
   preflightUpload(workspaceId: string, input: PreflightUploadInput): Promise<PreflightOutcome>;
   getBrandKit(workspaceId: string): Promise<BrandKitView>;
+  /** True when packs may carry output options other than today's pack: the
+   * NEXT_PUBLIC_OUTPUT_OPTIONS flag is on and, in db mode, the
+   * output_options_enabled kill switch too (cached briefly per process). */
+  outputOptionsEnabled(): Promise<boolean>;
   saveBrandKit(workspaceId: string, kit: BrandKitView): Promise<SaveResult>;
   listMembers(workspaceId: string): Promise<MemberView[]>;
   listIntegrations(workspaceId: string): Promise<IntegrationView[]>;

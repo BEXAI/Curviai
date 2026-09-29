@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobView, Services } from "@/lib/services/types";
+import { JOB_BODY_MAX_BYTES } from "@/lib/http/json-body";
 import { MemoryRateLimitStore, setRateLimitStoreForTests } from "@/lib/rate-limit";
 import {
   TEST_JOB_ID,
@@ -104,5 +105,82 @@ describe("POST /api/jobs seller inputs", () => {
     const response = await post(overrides);
     expect(response.status).toBe(400);
     expect(services.createJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/jobs output options (PHASE_15)", () => {
+  it("passes valid options to the service with the defaults filled", async () => {
+    const response = await post({
+      outputOptions: {
+        lookBase: "keep_photo",
+        background: "keep",
+        color: { kind: "custom", hex: "#1f2a44" },
+        fit: "pad",
+        extras: { scenes: true },
+      },
+    });
+    expect(response.status).toBe(201);
+    const input = vi.mocked(services.createJob).mock.calls[0]?.[1];
+    expect(input?.outputOptions).toEqual({
+      v: 1,
+      lookBase: "keep_photo",
+      background: "keep",
+      color: { kind: "custom", hex: "#1f2a44" },
+      fit: "pad",
+      extras: { scenes: true },
+    });
+  });
+
+  it("accepts a request with no options, a swatch and a brand color", async () => {
+    expect((await post({})).status).toBe(201);
+    expect((await post({ outputOptions: { color: { kind: "swatch", key: "sand" } } })).status).toBe(201);
+    expect((await post({ outputOptions: { color: { kind: "brand", index: 5 } } })).status).toBe(201);
+  });
+
+  it.each([
+    ["a short hex", { color: { kind: "custom", hex: "#FFF" } }],
+    ["a named color", { color: { kind: "custom", hex: "red" } }],
+    ["a hex with bad digits", { color: { kind: "custom", hex: "#GGGGGG" } }],
+    ["a brand index past the kit limit", { color: { kind: "brand", index: 6 } }],
+    ["an unknown swatch", { color: { kind: "swatch", key: "neon" } }],
+    ["an unknown key", { background: "keep", glow: true }],
+    ["an unknown extra", { extras: { stickers: true } }],
+    ["the P1 crop fit", { fit: "crop" }],
+    ["the P1 edge match color", { color: { kind: "edge_match" } }],
+    ["the P1 scene count", { sceneCount: 3 }],
+    ["an unknown version", { v: 2 }],
+  ])("refuses %s with a 400 before the service", async (_label, outputOptions) => {
+    const response = await post({ outputOptions });
+    expect(response.status).toBe(400);
+    expect(services.createJob).not.toHaveBeenCalled();
+  });
+
+  it("keeps a maximal body under the body cap", async () => {
+    const body = {
+      productId: TEST_PRODUCT_ID,
+      channels: Array.from({ length: 24 }, (_, i) => `channel.${String(i).padStart(56, "x")}`),
+      mode: "listing",
+      uploads: Array.from({ length: 8 }, (_, i) => ({
+        key: `ws/${TEST_WORKSPACE_ID}/src/${"k".repeat(470)}${i}`,
+        sha256: "a".repeat(64),
+        kind: "image",
+        angle: "in_the_box",
+        targetBox: { x: 0.123456789, y: 0.123456789, width: 0.5, height: 0.5 },
+      })),
+      newProductTitle: "T".repeat(120),
+      userDescription: "D".repeat(2000),
+      sku: "S".repeat(40),
+      boxContents: Array.from({ length: 5 }, () => "B".repeat(40)),
+      comparisonFacts: Array.from({ length: 5 }, () => "C".repeat(40)),
+      outputOptions: {
+        v: 1,
+        lookBase: "marketplace",
+        background: "remove",
+        color: { kind: "custom", hex: "#ABCDEF" },
+        fit: "pad",
+        extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: false },
+      },
+    };
+    expect(new TextEncoder().encode(JSON.stringify(body)).length).toBeLessThan(JOB_BODY_MAX_BYTES);
   });
 });

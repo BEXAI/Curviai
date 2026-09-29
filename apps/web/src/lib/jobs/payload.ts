@@ -8,6 +8,7 @@ import type { BrandStyle, GeneratePackInput } from "@curvi/trigger/runner";
 import type { PreflightIntake } from "@curvi/trigger/preflight-intake";
 import { isTemplateFontKey, presets, socialBadgeByTier, type TierKey } from "@curvi/pipeline/seed";
 import { isAngleRole, printableSellerLines } from "@curvi/pipeline/seller-inputs";
+import { ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 
 export interface PayloadProduct {
   id: string;
@@ -30,6 +31,51 @@ export interface PayloadMedia {
   targetBox?: { x: number; y: number; width: number; height: number } | null;
   /** The preflight's intake answer, for the runner to reuse when fresh. */
   preflight?: PreflightIntake;
+  /** Stored upright pixel size (source_media width and height, from the
+   * ingest check), so the runner sizes kept photos without a decode. */
+  width?: number | null;
+  height?: number | null;
+  /** The stored copy was decoded and written again at upload
+   * (source_media.ingest); unknown for uploads before PHASE_15. */
+  reencoded?: boolean | null;
+}
+
+/**
+ * PHASE_15 worker payload fields the web app sends: each photo's size and
+ * re-encode flag, and the job's resolved output options. SEAM: the runner
+ * adds the same optional fields to GeneratePackInput (images[].width,
+ * height, reencoded and output) and PackFollowUpInput (output). Until then
+ * these types carry them, and a runner that does not know them ignores them.
+ */
+export type PayloadImage = GeneratePackInput["images"][number] & {
+  width?: number;
+  height?: number;
+  reencoded?: boolean;
+};
+
+export type GeneratePackPayload = Omit<GeneratePackInput, "images"> & {
+  images: PayloadImage[];
+  /** The job's output options, parsed again from the stored row. Absent
+   * only for a job stored without options (today's pack). */
+  output?: ResolvedOutputOptions;
+};
+
+/** A positive whole pixel count, or undefined. */
+function pixels(value: number | null | undefined): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * The stored output options for a worker payload, parsed again with the
+ * shared schema (PHASE_15 item 27). Null or undefined means no options
+ * (today's pack); a value the schema refuses throws, so a pack never runs on
+ * options nobody can read.
+ */
+export function payloadOutputOf(stored: unknown): ResolvedOutputOptions | undefined {
+  if (stored === null || stored === undefined) {
+    return undefined;
+  }
+  return ResolvedOutputOptions.parse(stored);
 }
 
 /** A box the runner can use: every side inside the photo. */
@@ -104,8 +150,11 @@ export function buildGeneratePackInput(args: {
   brandColors?: string[] | null;
   /** Brand kit fonts, logo and style preset; see brandStyleFor. */
   brandKit?: PayloadBrandKit | null;
-}): GeneratePackInput {
+  /** generation_jobs.output_options as stored; see payloadOutputOf. */
+  outputOptions?: unknown;
+}): GeneratePackPayload {
   const brand = brandStyleFor(args.workspaceId, args.brandKit);
+  const output = payloadOutputOf(args.outputOptions);
   return {
     jobId: args.jobId,
     workspaceId: args.workspaceId,
@@ -117,12 +166,18 @@ export function buildGeneratePackInput(args: {
     // as the primary one, and the analyzer looks at the first few.
     images: args.media
       .filter((m) => m.kind !== "video")
-      .map((m) => ({
-        mediaId: m.r2Key,
-        ...(isAngleRole(m.angle) ? { angle: m.angle } : {}),
-        ...(validBox(m.targetBox) ? { targetBox: m.targetBox } : {}),
-        ...(m.preflight ? { preflight: m.preflight } : {}),
-      }))
+      .map((m): PayloadImage => {
+        const width = pixels(m.width);
+        const height = pixels(m.height);
+        return {
+          mediaId: m.r2Key,
+          ...(isAngleRole(m.angle) ? { angle: m.angle } : {}),
+          ...(validBox(m.targetBox) ? { targetBox: m.targetBox } : {}),
+          ...(m.preflight ? { preflight: m.preflight } : {}),
+          ...(width !== undefined && height !== undefined ? { width, height } : {}),
+          ...(typeof m.reencoded === "boolean" ? { reencoded: m.reencoded } : {}),
+        };
+      })
       .sort((a, b) => Number(b.angle === "front") - Number(a.angle === "front")),
     userDescription: args.userDescription,
     brandColors: (Array.isArray(args.brandColors) ? args.brandColors : [])
@@ -136,5 +191,6 @@ export function buildGeneratePackInput(args: {
     // The "Made with Curvi" badge on social exports, by plan (seed).
     socialBadge: socialBadgeByTier[args.tier] ?? false,
     ...(brand ? { brand } : {}),
+    ...(output ? { output } : {}),
   };
 }

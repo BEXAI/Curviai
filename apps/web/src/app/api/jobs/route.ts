@@ -15,6 +15,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { OutputOptionsInput } from "@curvi/pipeline/output-options";
 import { hasSpec } from "@curvi/specs";
 import { InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { isWorkspaceSourceKey } from "@/lib/r2";
@@ -54,6 +55,11 @@ const JobRequest = z.object({
   sku: skuSchema.optional(),
   boxContents: sellerLinesSchema.optional(),
   comparisonFacts: sellerLinesSchema.optional(),
+  // The seller's output options (PHASE_15), strict: an unknown key, a bad
+  // hex, a brand index out of range or a value only a later release honors
+  // is a 400. The service resolves them against the brand kit, the plan and
+  // the flags.
+  outputOptions: OutputOptionsInput.optional(),
 });
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -174,4 +180,5 @@ const REJECTED_STATUS = {
   unavailable: 503,
   mode_unavailable: 400,
   invalid_upload: 422,
+  invalid_options: 400,
 } as const;

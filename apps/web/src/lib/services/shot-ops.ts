@@ -10,6 +10,7 @@
  * come from the spec registry.
  */
 
+import { planFlagsOf, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 import { planShots } from "@curvi/pipeline/planner";
 import { ProductProfile, Shot } from "@curvi/pipeline/schemas";
 import { undeliverableShotMethods, type TierKey } from "@curvi/pipeline/seed";
@@ -101,6 +102,9 @@ export function retryShotFor(shot: Shot, existingFilesBySpec: Readonly<Record<st
   return channels.length > 0 ? { ...shot, channels } : null;
 }
 
+/** The white shot types a new angle photo is planned as. */
+const ANGLE_WHITE_TYPES: ReadonlySet<Shot["type"]> = new Set(["amazon_main", "alt_angle_white"]);
+
 /**
  * The shots a new photo of `angle` unlocks, planned by the deterministic
  * planner (the same rules and seed prices as a first run) for the pack's
@@ -108,6 +112,10 @@ export function retryShotFor(shot: Shot, existingFilesBySpec: Readonly<Record<st
  * front image when the front was missing. Only shots made from the new
  * photo are kept, each on the channels that still have room, under the id
  * of the skipped card it replaces. Empty when no channel can take it.
+ *
+ * On a Keep pack (the photo in output.keepMediaIds) the photo ships as
+ * itself: its original_photo takes the card's id, and a made white copy for
+ * the channels that require white follows under its own id.
  */
 export function planAngleShots(args: {
   angle: Angle;
@@ -116,6 +124,12 @@ export function planAngleShots(args: {
   channels: readonly string[];
   tier: TierKey;
   existingFilesBySpec: Readonly<Record<string, number>>;
+  /** The job's stored output options (PHASE_15), with the new photo in
+   * keepMediaIds when the pack keeps its backgrounds. Absent or null plans
+   * today's white shots; the color is applied at render time. */
+  output?: ResolvedOutputOptions | null;
+  /** The new photo's stored upright size, when the ingest check read it. */
+  photoSize?: { width: number; height: number } | null;
 }): Shot[] {
   const profile: ProductProfile = {
     ...ESTIMATE_REFERENCE_PRODUCT,
@@ -123,6 +137,7 @@ export function planAngleShots(args: {
     missingAnglesNeeded: [],
     imageQuality: { usableForMain: true, issues: [] },
   };
+  const kept = args.output?.keepMediaIds.includes(args.mediaKey) === true;
   const plan = planShots(profile, {
     channels: [...args.channels],
     tier: args.tier,
@@ -131,15 +146,44 @@ export function planAngleShots(args: {
     // Nothing but the angle's own shots may use the new photo.
     primaryMediaId: `${args.mediaKey}#unused`,
     undeliverableMethods: [...undeliverableShotMethods],
+    ...(args.output
+      ? {
+          output: planFlagsOf({ ...args.output, keepMediaIds: kept ? [args.mediaKey] : [] }, [
+            { id: args.mediaKey, angle: args.angle, ...(args.photoSize ?? {}) },
+          ]),
+        }
+      : {}),
   });
-  const shot = plan.shots.find(
-    (s) => s.sourceMediaId === args.mediaKey && (s.type === "amazon_main" || s.type === "alt_angle_white"),
-  );
-  if (!shot) {
-    return [];
+  const fromPhoto = plan.shots.filter((s) => s.sourceMediaId === args.mediaKey);
+  // A kept photo ships as itself first; its made white copy follows for the
+  // channels that require white. A removed photo gets today's white shot.
+  const picked = kept
+    ? [fromPhoto.find((s) => s.type === "original_photo"), fromPhoto.find((s) => ANGLE_WHITE_TYPES.has(s.type))]
+    : [fromPhoto.find((s) => ANGLE_WHITE_TYPES.has(s.type))];
+  const out: Shot[] = [];
+  for (const shot of picked) {
+    if (!shot) {
+      continue;
+    }
+    const channels = specsWithRoom(shot.channels, args.existingFilesBySpec);
+    if (channels.length > 0) {
+      // The first shot takes the skipped card's id; a second gets its own.
+      out.push({ ...shot, id: out.length === 0 ? args.shotId : `${args.shotId}_${shot.type}`, channels });
+    }
   }
-  const channels = specsWithRoom(shot.channels, args.existingFilesBySpec);
-  return channels.length > 0 ? [{ ...shot, id: args.shotId, channels }] : [];
+  return out;
+}
+
+/**
+ * The job's options for a follow up that adds a photo: on a Keep pack the
+ * new photo is kept too, since the runner reads keepMediaIds as the list of
+ * kept photos. Other packs are returned unchanged.
+ */
+export function withAddedPhoto(output: ResolvedOutputOptions, mediaKey: string): ResolvedOutputOptions {
+  if (output.background !== "keep" || output.keepMediaIds.includes(mediaKey)) {
+    return output;
+  }
+  return { ...output, keepMediaIds: [...output.keepMediaIds, mediaKey] };
 }
 
 /** What the board says after a cancel, from the credits it returned. */
