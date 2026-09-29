@@ -35,7 +35,14 @@ function cutout(width: number, height: number, rects: Rect[]): RawImage {
 
 const RED: [number, number, number] = [200, 30, 30];
 const BLUE: [number, number, number] = [30, 40, 200];
-const none: NoteSignals = { wantColors: [], excludeColors: [], wantWords: [], excludeWords: [] };
+const none: NoteSignals = {
+  wantColors: [],
+  excludeColors: [],
+  wantWords: [],
+  excludeWords: [],
+  wantPhrases: [],
+  excludePhrases: [],
+};
 
 /** Two tall bottles on a 400 x 300 cutout: red at x 40, blue at x 200. */
 function twoBottles(gap = 10): RawImage {
@@ -141,6 +148,8 @@ describe("noteSignals", () => {
       excludeColors: ["red"],
       wantWords: [],
       excludeWords: [],
+      wantPhrases: [],
+      excludePhrases: [],
     });
   });
 
@@ -152,7 +161,14 @@ describe("noteSignals", () => {
         mustKeep: [],
         styleNotes: null,
       }),
-    ).toEqual({ wantColors: ["blue"], excludeColors: ["gray", "red"], wantWords: ["mug"], excludeWords: ["kettle", "tray"] });
+    ).toEqual({
+      wantColors: ["blue"],
+      excludeColors: ["gray", "red"],
+      wantWords: ["mug"],
+      excludeWords: ["kettle", "tray"],
+      wantPhrases: [],
+      excludePhrases: ["crimson tray"],
+    });
   });
 
   it("is empty without a note or intent", () => {
@@ -174,6 +190,33 @@ describe("chooseInventoryTarget", () => {
       featured: [1],
       removed: [0],
       touching: false,
+    });
+  });
+
+  it("follows the production pack 3afc1dff: instruction words and intake's own labels never cause a conflict", () => {
+    // The note and intent exactly as stored on the failed production job.
+    const signals = noteSignals("Create Blue Gatorade bottle images, do not generate images for Red Gatorade bottle.", {
+      featureOnly: "blue sports drink bottle",
+      exclude: ["red sports drink bottle"],
+      mustKeep: [],
+      styleNotes: null,
+    });
+    expect(signals.wantColors).toEqual(["blue"]);
+    expect(signals.excludeColors).toEqual(["red"]);
+    const products = [
+      product("red sports drink bottle", redBox, "no"),
+      product("blue sports drink bottle", blueBox, "yes"),
+    ];
+    expect(chooseInventoryTarget({ objects: objects(), products, signals })).toMatchObject({
+      rule: "model",
+      featured: [1],
+      removed: [0],
+    });
+    // Even if the model marks nothing, the note and labels still pick blue.
+    const unsure = products.map((p) => ({ ...p, matchesIntent: "unclear" as const }));
+    expect(chooseInventoryTarget({ objects: objects(), products: unsure, signals })).toMatchObject({
+      rule: "note",
+      featured: [1],
     });
   });
 

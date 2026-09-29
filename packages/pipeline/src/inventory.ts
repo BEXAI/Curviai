@@ -328,6 +328,27 @@ const EXCLUDE_WORDS: ReadonlySet<string> = new Set([
 
 /** Words that say nothing about which product is meant. */
 const STOP_WORDS: ReadonlySet<string> = new Set([
+  // Instruction words: they describe the task, never the product, so they
+  // must not count as product words ("create blue gatorade bottle images").
+  "create",
+  "make",
+  "generate",
+  "produce",
+  "render",
+  "design",
+  "want",
+  "need",
+  "please",
+  "image",
+  "images",
+  "photo",
+  "photos",
+  "picture",
+  "pictures",
+  "shot",
+  "shots",
+  "pack",
+  "listing",
   "the",
   "and",
   "but",
@@ -418,6 +439,15 @@ export interface NoteSignals {
    * "gatorade" in "blue Gatorade, not the red Gatorade", tell nothing). */
   wantWords: string[];
   excludeWords: string[];
+  /** Intake's own featureOnly and exclude phrases, normalized. Intake names
+   * products with the same words it uses for their labels, so a label equal
+   * to one of these is a direct match. */
+  wantPhrases: string[];
+  excludePhrases: string[];
+}
+
+function phraseOf(text: string): string {
+  return wordsOf(text).join(" ");
 }
 
 function wordsOf(text: string): string[] {
@@ -477,6 +507,8 @@ export function noteSignals(note: string | null | undefined, intent?: SellerInte
     excludeColors: onlyIn(excludeColorSet, wantColorSet),
     wantWords: onlyIn(wantWordSet, excludeWordSet),
     excludeWords: onlyIn(excludeWordSet, wantWordSet),
+    wantPhrases: intent?.featureOnly ? [phraseOf(intent.featureOnly)].filter(Boolean) : [],
+    excludePhrases: (intent?.exclude ?? []).map(phraseOf).filter(Boolean),
   };
 }
 
@@ -591,13 +623,20 @@ export interface InventoryChoiceInput {
 function passesNote(object: InventoryObject, label: string | null, signals: NoteSignals): boolean {
   const colors = objectColors(object);
   const labelWords = new Set(productWords(wordsOf(label ?? "")));
+  const labelPhrase = label ? phraseOf(label) : "";
   if (signals.excludeColors.includes(object.color.name)) return false;
+  // Intake's own exclude and feature phrases match its own labels exactly.
+  if (labelPhrase && signals.excludePhrases.includes(labelPhrase)) return false;
   if (label && signals.excludeWords.some((w) => labelWords.has(w))) return false;
-  const wantedByColor = signals.wantColors.length === 0 || signals.wantColors.some((c) => colors.has(c));
-  if (!wantedByColor) return false;
+  if (signals.wantColors.length > 0) {
+    // A named color decides: the measured color (or the label's color word)
+    // must be one the note asks for; product words cannot overrule it.
+    return signals.wantColors.some((c) => colors.has(c));
+  }
+  if (labelPhrase && signals.wantPhrases.includes(labelPhrase)) return true;
   if (signals.wantWords.length === 0) return true;
   // Without an intake label only a color can speak for the piece.
-  return label ? signals.wantWords.some((w) => labelWords.has(w)) : signals.wantColors.length > 0;
+  return label ? signals.wantWords.some((w) => labelWords.has(w)) : false;
 }
 
 function holdsExcludedColor(object: InventoryObject, signals: NoteSignals): boolean {
