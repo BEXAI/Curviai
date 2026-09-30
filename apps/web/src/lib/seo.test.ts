@@ -5,12 +5,13 @@ import { fileURLToPath } from "node:url";
 import robots from "@/app/robots";
 import sitemap from "@/app/sitemap";
 import { categories } from "@/components/marketing/categories";
+import { AGENT_HELP_SLUG, helpArticles } from "@/components/marketing/help-articles";
 import { COMPETITOR_FACTS_CHECKED, imageGenerators, photoTools } from "@/components/marketing/competitor-facts";
 import { pillarPageTexts, pillarPages } from "@/components/marketing/pillar-copy";
 import { pillarMetadata } from "@/components/marketing/pillar-page";
 import { imageSpecs, specDisplayName, specSlug } from "@/components/marketing/spec-slug";
 import { buildLlmsFullTxt, buildLlmsTxt } from "./llms";
-import { comingSoonFileNames, joinList, specAvailability, unqualifiedClaims } from "./marketing-facts";
+import { comingSoonFileNames, FEATURES, isLive, joinList, specAvailability, unqualifiedClaims } from "./marketing-facts";
 import {
   DESCRIPTION_MAX,
   OG_IMAGE,
@@ -333,6 +334,34 @@ describe("llms.txt", () => {
       expect(text).toContain(`- ${joinList(soon)}`);
     }
     expect(text).not.toMatch(/^- Files for\s*$/m);
+  });
+
+  it("describes the pack sets, A+ modules, carousels and ad packs while they are live (PHASE_16)", () => {
+    const checks = [
+      ["packBundles", /Pack sets/],
+      ["aplusModules", /A\+ content modules/],
+      ["adsFormats", /carousels/],
+      ["adsFormats", /ad packs/],
+    ] as const;
+    for (const [key, pattern] of checks) {
+      expect(pattern.test(text), `${key} ${pattern}`).toBe(isLive(key));
+      expect(SITE_FEATURES.some((feature) => pattern.test(feature)), `${key} ${pattern}`).toBe(isLive(key));
+    }
+    expect(unqualifiedClaims(SITE_FEATURES.join(". "))).toEqual([]);
+  });
+
+  it("lists the API, MCP server, CLI and skill, and says coming soon until they ship", () => {
+    const line = text.split("\n").find((entry) => entry.includes(`/help#${AGENT_HELP_SLUG}`));
+    expect(line).toBeDefined();
+    expect(helpArticles.some((article) => article.slug === AGENT_HELP_SLUG)).toBe(true);
+    for (const phrase of ["Curvi API", "MCP server", "command line tool", "Curvi skill"]) {
+      expect(line).toContain(phrase);
+    }
+    if (!isLive("agentApi") || !isLive("agentSkill")) {
+      expect(line).toContain("coming soon");
+      expect(text).toContain(`- ${FEATURES.agentApi.label}`);
+      expect(text).toContain(`- ${FEATURES.agentSkill.label}`);
+    }
   });
 
   it("follows the copy rules outside markdown list markers", () => {

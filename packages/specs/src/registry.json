@@ -52,6 +52,50 @@
       "textAllowed": true
     },
     {
+      "id": "amazon.aplus.wide_banner",
+      "verified": false,
+      "source": "A+ image with text overlay and wide banner, 970 x 300; Amazon Launchpad A+ guideline 2018 and secondary guides, checked 2026-09-29",
+      "width": 970,
+      "height": 300,
+      "exactSize": true,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
+      "id": "amazon.aplus.single_image",
+      "verified": false,
+      "source": "A+ single side image, three images and multiple image modules, 300 x 300; Amazon Launchpad A+ guideline 2018 and secondary guides, checked 2026-09-29",
+      "width": 300,
+      "height": 300,
+      "exactSize": true,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
+      "id": "amazon.aplus.four_images",
+      "verified": false,
+      "source": "A+ four images in a row, 220 x 220; secondary guides, checked 2026-09-29",
+      "width": 220,
+      "height": 220,
+      "exactSize": true,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
+      "id": "amazon.aplus.quadrant_image",
+      "verified": false,
+      "source": "A+ four image quadrant, 135 x 135; secondary guides, checked 2026-09-29",
+      "width": 135,
+      "height": 135,
+      "exactSize": true,
+      "formats": ["jpg", "png"],
+      "maxBytes": 2000000,
+      "textAllowed": true
+    },
+    {
       "id": "shopify.product",
       "verified": true,
       "source": "help.shopify.com product media types, Sept 2026",
@@ -159,7 +203,8 @@
       "exactSize": true,
       "formats": ["jpg", "png"],
       "textAllowed": true,
-      "badgeAllowed": true
+      "badgeAllowed": true,
+      "textLimits": { "headline": 27, "primaryText": 125 }
     },
     {
       "id": "meta.feed_4x5",
@@ -169,7 +214,8 @@
       "exactSize": true,
       "formats": ["jpg", "png"],
       "textAllowed": true,
-      "badgeAllowed": true
+      "badgeAllowed": true,
+      "textLimits": { "headline": 27, "primaryText": 125 }
     },
     {
       "id": "meta.story_9x16",
@@ -177,19 +223,51 @@
       "width": 1080,
       "height": 1920,
       "exactSize": true,
-      "safeZone": { "top": 250, "bottom": 340 },
+      "source": "Safe zone 14 percent top, 35 percent bottom, 6 percent each side; primary text 125, headline 40: facebook.com/business/ads-guide instagram-story and facebook-story, checked 2026-09-29",
+      "safeZone": { "top": 269, "bottom": 672, "left": 65, "right": 65 },
       "formats": ["jpg", "png", "mp4"],
       "textAllowed": true,
-      "badgeAllowed": true
+      "badgeAllowed": true,
+      "textLimits": { "headline": 40, "primaryText": 125 }
+    },
+    {
+      "id": "meta.reels_9x16",
+      "verified": true,
+      "source": "Instagram Reels image ad, 9:16, JPG or PNG up to 30 MB, primary text 44, safe zone 14 percent top, 35 percent bottom, 6 percent each side: facebook.com/business/ads-guide/update/image/instagram-reels, checked 2026-09-29",
+      "width": 1080,
+      "height": 1920,
+      "exactSize": true,
+      "safeZone": { "top": 269, "bottom": 672, "left": 65, "right": 65 },
+      "formats": ["jpg", "png"],
+      "maxBytes": 30000000,
+      "textAllowed": true,
+      "badgeAllowed": true,
+      "textLimits": { "primaryText": 44 }
     },
     {
       "id": "pinterest.pin",
       "verified": false,
+      "source": "2:3 at 1000 x 1500, PNG or JPEG up to 20 MB, title up to 100 characters: help.pinterest.com pinterest-product-specs, checked 2026-09-29",
       "width": 1000,
       "height": 1500,
       "exactSize": true,
       "formats": ["jpg", "png"],
-      "textAllowed": true
+      "maxBytes": 20000000,
+      "textAllowed": true,
+      "textLimits": { "title": 100 }
+    },
+    {
+      "id": "tiktok.ad_9x16",
+      "verified": false,
+      "source": "In-Feed image ad 9:16 at or above 540 x 960, JPG or PNG, ad text up to 100 Latin characters: ads.tiktok.com help, checked 2026-09-29; safe zone pixels from secondary readings of TikTok's overlay files",
+      "width": 1080,
+      "height": 1920,
+      "exactSize": true,
+      "safeZone": { "top": 269, "bottom": 484, "left": 65, "right": 140 },
+      "formats": ["jpg", "png"],
+      "textAllowed": true,
+      "badgeAllowed": true,
+      "textLimits": { "adText": 100 }
     },
     {
       "id": "video.amazon_listing",

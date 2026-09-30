@@ -321,7 +321,9 @@ describe("makeOriginalFit: trim to the channel's shape (P1 crop)", () => {
   it("keeps the product inside meta.story_9x16's safe zone", async () => {
     // Large enough that the 9:16 window reaches 1080 by 1920 within the cap.
     const bytes = await jpegPhoto(2400, 1800);
-    const box = { left: 840, top: 540, width: 720, height: 720 };
+    // High enough in the photo for the story's wider safe zone (14 percent
+    // top, 35 percent bottom, PHASE_16 workstream 3).
+    const box = { left: 840, top: 400, width: 720, height: 720 };
     const spec = getSpec("meta.story_9x16");
     const result = await rendered(bytes, spec.id, { fit: "crop", productBox: box });
     expect(result.treatment.cropped).toBe(true);

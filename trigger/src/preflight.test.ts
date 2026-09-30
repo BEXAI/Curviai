@@ -513,3 +513,94 @@ describe("runUploadPreflight", () => {
     expect(run.costMicros).toBe(800);
   });
 });
+
+// docs/phases/PHASE_16.md workstream 4: the question step in the preflight.
+describe("runUploadPreflight questions", () => {
+  const questionKey = activeRecipe("question").key;
+
+  function questionDeps(
+    image: IntakeImageResult,
+    plannerOutput: unknown,
+    opts: { sellerIntent?: unknown; cutout?: RawImage | null } = {},
+  ): { deps: PipelineDeps; planner: MockProvider } {
+    const { ai } = makeAi({ images: [image], ...(opts.sellerIntent ? { sellerIntent: opts.sellerIntent } : {}) });
+    const planner = new MockProvider({ name: "mock-questions", tasks: [questionKey], output: plannerOutput, costMicros: 300 });
+    ai.registry.register(planner);
+    ai.routing[questionKey] = [planner.name];
+    const bytes = encodePng(twoBottles());
+    const cutout = opts.cutout === undefined ? twoBottles() : opts.cutout;
+    const demo = new DemoShotGenerator();
+    return {
+      deps: {
+        ai,
+        store: new InMemoryJobStore(),
+        clock: systemClock,
+        generator: { generate: (args) => demo.generate(args), inventoryCutout: async () => ({ cutout, costMicros: 20_000 }) } as ShotGenerator,
+        loadMedia: async (key) => (key === KEY ? bytes : null),
+      },
+      planner,
+    };
+  }
+
+  const plannerAnswer = {
+    questions: [
+      { id: "target", kind: "target", options: [{ value: "item:1", label: "anything" }] },
+      { id: "channels", kind: "channels", options: [{ value: "amazon", label: "Amazon" }, { value: "shopify", label: "Shopify" }] },
+      { id: "mood", kind: "mood", options: [{ value: "gym", label: "Gym" }, { value: "studio", label: "Studio" }] },
+      { id: "use", kind: "use", options: [{ value: "a", label: "Home gym" }, { value: "b", label: "Trail running" }] },
+      { id: "audience", kind: "audience", options: [{ value: "c", label: "Kids" }, { value: "d", label: "Adults" }] },
+    ],
+  };
+
+  it("asks at most four questions, the target first with the photo's own items, and books the spend", async () => {
+    const { deps, planner } = questionDeps(twoProductsImage, plannerAnswer);
+    const run = await runUploadPreflight(deps, { preflightId: "pq-1", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(planner.invocations).toBe(1);
+    expect(planner.calls[0].jobId).toBe("pq-1");
+    expect(run.questions.length).toBeLessThanOrEqual(4);
+    expect(run.questions.map((q) => q.kind)).toEqual(["target", "channels", "mood", "use"]);
+    expect(run.questions[0].options).toEqual([
+      { value: "item:1", label: "red bottle", color: "red" },
+      { value: "item:2", label: "blue bottle", color: "blue" },
+      { value: "all", label: "Both" },
+    ]);
+    expect(run.costMicros).toBe(800 + 20_000 + 300);
+  });
+
+  it("never asks the target when the note already picked the product", async () => {
+    const { deps } = questionDeps(twoProductsImage, plannerAnswer);
+    const run = await runUploadPreflight(deps, { preflightId: "pq-2", workspaceId: WS, mediaKey: KEY, note: "the blue one only" });
+    expect(run.rule).toBe("note");
+    expect(run.questions.map((q) => q.kind)).not.toContain("target");
+  });
+
+  it("asks nothing, and calls no model, when the note answers every kind", async () => {
+    const one = { ...twoProductsImage, distinctProducts: 1, products: [twoProductsImage.products![1]] };
+    const { deps, planner } = questionDeps(one, plannerAnswer, {
+      sellerIntent: { featureOnly: null, exclude: [], mustKeep: [], styleNotes: "bright kitchen" },
+    });
+    const run = await runUploadPreflight(deps, { preflightId: "pq-3", workspaceId: WS, mediaKey: KEY, note: "Amazon listing, bright kitchen" });
+    expect(run.questions).toEqual([]);
+    expect(planner.invocations).toBe(0);
+  });
+
+  it("asks the deterministic questions when the planner answers out of shape", async () => {
+    const { deps } = questionDeps(twoProductsImage, { nope: true });
+    const run = await runUploadPreflight(deps, { preflightId: "pq-4", workspaceId: WS, mediaKey: KEY, note: "" });
+    expect(run.questions.map((q) => q.kind)).toEqual(["target", "channels", "mood"]);
+  });
+
+  it("asks no question about a blocked photo", async () => {
+    const { deps, planner } = questionDeps({ ...twoProductsImage, flags: { ...flags, drugs: true } }, plannerAnswer);
+    const run = await runUploadPreflight(deps, { preflightId: "pq-5", workspaceId: WS, mediaKey: KEY });
+    expect(run.questions).toEqual([]);
+    expect(planner.invocations).toBe(0);
+  });
+
+  it("still asks the other questions when the cutout is unavailable, without a target", async () => {
+    const { deps } = questionDeps(twoProductsImage, plannerAnswer, { cutout: null });
+    const run = await runUploadPreflight(deps, { preflightId: "pq-6", workspaceId: WS, mediaKey: KEY });
+    expect(run.cutout).toBe("unavailable");
+    expect(run.questions.map((q) => q.kind)).toEqual(["channels", "mood", "use", "audience"]);
+  });
+});

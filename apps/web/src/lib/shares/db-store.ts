@@ -123,6 +123,8 @@ export class DbShareStore implements ShareStore {
       where: (t, { and, eq, inArray }) =>
         and(
           eq(t.workspaceId, job.workspaceId),
+          // Only picked files ship (PHASE_16 workstream 6).
+          eq(t.picked, true),
           inArray(
             t.assetId,
             assetRows.map((a) => a.id),
@@ -453,7 +455,14 @@ export class DbShareStore implements ShareStore {
     const [variantRows, mediaRows, productRows] = await Promise.all([
       assetRows.length > 0
         ? this.db.query.assetVariants.findMany({
-            where: (t, { inArray }) => inArray(t.assetId, assetRows.map((a) => a.id)),
+            where: (t, { and, eq, inArray }) =>
+              and(
+                eq(t.picked, true),
+                inArray(
+                  t.assetId,
+                  assetRows.map((a) => a.id),
+                ),
+              ),
           })
         : Promise.resolve([]),
       unique(live.map((s) => s.beforeMediaId)).length > 0

@@ -9,6 +9,9 @@
 import type { OutputOptionsInput, PhotoBackgroundChoice } from "@curvi/pipeline/output-options";
 import type { ComplianceReportView } from "@/lib/compliance-report";
 import type { OutputOptionsSummary } from "@/lib/job-copy";
+import type { BrandPaletteOutcome } from "@/lib/brand/types";
+import type { GalleryFilters, GalleryItem } from "@/lib/library";
+import type { ReusePrefill } from "@/lib/reuse";
 import type { PreflightBox, PreflightOutcome } from "@/lib/preflight/types";
 
 export type {
@@ -64,6 +67,9 @@ export interface ProductSummary {
   boxContents: string[];
   /** Comparison facts the seller can back up, one printable line each. */
   comparisonFacts: string[];
+  /** Press quotes or awards for the A+ endorsement module, one printable line
+   * each (PHASE_16 workstream 2). Absent reads as none. */
+  endorsements?: string[];
   /** Stored photos a pack of this product would run on, capped at
    * MAX_PACK_PHOTOS. Set by listProducts, so the form can estimate a Keep
    * pack that sends no new uploads. */
@@ -120,6 +126,25 @@ export interface JobShotView {
   action?: ShotAction | null;
   /** How the board names the angle an add_photo card waits for, e.g. "back". */
   angle?: string | null;
+  /** The delivered asset behind a finished card, for favorites (PHASE_16
+   * workstream 6). Absent before the pack serves files. */
+  assetId?: string | null;
+  /** The asset is in the workspace's favorites. */
+  favorite?: boolean;
+  /** Set on every version of a lifestyle scene made in more than one
+   * version: which version this card is (1 is the scene itself) and whether
+   * its files ship. */
+  version?: ShotVersionView | null;
+  /** Pixel size of the preview file, for its true aspect ratio. */
+  width?: number | null;
+  height?: number | null;
+}
+
+export interface ShotVersionView {
+  number: number;
+  /** The shot id of the scene itself, shared by all its versions. */
+  sceneShotId: string;
+  picked: boolean;
 }
 
 export type ShotAction = "retry" | "add_photo";
@@ -235,8 +260,20 @@ export interface CreateJobInput {
   sku?: string;
   boxContents?: string[];
   comparisonFacts?: string[];
+  /** Press quotes or awards the A+ endorsement module prints as typed. */
+  endorsements?: string[];
   /** The seller's output options (PHASE_15). Absent means today's pack. */
   outputOptions?: OutputOptionsInput;
+  /** The question step's taps (PHASE_16 workstream 4): the upload the
+   * questions were asked about and question id to option value. Resolved
+   * against the questions stored for that upload; absent or skipped means
+   * the note alone. */
+  sellerAnswers?: { key: string; picks: Record<string, string> };
+  /** The question step's answers from a caller with no upload preflight
+   * (the v1 API and MCP, PHASE_16 workstream 5): seed choice values by
+   * question kind, resolved against the seed's full choices. Used only
+   * when sellerAnswers is absent. */
+  answers?: { channels?: string; mood?: string };
 }
 
 export type CreateJobResult =
@@ -375,6 +412,35 @@ export interface SaveResult {
     | "unavailable";
 }
 
+/** Favorites (PHASE_16 workstream 6). not_found 404, role_forbidden 403,
+ * unavailable 503, demo 400. */
+export type FavoriteResult =
+  | { outcome: "saved"; favorite: boolean }
+  | { outcome: "rejected"; reason: "not_found" | "role_forbidden" | "unavailable" | "demo"; message: string };
+
+/** Picking which versions of a scene ship. not_found 404, role_forbidden
+ * 403, not_ready 409, not_a_version 409, channel_full 409, unavailable 503,
+ * demo 400. */
+export type VersionPickResult =
+  | { outcome: "saved"; job: JobView }
+  | {
+      outcome: "rejected";
+      reason: "not_found" | "role_forbidden" | "not_ready" | "not_a_version" | "channel_full" | "unavailable" | "demo";
+      message: string;
+    };
+
+/** /app/library: the workspace's delivered images, newest first. */
+export interface LibraryView {
+  items: GalleryItem[];
+  /** Filter choices over every listed image, before the filters apply. */
+  facets: {
+    channels: Array<{ value: string; label: string }>;
+    shotTypes: Array<{ value: string; label: string }>;
+  };
+  /** True when more images exist than one page lists. */
+  truncated: boolean;
+}
+
 export interface Services {
   readonly mode: ServiceMode;
   /** The caller's workspace, or null when nobody is signed in (db mode only). */
@@ -427,6 +493,26 @@ export interface Services {
    * output_options_enabled kill switch too (cached briefly per process). */
   outputOptionsEnabled(): Promise<boolean>;
   saveBrandKit(workspaceId: string, kit: BrandKitView): Promise<SaveResult>;
+  /** Suggests brand colors from an uploaded logo (PHASE_16 workstream 7).
+   * Owners, admins and editors on a plan with a brand kit; the logo key
+   * must sit in this workspace's source prefix. Never saves the kit: the
+   * seller confirms the suggestion and saves through saveBrandKit. */
+  suggestBrandPalette(workspaceId: string, logoKey: string): Promise<BrandPaletteOutcome>;
   listMembers(workspaceId: string): Promise<MemberView[]>;
   listIntegrations(workspaceId: string): Promise<IntegrationView[]>;
+  /** "Make this pack again" (PHASE_16 workstream 6): a pack's channels,
+   * options, answers and note for the new pack form's prefill, or null when
+   * the job is not in this workspace. Reads only; never starts a pack. */
+  getReusePrefill(workspaceId: string, jobId: string): Promise<ReusePrefill | null>;
+  /** The workspace's delivered images for /app/library, picked files only,
+   * filtered, newest first, at most LIBRARY_PAGE_SIZE. */
+  listLibrary(workspaceId: string, filters: GalleryFilters): Promise<LibraryView>;
+  /** Adds an asset of this workspace to its favorites, or removes it.
+   * Owners, admins and editors. */
+  setFavorite(workspaceId: string, assetId: string, favorite: boolean): Promise<FavoriteResult>;
+  /** Picks or unpicks one version of a lifestyle scene on a delivered pack:
+   * a picked version's files ship (the all files zip, the file list, the
+   * share page), an unpicked one's do not. Owners, admins and editors.
+   * Never charges: every version was charged when it was made. */
+  pickShotVersion(workspaceId: string, jobId: string, shotId: string, picked: boolean): Promise<VersionPickResult>;
 }

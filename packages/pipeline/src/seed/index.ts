@@ -1,4 +1,13 @@
-export { RecipeModelOptions, RecipeRow, addedOverlaysIntake, qcJudgePolicy, recipeSeedRows } from "./recipes";
+export { RecipeModelOptions, RecipeRow, adCopyRecipe, addedOverlaysIntake, aplusCopyRecipe, qcJudgePolicy, recipeSeedRows } from "./recipes";
+export {
+  QUESTION_KINDS,
+  channelChoices,
+  defaultChannelChoices,
+  defaultMoodChoices,
+  moodChoices,
+  questionSet,
+} from "./questions";
+export type { ChannelChoice, MoodChoice, QuestionKind } from "./questions";
 export {
   CUTOUT_TASK,
   HARMONIZE_TASK,
@@ -10,22 +19,36 @@ export {
 } from "./models";
 export type { CutoutModelSeedRow, ImageModelSeedRow, ImageProviderFamily, LlmPriceTable } from "./models";
 export {
+  adsFormats,
+  aplusCopy,
+  aplusModules,
   backgroundSwatches,
   badgeStyle,
   canvasDefaults,
   jpegEncoding,
   lifestyleFallbackScenes,
   originalFit,
+  packBundles,
   presets,
   sceneCountOptions,
   sceneDefaults,
   stillStyle,
   templates,
 } from "./templates";
-export type { BackgroundSwatchKey, PresetKey } from "./templates";
+export { variationOptions } from "./variations";
+export type {
+  CarouselBeat,
+  AplusModuleKey,
+  AplusModuleLayout,
+  AplusModuleSeed,
+  BackgroundSwatchKey,
+  PackBundle,
+  PackBundleKey,
+  PresetKey,
+} from "./templates";
 export { DEFAULT_TEMPLATE_FONT, isTemplateFontKey, templateFonts } from "./fonts";
 export type { TemplateFontEntry, TemplateFontKey } from "./fonts";
-export { AUTO_STYLE_PRESET, MAX_BRAND_COLORS } from "./brand";
+export { AUTO_STYLE_PRESET, MAX_BRAND_COLORS, brandPalette } from "./brand";
 export { keepBackgroundPhrases } from "./phrases";
 export { retentionOffers } from "./retention";
 export type { RetentionOffers } from "./retention";

@@ -35,7 +35,24 @@ describe("packZipEntries (Update.md 6.5)", () => {
   it("keeps entry names inside their folder", () => {
     const entries = packZipEntries([{ r2Key: "k", filename: "../../etc/passwd", channelSpecId: "amazon.main" }], null);
     expect(entries[0].name.startsWith("amazon/")).toBe(true);
-    expect(entries[0].name.slice("amazon/".length)).not.toContain("/");
+    expect(entries[0].name).not.toContain("..");
+    expect(entries[0].name).toBe("amazon/etc/passwd");
+  });
+
+  it("keeps the carousel and ads folders of the ads formats (PHASE_16 workstream 3)", () => {
+    const entries = packZipEntries(
+      [
+        { r2Key: "k1", filename: "carousel/01.jpg", channelSpecId: "meta.feed_4x5" },
+        { r2Key: "k2", filename: "ads/ad_9x16/v1.jpg", channelSpecId: "tiktok.ad_9x16" },
+        { r2Key: "k3", filename: "carousel//./02.jpg", channelSpecId: "meta.feed_4x5" },
+      ],
+      null,
+    );
+    expect(entries.map((e) => e.name).sort()).toEqual([
+      "meta/carousel/01.jpg",
+      "meta/carousel/02.jpg",
+      "tiktok/ads/ad_9x16/v1.jpg",
+    ]);
   });
 });
 

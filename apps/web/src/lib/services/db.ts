@@ -13,7 +13,11 @@
 import {
   createDb,
   type Db,
+  assetVariants,
   brandKits,
+  favorites,
+  inArray,
+  packFiles,
   generationJobs,
   jobSteps,
   platformSettings,
@@ -45,7 +49,7 @@ import {
   socialBadgeByTier,
   tierByKey,
 } from "@curvi/pipeline/seed";
-import { isAngleRole, printableSellerLines, type AngleRole } from "@curvi/pipeline/seller-inputs";
+import { isAngleRole, printableEndorsements, printableSellerLines, type AngleRole } from "@curvi/pipeline/seller-inputs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   buildComplianceReportView,
@@ -88,6 +92,8 @@ import {
   preflightAddedOverlaysOf,
   preflightProductBoxOf,
   preflightRowsFor,
+  sellerAnswersFor,
+  sellerAnswersFromChoices,
   preflightUpload as runPreflightUpload,
   reusableIntakeOf,
   type PreflightServiceDeps,
@@ -95,12 +101,23 @@ import {
 import type { PreflightOutcome } from "@/lib/preflight/types";
 import type { UploadPreflight } from "@curvi/db";
 import { brandKitInputSchema, brandKitIssueNotice, normalizeFontChoice } from "@/lib/validation/brand-kit";
+import { brandPaletteOutcomeOf, defaultBrandPaletteRun, type BrandPaletteOutcome, type BrandPaletteRunner } from "@/lib/brand/palette";
+import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import { isUuid } from "@/lib/validation/ids";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import { ingestUpload, type IngestOutcome } from "@/lib/trust/ingest";
 import { r2TrustStorage } from "@/lib/trust/storage";
 import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
 import { buildShotViews } from "./job-shots";
+import {
+  LIBRARY_PAGE_SIZE,
+  filterGallery,
+  galleryFacets,
+  galleryItemsOf,
+  type GalleryFilters,
+} from "@/lib/library";
+import { reusePrefillOf, type ReusePrefill } from "@/lib/reuse";
+import { overLimitSpec, shotVersionsOf, VERSION_COPY } from "@/lib/variation-picks";
 import { readOutputDefaults, saveOutputDefaults } from "./output-defaults";
 import {
   hasPhotoBackgroundOverride,
@@ -147,6 +164,9 @@ import type {
   SaveResult,
   Services,
   ShotOpResult,
+  VersionPickResult,
+  FavoriteResult,
+  LibraryView,
   WorkspaceRole,
   WorkspaceSummary,
 } from "./types";
@@ -191,6 +211,9 @@ export interface DbServiceDeps {
   /** Overrides the provider pause verdict createJob checks (tests). Left
    * out, lib/provider-preflight decides. */
   providerVerdict?: () => Promise<PreflightVerdict>;
+  /** Overrides the logo palette reader (tests). Left out, the worker
+   * runtime reads the logo (lib/brand/palette.ts). */
+  brandPalette?: BrandPaletteRunner;
   /** Overrides the upload cutout cache check (tests): true when a fresh
    * cached cutout of this stored photo exists. Left out, R2 is read. */
   cutoutCached?: (workspaceId: string, r2Key: string) => Promise<boolean>;
@@ -324,6 +347,7 @@ function productSummaryOf(row: ProductRow): ProductSummary {
     sku: row.sku ?? null,
     boxContents: printableSellerLines(row.boxContents),
     comparisonFacts: printableSellerLines(row.comparisonFacts),
+    endorsements: printableEndorsements(row.endorsements),
   };
 }
 
@@ -332,9 +356,10 @@ function productSummaryOf(row: ProductRow): ProductSummary {
  * request carries. An empty SKU clears it; an empty list clears the list.
  */
 function sellerInputUpdates(
-  input: Pick<CreateJobInput, "sku" | "boxContents" | "comparisonFacts">,
-): Partial<Pick<ProductRow, "sku" | "boxContents" | "comparisonFacts">> {
+  input: Pick<CreateJobInput, "sku" | "boxContents" | "comparisonFacts" | "endorsements">,
+): Partial<Pick<ProductRow, "sku" | "boxContents" | "comparisonFacts" | "endorsements">> {
   return {
+    ...(input.endorsements !== undefined ? { endorsements: printableEndorsements(input.endorsements) } : {}),
     ...(input.sku !== undefined ? { sku: input.sku.trim() || null } : {}),
     ...(input.boxContents !== undefined ? { boxContents: printableSellerLines(input.boxContents) } : {}),
     ...(input.comparisonFacts !== undefined ? { comparisonFacts: printableSellerLines(input.comparisonFacts) } : {}),
@@ -481,6 +506,11 @@ function fileDownloadPath(jobId: string, fileId: string): string {
  * really delivered what it billed for, even if it later ended failed. A run
  * the time cap or a restart settled writes no files and charges nothing, so
  * it stays unserved. */
+/** Most delivered assets one library read scans before its filters. */
+const LIBRARY_SCAN_LIMIT = 600;
+
+const ASSET_NOT_FOUND = "This image does not exist in your workspace.";
+
 export function servesFiles(job: { status: string; creditsCharged: number | null }): boolean {
   return job.status === "done" || Number(job.creditsCharged ?? 0) > 0;
 }
@@ -883,6 +913,18 @@ export class DbService implements Services {
         }
         variantsByShot.set(shotId, [...(variantsByShot.get(shotId) ?? []), variant]);
       }
+      // Favorites and scene versions (PHASE_16 workstream 6).
+      const favoriteIds = await this.favoriteAssetIds(
+        workspaceId,
+        variantRows.map((v) => v.assetId),
+      );
+      const versions = shotVersionsOf(
+        shots.map((shot) => shot.shotId),
+        (shotId) => {
+          const files = variantsByShot.get(shotId);
+          return files && files.length > 0 ? files.some((v) => v.picked) : undefined;
+        },
+      );
       const canSign = isR2Configured();
       await Promise.all(
         shots.map(async (shot) => {
@@ -891,6 +933,14 @@ export class DbService implements Services {
             return;
           }
           shot.channels = [...new Set(variants.map((v) => v.channelSpecId))];
+          shot.assetId = variants[0].assetId;
+          shot.favorite = favoriteIds.has(variants[0].assetId);
+          shot.width = variants[0].width;
+          shot.height = variants[0].height;
+          const version = versions.get(shot.shotId);
+          if (version) {
+            shot.version = version;
+          }
           if (!canSign) {
             return;
           }
@@ -1708,7 +1758,9 @@ export class DbService implements Services {
       (existing.mode ?? input.mode) === input.mode &&
       JSON.stringify([...(existing.channels ?? input.channels)].sort()) ===
         JSON.stringify([...input.channels].sort()) &&
-      sameOutputOptions(existing.outputOptions, input);
+      sameOutputOptions(existing.outputOptions, input) &&
+      (existing.sellerNote ?? "") === (input.userDescription?.trim() ? input.userDescription : "") &&
+      (await this.uploadsRegisteredFor(workspaceId, existing, input));
     if (sameBody) {
       const job = await this.getJob(workspaceId, existing.id);
       if (job) {
@@ -1716,6 +1768,39 @@ export class DbService implements Services {
       }
     }
     return { outcome: "conflict", existingJobId: existing.id };
+  }
+
+  /**
+   * True when every photo this request uploads was registered by the job
+   * the key already names: the first attempt saved each upload as source
+   * media on its product (or found it already saved before the job). A
+   * reused key sent with photos the workspace never saved, or saved later
+   * for another product, is a different request, so it answers as a
+   * conflict instead of replaying another product's pack.
+   */
+  private async uploadsRegisteredFor(
+    workspaceId: string,
+    existing: { productId: string; createdAt: Date },
+    input: Pick<CreateJobInput, "uploads">,
+  ): Promise<boolean> {
+    const keys = [
+      ...new Set((input.uploads ?? []).map((u) => u.key).filter((key) => isWorkspaceSourceKey(workspaceId, key))),
+    ];
+    if (keys.length === 0) {
+      return true;
+    }
+    const rows = await this.db
+      .select({ r2Key: sourceMedia.r2Key, productId: sourceMedia.productId, createdAt: sourceMedia.createdAt })
+      .from(sourceMedia)
+      .where(and(eq(sourceMedia.workspaceId, workspaceId), inArray(sourceMedia.r2Key, keys)));
+    const byKey = new Map(rows.map((row) => [row.r2Key, row]));
+    return keys.every((key) => {
+      const row = byKey.get(key);
+      return (
+        row !== undefined &&
+        (row.productId === existing.productId || row.createdAt.getTime() <= existing.createdAt.getTime())
+      );
+    });
   }
 
   /**
@@ -1867,6 +1952,16 @@ export class DbService implements Services {
     const media: PackMedia[] = merged.map((m) =>
       ingestByKey.has(m.r2Key) ? { ...m, reencoded: ingestByKey.get(m.r2Key)?.reencoded ?? null } : m,
     );
+    // The question step's taps, resolved against the questions stored for
+    // that upload (PHASE_16 workstream 4). Never a reason to refuse a pack.
+    // An API caller has no preflight and sends seed choice values instead.
+    const sellerAnswers = input.sellerAnswers
+      ? sellerAnswersFor(
+          preflights,
+          merged.map((m) => m.r2Key),
+          input.sellerAnswers,
+        )
+      : sellerAnswersFromChoices(input.answers);
     const blocked = uploadRows
       .filter((u) => u.kind === "image")
       .map((u) => preflights.get(u.key))
@@ -1890,6 +1985,7 @@ export class DbService implements Services {
     const sellerInputs = {
       boxContents: sellerUpdates.boxContents ?? printableSellerLines(existingProduct?.boxContents),
       comparisonFacts: sellerUpdates.comparisonFacts ?? printableSellerLines(existingProduct?.comparisonFacts),
+      endorsements: sellerUpdates.endorsements ?? printableEndorsements(existingProduct?.endorsements),
     };
 
     // Plan 2.7: Listing Mode requires at least one real photo. Angles that
@@ -1966,6 +2062,7 @@ export class DbService implements Services {
       angles: media.filter((m) => m.kind !== "video").flatMap((m) => (m.angle ? [m.angle] : [])),
       hasBoxContents: sellerInputs.boxContents.length > 0,
       hasComparisonFacts: sellerInputs.comparisonFacts.length > 0,
+      hasEndorsements: sellerInputs.endorsements.length > 0,
       ...outputEstimateInputs(output.resolved, photos),
     }).total;
     if (creditsReserved <= 0) {
@@ -2080,6 +2177,8 @@ export class DbService implements Services {
             // The resolved options with the color snapshot (0023), which
             // the payload, the follow ups and the job page read back.
             outputOptions: { ...output.resolved },
+            // The seller's answers (0024), as the server resolved them.
+            ...(sellerAnswers ? { sellerAnswers: { ...sellerAnswers } } : {}),
           })
           .returning({ id: generationJobs.id });
         try {
@@ -2134,6 +2233,7 @@ export class DbService implements Services {
             sku: product.sku,
             boxContents: product.boxContents,
             comparisonFacts: product.comparisonFacts,
+            endorsements: product.endorsements,
           },
           media: media.map((m) => ({
             ...m,
@@ -2144,6 +2244,7 @@ export class DbService implements Services {
           brandColors,
           brandKit,
           outputOptions: output.resolved,
+          ...(sellerAnswers ? { sellerAnswers } : {}),
         }),
         runKey,
       });
@@ -2357,8 +2458,10 @@ export class DbService implements Services {
     // (Update.md 6.6). Keys outside this workspace are never signed.
     const canSign = isR2Configured();
     const files: JobFileView[] = [];
+    // Only picked files ship: an extra scene version the seller has not
+    // picked is shown on its card, never in the pack's files.
     const variants = variantRows
-      .filter((v) => isWorkspaceKey(workspaceId, v.r2Key))
+      .filter((v) => v.picked && isWorkspaceKey(workspaceId, v.r2Key))
       .sort((a, b) => a.channelSpecId.localeCompare(b.channelSpecId) || a.filename.localeCompare(b.filename));
     for (const variant of variants) {
       const id = `v_${variant.id}`;
@@ -2582,6 +2685,301 @@ export class DbService implements Services {
         .where(and(eq(brandKits.id, existing.id), eq(brandKits.workspaceId, workspaceId)));
     }
     return { ok: true, notice: "Brand kit saved." };
+  }
+
+  /** PHASE_16 workstream 7: the same role, prefix and plan checks as
+   * saving the kit, and the same server side check of the upload, before
+   * the worker runtime reads the logo. Suggestion only; nothing is saved. */
+  async suggestBrandPalette(workspaceId: string, logoKey: string): Promise<BrandPaletteOutcome> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return { ok: false, reason: "forbidden", notice: "Only owners, admins and editors can change the brand kit." };
+    }
+    if (!isWorkspaceSourceKey(workspaceId, logoKey)) {
+      return { ok: false, reason: "foreign_key", notice: brandKitCopy.paletteMissing };
+    }
+    const workspace = await this.db.query.workspaces.findFirst({ where: (t, { eq }) => eq(t.id, workspaceId) });
+    const allowance = checkBrandKitEntitlement(tierKeyOf(workspace?.plan), 0, false);
+    if (!allowance.ok) {
+      return { ok: false, reason: "upgrade_required", notice: allowance.message };
+    }
+    const checked = await this.ingest(logoKey, "image");
+    if (checked && !checked.ok) {
+      return { ok: false, reason: checked.retryable ? "unavailable" : "invalid_upload", notice: checked.notice };
+    }
+    try {
+      const run = await (this.deps.brandPalette ?? defaultBrandPaletteRun)({
+        requestId: crypto.randomUUID(),
+        workspaceId,
+        logoKey,
+      });
+      if (run.costMicros > 0) {
+        console.info(`[brand-palette] workspace ${workspaceId} palette namer spend ${run.costMicros} micros`);
+      }
+      return brandPaletteOutcomeOf(run);
+    } catch (err) {
+      console.error(`[brand-palette] could not read a logo in workspace ${workspaceId}`, err);
+      return { ok: false, reason: "unavailable", notice: brandKitCopy.paletteUnavailable };
+    }
+  }
+
+  /** Favorite asset ids among these, for this workspace. */
+  private async favoriteAssetIds(workspaceId: string, assetIds: readonly string[]): Promise<Set<string>> {
+    const ids = [...new Set(assetIds)];
+    if (ids.length === 0) {
+      return new Set();
+    }
+    const rows = await this.db.query.favorites.findMany({
+      columns: { assetId: true },
+      where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.assetId, ids)),
+    });
+    return new Set(rows.map((row) => row.assetId));
+  }
+
+  async getReusePrefill(workspaceId: string, jobId: string): Promise<ReusePrefill | null> {
+    if (!isUuid(jobId)) {
+      return null;
+    }
+    const job = await this.db.query.generationJobs.findFirst({
+      where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!job) {
+      return null;
+    }
+    return reusePrefillOf({
+      id: job.id,
+      productId: job.productId,
+      mode: job.mode ?? null,
+      channels: job.channels ?? null,
+      outputOptions: job.outputOptions,
+      sellerAnswers: job.sellerAnswers,
+      sellerNote: job.sellerNote,
+      createdAt: job.createdAt,
+    });
+  }
+
+  /**
+   * The library's images: the workspace's delivered assets, newest first,
+   * each shown from its first picked file. The scan reads at most
+   * LIBRARY_SCAN_LIMIT assets (favorites only reads the favorites), then
+   * the filters apply and one page is signed.
+   */
+  async listLibrary(workspaceId: string, filters: GalleryFilters): Promise<LibraryView> {
+    const favoriteIds = filters.favorites
+      ? [
+          ...(await this.db.query.favorites.findMany({
+            columns: { assetId: true },
+            where: (t, { eq }) => eq(t.workspaceId, workspaceId),
+          })),
+        ].map((row) => row.assetId)
+      : null;
+    if (favoriteIds && favoriteIds.length === 0) {
+      return { items: [], facets: { channels: [], shotTypes: [] }, truncated: false };
+    }
+    const assetRows = await this.db.query.assets.findMany({
+      where: (t, { and, eq, inArray }) =>
+        and(
+          eq(t.workspaceId, workspaceId),
+          eq(t.approved, true),
+          ...(favoriteIds ? [inArray(t.id, favoriteIds)] : []),
+        ),
+      orderBy: (t, { desc }) => [desc(t.createdAt)],
+      limit: LIBRARY_SCAN_LIMIT,
+    });
+    if (assetRows.length === 0) {
+      return { items: [], facets: { channels: [], shotTypes: [] }, truncated: false };
+    }
+    const jobIds = [...new Set(assetRows.map((a) => a.jobId))];
+    const assetIds = assetRows.map((a) => a.id);
+    const [jobRows, variantRows, favored] = await Promise.all([
+      this.db.query.generationJobs.findMany({
+        columns: { id: true, productId: true, status: true, creditsCharged: true },
+        where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.id, jobIds)),
+      }),
+      this.db.query.assetVariants.findMany({
+        where: (t, { and, eq, inArray }) =>
+          and(eq(t.workspaceId, workspaceId), eq(t.picked, true), inArray(t.assetId, assetIds)),
+      }),
+      this.favoriteAssetIds(workspaceId, assetIds),
+    ]);
+    // Files are served only for a finished or charged pack (servesFiles).
+    const serving = jobRows.filter((job) => servesFiles(job));
+    const productIds = [...new Set(serving.map((job) => job.productId))];
+    const productRows =
+      productIds.length > 0
+        ? await this.db.query.products.findMany({
+            columns: { id: true, title: true },
+            where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.id, productIds)),
+          })
+        : [];
+    const titles = new Map(productRows.map((p) => [p.id, p.title ?? "Untitled product"]));
+    const titleOfJob = new Map(serving.map((job) => [job.id, titles.get(job.productId) ?? "Untitled product"]));
+    const all = galleryItemsOf({
+      assets: assetRows.filter((a) => titleOfJob.has(a.jobId)),
+      variants: variantRows.filter((v) => isWorkspaceKey(workspaceId, v.r2Key)),
+      productTitleOfJob: titleOfJob,
+      favoriteAssetIds: favored,
+    });
+    const filtered = filterGallery(all, filters);
+    const page = filtered.slice(0, LIBRARY_PAGE_SIZE);
+    const canSign = isR2Configured();
+    const items = await Promise.all(
+      page.map(async ({ r2Key, variantId, ...item }) => {
+        if (!canSign) {
+          return item;
+        }
+        let imageUrl: string | null = null;
+        try {
+          imageUrl = await presignObjectGet(r2Key);
+        } catch {
+          imageUrl = null;
+        }
+        return { ...item, imageUrl, downloadUrl: fileDownloadPath(item.jobId, `v_${variantId}`) };
+      }),
+    );
+    return {
+      items,
+      facets: galleryFacets(all),
+      truncated: filtered.length > page.length || assetRows.length >= LIBRARY_SCAN_LIMIT,
+    };
+  }
+
+  async setFavorite(workspaceId: string, assetId: string, favorite: boolean): Promise<FavoriteResult> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return { outcome: "rejected", reason: "role_forbidden", message: CLIENT_SEAT_MESSAGE };
+    }
+    if (!isUuid(assetId)) {
+      return { outcome: "rejected", reason: "not_found", message: ASSET_NOT_FOUND };
+    }
+    const asset = await this.db.query.assets.findFirst({
+      columns: { id: true },
+      where: (t, { and, eq }) => and(eq(t.id, assetId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!asset) {
+      return { outcome: "rejected", reason: "not_found", message: ASSET_NOT_FOUND };
+    }
+    try {
+      if (favorite) {
+        const userId = await this.deps.getUserId();
+        await this.db
+          .insert(favorites)
+          .values({ workspaceId, assetId, createdBy: userId ?? null })
+          .onConflictDoNothing({ target: [favorites.workspaceId, favorites.assetId] });
+      } else {
+        await this.db
+          .delete(favorites)
+          .where(and(eq(favorites.workspaceId, workspaceId), eq(favorites.assetId, assetId)));
+      }
+    } catch (err) {
+      console.error(`[favorites] could not save a favorite in workspace ${workspaceId}`, err);
+      return { outcome: "rejected", reason: "unavailable", message: "We could not save that favorite. Try again." };
+    }
+    return { outcome: "saved", favorite };
+  }
+
+  /**
+   * Picks or unpicks one version of a scene on a delivered pack. Its files
+   * are flagged together (asset_variants.picked). Picking is refused when a
+   * channel has no room left for it. The channel zips of the channels it
+   * touches no longer match the picked files, so their rows go, as after a
+   * follow up; the all files zip and the file list read asset_variants and
+   * stay right. Runs under the workspace row lock, so two picks at once
+   * never both take a channel's last slot. Never touches the ledger.
+   */
+  async pickShotVersion(workspaceId: string, jobId: string, shotId: string, picked: boolean): Promise<VersionPickResult> {
+    const role = await this.currentRole(workspaceId);
+    if (role === null || role === "client") {
+      return { outcome: "rejected", reason: "role_forbidden", message: CLIENT_SEAT_MESSAGE };
+    }
+    const job = isUuid(jobId)
+      ? await this.db.query.generationJobs.findFirst({
+          where: (t, { and, eq }) => and(eq(t.id, jobId), eq(t.workspaceId, workspaceId)),
+        })
+      : undefined;
+    if (!job) {
+      return { outcome: "rejected", reason: "not_found", message: "This pack does not exist in your workspace." };
+    }
+    if (job.status !== "done") {
+      return { outcome: "rejected", reason: "not_ready", message: VERSION_COPY.notReady };
+    }
+    type Refusal = Extract<VersionPickResult, { outcome: "rejected" }>;
+    let refusal: Refusal | null = null;
+    try {
+      await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+        const assetRows = await tx.query.assets.findMany({
+          where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId), eq(t.approved, true)),
+          orderBy: (t, { asc }) => [asc(t.createdAt)],
+        });
+        // The newest passing asset of each shot, as the board shows it.
+        const assetOfShot = new Map<string, string>();
+        for (const row of assetRows) {
+          const id = row.qc && typeof row.qc.shotId === "string" ? row.qc.shotId : null;
+          if (id) assetOfShot.set(id, row.id);
+        }
+        const versions = shotVersionsOf([...assetOfShot.keys()], () => undefined);
+        const assetId = assetOfShot.get(shotId);
+        if (!assetId) {
+          refusal = { outcome: "rejected", reason: "not_found", message: "This shot has no files in this pack." };
+          return;
+        }
+        if (!versions.has(shotId)) {
+          refusal = { outcome: "rejected", reason: "not_a_version", message: VERSION_COPY.notAVersion };
+          return;
+        }
+        const jobAssetIds = [...assetOfShot.values()];
+        const variantRows = await tx.query.assetVariants.findMany({
+          where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), inArray(t.assetId, jobAssetIds)),
+        });
+        const own = variantRows.filter((v) => v.assetId === assetId);
+        if (own.length === 0) {
+          refusal = { outcome: "rejected", reason: "not_found", message: "This shot has no files in this pack." };
+          return;
+        }
+        if (picked) {
+          const pickedOnSpec = new Map<string, number>();
+          for (const v of variantRows) {
+            if (v.assetId !== assetId && v.picked) {
+              pickedOnSpec.set(v.channelSpecId, (pickedOnSpec.get(v.channelSpecId) ?? 0) + 1);
+            }
+          }
+          const full = overLimitSpec(
+            own.map((v) => v.channelSpecId),
+            pickedOnSpec,
+          );
+          if (full) {
+            refusal = { outcome: "rejected", reason: "channel_full", message: VERSION_COPY.channelFull(full) };
+            return;
+          }
+        }
+        await tx
+          .update(assetVariants)
+          .set({ picked })
+          .where(and(eq(assetVariants.workspaceId, workspaceId), eq(assetVariants.assetId, assetId)));
+        const channels = [...new Set(own.map((v) => v.channelSpecId.split(".")[0]))];
+        await tx
+          .delete(packFiles)
+          .where(
+            and(
+              eq(packFiles.jobId, job.id),
+              eq(packFiles.workspaceId, workspaceId),
+              eq(packFiles.kind, "zip"),
+              inArray(packFiles.channel, channels),
+            ),
+          );
+      });
+    } catch (err) {
+      console.error(`[versions] could not pick a version on job ${job.id}`, err);
+      return { outcome: "rejected", reason: "unavailable", message: VERSION_COPY.failed };
+    }
+    if (refusal) {
+      return refusal;
+    }
+    const view = await this.getJob(workspaceId, job.id);
+    return view
+      ? { outcome: "saved", job: view }
+      : { outcome: "rejected", reason: "not_found", message: "This pack does not exist in your workspace." };
   }
 
   async listMembers(workspaceId: string): Promise<MemberView[]> {

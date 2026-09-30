@@ -104,6 +104,20 @@ export default async function SettingsPage() {
         </CardContent>
       </Card>
 
+      <Card data-testid="api-keys-link">
+        <CardHeader>
+          <CardTitle>API keys</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-ink-500">
+            Start packs from your own tools, an AI agent or the command line. Growth plan and above.
+          </p>
+          <Link href="/app/settings/api" className={buttonVariants({ variant: "outline", size: "sm" })}>
+            Manage API keys
+          </Link>
+        </CardContent>
+      </Card>
+
       <Card data-testid="your-data">
         <CardHeader>
           <CardTitle>Your data</CardTitle>

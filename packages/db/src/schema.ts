@@ -4,6 +4,7 @@ import {
   bigserial,
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -131,6 +132,14 @@ export interface JobInventory {
  * does not parse. Null reads as the defaults. */
 export type JobOutputOptions = Record<string, unknown>;
 
+/** The seller's answers to the question step (0024, docs/phases/PHASE_16.md
+ * workstream 4), keyed by question id, a JSON object when set. Typed
+ * structurally like JobOutputOptions so the db package keeps no pipeline
+ * dependency; web and trigger parse it with the shared schema in
+ * @curvi/pipeline. Null when the seller skipped the step or on jobs from
+ * before 0024. */
+export type JobSellerAnswers = Record<string, unknown>;
+
 /** A product's saved output choices (0023), as the seller picked them
  * (OutputOptionsInput in @curvi/pipeline), never the resolved hex. */
 export type ProductOutputDefaults = Record<string, unknown>;
@@ -203,6 +212,11 @@ export const products = pgTable(
     sku: text("sku"),
     boxContents: jsonb("box_contents").$type<string[]>(),
     comparisonFacts: jsonb("comparison_facts").$type<string[]>(),
+    // Press quotes or awards the seller typed for the A+ endorsement module
+    // (migration 0025, PHASE_16 workstream 2), one printable line each, as
+    // typed. Null or empty means the module is skipped; a model never
+    // writes one.
+    endorsements: jsonb("endorsements").$type<string[]>(),
     // The seller's saved output choices for this product (0023), a JSON
     // object when set. Null means the defaults.
     outputDefaults: jsonb("output_defaults").$type<ProductOutputDefaults>(),
@@ -215,6 +229,7 @@ export const products = pgTable(
       "products_output_defaults_object",
       sql`${t.outputDefaults} IS NULL OR jsonb_typeof(${t.outputDefaults}) = 'object'`,
     ),
+    check("products_endorsements_array", sql`${t.endorsements} IS NULL OR jsonb_typeof(${t.endorsements}) = 'array'`),
   ],
 );
 
@@ -332,6 +347,9 @@ export const generationJobs = pgTable(
     // Null on jobs from before 0023 and reads as the defaults, so every
     // older pack reads as Marketplace ready.
     outputOptions: jsonb("output_options").$type<JobOutputOptions>(),
+    // The seller's answers to the question step (0024), a JSON object when
+    // set. Null when the step was skipped or on jobs from before 0024.
+    sellerAnswers: jsonb("seller_answers").$type<JobSellerAnswers>(),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -346,6 +364,10 @@ export const generationJobs = pgTable(
     check(
       "generation_jobs_output_options_object",
       sql`${t.outputOptions} IS NULL OR jsonb_typeof(${t.outputOptions}) = 'object'`,
+    ),
+    check(
+      "generation_jobs_seller_answers_object",
+      sql`${t.sellerAnswers} IS NULL OR jsonb_typeof(${t.sellerAnswers}) = 'object'`,
     ),
   ],
 );
@@ -394,6 +416,8 @@ export const assets = pgTable(
   (t) => [
     index("assets_workspace_id_idx").on(t.workspaceId),
     index("assets_job_id_idx").on(t.jobId),
+    // Target of the favorites (asset_id, workspace_id) foreign key (0024).
+    uniqueIndex("assets_id_workspace_id_uq").on(t.id, t.workspaceId),
   ],
 );
 
@@ -468,6 +492,10 @@ export const assetVariants = pgTable(
     bytes: integer("bytes"),
     width: integer("width"),
     height: integer("height"),
+    // Whether this variant ships (0024, docs/phases/PHASE_16.md workstream
+    // 6). Scene variations the seller did not pick are stored with false and
+    // the packager leaves them out. Every existing row reads true.
+    picked: boolean("picked").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -807,7 +835,73 @@ export const uploadPreflights = pgTable(
   ],
 );
 
+/**
+ * Workspace API keys (migration 0024, docs/phases/PHASE_16.md workstream 5)
+ * for the public API v1, the hosted MCP server and the CLI. The key itself is
+ * shown once and never stored: key_hash is its hash and prefix the unique
+ * public start of the key the server looks the row up by. scopes lists what
+ * the key may do; a key with revoked_at set no longer works (keys are
+ * revoked, never deleted). created_by is the auth user who made it. Tenant
+ * table: only owners and admins read, insert or update rows; no delete
+ * policy.
+ */
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    prefix: text("prefix").notNull(),
+    keyHash: text("key_hash").notNull(),
+    scopes: text("scopes").array().notNull().default(sql`'{}'::text[]`),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdBy: uuid("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("api_keys_prefix_uq").on(t.prefix),
+    index("api_keys_workspace_id_idx").on(t.workspaceId),
+  ],
+);
+
+/**
+ * Favorite assets for the gallery and /app/library (migration 0024,
+ * docs/phases/PHASE_16.md workstream 6): at most one row per workspace and
+ * asset. Tenant table: members read; owners, admins and editors add and
+ * remove favorites, and only for an asset of their own workspace.
+ */
+export const favorites = pgTable(
+  "favorites",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    assetId: uuid("asset_id").notNull(),
+    createdBy: uuid("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The primary key is the unique (workspace_id, asset_id) pair.
+    primaryKey({ columns: [t.workspaceId, t.assetId] }),
+    // The asset must belong to the same workspace, whoever writes the row
+    // (the owner connection bypasses RLS), so the foreign key takes both.
+    foreignKey({
+      name: "favorites_asset_workspace_fk",
+      columns: [t.assetId, t.workspaceId],
+      foreignColumns: [assets.id, assets.workspaceId],
+    }).onDelete("cascade"),
+    index("favorites_asset_id_idx").on(t.assetId),
+  ],
+);
+
 // Inferred row types.
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type NewApiKey = typeof apiKeys.$inferInsert;
+export type Favorite = typeof favorites.$inferSelect;
+export type NewFavorite = typeof favorites.$inferInsert;
 export type UploadPreflight = typeof uploadPreflights.$inferSelect;
 export type NewUploadPreflight = typeof uploadPreflights.$inferInsert;
 export type Workspace = typeof workspaces.$inferSelect;

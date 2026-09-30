@@ -4,6 +4,8 @@
  * components: no server imports here.
  */
 
+import type { SellerQuestion } from "@curvi/pipeline/questions";
+
 /** A box normalized to 0..1 of the upright photo (source_media.target_box). */
 export interface PreflightBox {
   x: number;
@@ -72,6 +74,10 @@ export interface PreflightView {
    * photo (intake version 5). A kept photo so flagged is left out of the
    * channels that refuse them. Absent on older rows: a clean photo. */
   addedOverlays?: boolean;
+  /** The question step (PHASE_16 workstream 4): at most four short
+   * questions with labeled options, none the photo or the note answers.
+   * Absent or empty: nothing to ask. */
+  questions?: SellerQuestion[];
   /** True for the simulated demo mode answer. */
   demo?: boolean;
   /** The upload's cutout of this photo was made (and kept in the upload

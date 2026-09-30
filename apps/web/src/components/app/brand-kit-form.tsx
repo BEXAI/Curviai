@@ -3,6 +3,8 @@
 import { useState, useTransition } from "react";
 import { Button, Card, CardContent, Input, Label, Select, cn } from "@curvi/ui";
 import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
+import { BrandPaletteSuggestion } from "@/components/app/brand-palette-suggestion";
+import type { BrandPaletteOutcome } from "@/lib/brand/types";
 import type { BrandKitView, SaveResult } from "@/lib/services/types";
 import { uploadTypeForFile } from "@/lib/upload-validation";
 
@@ -17,7 +19,14 @@ interface BrandKitFormProps {
   /** Template fonts from the seed catalog; the empty value is the default. */
   fontOptions: SelectOption[];
   save: (kit: BrandKitView) => Promise<SaveResult>;
+  /** Reads colors from the uploaded logo (PHASE_16 workstream 7). Returns a
+   * suggestion only; the kit changes when the seller confirms and saves. */
+  suggestPalette?: (logoKey: string) => Promise<BrandPaletteOutcome>;
+  /** The most colors a kit holds (seed MAX_BRAND_COLORS). */
+  maxColors?: number;
 }
+
+const MIN_COLOR_SLOTS = 3;
 
 const HEX_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 
@@ -25,10 +34,43 @@ const HEX_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 const LOGO_CONTENT_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 const LOGO_TYPE_COPY = "This file type is not supported. Use a PNG, JPEG or WEBP logo.";
 
-export function BrandKitForm({ initial, presetOptions, fontOptions, save }: BrandKitFormProps) {
+export function BrandKitForm({
+  initial,
+  presetOptions,
+  fontOptions,
+  save,
+  suggestPalette,
+  maxColors = MIN_COLOR_SLOTS,
+}: BrandKitFormProps) {
   const [kit, setKit] = useState<BrandKitView>(initial);
   const [result, setResult] = useState<SaveResult | null>(null);
   const [pending, startTransition] = useTransition();
+  const [palette, setPalette] = useState<
+    | { phase: "idle" }
+    | { phase: "reading" }
+    | { phase: "done"; outcome: BrandPaletteOutcome }
+    | { phase: "applied" }
+  >({ phase: "idle" });
+  // One empty slot after the filled ones, at least MIN_COLOR_SLOTS, at most maxColors.
+  const colorSlots = Math.min(
+    Math.max(maxColors, MIN_COLOR_SLOTS),
+    Math.max(MIN_COLOR_SLOTS, kit.colors.filter((c) => c.length > 0).length + 1),
+  );
+
+  async function readPalette() {
+    if (!suggestPalette || !kit.logoKey) {
+      return;
+    }
+    setPalette({ phase: "reading" });
+    try {
+      setPalette({ phase: "done", outcome: await suggestPalette(kit.logoKey) });
+    } catch {
+      setPalette({
+        phase: "done",
+        outcome: { ok: false, reason: "unavailable", notice: brandKitCopy.paletteUnavailable },
+      });
+    }
+  }
   const [logoState, setLogoState] = useState<
     | { phase: "idle" }
     | { phase: "uploading" }
@@ -61,6 +103,7 @@ export function BrandKitForm({ initial, presetOptions, fontOptions, save }: Bran
       }
       setKit((current) => ({ ...current, logoKey: data.key, hasLogo: true }));
       setLogoState({ phase: "uploaded", previewUrl: URL.createObjectURL(file) });
+      setPalette({ phase: "idle" });
     } catch {
       setLogoState({ phase: "error", message: "The upload failed. Check your connection and try again." });
     }
@@ -100,7 +143,7 @@ export function BrandKitForm({ initial, presetOptions, fontOptions, save }: Bran
         <div>
           <Label>Brand colors</Label>
           <div className="mt-2 grid gap-3 sm:grid-cols-3">
-            {[0, 1, 2].map((index) => (
+            {Array.from({ length: colorSlots }, (_, index) => index).map((index) => (
               <div key={index} className="flex items-center gap-2">
                 <span
                   aria-hidden="true"
@@ -204,6 +247,43 @@ export function BrandKitForm({ initial, presetOptions, fontOptions, save }: Bran
               )}
             </div>
           </div>
+          {suggestPalette && kit.logoKey ? (
+            <div className="mt-4" data-testid="brand-palette">
+              {palette.phase === "done" && palette.outcome.ok ? (
+                <BrandPaletteSuggestion
+                  suggestion={palette.outcome.suggestion}
+                  maxColors={Math.max(maxColors, MIN_COLOR_SLOTS)}
+                  onUse={(colors) => {
+                    setKit((current) => ({ ...current, colors }));
+                    setResult(null);
+                    setPalette({ phase: "applied" });
+                  }}
+                  onDismiss={() => setPalette({ phase: "idle" })}
+                />
+              ) : (
+                <div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void readPalette()}
+                    disabled={palette.phase === "reading" || logoState.phase === "uploading"}
+                  >
+                    {palette.phase === "reading" ? brandKitCopy.paletteReading : brandKitCopy.paletteButton}
+                  </Button>
+                  {palette.phase === "done" && !palette.outcome.ok ? (
+                    <p className="mt-2 text-xs text-amber-700" data-testid="brand-palette-notice">
+                      {palette.outcome.notice}
+                    </p>
+                  ) : null}
+                  {palette.phase === "applied" ? (
+                    <p className="mt-2 text-xs text-emerald-700" data-testid="brand-palette-notice">
+                      {brandKitCopy.paletteApplied}
+                    </p>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
 
         <div>

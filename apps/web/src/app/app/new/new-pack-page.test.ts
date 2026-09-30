@@ -329,7 +329,8 @@ describe("/app/new with output options on", () => {
     const html = await renderOn();
     expect(html).toContain("3. How your images look");
     expect(html).toContain('role="radiogroup"');
-    expect(html.match(/role="radio"/g)?.length).toBe(3);
+    // Three look cards, and the four bundle cards above the channel list (PHASE_16).
+    expect(html.match(/role="radio"/g)?.length).toBe(3 + 4);
     expect(html).toMatch(/<button[^>]*role="switch"[^>]*aria-checked="true"/);
     expect(html).toContain("Remove the background");
     expect(html).toContain(LISTING_MODE_LINE);
@@ -337,6 +338,25 @@ describe("/app/new with output options on", () => {
     expect(html).toContain('data-testid="summary-background"');
     expect(html).toContain("Background: removed, on white");
     expect(html).not.toContain('data-testid="listing-mode"');
+  });
+
+  it("shows the bundle cards above the channel list with Everything picked and a figure on each (PHASE_16)", async () => {
+    const html = await renderOn();
+    const cards = html.indexOf('data-testid="bundle-cards"');
+    expect(cards).toBeGreaterThan(-1);
+    expect(cards).toBeLessThan(html.indexOf('data-testid="channel-amazon.main"'));
+    expect(html).toContain('aria-label="How much to make"');
+    for (const key of ["main", "listing", "aplus", "everything"]) {
+      expect(html).toContain(`data-testid="bundle-${key}-credits"`);
+    }
+    expect(html).toMatch(/role="radio" aria-checked="true"[^>]*data-testid="bundle-everything"/);
+    expect(html).toContain("Main image only");
+    expect(html).not.toContain("Not in the set you picked.");
+  });
+
+  it("shows no bundle cards while output options are off", async () => {
+    const html = await renderPage();
+    expect(html).not.toContain('data-testid="bundle-cards"');
   });
 
   it("carries the registry flags as chips on channel rows", async () => {

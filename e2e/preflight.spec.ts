@@ -86,3 +86,46 @@ test("a photo with a blocking problem cannot start a pack", async ({ page }) => 
   await expect(create).toBeEnabled();
   expect(posted).toBe(false);
 });
+
+// docs/phases/PHASE_16.md workstream 4: the question step, beside the note.
+// The demo preflight asks its questions for keys with "questions" in them.
+test("the question step asks which product with labeled options, and the answers go with the pack", async ({ page }) => {
+  await uploadAs(page, "e2e-questions");
+  const step = page.getByTestId("question-step");
+  await expect(step).toContainText("Which product is this pack for?");
+  await expect(step).toContainText("Where will you sell?");
+  // The target question stands in for the chooser while the step is shown.
+  await expect(page.getByTestId("product-chooser")).toHaveCount(0);
+  const targets = page.getByTestId("question-target-option");
+  await expect(targets).toHaveText(["silver watch", "white sneakers", "Both"]);
+
+  await targets.nth(1).click();
+  await expect(targets.nth(1)).toHaveAttribute("aria-pressed", "true");
+  const create = page.getByTestId("create-pack");
+  await expect(create).toBeEnabled();
+
+  const request = page.waitForRequest((r) => r.url().endsWith("/api/jobs") && r.method() === "POST");
+  await create.click();
+  const body = (await request).postDataJSON() as {
+    uploads: Array<{ key: string; targetBox?: unknown }>;
+    sellerAnswers?: { key: string; picks: Record<string, string> };
+  };
+  const key = `ws/${DEMO_WORKSPACE_ID}/src/e2e-questions`;
+  expect(body.uploads[0].targetBox).toEqual({ x: 0.5, y: 0.45, width: 0.44, height: 0.3 });
+  expect(body.sellerAnswers).toEqual({ key, picks: { target: "item:2" } });
+  await page.waitForURL(/\/app\/jobs\//, { timeout: 15000 });
+});
+
+test("Skip, use my note hides the step and brings the chooser back, and Both needs no tap", async ({ page }) => {
+  await uploadAs(page, "e2e-questions-skip");
+  await page.getByTestId("question-skip").click();
+  await expect(page.getByTestId("question-step")).toHaveCount(0);
+  await expect(page.getByTestId("product-chooser")).toBeVisible();
+  await page.getByTestId("question-reopen").click();
+  await page.getByTestId("question-target-option").filter({ hasText: "Both" }).click();
+  await expect(page.getByTestId("create-pack")).toBeEnabled();
+  // Skipping after Both drops the pick, so the chooser asks again.
+  await page.getByTestId("question-skip").click();
+  await expect(page.getByTestId("product-chooser")).toBeVisible();
+  await expect(page.getByTestId("create-pack")).toBeDisabled();
+});

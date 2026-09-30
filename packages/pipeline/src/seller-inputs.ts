@@ -128,6 +128,23 @@ export function printableSellerLines(lines: ReadonlyArray<string> | null | undef
   return out;
 }
 
+/**
+ * Press quotes or awards the seller supplies for the A+ endorsement module
+ * (PHASE_16 workstream 2). Amazon allows quotes from well known
+ * publications or public figures with the source, and awards from the last
+ * 2 years with the date and the organization; never customer reviews
+ * (A+ content guidelines, docs/verification.md 2026-09-29). Printed exactly as typed, never written by a
+ * model: at most MAX_ENDORSEMENTS lines of MAX_SELLER_LINE_CHARS each. A
+ * longer line is refused at the form and the API, never cut.
+ */
+export const MAX_ENDORSEMENTS = 3;
+
+/** The seller's endorsement lines ready to print (see printableSellerLines),
+ * at most MAX_ENDORSEMENTS. */
+export function printableEndorsements(lines: ReadonlyArray<string> | null | undefined): string[] {
+  return printableSellerLines(lines).slice(0, MAX_ENDORSEMENTS);
+}
+
 /** Splits a textarea value into seller lines, one per line of text. */
 export function sellerLinesFromText(text: string): string[] {
   return text

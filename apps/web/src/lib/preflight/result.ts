@@ -112,6 +112,9 @@ export function storedPreflightOf(
     // The preview shows one product, so a photo that needs the chooser has none.
     ...(previewKey && status === "ready" ? { previewKey } : {}),
     ...(image.addedOverlays === true ? { addedOverlays: true } : {}),
+    // The question step's questions, stored with the verdict so createJob
+    // resolves the seller's taps against the server's own options.
+    ...(run.questions.length > 0 ? { questions: run.questions } : {}),
     ...(run.cutout === "done" ? { cutoutCached: true } : {}),
   };
 }

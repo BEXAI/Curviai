@@ -4,11 +4,12 @@ import { useEffect, useMemo, useReducer, useRef, useState, type FocusEvent } fro
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, Card, CardContent, Input, Label, Select, Textarea, cn } from "@curvi/ui";
-import { LOOK_PRESETS, type OutputPlanFlags } from "@curvi/pipeline/output-options";
+import { DEFAULT_BUNDLE, lookPresetFor, type OutputPlanFlags } from "@curvi/pipeline/output-options";
 import type { TierKey } from "@curvi/pipeline/seed";
 import { OutOfCreditsDialog } from "@/components/app/paywall";
 import {
   ANGLE_ROLES,
+  MAX_ENDORSEMENTS,
   MAX_SELLER_LINE_CHARS,
   MAX_SELLER_LINES,
   MAX_SKU_CHARS,
@@ -50,7 +51,9 @@ import {
   type OutputFormState,
   type PhotoBackground,
   backgroundSummaryLine,
+  bundleEstimates,
   conflictContextOf,
+  currentBundle,
   effectiveChoices,
   formConflicts,
   formPhotos,
@@ -85,9 +88,25 @@ import {
 } from "@/lib/preflight/copy";
 import type { PreflightBox, PreflightView } from "@/lib/preflight/types";
 import { OutputOptionsPanel } from "./output-options-panel";
+import { PackBundleCards } from "./pack-bundle-cards";
 import { PreflightResult } from "./preflight-result";
 import { ProductLinkImport } from "./product-link-import";
+import { QuestionStep } from "./question-step";
+import type { SellerQuestion } from "@curvi/pipeline/questions";
+import {
+  channelsAfterAnswer,
+  knownKinds,
+  QUESTION_STEP_COPY,
+  questionSourcePhoto,
+  sellerAnswersBody,
+  skipPatchFor,
+  targetPatchFor,
+  toggledAnswer,
+  targetValueOf,
+  visibleQuestions,
+} from "@/lib/question-step";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
+import { prefilledPicks, reuseNotice, type ReusePrefill } from "@/lib/reuse";
 
 export interface ChannelOption {
   id: string;
@@ -120,6 +139,8 @@ export interface ProductOption {
   sku?: string | null;
   boxContents?: string[];
   comparisonFacts?: string[];
+  /** Press quotes or awards for the A+ endorsement module. */
+  endorsements?: string[];
   /** Photos already stored for the product (capped at MAX_PACK_PHOTOS), for
    * the estimate when the seller adds none. */
   storedPhotoCount?: number;
@@ -157,13 +178,27 @@ interface NewPackFormProps {
   brandHasLogo?: boolean;
   /** Set while scenes are paused: the scenes extra is forced off and shows this. */
   scenesPausedNote?: string | null;
+  /** "Make this pack again" (PHASE_16 workstream 6): an earlier pack's
+   * channels, choices, answers and note, filled in once. A prefill only. */
+  reuse?: ReusePrefill | null;
 }
 
-/** The form's first options: the preselected product's remembered choices, else Marketplace ready. */
-function initialOptionsFor(product: ProductOption | null, enabled: boolean, brandColorCount: number): {
+/** The form's first options: an earlier pack's choices when making it
+ * again, else the preselected product's remembered choices, else
+ * Marketplace ready. */
+function initialOptionsFor(
+  product: ProductOption | null,
+  enabled: boolean,
+  brandColorCount: number,
+  reuse?: ReusePrefill | null,
+): {
   state: OutputFormState;
   remembered: boolean;
 } {
+  const reused = enabled && reuse ? rememberedFormState(reuse.outputOptions, { brandColorCount }) : null;
+  if (reused) {
+    return { state: reused, remembered: false };
+  }
   const remembered = enabled && product ? rememberedFormState(product.outputDefaults, { brandColorCount }) : null;
   return remembered ? { state: remembered, remembered: true } : { state: initialOutputForm(), remembered: false };
 }
@@ -248,7 +283,12 @@ export function nextAngle(taken: readonly AngleRole[]): AngleRole {
  * they can be sent. Mirrors the API's checks so a seller sees the fix here
  * instead of a refused pack.
  */
-export function sellerDetailsProblem(sku: string, boxContents: string[], comparisonFacts: string[]): string | null {
+export function sellerDetailsProblem(
+  sku: string,
+  boxContents: string[],
+  comparisonFacts: string[],
+  endorsements: string[] = [],
+): string | null {
   const trimmedSku = sku.trim();
   if (trimmedSku.length > MAX_SKU_CHARS) {
     return `Keep the SKU to ${MAX_SKU_CHARS} characters.`;
@@ -267,6 +307,13 @@ export function sellerDetailsProblem(sku: string, boxContents: string[], compari
     if (long) {
       return `Keep each line of ${label} to ${MAX_SELLER_LINE_CHARS} characters so it prints whole. This one is too long: ${long}`;
     }
+  }
+  if (endorsements.length > MAX_ENDORSEMENTS) {
+    return `List at most ${MAX_ENDORSEMENTS} quotes or awards.`;
+  }
+  const longEndorsement = endorsements.find((line) => line.length > MAX_SELLER_LINE_CHARS);
+  if (longEndorsement) {
+    return `Keep each quote or award to ${MAX_SELLER_LINE_CHARS} characters so it prints whole. This one is too long: ${longEndorsement}`;
   }
   return null;
 }
@@ -289,6 +336,9 @@ export interface PhotoItem {
   preflightFailure?: string;
   /** The product the seller tapped in the chooser. */
   chosen?: number | null;
+  /** The seller answered the question step's "Which product" with every
+   * item (PHASE_16 workstream 4): the photo needs no single pick. */
+  targetAll?: boolean;
   /** Object URL of the picked file, for the thumbnail and the preview strip.
    * Revoked when the photo is removed and when the form unmounts. */
   previewUrl?: string;
@@ -307,7 +357,7 @@ export function photoBlockReason(
     return null;
   }
   return preflightBlockReason(photo.preflight, selected, photo.chosen, {
-    multiItem: photo.angle === "in_the_box",
+    multiItem: photo.angle === "in_the_box" || photo.targetAll === true,
     ...(output ? { output } : {}),
   });
 }
@@ -349,7 +399,12 @@ function isTextEntry(target: EventTarget | null): boolean {
  * the note's preselected pick. None for a photo that shows several items on
  * purpose (in the box) or had nothing to choose. */
 export function photoTargetBox(photo: PhotoItem): PreflightBox | undefined {
-  if (photo.kind !== "image" || photo.angle === "in_the_box" || photo.preflight?.status !== "choose") {
+  if (
+    photo.kind !== "image" ||
+    photo.angle === "in_the_box" ||
+    photo.targetAll === true ||
+    photo.preflight?.status !== "choose"
+  ) {
     return undefined;
   }
   return chosenItem(photo.preflight, photo.chosen)?.box;
@@ -374,6 +429,7 @@ export function NewPackForm({
   brandKitsAllowed = false,
   brandHasLogo = false,
   scenesPausedNote = null,
+  reuse = null,
 }: NewPackFormProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -399,12 +455,13 @@ export function NewPackForm({
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   // A new photo is a new product unless the seller picks an existing one
   // and confirms the photo shows it, so photos of two items never mix.
-  const [productId, setProductId] = useState(() =>
-    initialProductId && products.some((p) => p.id === initialProductId) ? initialProductId : "new",
-  );
+  const [productId, setProductId] = useState(() => {
+    const wanted = initialProductId ?? reuse?.productId ?? null;
+    return wanted && products.some((p) => p.id === wanted) ? wanted : "new";
+  });
   const [confirmedAttach, setConfirmedAttach] = useState<string | null>(null);
   const [newProductTitle, setNewProductTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const [description, setDescription] = useState(reuse?.note ?? "");
   // The note as typed right now, for checks that finish after a keystroke.
   const descriptionRef = useRef("");
   descriptionRef.current = description;
@@ -413,10 +470,15 @@ export function NewPackForm({
   const [sku, setSku] = useState(initialProduct?.sku ?? "");
   const [boxText, setBoxText] = useState((initialProduct?.boxContents ?? []).join("\n"));
   const [comparisonText, setComparisonText] = useState((initialProduct?.comparisonFacts ?? []).join("\n"));
-  const [selected, setSelected] = useState<string[]>(
-    DEFAULT_CHANNELS.filter((id) => channels.some((c) => c.id === id && isPickable(c))),
-  );
-  const [mode, setMode] = useState<EstimateMode>("listing");
+  const [endorsementText, setEndorsementText] = useState((initialProduct?.endorsements ?? []).join("\n"));
+  const [selected, setSelected] = useState<string[]>(() => {
+    const pickable = (id: string) => channels.some((c) => c.id === id && isPickable(c));
+    // Making a pack again restores its channels, less any the plan can no
+    // longer pick; with none left it starts from the default pick.
+    const reused = (reuse?.channels ?? []).filter(pickable);
+    return reused.length > 0 ? reused : DEFAULT_CHANNELS.filter(pickable);
+  });
+  const [mode, setMode] = useState<EstimateMode>(reuse?.mode ?? "listing");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [outOfCredits, setOutOfCredits] = useState<PaywallCopy | null>(null);
@@ -428,6 +490,7 @@ export function NewPackForm({
   const effectiveMode: EstimateMode = CONCEPT_MODE_AVAILABLE ? mode : "listing";
   const boxContents = useMemo(() => sellerLinesFromText(boxText), [boxText]);
   const comparisonFacts = useMemo(() => sellerLinesFromText(comparisonText), [comparisonText]);
+  const endorsements = useMemo(() => sellerLinesFromText(endorsementText), [endorsementText]);
   const photoAngles = photos.filter((p) => p.kind === "image" && p.phase !== "error").map((p) => p.angle);
   const anglesKey = photoAngles.join(",");
   const selectedProduct = products.find((p) => p.id === productId) ?? null;
@@ -438,7 +501,7 @@ export function NewPackForm({
   const optionsOn = outputOptionsEnabled;
   // Brand colors a remembered choice may still use: the kit's, on a plan with kits.
   const brandColorCount = brandKitsAllowed ? usableBrandColors(brandColors).length : 0;
-  const [initialOptions] = useState(() => initialOptionsFor(initialProduct, optionsOn, brandColorCount));
+  const [initialOptions] = useState(() => initialOptionsFor(initialProduct, optionsOn, brandColorCount, reuse));
   const [outputForm, dispatchOutput] = useReducer(outputFormReducer, initialOptions.state);
   // The title whose remembered choices filled the options, for the notice.
   const [rememberedTitle, setRememberedTitle] = useState<string | null>(
@@ -448,6 +511,10 @@ export function NewPackForm({
   const [pauseLeftOut, setPauseLeftOut] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [typing, setTyping] = useState(false);
+  // The question step (PHASE_16 workstream 4): taps by question id, and
+  // whether the seller chose "Skip, use my note".
+  const [questionPicks, setQuestionPicks] = useState<Record<string, string>>({});
+  const [questionsSkipped, setQuestionsSkipped] = useState(false);
   const choices = useMemo(
     () =>
       effectiveChoices(outputForm.choices, {
@@ -485,32 +552,67 @@ export function NewPackForm({
         angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
         hasBoxContents: boxContents.length > 0,
         hasComparisonFacts: comparisonFacts.length > 0,
+        hasEndorsements: endorsements.length > 0,
         ...(optionsOn ? output.estimateInputs : {}),
       }),
-    [selected, effectiveMode, tier, anglesKey, boxContents, comparisonFacts, optionsOn, output],
+    [selected, effectiveMode, tier, anglesKey, boxContents, comparisonFacts, endorsements, optionsOn, output],
   );
-  // The difference between looks, for the summary: this pack as Keep my photo and as Marketplace ready.
+  // The difference between looks, for the summary: this pack as Keep my
+  // photo and as Marketplace ready, both with the pack's bundle (PHASE_16).
+  const bundle = currentBundle(outputForm);
   const lookTotals = useMemo(() => {
     if (!optionsOn) return null;
     const base = {
       angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
       hasBoxContents: boxContents.length > 0,
       hasComparisonFacts: comparisonFacts.length > 0,
+      hasEndorsements: endorsements.length > 0,
     };
-    const keep = resolveFormOutput({
-      choices: effectiveChoices(LOOK_PRESETS.keep_photo, { scenesPaused: scenesPausedNote !== null }),
-      brandColors: usableBrand,
-      brandKitsAllowed,
-      photos: output.planned,
-    });
-    return {
-      keep: estimatePackCredits(selected, effectiveMode, tier, {
+    const totalFor = (look: "keep_photo" | "marketplace") => {
+      const resolved = resolveFormOutput({
+        choices: effectiveChoices(lookPresetFor(look, bundle), { scenesPaused: scenesPausedNote !== null }),
+        brandColors: usableBrand,
+        brandKitsAllowed,
+        photos: output.planned,
+      });
+      return estimatePackCredits(selected, effectiveMode, tier, {
         ...base,
-        ...outputEstimateInputs(keep.resolved, output.parsed),
-      }).total,
-      marketplace: estimatePackCredits(selected, effectiveMode, tier, base).total,
+        ...outputEstimateInputs(resolved.resolved, output.parsed),
+      }).total;
     };
-  }, [optionsOn, anglesKey, boxContents, comparisonFacts, scenesPausedNote, usableBrand, brandKitsAllowed, output, selected, effectiveMode, tier]);
+    return {
+      keep: totalFor("keep_photo"),
+      marketplace:
+        bundle === DEFAULT_BUNDLE
+          ? estimatePackCredits(selected, effectiveMode, tier, base).total
+          : totalFor("marketplace"),
+    };
+  }, [optionsOn, bundle, anglesKey, boxContents, comparisonFacts, endorsements, scenesPausedNote, usableBrand, brandKitsAllowed, output, selected, effectiveMode, tier]);
+  // Each bundle card's figure for this pack (PHASE_16 workstream 1).
+  const bundleTotals = useMemo(
+    () =>
+      optionsOn && effectiveMode === "listing"
+        ? bundleEstimates({
+            channels: selected,
+            mode: effectiveMode,
+            tier,
+            seller: {
+              angles: anglesKey ? (anglesKey.split(",") as AngleRole[]) : [],
+              hasBoxContents: boxContents.length > 0,
+              hasComparisonFacts: comparisonFacts.length > 0,
+              hasEndorsements: endorsements.length > 0,
+            },
+            state: outputForm,
+            brandColors: usableBrand,
+            brandKitsAllowed,
+            photos: output.parsed,
+            planned: output.planned,
+            photoBackgrounds: photoBackgroundsOf(photos),
+            context: { scenesPaused: scenesPausedNote !== null },
+          })
+        : null,
+    [optionsOn, effectiveMode, selected, tier, anglesKey, boxContents, comparisonFacts, endorsements, outputForm, usableBrand, brandKitsAllowed, output, photos, scenesPausedNote],
+  );
 
   const conflicts = optionsOn && effectiveMode !== "concept" ? formConflicts(selected, output.current.resolved, output.planned) : [];
   const conflictContext = conflictContextOf(choices.background, output.planned, output.current.resolved);
@@ -523,12 +625,61 @@ export function NewPackForm({
   // Concept packs are normalized to today's pack by the server, so they send none.
   const sendsOptions = optionsOn && effectiveMode === "listing";
 
-  const detailsProblem = sellerDetailsProblem(sku, boxContents, comparisonFacts);
+  const detailsProblem = sellerDetailsProblem(sku, boxContents, comparisonFacts, endorsements);
   const uploading = photos.some((p) => p.phase === "uploading");
   const checking = photos.some((p) => p.phase === "uploaded" && p.preflightPhase === "checking");
   const blockReason =
     photos.map((p) => photoBlockReason(p, selected, photoOutput(p))).find((reason) => reason !== null) ?? null;
   const uploaded = photos.filter((p) => p.phase === "uploaded" && p.key && p.sha256);
+  // The question step: the front photo's questions, less what the form knows.
+  const questionPhoto = questionSourcePhoto(photos);
+  const questions = questionPhoto
+    ? visibleQuestions(
+        questionPhoto.preflight,
+        knownKinds({
+          photoAngle: questionPhoto.angle,
+          optionsOn: optionsOn && effectiveMode !== "concept",
+          scenesOn: choices.extras.scenes,
+          scenePreset: outputForm.more.scenePreset,
+        }),
+      )
+    : [];
+  const questionsShown = questions.length > 0 && !questionsSkipped;
+  // The target question replaces the chooser of its own photo while shown.
+  const chooserInStep = questionsShown && questions.some((q) => q.kind === "target") ? questionPhoto?.id : undefined;
+  // Making a pack again taps the earlier pack's answers wherever the new
+  // photo's questions offer them; the seller's own taps win.
+  const effectivePicks = reuse ? prefilledPicks(questions, reuse.answers, questionPicks) : questionPicks;
+  const questionValues: Record<string, string | null> = Object.fromEntries(
+    questions.map((q) => [q.id, q.kind === "target" && questionPhoto ? targetValueOf(questionPhoto) : (effectivePicks[q.id] ?? null)]),
+  );
+  const answersBody = sellerAnswersBody({ photo: questionPhoto, questions, picks: effectivePicks, skipped: questionsSkipped });
+
+  function pickAnswer(question: SellerQuestion, tapped: string) {
+    setSubmitError(null);
+    // Tapping the held option takes the answer back.
+    const value = toggledAnswer(questionValues[question.id], tapped);
+    if (question.kind === "target") {
+      const pick = targetPatchFor(value);
+      if (pick && questionPhoto) updatePhoto(questionPhoto.id, pick);
+      return;
+    }
+    if (value === null) {
+      // An empty pick, not a missing one, so a reused pack's answer does
+      // not tap itself again; sellerAnswersBody sends nothing for it.
+      setQuestionPicks((current) => ({ ...current, [question.id]: "" }));
+      return;
+    }
+    setQuestionPicks((current) => ({ ...current, [question.id]: value }));
+    if (question.kind === "channels") {
+      setSelected((current) =>
+        channelsAfterAnswer(current, value, question, (id) => {
+          const channel = channels.find((c) => c.id === id);
+          return channel ? { pickable: isPickable(channel), marketplace: channel.marketplace } : null;
+        }),
+      );
+    }
+  }
   const attachKey =
     uploaded.length > 0 && selectedProduct ? `${uploaded.map((p) => p.key).join("|")}:${selectedProduct.id}` : null;
   const needsAttachConfirm = attachKey !== null && confirmedAttach !== attachKey;
@@ -540,6 +691,7 @@ export function NewPackForm({
     setSku(product?.sku ?? "");
     setBoxText((product?.boxContents ?? []).join("\n"));
     setComparisonText((product?.comparisonFacts ?? []).join("\n"));
+    setEndorsementText((product?.endorsements ?? []).join("\n"));
     // Its remembered choices prefill the options, like the SKU (PHASE_15
     // P1). A product without them, after one with them, starts over from
     // Marketplace ready so one product's choices never carry to another.
@@ -794,9 +946,11 @@ export function NewPackForm({
       setPhotos((current) =>
         current.map((p) => {
           if (p.id !== id || p.key !== key) return p;
-          // A tap survives a second check when that product is still there.
+          // A tap survives a second check when that product is still there,
+          // and "every item" while the photo still holds several.
           const keep = p.chosen != null && view.items.some((item) => item.number === p.chosen) ? p.chosen : null;
-          return { ...p, preflightPhase: "done", preflight: view, preflightNote: note, chosen: keep };
+          const targetAll = p.targetAll === true && view.status === "choose";
+          return { ...p, preflightPhase: "done", preflight: view, preflightNote: note, chosen: keep, targetAll };
         }),
       );
     } catch {
@@ -893,7 +1047,7 @@ export function NewPackForm({
         ...(sendsOptions && p.kind === "image" ? uploadBackgroundField(p.background) : {}),
       };
     });
-    const details = { sku: sku.trim(), boxContents, comparisonFacts };
+    const details = { sku: sku.trim(), boxContents, comparisonFacts, endorsements };
     const intent = intentFor(
       intentRef.current,
       {
@@ -910,6 +1064,8 @@ export function NewPackForm({
           // Any change to the image choices is a new intent (PHASE_15).
           ...(sendsOptions ? { options: optionsKey } : {}),
           ...(uploads.some((u) => u.background) ? { backgrounds: uploads.map((u) => u.background ?? "") } : {}),
+          // Any change to the answers is a new intent (PHASE_16).
+          ...(answersBody ? { answers: answersBody } : {}),
         }),
       },
       () => crypto.randomUUID(),
@@ -932,6 +1088,7 @@ export function NewPackForm({
           userDescription: description.trim() ? description.trim() : undefined,
           ...details,
           ...(sendsOptions ? { outputOptions: outputOptionsBody(outputForm.lookBase, choices, outputForm.more) } : {}),
+          ...(answersBody ? { sellerAnswers: answersBody } : {}),
         }),
       });
       const data = (await response.json().catch(() => ({}))) as {
@@ -1016,6 +1173,15 @@ export function NewPackForm({
   return (
     <div className={cn("grid gap-8 lg:grid-cols-[1fr_20rem]", optionsOn && "pb-28 lg:pb-0")} {...focusProps}>
       <div className="min-w-0 space-y-8">
+        {reuse ? (
+          <p
+            role="status"
+            className="rounded-lg border border-ink-200 bg-ink-50 px-4 py-3 text-sm text-ink-700"
+            data-testid="reuse-notice"
+          >
+            {reuseNotice(reuse.createdAt)}
+          </p>
+        ) : null}
         {optionsOn && packsPaused ? (
           <div
             role="status"
@@ -1135,10 +1301,11 @@ export function NewPackForm({
                           selected={selected}
                           chosen={photo.chosen ?? null}
                           onChoose={(number) => {
-                            updatePhoto(photo.id, { chosen: number });
+                            updatePhoto(photo.id, { chosen: number, targetAll: false });
                             setSubmitError(null);
                           }}
-                          multiItem={photo.angle === "in_the_box"}
+                          multiItem={photo.angle === "in_the_box" || photo.targetAll === true}
+                          hideChooser={photo.id === chooserInStep}
                           photoLabel={`photo ${index + 1}`}
                           output={photoOutput(photo)}
                         />
@@ -1290,6 +1457,28 @@ export function NewPackForm({
               <p className="mt-1 text-xs text-ink-400">
                 Optional. The analyzer reads this as seller notes when planning your shots.
               </p>
+              {questionsShown ? (
+                <QuestionStep
+                  questions={questions}
+                  items={questionPhoto?.preflight?.items ?? []}
+                  values={questionValues}
+                  onPick={pickAnswer}
+                  onSkip={() => {
+                    setQuestionsSkipped(true);
+                    const undo = skipPatchFor(questionPhoto);
+                    if (undo && questionPhoto) updatePhoto(questionPhoto.id, undo);
+                  }}
+                />
+              ) : questions.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setQuestionsSkipped(false)}
+                  className="mt-2 inline-flex min-h-11 items-center text-sm font-medium text-ink-700 underline"
+                  data-testid="question-reopen"
+                >
+                  {QUESTION_STEP_COPY.reopen}
+                </button>
+              ) : null}
               {keepHint ? (
                 <p className="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-amber-800" data-testid="keep-background-hint">
                   <span>{keepHint}</span>
@@ -1309,10 +1498,10 @@ export function NewPackForm({
             <h3 className="text-sm font-semibold text-ink-900">Details for more images</h3>
             <p className="mt-1 text-xs text-ink-500">
               Optional, and saved with the product. What is in the box adds an In the box image. Comparison facts
-              add a Comparison image. Both print exactly what you type, one line each, up to {MAX_SELLER_LINES}{" "}
-              lines of {MAX_SELLER_LINE_CHARS} characters.
+              add a Comparison image. Press quotes or awards add an A+ module for Amazon. Each prints exactly what you
+              type, one line each, up to {MAX_SELLER_LINES} lines of {MAX_SELLER_LINE_CHARS} characters.
             </p>
-            <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div>
                 <Label htmlFor="product-sku">SKU</Label>
                 <Input
@@ -1346,6 +1535,21 @@ export function NewPackForm({
                 />
                 <p className="mt-1 text-xs text-ink-400">Only facts you can back up.</p>
               </div>
+              <div>
+                <Label htmlFor="endorsements">Press quotes or awards</Label>
+                <Textarea
+                  id="endorsements"
+                  value={endorsementText}
+                  onChange={(event) => setEndorsementText(event.target.value)}
+                  placeholder={"Great for the trail, Outdoor Weekly\nGift Guide pick, Home Journal 2026"}
+                  className="mt-1"
+                />
+                <p className="mt-1 text-xs text-ink-400">
+                  Amazon takes quotes from a known publication or public figure with the source, and awards from
+                  the last 2 years with who gave them and when. Customer reviews are not allowed. Up to{" "}
+                  {MAX_ENDORSEMENTS}, printed as you type them; we never write one for you.
+                </p>
+              </div>
             </div>
             {detailsProblem ? (
               <p className="mt-3 text-sm text-amber-700" data-testid="seller-details-problem">
@@ -1357,6 +1561,13 @@ export function NewPackForm({
 
         <section>
           <h2 className="text-lg font-semibold text-ink-950">2. Pick your channels</h2>
+          {bundleTotals ? (
+            <PackBundleCards
+              bundle={bundle}
+              onPick={(next) => applyOutput({ type: "bundle", bundle: next })}
+              estimates={bundleTotals}
+            />
+          ) : null}
           <div className="mt-3 grid gap-6 sm:grid-cols-2">
             <div>
               <h3 className="text-sm font-semibold text-ink-700">Marketplaces</h3>

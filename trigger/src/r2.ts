@@ -126,6 +126,19 @@ export function assetFileKey(
   return `ws/${workspaceId}/jobs/${jobId}/files/${channel}/${filename}`;
 }
 
+/** Key of an extra scene version's file (PHASE_16 workstream 6). The
+ * version folder keeps it apart from the pack's own files, which the channel
+ * convention may give the same name. */
+export function variationFileKey(
+  workspaceId: string,
+  jobId: string,
+  variation: number,
+  channel: string,
+  filename: string,
+): string {
+  return `ws/${workspaceId}/jobs/${jobId}/files/${channel}/variation-${variation}/${filename}`;
+}
+
 /** Key of a file a pack follow up delivers (a retried shot or an added
  * angle). The run key keeps it apart from every file already delivered, so a
  * follow up can never overwrite one, whatever name the channel convention

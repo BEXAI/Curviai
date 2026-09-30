@@ -24,10 +24,16 @@ import {
 } from "@curvi/specs";
 import {
   ADDED_OVERLAYS_REASON,
+  BUNDLE_OFF_REASON,
   GALLERY_SLOTS,
   SELLER_OFF_REASON,
   SOURCE_TOO_SMALL_REASON,
+  bundleMaxSecondary,
+  bundleOf,
+  bundleShotTypes,
   extraFamilyOf,
+  extraOn,
+  isSecondaryShot,
   originalScale,
   sceneCountOf,
   specAcceptsImage,
@@ -37,9 +43,18 @@ import {
   type PlannedImageKind,
 } from "../output-options";
 import { creditCosts, isEntitled, type TierKey } from "../seed/credits";
-import { lifestyleFallbackScenes, sceneCountOptions } from "../seed/templates";
+import {
+  aplusModules,
+  lifestyleFallbackScenes,
+  sceneCountOptions,
+  type AplusModuleKey,
+  type AplusModuleSeed,
+} from "../seed/templates";
+import { capAplusModules, moduleSkipReason, plannedModuleLines } from "../aplus-copy";
+import { applyVariations } from "../variations";
 import { ProductProfile, Shot, ShotList, type ShotMethod } from "../schemas";
-import { printableSellerLines } from "../seller-inputs";
+import { printableEndorsements, printableSellerLines } from "../seller-inputs";
+import { dropIncompleteCarousels, planAdsShots, sellerTextFor } from "./ads";
 
 export interface PlanOptions {
   /** Selected channels or channel families, e.g. ["amazon", "shopify.product"]. */
@@ -56,6 +71,12 @@ export interface PlanOptions {
   /** Comparison facts the seller can back up, printed as the comparison
    * shot's callouts. A non empty list also counts as hasComparisonFacts. */
   comparisonFacts?: readonly string[];
+  /** Seller added press quotes or awards for the A+ endorsement module. */
+  hasEndorsements?: boolean;
+  /** The seller's press quotes or awards, one per line, printed as the
+   * endorsement module's lines exactly as typed. A non empty list also
+   * counts as hasEndorsements. */
+  endorsements?: readonly string[];
   /** Seller uploaded a video. */
   hasVideoSource?: boolean;
   /** Media id per photographed angle. Falls back to primaryMediaId. */
@@ -172,14 +193,31 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   const output = opts.output;
   const keptIds = new Set(output?.keepMediaIds ?? []);
   const offTypes = sellerOffShotTypes(output);
+  const bundleOff = bundleOffShotTypes(output);
+  const maxSecondary = output ? bundleMaxSecondary(bundleOf(output)) : null;
+  let secondaries = 0;
+  /** True when the bundle leaves this shot out: a type outside it, or an
+   * other angle image past its maxSecondary. */
+  const outsideBundle = (shot: Pick<Shot, "type" | "priority">): boolean =>
+    bundleOff.has(shot.type) || (maxSecondary !== null && isSecondaryShot(shot) && secondaries >= maxSecondary);
 
   const shots: Shot[] = [];
   const skipped: SkippedShot[] = [];
   let seq = 0;
   const nextId = (type: string): string => `s${String(++seq).padStart(2, "0")}_${type}`;
-  /** Records a shot the plan leaves out. An undeliverable method wins over the given reason. */
+  /** Records a shot the plan leaves out. An undeliverable method wins over
+   * the given reason, and the bundle wins over the rest: a shot the seller's
+   * set leaves out never asks for a photo or a plan. */
   const skip = (type: string, method: ShotMethod, reason: string): void => {
-    skipped.push({ type, reason: undeliverable.has(method) ? UNDELIVERABLE_METHOD_REASON : reason });
+    const [base, angle] = type.split(":");
+    const shotType = Shot.shape.type.safeParse(base);
+    const inBundle =
+      !shotType.success ||
+      !outsideBundle({ type: shotType.data, priority: angle === undefined || angle === "front" ? 1 : 2 });
+    skipped.push({
+      type,
+      reason: undeliverable.has(method) ? UNDELIVERABLE_METHOD_REASON : inBundle ? reason : BUNDLE_OFF_REASON,
+    });
   };
   /**
    * Plans a shot on the specs the seller picked, or skips it: when its method
@@ -202,9 +240,16 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
       skipped.push({ type: shot.type, reason: CHANNEL_NOT_SELECTED_REASON });
       return;
     }
+    if (outsideBundle(shot)) {
+      skipped.push({ type: shot.type, reason: BUNDLE_OFF_REASON, channels });
+      return;
+    }
     if (offTypes.has(shot.type)) {
       skipped.push({ type: shot.type, reason: SELLER_OFF_REASON, channels });
       return;
+    }
+    if (isSecondaryShot(shot)) {
+      secondaries += 1;
     }
     shots.push({ id: nextId(shot.type), ...shot, channels });
   };
@@ -491,7 +536,7 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   }
 
   if (familyPicked("amazon")) {
-    for (let i = 0; i < 2; i++) {
+    const planBanner = (): void =>
       plan({
         type: "aplus_banner",
         sourceMediaId: mediaFor("front"),
@@ -501,7 +546,37 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
         credits: creditCosts.deterministic,
         priority: 6,
       });
+    // The hero banner leads the A+ page, then the modules the product's
+    // facts and the seller's input support (PHASE_16 workstream 2), then the
+    // second banner, which the page's module cap drops first.
+    planBanner();
+    const endorsements = printableEndorsements(opts.endorsements);
+    const hasEndorsements = opts.hasEndorsements === true || endorsements.length > 0;
+    for (const type of Object.keys(aplusModules) as AplusModuleKey[]) {
+      const seed: AplusModuleSeed = aplusModules[type];
+      // A module is only considered when its A+ spec is picked, so a pack
+      // for the main image alone does not list six modules as left out.
+      if (!specSelected(seed.specId)) {
+        continue;
+      }
+      const reason = moduleSkipReason(type, profile, hasEndorsements);
+      if (reason) {
+        skip(type, "template", reason);
+        continue;
+      }
+      const lines = plannedModuleLines(type, profile, endorsements);
+      plan({
+        type,
+        sourceMediaId: mediaFor("front"),
+        method: "template",
+        channels: [seed.specId],
+        stylePreset: basePreset,
+        ...(lines.length > 0 ? { callouts: lines } : {}),
+        credits: creditCosts.deterministic,
+        priority: 6,
+      });
     }
+    planBanner();
   }
   if (familyPicked("shopify")) {
     plan({
@@ -549,6 +624,24 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
       credits: creditCosts.deterministic,
       priority: 7,
     });
+  }
+
+  // Ads formats (PHASE_16 workstream 3): the moodboard pin, the carousel and
+  // the ad pack, only with the ads switch on. Off (the default), none of them
+  // is considered, so the plan and its skipped list are as before.
+  if (output && extraOn(output.extras, "ads")) {
+    planAdsShots(
+      {
+        profile,
+        specSelected,
+        scenesOn: extraOn(output.extras, "scenes"),
+        frontMediaId: mediaFor("front"),
+        stylePreset: basePreset,
+        boxContents: opts.boxContents,
+        sellerText: sellerTextFor([opts.boxContents, opts.comparisonFacts, opts.endorsements]),
+      },
+      { plan, skip },
+    );
   }
 
   // video_spin if 4 or more angles or a video exist.
@@ -612,18 +705,25 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
   // refuses it, leave that spec, then a spec emptied only by the seller's
   // switches gets the front image, before the limits and the trim see the
   // plan.
-  const sized = applyAddedOverlays(applyOriginalSizes(shots, output, skipped), output, skipped);
+  const sized = applyAddedOverlays(applyOriginalSizes(capAplusModules(shots, skipped), output, skipped), output, skipped);
   const covered = coverSellerOffSpecs(sized, skipped, output, { frontMediaId: frontMedia, frontUsable });
 
   // Channel file limits (amazon.secondary takes 8, amazon.main takes 1) and
   // rule 6, the credit budget, which keeps a file for every picked spec it
   // can afford (trimToBudget).
-  const kept = fitLimitsAndBudget(
-    covered,
-    opts.creditBudget,
+  // Scene variations (PHASE_16 workstream 6): each lifestyle shot carries
+  // the seller's version count and its extra versions' credits, so the trim
+  // and the estimate see what the pack makes. It still takes one slot.
+  // A carousel that lost a slide to a limit or the trim ships no slide.
+  const kept = dropIncompleteCarousels(
+    fitLimitsAndBudget(
+      applyVariations(covered, output),
+      opts.creditBudget,
+      skipped,
+      specSelected,
+      reservedSlotsFor(covered, sceneCountOf(output)),
+    ),
     skipped,
-    specSelected,
-    reservedSlotsFor(covered, sceneCountOf(output)),
   );
 
   // Schema cap: at most 40 shots.
@@ -632,7 +732,7 @@ export function planShots(profile: ProductProfile, opts: PlanOptions): ShotList 
     skipped.push({ type: dropped.type, reason: "shot cap" });
   }
 
-  return ShotList.parse({ shots: kept, skipped });
+  return ShotList.parse({ shots: dropIncompleteCarousels(kept, skipped), skipped });
 }
 
 /**
@@ -780,8 +880,51 @@ export function sellerOffShotTypes(flags: OutputPlanFlags | undefined): Set<Shot
   return off;
 }
 
+/** The shot types outside the pack's bundle (PHASE_16). Empty without flags
+ * and for today's pack. */
+export function bundleOffShotTypes(flags: Pick<OutputPlanFlags, "bundle"> | undefined): Set<Shot["type"]> {
+  const inBundle = bundleShotTypes(bundleOf(flags));
+  return new Set(Shot.shape.type.options.filter((type) => !inBundle.has(type)));
+}
+
 /**
- * Removes the shots in extra families the seller turned off and records each
+ * Removes the shots the pack's bundle leaves out (PHASE_16 workstream 1):
+ * every shot of a type outside the bundle, then every other angle image
+ * (isSecondaryShot) past the bundle's maxSecondary, in plan order. Each is
+ * recorded with BUNDLE_OFF_REASON and the specs it targeted; seller off
+ * cover never fills those specs, since the seller picked a smaller set. For
+ * plans this planner did not make; skipSellerOffShots runs it first, so the
+ * runner's fitShotsToChannels applies it too. Returns the other shots in order.
+ */
+export function skipBundleOffShots(
+  shots: readonly Shot[],
+  flags: Pick<OutputPlanFlags, "bundle"> | undefined,
+  skipped: SkippedShot[],
+): Shot[] {
+  const off = bundleOffShotTypes(flags);
+  const maxSecondary = bundleMaxSecondary(bundleOf(flags));
+  if (off.size === 0 && maxSecondary === null) {
+    return [...shots];
+  }
+  let secondaries = 0;
+  const out: Shot[] = [];
+  for (const shot of shots) {
+    const pastCap = maxSecondary !== null && isSecondaryShot(shot) && secondaries >= maxSecondary;
+    if (off.has(shot.type) || pastCap) {
+      skipped.push({ type: shot.type, reason: BUNDLE_OFF_REASON, channels: [...new Set(shot.channels)] });
+      continue;
+    }
+    if (isSecondaryShot(shot)) {
+      secondaries += 1;
+    }
+    out.push(shot);
+  }
+  return out;
+}
+
+/**
+ * Removes the shots the pack's bundle leaves out (skipBundleOffShots), then
+ * the shots in extra families the seller turned off, recording each of those
  * with SELLER_OFF_REASON and the specs it targeted, so coverSellerOffSpecs
  * can fill a spec left empty. For plans this planner did not make (the
  * fitted LLM plan): the runner calls it before the channel limits, as
@@ -792,12 +935,13 @@ export function skipSellerOffShots(
   flags: OutputPlanFlags | undefined,
   skipped: SkippedShot[],
 ): Shot[] {
+  const inBundle = skipBundleOffShots(shots, flags, skipped);
   const off = sellerOffShotTypes(flags);
   if (off.size === 0) {
-    return [...shots];
+    return inBundle;
   }
   const out: Shot[] = [];
-  for (const shot of shots) {
+  for (const shot of inBundle) {
     if (off.has(shot.type)) {
       skipped.push({ type: shot.type, reason: SELLER_OFF_REASON, channels: [...new Set(shot.channels)] });
     } else {
@@ -1180,7 +1324,9 @@ function socialChannelFor(type: "social_1x1" | "social_4x5" | "social_9x16"): st
     case "social_4x5":
       return ["meta.feed_4x5"];
     case "social_9x16":
-      return ["meta.story_9x16"];
+      // Every 9:16 social spec takes the story card, each rendered inside
+      // its own safe zone (PHASE_16 workstream 3 added Reels and TikTok).
+      return ["meta.story_9x16", "meta.reels_9x16", "tiktok.ad_9x16"];
   }
 }
 

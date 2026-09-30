@@ -60,6 +60,12 @@ import {
   prepareWorkingSource,
   rawToSharp,
   renderTemplateStill,
+  renderAdVariant,
+  renderCarouselSlide,
+  renderPinMoodboard,
+  overlaySceneLine,
+  carouselPlateSize,
+  isAdsShotType,
   TEMPLATE_STILL_TYPES,
   TEXT_TEMPLATE_TYPES,
   TemplateUnavailableError,
@@ -68,6 +74,8 @@ import {
   type TargetCrop,
   type PixelRect,
   type TemplateStillType,
+  type AdsStillResult,
+  type CarouselSlideContent,
   type CompositeResult,
   type ImageOutput,
   type HarmonizeInput,
@@ -842,6 +850,8 @@ export class LiveShotGenerator implements ShotGenerator {
   private readonly cutoutCosts = new Map<string, number>();
   private readonly cutoutCostClaimed = new Set<string>();
   private readonly logos = new Map<string, Promise<Buffer | null>>();
+  /** Carousel scene layers per job and carousel (founder decision 4). */
+  private readonly carouselPlates = new Map<string, Promise<RawImage>>();
   /** Stored uploads of kept photos, as encoded bytes per job and photo,
    * never as RGBA (PHASE_15 memory section). */
   private readonly sources = new Map<string, Promise<Buffer | null>>();
@@ -1604,7 +1614,7 @@ export class LiveShotGenerator implements ShotGenerator {
     if (method === "deterministic" && !DETERMINISTIC_LIVE_TYPES.has(shot.type)) {
       throw new ShotUnavailableError(`The ${label} shot is not produced by live providers yet.`);
     }
-    if (method === "template" && !TEMPLATE_STILL_TYPES.has(shot.type)) {
+    if (method === "template" && !TEMPLATE_STILL_TYPES.has(shot.type) && !isAdsShotType(shot.type)) {
       throw new ShotUnavailableError(`The ${label} shot needs seller details this pack does not have.`);
     }
     // An already white kept photo makes its own white file from the cached
@@ -1644,19 +1654,22 @@ export class LiveShotGenerator implements ShotGenerator {
                 output: args.output,
                 keptSource: args.output?.keepMediaIds.includes(shot.sourceMediaId) === true,
               })
-            : await renderTemplateStill({
-                type: shot.type as TemplateStillType,
-                spec: getSpec(shot.channels[0]),
-                productPng: product.productPng,
-                maskPng: product.maskPng,
-                callouts: shot.callouts,
-                // The preset's card color, or the seller's color with
-                // Graphics follow your color, text flipped on a dark card.
-                ...templateCardColors(getSpec(shot.channels[0]), shot.stylePreset, args.output),
-                accentHex: stillStyle.accentHex,
-                fonts: args.brand?.fonts,
-                logo: await this.logoFor(args),
-              });
+            : isAdsShotType(shot.type)
+              ? await this.renderAdsTemplate(args, product, null)
+              : await renderTemplateStill({
+                  type: shot.type as TemplateStillType,
+                  spec: getSpec(shot.channels[0]),
+                  productPng: product.productPng,
+                  maskPng: product.maskPng,
+                  callouts: shot.callouts,
+                  headline: shot.headline,
+                  // The preset's card color, or the seller's color with
+                  // Graphics follow your color, text flipped on a dark card.
+                  ...templateCardColors(getSpec(shot.channels[0]), shot.stylePreset, args.output),
+                  accentHex: stillStyle.accentHex,
+                  fonts: args.brand?.fonts,
+                  logo: await this.logoFor(args),
+                });
         const erosion = still.fidelityErosion ?? (await stillErosionFromMasks(product.mask, still.mask));
         return {
           image: still.image,
@@ -1711,7 +1724,32 @@ export class LiveShotGenerator implements ShotGenerator {
       },
     };
 
-    const result = await compositeShot({
+    // A carousel's slides share one scene layer (founder decision 4): the
+    // product is placed on it exactly, never harmonized per slide.
+    if (args.shot.type === "carousel_slide") {
+      try {
+        const plate = await this.carouselPlate(args, spec, routedScene, scenePrompt);
+        const still = await this.renderAdsTemplate(args, product, plate);
+        const erosion = await stillErosionFromMasks(product.mask, still.mask);
+        return {
+          image: still.image,
+          mask: still.mask,
+          productReference: still.productReference,
+          encoded: still.encoded,
+          costMicros: spend.micros,
+          spendReserved,
+          fidelityRequired: true,
+          ...(erosion ? { fidelityErodePx: erosion.erodePx, fidelityErodeFloorPx: erosion.floorPx } : {}),
+        };
+      } catch (err) {
+        if (err instanceof TemplateUnavailableError) {
+          throw stillFailure(err, label, spend.micros, args);
+        }
+        throw err;
+      }
+    }
+
+    const composited = await compositeShot({
       productRgba,
       mask,
       provider: routedScene,
@@ -1726,9 +1764,159 @@ export class LiveShotGenerator implements ShotGenerator {
       workspaceId: args.workspaceId,
       jobId: args.jobId,
     });
+    // The moodboard pin prints its one line on the finished scene, where
+    // the product is not; the product pixels stay as pasted back.
+    let result = composited;
+    if (args.shot.type === "pin_moodboard") {
+      try {
+        const finalRaw = await overlaySceneLine({
+          image: composited.finalRaw,
+          mask: composited.canvasMask,
+          spec,
+          headline: args.shot.headline ?? "",
+          style: this.adsStyle(args, spec),
+        });
+        result = { ...composited, finalRaw, png: await encodePng(finalRaw) };
+      } catch (err) {
+        throw stillFailure(err, label, spend.micros, args);
+      }
+    }
 
     return this.finishComposite(result, spec, spend.micros, spendReserved);
   }
+
+  /** Card, text and accent colors and brand fonts for an ads format. */
+  private adsStyle(args: ShotGenerateArgs, spec: ChannelSpec) {
+    return {
+      ...templateCardColors(spec, args.shot.stylePreset, args.output),
+      accentHex: stillStyle.accentHex,
+      ...(args.brand?.fonts ? { fonts: args.brand.fonts } : {}),
+    };
+  }
+
+  /**
+   * A template ads format (PHASE_16 workstream 3): the moodboard pin, a
+   * static ad variant for its placement, or a carousel slide cut from its
+   * carousel's one canvas (on the scene layer when one is given).
+   */
+  private async renderAdsTemplate(
+    args: ShotGenerateArgs,
+    product: LiveProduct,
+    plate: RawImage | null,
+  ): Promise<AdsStillResult> {
+    const { shot } = args;
+    const spec = getSpec(shot.channels[0]);
+    const base = { spec, productPng: product.productPng, maskPng: product.maskPng, ...this.adsStyle(args, spec) };
+    switch (shot.type) {
+      case "pin_moodboard":
+        return renderPinMoodboard({ ...base, headline: shot.headline ?? "" });
+      case "ad_variant":
+        return renderAdVariant({ ...base, headline: shot.headline ?? "", cta: shot.cta ?? "" });
+      case "carousel_slide":
+        return renderCarouselSlide({
+          ...base,
+          slideCount: shot.slideCount ?? 1,
+          slide: carouselSlideContentOf(shot),
+          ...(plate ? { plate } : {}),
+        });
+      default:
+        throw new TemplateUnavailableError(`No ads template for shot type ${shot.type}`);
+    }
+  }
+
+  /**
+   * The carousel's one scene layer at its whole canvas size (founder
+   * decision 4): made once, by the carousel's first slide, through the
+   * image chain (packages/ai, with the pack's caps and metering) and kept in
+   * the upload cache under the job, so the other slides, in this process or
+   * in their own fan out subtasks, cut their slice from the same pixels.
+   * The runner runs first slides before the others (carouselRunOrder). A
+   * later slide never generates: without the layer it needs review. A
+   * retried first slide makes a new layer.
+   */
+  private async carouselPlate(
+    args: ShotGenerateArgs,
+    spec: ChannelSpec,
+    provider: Provider,
+    scenePrompt: string,
+  ): Promise<RawImage> {
+    const { shot } = args;
+    const carouselId = shot.carouselId ?? "c1";
+    const lead = (shot.slideIndex ?? 1) === 1;
+    const size = carouselPlateSize(spec, shot.slideCount ?? 1);
+    const key = carouselPlateKey(args.workspaceId, args.jobId, carouselId);
+    const memo = `${args.jobId}:${carouselId}`;
+    const regenerate = lead && args.attempt > 1;
+    if (!regenerate) {
+      const known = this.carouselPlates.get(memo);
+      if (known) {
+        return known;
+      }
+    }
+    const pending = (async (): Promise<RawImage> => {
+      const store = this.opts.cutoutCache;
+      if (!regenerate && store) {
+        const stored = await store.get(key).catch(() => null);
+        if (stored) {
+          return plateToCanvas(stored.bytes, size);
+        }
+      }
+      if (!lead) {
+        throw new ShotUnavailableError(CAROUSEL_SCENE_NOT_READY);
+      }
+      const res = await provider.invoke<ScenePlateInput, ImageOutput>({
+        task: SCENE_PLATE_TASK,
+        input: { prompt: scenePrompt, width: size.width, height: size.height },
+        workspaceId: args.workspaceId,
+        jobId: args.jobId,
+        stepId: `${shot.id}:scene_plate`,
+      });
+      if (store) {
+        await store.put(key, res.output.png, "image/png").catch((err: unknown) => {
+          console.warn(`[live] job ${args.jobId} carousel scene could not be stored`, err);
+        });
+      }
+      return plateToCanvas(res.output.png, size);
+    })();
+    this.carouselPlates.set(memo, pending);
+    pending.catch(() => this.carouselPlates.delete(memo));
+    return pending;
+  }
+}
+
+/** Why a later carousel slide needs review: its carousel's scene layer was
+ * never made (the first slide failed). */
+export const CAROUSEL_SCENE_NOT_READY = "The carousel's scene could not be made, so this slide needs review.";
+
+/** Where a carousel's scene layer is kept: under the workspace and the job. */
+export function carouselPlateKey(workspaceId: string, jobId: string, carouselId: string): string {
+  const safe = (value: string) => value.replace(/[^A-Za-z0-9_-]/g, "") || "x";
+  return `ws/${workspaceId}/cache/carousel/${safe(jobId)}/${safe(carouselId)}.png`;
+}
+
+/** A scene layer at the carousel's whole canvas size: resized to cover it
+ * and center cropped, since image models return their own sizes. */
+async function plateToCanvas(bytes: Buffer, size: { width: number; height: number }): Promise<RawImage> {
+  const { data, info } = await rawToSharp(await decodeToRgba(bytes))
+    .resize(size.width, size.height, { fit: "cover", position: "centre" })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { data, width: info.width, height: info.height, channels: 4 };
+}
+
+/** What a carousel slide shot prints, as the renderer takes it. The hook and
+ * the call to action show the product large; the other slides smaller. */
+export function carouselSlideContentOf(shot: ShotGenerateArgs["shot"]): CarouselSlideContent {
+  const index = shot.slideIndex ?? 1;
+  const hero = index === 1 || index === (shot.slideCount ?? 1) || shot.cta !== undefined;
+  return {
+    slideIndex: index,
+    role: hero ? "hero" : "support",
+    ...(shot.headline ? { headline: shot.headline } : {}),
+    ...(shot.callouts && shot.callouts.length > 0 ? { lines: shot.callouts } : {}),
+    ...(shot.cta ? { cta: shot.cta } : {}),
+  };
 }
 
 /**

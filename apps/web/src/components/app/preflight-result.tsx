@@ -27,6 +27,9 @@ interface PreflightResultProps {
    * cutout needs no product choice and never blocks on size; its heads ups
    * say what happens instead. Absent means today's pack. */
   output?: PhotoOutputContext;
+  /** The question step asks which product instead (PHASE_16 workstream 4),
+   * so the chooser is not shown twice. */
+  hideChooser?: boolean;
 }
 
 /**
@@ -45,6 +48,7 @@ export function PreflightResult({
   multiItem,
   photoLabel,
   output,
+  hideChooser,
 }: PreflightResultProps) {
   if (checking) {
     return (
@@ -80,7 +84,8 @@ export function PreflightResult({
   // A kept photo's size lines come from keptPhotoHeadsUp (left out, never blocked).
   const short = kept ? [] : sizeShortfalls(view, selected, chosen, output);
   const headsUp = keptPhotoHeadsUp(view, selected, chosen, output);
-  const showChooser = view.status === "choose" && !multiItem && (output === undefined || output.feedsCutout);
+  const needsChoice = view.status === "choose" && !multiItem && (output === undefined || output.feedsCutout);
+  const showChooser = needsChoice && !hideChooser;
   return (
     <div className="mt-1 space-y-1">
       {showChooser ? (
@@ -91,7 +96,7 @@ export function PreflightResult({
           photoLabel={photoLabel}
         />
       ) : null}
-      {ready && (!showChooser || chosenItem(view, chosen)) ? (
+      {ready && (!needsChoice || chosenItem(view, chosen)) ? (
         <p className="text-xs text-emerald-700" data-testid="preflight-ready">
           {ready}
         </p>

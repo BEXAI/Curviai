@@ -22,11 +22,12 @@
  * createJob hold and the demo plan agree with the runner.
  */
 
-import { keepMediaIdsFor, type OutputPlanFlags, type PlanPhoto } from "@curvi/pipeline/output-options";
+import { extraOn, keepMediaIdsFor, type OutputPlanFlags, type PlanPhoto } from "@curvi/pipeline/output-options";
 import { planShots, type PlanOptions } from "@curvi/pipeline/planner";
 import type { ProductProfile, Shot } from "@curvi/pipeline/schemas";
+import { extraVariationCredits } from "@curvi/pipeline/variations";
 import { planAngleKey, withSellerAngles, type AngleRole } from "@curvi/pipeline/seller-inputs";
-import { isShotMethodDeliverable, stillStyle, type TierKey } from "@curvi/pipeline/seed";
+import { adsFormats, isShotMethodDeliverable, stillStyle, type TierKey } from "@curvi/pipeline/seed";
 import { getSpec, hasSpec, isMarketplaceChannel, requiresWhiteBackground } from "@curvi/specs";
 
 export type EstimateMode = "listing" | "concept";
@@ -75,6 +76,40 @@ export const ESTIMATE_REFERENCE_PRODUCT: ProductProfile = {
 const REFERENCE_MEDIA_ID = "reference_front";
 
 /**
+ * Spare lines the ads reference product draws on. With the ads family on,
+ * the hold covers the most the seed lets a real product make: a carousel
+ * with maxBenefitSlides benefit slides, a details slide and an in the box
+ * slide, and an ad pack of maxVariants versions. Each line is short enough
+ * for every placement's text limit, so no placement turns it away. The
+ * worker releases what the real product does not make; holding less would
+ * let its budget trim drop a slide, and with it the whole carousel.
+ */
+const ADS_REFERENCE_BENEFITS = ["keeps coffee hot", "easy grip handle", "fits most cup holders", "stacks neatly"];
+const ADS_REFERENCE_FEATURES = ["pour over rim", "wide stable base", "glazed inside", "matte outside", "thick walls"];
+
+/** The seller's box contents as the estimate knows them: only whether any were typed. */
+const REFERENCE_BOX_CONTENTS = ["Mug"];
+
+/**
+ * The reference product with enough lines for the largest carousel and ad
+ * pack the seed allows: maxBenefitSlides benefits, then features until the
+ * name, benefits and features give maxVariants headlines.
+ */
+function adsReferenceProduct(profile: ProductProfile): ProductProfile {
+  const benefits = [...new Set([...profile.benefits, ...ADS_REFERENCE_BENEFITS])].slice(
+    0,
+    Math.max(profile.benefits.length, adsFormats.carousel.maxBenefitSlides),
+  );
+  const featureCount = Math.max(
+    profile.features.length,
+    adsFormats.carousel.maxDetailLines,
+    adsFormats.adPack.maxVariants - 1 - benefits.length,
+  );
+  const features = [...new Set([...profile.features, ...ADS_REFERENCE_FEATURES])].slice(0, featureCount);
+  return { ...profile, benefits, features };
+}
+
+/**
  * What the seller told us about the product, so the estimate and the hold
  * cover the shots those inputs unlock: every photo role adds its angle to
  * the reference product's, and box contents and comparison facts add the
@@ -85,6 +120,8 @@ export interface EstimateSellerInputs {
   angles?: readonly AngleRole[];
   hasBoxContents?: boolean;
   hasComparisonFacts?: boolean;
+  /** Press quotes or awards for the A+ endorsement module (PHASE_16). */
+  hasEndorsements?: boolean;
   /**
    * The seller's output options as plan flags. Absent means today's pack.
    * Its keepMediaIds are matched to the estimate's photos by position when
@@ -206,15 +243,22 @@ function referencePack(
   if (picked.length === 0) {
     return { shots: [], kept: new Set() };
   }
-  const profile = referenceProductFor(inputs);
+  const adsOn = inputs?.output !== undefined && extraOn(inputs.output.extras, "ads");
+  const base = referenceProductFor(inputs);
+  const profile = adsOn ? adsReferenceProduct(base) : base;
   const plan = inputs?.output ? estimatePlanFor(profile, inputs, inputs.output, primaryMediaId) : null;
+  const hasBoxContents = inputs?.hasBoxContents === true;
   const options: PlanOptions = {
     channels: picked,
     tier,
     creditBudget: Number.MAX_SAFE_INTEGER,
     primaryMediaId,
-    hasBoxContents: inputs?.hasBoxContents === true,
+    hasBoxContents,
+    // The carousel's in the box slide needs the lines themselves, not only
+    // the flag, so the hold counts it whenever the seller typed any.
+    ...(adsOn && hasBoxContents ? { boxContents: REFERENCE_BOX_CONTENTS } : {}),
     hasComparisonFacts: inputs?.hasComparisonFacts === true,
+    hasEndorsements: inputs?.hasEndorsements === true,
     ...(plan ? { output: plan.output, mediaIdsByAngle: plan.mediaIdsByAngle } : {}),
   };
   return { shots: planShots(profile, options).shots, kept: new Set(plan?.output.keepMediaIds ?? []) };
@@ -239,6 +283,14 @@ const MADE_WHITE_LINE: { key: string; name: LineName } = {
   name: {
     one: "Made white for channels that require it",
     many: (n) => `Made white for channels that require it, ${n}`,
+  },
+};
+
+const VARIATIONS_LINE: { key: string; name: LineName } = {
+  key: "scene_variations",
+  name: {
+    one: "Extra version of a scene",
+    many: (n) => `Extra versions of scenes, ${n}`,
   },
 };
 
@@ -294,6 +346,18 @@ function lineFor(shot: Shot, context: LineContext): { key: string; name: LineNam
       return { key: "comparison", name: { one: "Comparison image" } };
     case "aplus_banner":
       return { key: "aplus_banner", name: { one: "A plus banner", many: (n) => `A plus banners, ${n}` } };
+    case "aplus_pain_points":
+      return { key: "aplus_pain_points", name: { one: "A plus problems solved module" } };
+    case "aplus_features":
+      return { key: "aplus_features", name: { one: "A plus features module" } };
+    case "aplus_ingredients":
+      return { key: "aplus_ingredients", name: { one: "A plus materials module" } };
+    case "aplus_results":
+      return { key: "aplus_results", name: { one: "A plus results module" } };
+    case "aplus_how_to":
+      return { key: "aplus_how_to", name: { one: "A plus how to use module" } };
+    case "aplus_endorsement":
+      return { key: "aplus_endorsement", name: { one: "A plus press quotes and awards module" } };
     case "shopify_hero":
       return { key: "shopify_hero", name: { one: "Shopify hero" } };
     case "collection_thumb":
@@ -304,6 +368,14 @@ function lineFor(shot: Shot, context: LineContext): { key: string; name: LineNam
       return { key: "social", name: { one: "Social crop", many: (n) => `Social crops, ${n}` } };
     case "social_2x3":
       return { key: "social_2x3", name: { one: "Pinterest pin" } };
+    case "pin_moodboard":
+      return { key: "pin_moodboard", name: { one: "Moodboard pin" } };
+    case "carousel_slide":
+      // A carousel is one line: its slides share one canvas, and with scenes
+      // on its one scene is charged on the first slide (founder decision 4).
+      return { key: "carousel", name: { one: "Carousel, 1 slide", many: (n) => `Carousel, ${n} slides` } };
+    case "ad_variant":
+      return { key: "ad_variant", name: { one: "Ad", many: (n) => `Ads, ${n} versions` } };
     case "video_spin":
       return { key: "video_spin", name: { one: "Spin video" } };
     case "video_hero_6s":
@@ -333,14 +405,23 @@ export function estimatePackCredits(
     kept: pack.kept,
     colorIsWhite: (inputs?.colorHex ?? white).toUpperCase() === white,
   };
+  const add = (key: string, name: LineName, count: number, credits: number, deliverable: boolean): void => {
+    const group = groups.get(key) ?? { name, count: 0, credits: 0, deliverable };
+    group.count += count;
+    group.credits += deliverable ? credits : 0;
+    group.deliverable &&= deliverable;
+    groups.set(key, group);
+  };
   for (const shot of pack.shots) {
     const { key, name } = lineFor(shot, context);
     const deliverable = isShotMethodDeliverable(shot.method);
-    const group = groups.get(key) ?? { name, count: 0, credits: 0, deliverable };
-    group.count += 1;
-    group.credits += deliverable ? shot.credits : 0;
-    group.deliverable &&= deliverable;
-    groups.set(key, group);
+    // Extra scene versions (PHASE_16 workstream 6) get their own line, at
+    // the seed price per version, so the scene line keeps its own price.
+    const extra = shot.variations !== undefined ? extraVariationCredits(shot.variations) : 0;
+    add(key, name, 1, shot.credits - extra, deliverable);
+    if (shot.variations !== undefined) {
+      add(VARIATIONS_LINE.key, VARIATIONS_LINE.name, shot.variations - 1, extra, deliverable);
+    }
   }
 
   const lines: EstimateLine[] = [...groups.values()].map((group) => {

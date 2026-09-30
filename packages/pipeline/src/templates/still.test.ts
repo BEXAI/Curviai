@@ -81,7 +81,7 @@ const colors = {
   accentHex: stillStyle.accentHex,
 };
 
-const cases: { type: TemplateStillType; specId: string; callouts?: string[] }[] = [
+const cases: { type: TemplateStillType; specId: string; callouts?: string[]; headline?: string }[] = [
   {
     type: "infographic",
     specId: "amazon.secondary",
@@ -99,6 +99,42 @@ const cases: { type: TemplateStillType; specId: string; callouts?: string[] }[] 
     callouts: ["Holds 24 oz, most hold 16 oz", "Cold for 24 hours, not 12"],
   },
   { type: "aplus_banner", specId: "amazon.aplus.basic_header" },
+  // The six A+ modules (PHASE_16 workstream 2): a rule 3 check for each.
+  {
+    type: "aplus_features",
+    specId: "amazon.aplus.basic_header",
+    headline: "Built for everyday use",
+    callouts: ["Leak proof lid", "Dishwasher safe", "Fits cup holders"],
+  },
+  {
+    type: "aplus_pain_points",
+    specId: "amazon.aplus.basic_header",
+    headline: "No more warm water",
+    callouts: ["Stays cold on hot days", "No drips in your bag", "Easy to carry all day"],
+  },
+  {
+    type: "aplus_ingredients",
+    specId: "amazon.aplus.basic_header",
+    headline: "What it is made of",
+    callouts: ["Stainless steel", "Bamboo lid"],
+  },
+  {
+    type: "aplus_results",
+    specId: "amazon.aplus.basic_header",
+    headline: "What daily use looks like",
+    callouts: ["Cold water at your desk", "Fewer plastic bottles", "A lid that stays shut"],
+  },
+  {
+    type: "aplus_how_to",
+    specId: "amazon.aplus.basic_header",
+    headline: "How to use it",
+    callouts: ["Fill with water", "Twist the lid shut", "Rinse after use"],
+  },
+  {
+    type: "aplus_endorsement",
+    specId: "amazon.aplus.basic_header",
+    callouts: ["Loved by hikers", "Gift Guide pick 2026"],
+  },
   { type: "social_1x1", specId: "meta.feed_1x1" },
   { type: "social_4x5", specId: "meta.feed_4x5" },
   { type: "social_9x16", specId: "meta.story_9x16" },
@@ -130,7 +166,14 @@ describe("renderTemplateStill", () => {
     it(`renders ${c.type} for ${c.specId} within the channel spec`, async () => {
       const spec = getSpec(c.specId);
       const cutout = await syntheticCutout();
-      const result = await renderTemplateStill({ type: c.type, spec, ...cutout, callouts: c.callouts, ...colors });
+      const result = await renderTemplateStill({
+        type: c.type,
+        spec,
+        ...cutout,
+        callouts: c.callouts,
+        ...(c.headline ? { headline: c.headline } : {}),
+        ...colors,
+      });
       const { image, mask, encoded } = result;
 
       // Size, format and bytes.
@@ -243,6 +286,43 @@ describe("renderTemplateStill", () => {
     }
   });
 
+  it("never pads an A+ module: fewer usable lines than the seeded minimum is refused", async () => {
+    const spec = getSpec("amazon.aplus.basic_header");
+    const cutout = await syntheticCutout();
+    await expect(
+      renderTemplateStill({
+        type: "aplus_features",
+        spec,
+        ...cutout,
+        headline: "Built for everyday use",
+        callouts: ["Leak proof lid", "  "],
+        ...colors,
+      }),
+    ).rejects.toBeInstanceOf(TemplateUnavailableError);
+    await expect(
+      renderTemplateStill({ type: "aplus_endorsement", spec, ...cutout, callouts: [], ...colors }),
+    ).rejects.toBeInstanceOf(TemplateUnavailableError);
+  });
+
+  it("prints an A+ module headline above its lines, clear of the product", async () => {
+    const spec = getSpec("amazon.aplus.basic_header");
+    const cutout = await syntheticCutout();
+    const base = { type: "aplus_how_to" as const, spec, ...cutout, callouts: ["Fill it", "Close it", "Carry it"], ...colors };
+    const without = await renderTemplateStill(base);
+    const withHeadline = await renderTemplateStill({ ...base, headline: "How to use it" });
+    const text = hexToRgb(colors.textHex);
+    const count = (r: typeof without) => {
+      let n = 0;
+      for (let i = 0; i < r.mask.data.length; i++) {
+        if (r.mask.data[i] === 0 && nearColor(r.image.data, i * 4, text, 24)) n++;
+      }
+      return n;
+    };
+    expect(count(withHeadline)).toBeGreaterThan(count(without) + 200);
+    // The product is placed the same way with or without the headline.
+    expect(boundingBoxOfMask(withHeadline.mask)).toEqual(boundingBoxOfMask(without.mask));
+  });
+
   it("throws TemplateUnavailableError for dimensions with no label", async () => {
     const cutout = await syntheticCutout();
     await expect(
@@ -305,6 +385,7 @@ describe("renderTemplateStill rule 3 product fidelity", () => {
         spec,
         ...(await texturedCutout()),
         callouts: c.callouts,
+        ...(c.headline ? { headline: c.headline } : {}),
         ...colors,
       });
       expect(render.productReference.width).toBe(render.image.width);

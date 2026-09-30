@@ -134,6 +134,8 @@ describe("POST /api/jobs output options (PHASE_15)", () => {
       productSize: "standard",
       enlarge: true,
       graphicsColor: false,
+      bundle: "everything",
+      variations: 1,
     });
   });
 
@@ -165,6 +167,12 @@ describe("POST /api/jobs output options (PHASE_15)", () => {
     expect(input?.outputOptions).toMatchObject({ fit: "crop", color: { kind: "edge_match" }, sceneCount: 1 });
   });
 
+  it.each(["main", "listing", "aplus", "everything"])("accepts the %s bundle (PHASE_16)", async (bundle) => {
+    expect((await post({ outputOptions: { bundle } })).status).toBe(201);
+    const input = vi.mocked(services.createJob).mock.calls[0]?.[1];
+    expect(input?.outputOptions?.bundle).toBe(bundle);
+  });
+
   it("refuses a background per photo the schema does not know", async () => {
     const response = await post({
       uploads: [{ key: `ws/${TEST_WORKSPACE_ID}/src/a.jpg`, sha256: "a".repeat(64), kind: "image", background: "blur" }],
@@ -194,6 +202,10 @@ describe("POST /api/jobs output options (PHASE_15)", () => {
     ["an unknown scene style", { scenePreset: "neon" }],
     ["an unknown product size", { productSize: "huge" }],
     ["an unknown version", { v: 2 }],
+    ["an unknown bundle", { bundle: "most" }],
+    ["a bundle list", { bundle: ["main"] }],
+    ["a null bundle", { bundle: null }],
+    ["a bundle key in another case", { bundle: "Main" }],
   ])("refuses %s with a 400 before the service", async (_label, outputOptions) => {
     const response = await post({ outputOptions });
     expect(response.status).toBe(400);
@@ -231,6 +243,7 @@ describe("POST /api/jobs output options (PHASE_15)", () => {
         productSize: "smaller",
         enlarge: false,
         graphicsColor: true,
+        bundle: "everything",
       },
     };
     expect(new TextEncoder().encode(JSON.stringify(body)).length).toBeLessThan(JOB_BODY_MAX_BYTES);

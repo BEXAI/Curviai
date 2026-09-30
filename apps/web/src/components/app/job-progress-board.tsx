@@ -10,6 +10,8 @@ import {
   type PackActionResult,
 } from "@/components/app/pack-actions";
 import { ComplianceReportPanel } from "@/components/app/compliance-report-panel";
+import { GalleryGrid } from "@/components/app/gallery-grid";
+import { VersionPick } from "@/components/app/version-pick";
 import { InventoryCard } from "@/components/app/inventory-card";
 import { JobOptionsCard } from "@/components/app/job-options-card";
 import { OutputPreview } from "@/components/app/output-preview";
@@ -19,7 +21,17 @@ import { StatusChip } from "@/components/app/status-chip";
 import { packSummaryLine } from "@/lib/job-copy";
 import { isTerminalJobStatus, nextPoll, pollStopCopy, type PollResult, type PollStopReason } from "@/lib/job-poll";
 import { canReveal, revealShots } from "@/lib/makeover";
-import { boardShots, isOriginalShot, isTransparentShot, isTurnedOffShot, previewAspect } from "@/lib/output-preview";
+import {
+  boardSections,
+  boardShots,
+  isOriginalShot,
+  isTransparentShot,
+  isTurnedOffShot,
+  previewAspect,
+  type GroupedShot,
+} from "@/lib/output-preview";
+import { galleryItemsFromJob } from "@/lib/library";
+import { REUSE_LABEL, reuseHref } from "@/lib/reuse";
 import { track } from "@/lib/track";
 import type { JobShotView, JobView } from "@/lib/services/types";
 
@@ -131,6 +143,44 @@ function shotChip(shot: JobShotView, jobStatus: JobView["status"]): { status: st
   return { status: shot.status, label: shot.label ?? null };
 }
 
+/** A section of grouped cards: a carousel's slides in order, or the ads. */
+function ShotGroup({
+  title,
+  line,
+  testId,
+  cards,
+  job,
+  canManage,
+  onAction,
+}: {
+  title: string;
+  line: string;
+  testId: string;
+  cards: GroupedShot<JobShotView>[];
+  job: Pick<JobView, "id" | "status">;
+  canManage: boolean;
+  onAction: (result: PackActionResult) => void;
+}) {
+  if (cards.length === 0) {
+    return null;
+  }
+  return (
+    <section className="space-y-3" aria-label={title} data-testid={testId}>
+      <div>
+        <h2 className="text-base font-semibold text-ink-900">{title}</h2>
+        <p className="text-sm text-ink-500">{line}</p>
+      </div>
+      <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {cards.map((card) => (
+          <li key={card.shot.shotId}>
+            <ShotCard shot={card.shot} job={job} canManage={canManage} onAction={onAction} title={card.title} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 /**
  * One shot on the board. The preview shows the whole file inside a box in
  * its channel's shape, with a checkerboard behind a transparent PNG
@@ -141,14 +191,17 @@ export function ShotCard({
   job,
   canManage,
   onAction,
+  title: titleOverride,
 }: {
   shot: JobShotView;
   job: Pick<JobView, "id" | "status">;
   canManage: boolean;
   onAction: (result: PackActionResult) => void;
+  /** A grouped card's own title, for example "Slide 2" or "Ad 3". */
+  title?: string;
 }) {
   const chip = shotChip(shot, job.status);
-  const title = shotTitle(shot.shotType);
+  const title = titleOverride ?? shotTitle(shot.shotType);
   return (
     <Card
       className={cn(
@@ -200,6 +253,15 @@ export function ShotCard({
         <div className="mt-3 min-h-6">
           <ComplianceBadge shot={shot} />
         </div>
+        {shot.version ? (
+          <VersionPick
+            jobId={job.id}
+            shotId={shot.shotId}
+            version={shot.version}
+            canPick={canManage && job.status === "done" && shot.status === "done"}
+            onDone={onAction}
+          />
+        ) : null}
         {canManage && shot.action === "retry" ? (
           <RetryShotButton jobId={job.id} shot={shot} title={title} onDone={onAction} />
         ) : null}
@@ -387,7 +449,8 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
   }
 
   // Shots the seller turned off are not shown, and not counted as left out.
-  const shots = boardShots(job.shots);
+  // Carousel slides and ads get their own sections (PHASE_16 workstream 3).
+  const sections = boardSections(boardShots(job.shots));
   const planned = job.shots.filter((s) => s.status !== "skipped");
   const skipped = job.shots.filter((s) => s.status === "skipped" && !isTurnedOffShot(s));
   const delivered = planned.filter((s) => s.status === "done").length;
@@ -470,17 +533,25 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
                 >
                   New pack for this product
                 </Link>
+                <Link href={reuseHref(job.id)} className={buttonVariants({ size: "sm", variant: "outline" })} data-testid="reuse-pack">
+                  {REUSE_LABEL}
+                </Link>
               </div>
             </CardContent>
           </Card>
         ) : null}
         {job.status === "failed" || job.status === "canceled" ? (
-          <Link
-            href={`/app/new?product=${encodeURIComponent(job.productId)}`}
-            className={buttonVariants({ size: "sm", variant: "outline" })}
-          >
-            Try this product again
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href={`/app/new?product=${encodeURIComponent(job.productId)}`}
+              className={buttonVariants({ size: "sm", variant: "outline" })}
+            >
+              Try this product again
+            </Link>
+            <Link href={reuseHref(job.id)} className={buttonVariants({ size: "sm", variant: "outline" })} data-testid="reuse-pack">
+              {REUSE_LABEL}
+            </Link>
+          </div>
         ) : null}
         {planned.length > 0 ? (
           <div className="flex items-center gap-3">
@@ -514,14 +585,46 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
         </Card>
       ) : null}
 
-      {shots.length > 0 ? (
+      {sections.shots.length > 0 ? (
         <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Shots in this pack">
-          {shots.map((shot) => (
+          {sections.shots.map((shot) => (
             <li key={shot.shotId}>
               <ShotCard shot={shot} job={job} canManage={canManage} onAction={onAction} />
             </li>
           ))}
         </ul>
+      ) : null}
+
+      <ShotGroup
+        title="Carousel"
+        line="The slides read as one swipe, in this order. They ship in the carousel folder, numbered."
+        testId="carousel-group"
+        cards={sections.carousel}
+        job={job}
+        canManage={canManage}
+        onAction={onAction}
+      />
+      <ShotGroup
+        title="Ads"
+        line="Each ad ships for every placement you picked, inside its safe zone, with its headline and call to action in the ads file."
+        testId="ads-group"
+        cards={sections.ads}
+        job={job}
+        canManage={canManage}
+        onAction={onAction}
+      />
+      {job.status === "done" && galleryItemsFromJob(job).length > 0 ? (
+        <section className="space-y-3" aria-labelledby="pack-gallery-title">
+          <h2 id="pack-gallery-title" className="text-lg font-semibold text-ink-950">
+            Gallery
+          </h2>
+          <GalleryGrid
+            items={galleryItemsFromJob(job)}
+            canFavorite={canManage}
+            emptyText="No images match these filters."
+            testId="pack-gallery"
+          />
+        </section>
       ) : null}
 
       {job.status === "done" || job.followUpRunning ? <PackDownloads jobId={job.id} packDone={job.status === "done"} /> : null}

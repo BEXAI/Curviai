@@ -624,7 +624,7 @@ describe("planShots undeliverable methods", () => {
     // big for the budget go.
     const unfiltered = planShots(profile(), { ...baseOpts, channels, tier: "pro", creditBudget: need });
     const trimmed = unfiltered.skipped.filter((s) => s.reason === "credit budget").map((s) => s.type);
-    expect(trimmed).toEqual(expect.arrayContaining(["video_hero_6s", "video_lifestyle_15s", "video_ugc_hook"]));
+    expect(trimmed).toEqual(expect.arrayContaining(["video_lifestyle_15s", "video_ugc_hook"]));
     expect(unfiltered.shots.some((s) => s.type === "video_spin")).toBe(true);
     expect(trimmed.some((type) => !VIDEO_TYPES.includes(type))).toBe(true);
   });

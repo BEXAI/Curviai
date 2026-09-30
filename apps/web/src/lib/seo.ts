@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
-import { tiers, type TierDefinition } from "@curvi/pipeline/seed";
+import { packBundles, tiers, type TierDefinition } from "@curvi/pipeline/seed";
 import { isStripeConfigured, siteUrl } from "@/lib/env";
-import { amazonMainRules, joinList, liveChannelNames, type Availability } from "@/lib/marketing-facts";
+import { amazonMainRules, isLive, joinList, liveChannelNames, type Availability } from "@/lib/marketing-facts";
 
 /**
  * Search, answer engine and generative engine metadata for the marketing
@@ -75,6 +75,18 @@ export const SITE_FEATURES = [
   "A whole listing pack compiled from one product photo in one run",
   "Files that still fail their channel checks are marked for review and not charged",
   "Free browser tools: an Amazon main image checker, a white background fixer and a marketplace image resizer",
+  // PHASE_16 formats, each worded only while its flag says live.
+  ...(isLive("packBundles")
+    ? [`Pack sets that choose how much a pack makes: ${joinList(Object.values(packBundles).map((bundle) => bundle.label))}`]
+    : []),
+  ...(isLive("aplusModules")
+    ? ["Amazon A+ content modules built from the product's own facts and your press quotes or awards"]
+    : []),
+  ...(isLive("adsFormats")
+    ? [
+        "Moodboard pins, social carousels that read as one story across the swipe, and static ad packs in several versions with a sheet of headlines and calls to action",
+      ]
+    : []),
 ];
 
 /** The social card rendered by app/opengraph-image.tsx. */

@@ -56,8 +56,17 @@ export function createFakeServices(role: WorkspaceRole | null = "owner"): Servic
     })),
     outputOptionsEnabled: vi.fn(async () => true),
     saveBrandKit: vi.fn(async () => ({ ok: true, notice: "Brand kit saved." })),
+    suggestBrandPalette: vi.fn(async () => ({
+      ok: false as const,
+      reason: "unavailable" as const,
+      notice: "Not configured.",
+    })),
     listMembers: vi.fn(async () => []),
     listIntegrations: vi.fn(async () => []),
+    getReusePrefill: vi.fn(async () => null),
+    listLibrary: vi.fn(async () => ({ items: [], facets: { channels: [], shotTypes: [] }, truncated: false })),
+    setFavorite: vi.fn(async () => ({ outcome: "rejected" as const, reason: "not_found" as const, message: "Not found." })),
+    pickShotVersion: vi.fn(async () => ({ outcome: "rejected" as const, reason: "not_found" as const, message: "Not found." })),
   };
 }
 

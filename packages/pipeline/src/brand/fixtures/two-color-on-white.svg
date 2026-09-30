@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500">
+  <!-- Palette fixture: a green leaf and charcoal lettering on a white box, the way a JPEG logo arrives. -->
+  <rect width="500" height="500" fill="#FFFFFF"/>
+  <path d="M250 60 C380 120 390 260 250 330 C110 260 120 120 250 60 Z" fill="#0B6E4F"/>
+  <rect x="80" y="370" width="340" height="70" rx="10" fill="#2B2D31"/>
+</svg>

@@ -35,12 +35,16 @@ import {
   backgroundSwatches,
   canvasDefaults,
   originalFit,
+  packBundles,
   presets,
   sceneCountOptions,
   stillStyle,
   type BackgroundSwatchKey,
+  type PackBundle,
+  type PackBundleKey,
   type PresetKey,
 } from "./seed/templates";
+import { variationOptions } from "./seed/variations";
 
 /** A six digit hex color, like #1F2A44. */
 export const HEX = /^#[0-9A-Fa-f]{6}$/;
@@ -76,8 +80,11 @@ export const ColorChoice = z.discriminatedUnion("kind", [
 ]);
 export type ColorChoice = z.infer<typeof ColorChoice>;
 
-/** The switchable extra image families (PHASE_15 control 5). */
-export const EXTRA_FAMILY_KEYS = ["scenes", "backdrops", "transparentPng", "graphics", "cards"] as const;
+/** The switchable extra image families (PHASE_15 control 5). ads (PHASE_16
+ * workstream 3: the moodboard pin, the carousel and the ad pack) is off
+ * unless the seller turns it on, and is left out of the options while off
+ * (compactExtras), so every pack from before it keeps its options key. */
+export const EXTRA_FAMILY_KEYS = ["scenes", "backdrops", "transparentPng", "graphics", "cards", "ads"] as const;
 export type ExtraFamily = (typeof EXTRA_FAMILY_KEYS)[number];
 
 /** Shot types per extra family. A shot type in no family is never switchable. */
@@ -87,7 +94,32 @@ export const EXTRA_FAMILIES: Readonly<Record<ExtraFamily, readonly Shot["type"][
   transparentPng: ["cutout_png"],
   graphics: ["infographic", "dimensions", "in_the_box", "comparison"],
   cards: ["social_1x1", "social_4x5", "social_9x16", "social_2x3", "aplus_banner"],
+  ads: ["pin_moodboard", "carousel_slide", "ad_variant"],
 };
+
+/** Extra families that start off in every look and bundle, and are written
+ * into the options only when on. */
+const OFF_UNLESS_ON_FAMILIES: readonly ExtraFamily[] = ["ads"];
+
+/**
+ * The extras with every off unless on family (ads) left out while it is off,
+ * so absent and false read the same and today's options keep their key. The
+ * other families are always written.
+ */
+export function compactExtras(extras: OutputExtras): OutputExtras {
+  const out = { ...extras };
+  for (const family of OFF_UNLESS_ON_FAMILIES) {
+    if (out[family] !== true) {
+      delete out[family];
+    }
+  }
+  return out;
+}
+
+/** True when the family is switched on. An absent ads switch is off. */
+export function extraOn(extras: Partial<OutputExtras>, family: ExtraFamily): boolean {
+  return extras[family] === true;
+}
 
 /** Shot types the seller can never switch off. */
 export const NEVER_SWITCHABLE_SHOT_TYPES: readonly Shot["type"][] = [
@@ -107,7 +139,66 @@ export function extraFamilyOf(type: Shot["type"]): ExtraFamily | null {
   return null;
 }
 
-export const LOOK_KEYS = ["marketplace", "keep_photo", "brand"] as const;
+// ---------------------------------------------------------------------------
+// Pack bundles (PHASE_16 workstream 1): how much a pack makes.
+
+/** Reason recorded in skipped for a shot outside the seller's pack bundle.
+ * The copy lives in apps/web/src/lib/job-copy.ts (rule 9). */
+export const BUNDLE_OFF_REASON = "not in the chosen set";
+
+/** Seeded bundle keys, in card order. */
+export const BUNDLE_KEYS = Object.keys(packBundles) as [PackBundleKey, ...PackBundleKey[]];
+export type BundleKey = PackBundleKey;
+
+/** The bundle a pack uses unless the seller picks another: today's pack. */
+export const DEFAULT_BUNDLE: BundleKey = "everything";
+
+/** The pack's bundle; absent (every row before PHASE_16) is today's pack. */
+export function bundleOf(options?: { bundle?: BundleKey } | null): BundleKey {
+  return options?.bundle ?? DEFAULT_BUNDLE;
+}
+
+/** Every shot type the bundle may plan: its shotTypes and its A+ modules. */
+export function bundleShotTypes(bundle: BundleKey): ReadonlySet<Shot["type"]> {
+  const entry: PackBundle = packBundles[bundle];
+  return new Set([...entry.shotTypes, ...(entry.aplusModules ?? [])]);
+}
+
+/** True when the bundle holds any shot type of this extra family, so its
+ * Extra images switch can be on. */
+export function bundleHoldsFamily(bundle: BundleKey, family: ExtraFamily): boolean {
+  const types = bundleShotTypes(bundle);
+  return EXTRA_FAMILIES[family].some((type) => types.has(type));
+}
+
+/** The Extra images switches a bundle starts from: its seeded extras with
+ * Remove, every extra off with Keep. */
+export function bundleExtrasFor(bundle: BundleKey, background: "remove" | "keep"): OutputExtras {
+  const seeded = packBundles[bundle].extras;
+  const out = {} as OutputExtras;
+  for (const family of EXTRA_FAMILY_KEYS) {
+    out[family] = background === "remove" && seeded[family] && bundleHoldsFamily(bundle, family);
+  }
+  return compactExtras(out);
+}
+
+/** The most other angle images the bundle plans, or null for no cap. */
+export function bundleMaxSecondary(bundle: BundleKey): number | null {
+  const entry: PackBundle = packBundles[bundle];
+  return entry.maxSecondary ?? null;
+}
+
+/** Shot types that count against a bundle's maxSecondary when they are not
+ * the front image (priority above 1): a white alternate angle, a kept photo. */
+const SECONDARY_SHOT_TYPES: ReadonlySet<Shot["type"]> = new Set<Shot["type"]>(["alt_angle_white", "original_photo"]);
+
+/** True for an other angle image: a white alternate angle or a kept photo
+ * that does not lead a listing (the planner gives the front image priority 1). */
+export function isSecondaryShot(shot: Pick<Shot, "type" | "priority">): boolean {
+  return SECONDARY_SHOT_TYPES.has(shot.type) && shot.priority > 1;
+}
+
+export const LOOK_KEYS =["marketplace", "keep_photo", "brand"] as const;
 export type LookKey = (typeof LOOK_KEYS)[number];
 /** A look the server derives: a preset key, or custom when no preset matches. */
 export type Look = LookKey | "custom";
@@ -138,6 +229,20 @@ export type ProductSize = z.infer<typeof ProductSize>;
 
 const SceneCount = z.number().int().min(sceneCountOptions.min).max(sceneCountOptions.max);
 
+// Scene variations (PHASE_16 workstream 6): versions made of each lifestyle
+// scene, the seller picks which ones ship.
+
+/** Versions of each lifestyle scene a pack makes unless the seller asks for more. */
+export const DEFAULT_VARIATIONS: number = variationOptions.default;
+
+const Variations = z.number().int().min(variationOptions.min).max(variationOptions.max);
+
+/** Versions of each lifestyle scene the pack makes; absent (every row before
+ * PHASE_16) is the seed default. */
+export function variationsOf(options?: { variations?: number } | null): number {
+  return options?.variations ?? DEFAULT_VARIATIONS;
+}
+
 /** The P1 choices' defaults: today's pack, with the seeded scene count. */
 export const P1_DEFAULTS: OutputP1Choices = {
   sceneCount: sceneCountOptions.default,
@@ -165,6 +270,7 @@ const ExtrasInput = z
     transparentPng: z.boolean(),
     graphics: z.boolean(),
     cards: z.boolean(),
+    ads: z.boolean(),
   })
   .partial()
   .strict();
@@ -176,9 +282,14 @@ const Extras = z
     transparentPng: z.boolean(),
     graphics: z.boolean(),
     cards: z.boolean(),
+    /** The ads family (PHASE_16); absent is off. */
+    ads: z.boolean().optional(),
   })
   .strict();
 export type OutputExtras = z.infer<typeof Extras>;
+
+/** A seeded pack bundle key. */
+const Bundle = z.enum(BUNDLE_KEYS);
 
 /**
  * What a request may send, strict: an unknown key or an out of range value
@@ -198,6 +309,10 @@ export const OutputOptionsInput = z
     productSize: ProductSize.default(P1_DEFAULTS.productSize),
     enlarge: z.boolean().default(P1_DEFAULTS.enlarge),
     graphicsColor: z.boolean().default(P1_DEFAULTS.graphicsColor),
+    /** How much the pack makes (PHASE_16 workstream 1); today's pack by default. */
+    bundle: Bundle.default(DEFAULT_BUNDLE),
+    /** Versions of each lifestyle scene (PHASE_16 workstream 6); one by default. */
+    variations: Variations.default(DEFAULT_VARIATIONS),
   })
   .strict();
 /** The request shape, before defaults. */
@@ -211,9 +326,16 @@ export interface NormalizedOutputOptions extends OutputP1Choices {
   color: ColorChoice;
   fit: OutputFit;
   extras: OutputExtras;
+  /** The pack bundle (PHASE_16); absent is today's pack (DEFAULT_BUNDLE), so
+   * a pack that keeps the default reads exactly as before. Read it with bundleOf. */
+  bundle?: BundleKey;
+  /** Versions of each lifestyle scene (PHASE_16); absent is the seed default,
+   * so a pack that keeps it reads exactly as before. Read it with variationsOf. */
+  variations?: number;
 }
 
-/** The choices a look fixes: normalized options without lookBase. */
+/** The choices a look fixes: normalized options without lookBase. The
+ * bundle rides along; a look never sets it (lookOf reads it). */
 export type OutputChoices = Omit<NormalizedOutputOptions, "lookBase">;
 
 function allExtras(on: boolean): OutputExtras {
@@ -222,13 +344,22 @@ function allExtras(on: boolean): OutputExtras {
 
 /**
  * Parses and fills a request's options. Missing extras follow the
- * background: all on with remove, all off with keep. An absent options
- * object normalizes to today's pack exactly. Throws a ZodError on anything
- * the P0 schema refuses.
+ * background and the bundle: the bundle's seeded extras with remove (all on
+ * for today's pack), all off with keep. A family the bundle holds no shot
+ * type of is always off. An absent options object normalizes to today's
+ * pack exactly, and bundle is left out when it is the default. Throws a
+ * ZodError on anything the P0 schema refuses.
  */
 export function normalizeOutputOptions(input?: OutputOptionsInput | null): NormalizedOutputOptions {
   const parsed = OutputOptionsInput.parse(input ?? {});
-  const extras = { ...allExtras(parsed.background === "remove"), ...parsed.extras };
+  const bundle = parsed.bundle;
+  const merged: OutputExtras = { ...bundleExtrasFor(bundle, parsed.background), ...parsed.extras };
+  for (const family of EXTRA_FAMILY_KEYS) {
+    if (merged[family] !== undefined) {
+      merged[family] &&= bundleHoldsFamily(bundle, family);
+    }
+  }
+  const extras = compactExtras(merged);
   return {
     v: 1,
     ...(parsed.lookBase !== undefined ? { lookBase: parsed.lookBase } : {}),
@@ -242,6 +373,8 @@ export function normalizeOutputOptions(input?: OutputOptionsInput | null): Norma
     productSize: parsed.productSize,
     enlarge: parsed.enlarge,
     graphicsColor: parsed.graphicsColor,
+    ...(bundle !== DEFAULT_BUNDLE ? { bundle } : {}),
+    ...(parsed.variations !== DEFAULT_VARIATIONS ? { variations: parsed.variations } : {}),
   };
 }
 
@@ -296,21 +429,42 @@ function choicesOf(options: NormalizedOutputOptions | OutputChoices): OutputChoi
     background: options.background,
     color: options.color,
     fit: options.fit,
-    extras: options.extras,
+    extras: compactExtras(options.extras),
     sceneCount: options.sceneCount,
     scenePreset: options.scenePreset,
     logo: options.logo,
     productSize: options.productSize,
     enlarge: options.enlarge,
     graphicsColor: options.graphicsColor,
+    ...(bundleOf(options) !== DEFAULT_BUNDLE ? { bundle: bundleOf(options) } : {}),
+    ...(variationsOf(options) !== DEFAULT_VARIATIONS ? { variations: variationsOf(options) } : {}),
   };
 }
 
-/** The look the choices amount to: the preset key on an exact match, otherwise custom. */
+/**
+ * A look's preset for a bundle: the look's choices with the Extra images
+ * switches the bundle starts from (bundleExtrasFor). With today's pack it is
+ * LOOK_PRESETS[look] exactly. The form's look cards, Reset and the Custom
+ * chip start from this, so picking a bundle never reads as Custom.
+ */
+export function lookPresetFor(look: LookKey, bundle: BundleKey = DEFAULT_BUNDLE): OutputChoices {
+  const preset = LOOK_PRESETS[look];
+  return {
+    ...preset,
+    color: { ...preset.color },
+    extras: bundle === DEFAULT_BUNDLE ? { ...preset.extras } : bundleExtrasFor(bundle, preset.background),
+    ...(bundle !== DEFAULT_BUNDLE ? { bundle } : {}),
+  };
+}
+
+/** The look the choices amount to: the preset key on an exact match with
+ * that look's preset for the same bundle, otherwise custom. */
 export function lookOf(options: NormalizedOutputOptions | OutputChoices): Look {
-  const key = canonicalJson(choicesOf(options));
+  // Variations ride along like the bundle: a look never sets them.
+  const key = canonicalJson({ ...choicesOf(options), variations: undefined });
+  const bundle = bundleOf(options);
   for (const look of LOOK_KEYS) {
-    if (canonicalJson(LOOK_PRESETS[look]) === key) {
+    if (canonicalJson(choicesOf(lookPresetFor(look, bundle))) === key) {
       return look;
     }
   }
@@ -366,6 +520,10 @@ export const ResolvedOutputOptions = z
     productSize: ProductSize.optional(),
     enlarge: z.boolean().optional(),
     graphicsColor: z.boolean().optional(),
+    /** The pack bundle (PHASE_16); absent is today's pack. Read with bundleOf. */
+    bundle: Bundle.optional(),
+    /** Versions of each lifestyle scene (PHASE_16); absent is one. Read with variationsOf. */
+    variations: Variations.optional(),
   })
   .strict();
 export type ResolvedOutputOptions = z.infer<typeof ResolvedOutputOptions>;
@@ -502,21 +660,30 @@ export interface OutputPlanFlags {
   sceneCount?: number;
   /** False with Never enlarge my photo (P1): kept photos cap at 1. */
   enlarge?: boolean;
+  /** The pack bundle (PHASE_16): shot types outside it, and other angle
+   * images past its maxSecondary, are skipped with BUNDLE_OFF_REASON. Absent
+   * is today's pack. */
+  bundle?: BundleKey;
+  /** Versions of each lifestyle scene (PHASE_16 workstream 6); absent is one. */
+  variations?: number;
 }
 
 /** The plan flags for resolved options and the pack's photos. No hex, no free text. */
 export function planFlagsOf(
   resolved: Pick<ResolvedOutputOptions, "background" | "keepMediaIds" | "extras" | "fit"> &
-    Pick<P1Fields, "sceneCount" | "enlarge">,
+    Pick<P1Fields, "sceneCount" | "enlarge"> & { bundle?: BundleKey; variations?: number },
   photos: readonly PlanPhoto[],
 ): OutputPlanFlags {
+  const bundle = bundleOf(resolved);
   return {
     background: resolved.background,
     keepMediaIds: [...resolved.keepMediaIds],
-    extras: { ...resolved.extras },
+    extras: compactExtras(resolved.extras),
     fit: resolved.fit,
     sceneCount: sceneCountOf(resolved),
     enlarge: resolved.enlarge ?? P1_DEFAULTS.enlarge,
+    ...(bundle !== DEFAULT_BUNDLE ? { bundle } : {}),
+    ...(variationsOf(resolved) !== DEFAULT_VARIATIONS ? { variations: variationsOf(resolved) } : {}),
     photos: photos.map((photo) => ({
       id: photo.id,
       ...(photo.angle !== undefined ? { angle: photo.angle } : {}),
@@ -761,7 +928,7 @@ export interface PixelBox {
  * aspect (canvasSizeFor) that fits in the photo and holds the product box
  * plus seed originalFit.cropMarginShare of the box's longest side on every
  * side (the margin stops at the photo's edge). On a spec with a safe zone
- * (meta.story_9x16) the box plus margin must also sit inside the zone once
+ * (meta.story_9x16, TikTok's left and right too) the box plus margin must also sit inside the zone once
  * the window is scaled to the canvas. The window is centered on the box as
  * far as those rules allow. null when there is no usable box or the box
  * cannot fit, and the caller falls back (cropFallbackFor). Pure.
@@ -804,11 +971,17 @@ export function cropWindowFor(
   // The safe zone, in window pixels.
   const zoneTop = Math.ceil(((spec.safeZone?.top ?? 0) * winH) / canvas.height);
   const zoneBottom = Math.ceil(((spec.safeZone?.bottom ?? 0) * winH) / canvas.height);
+  const zoneLeft = Math.ceil(((spec.safeZone?.left ?? 0) * winW) / canvas.width);
+  const zoneRight = Math.ceil(((spec.safeZone?.right ?? 0) * winW) / canvas.width);
   const place = (lo: number, hi: number, center: number): number | null => {
     if (lo > hi) return null;
     return Math.min(hi, Math.max(lo, Math.round(center)));
   };
-  const left = place(Math.max(0, need.right - winW), Math.min(W - winW, need.left), (need.left + need.right - winW) / 2);
+  const left = place(
+    Math.max(0, need.right - (winW - zoneRight)),
+    Math.min(W - winW, need.left - zoneLeft),
+    (need.left + need.right - winW - zoneLeft + zoneRight) / 2,
+  );
   const top = place(
     Math.max(0, need.bottom - (winH - zoneBottom)),
     Math.min(H - winH, need.top - zoneTop),
@@ -887,7 +1060,8 @@ export function originalScale(
   if ((fit === "crop" ? cropFallbackFor(spec) : fit) === "pad") {
     const canvas = canvasSizeFor(spec);
     const safeHeight = canvas.height - (spec.safeZone?.top ?? 0) - (spec.safeZone?.bottom ?? 0);
-    return placed(Math.min(canvas.width / w, Math.max(1, safeHeight) / h, byMegapixels, 1));
+    const safeWidth = canvas.width - (spec.safeZone?.left ?? 0) - (spec.safeZone?.right ?? 0);
+    return placed(Math.min(Math.max(1, safeWidth) / w, Math.max(1, safeHeight) / h, byMegapixels, 1));
   }
   const bounds = dimensionBounds(spec);
   const long = Math.max(w, h);

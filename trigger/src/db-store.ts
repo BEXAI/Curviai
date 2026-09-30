@@ -31,6 +31,7 @@ import {
 } from "@curvi/db";
 import type { JobInventory, PackFileReport } from "@curvi/pipeline";
 import type { SellerIntent, Shot } from "@curvi/pipeline/schemas";
+import { parseVariationShotId } from "@curvi/pipeline/variations";
 import {
   JobAbandonedError,
   type JobLedgerEntry,
@@ -42,7 +43,7 @@ import {
   type UndeliveredShot,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
-import { assetFileKey, followUpFileKey, packFileKey, type PackUploader } from "./r2";
+import { assetFileKey, followUpFileKey, packFileKey, variationFileKey, type PackUploader } from "./r2";
 
 export interface DbJobStoreOptions {
   /** True when the app already reserved credits at job creation, the normal
@@ -373,6 +374,31 @@ export class DbJobStore implements JobStore {
       });
     }
 
+    // Extra scene versions (PHASE_16 workstream 6): stored unpicked, under
+    // their own keys, never in a channel zip. The seller picks which ship.
+    for (const batch of pack.variations ?? []) {
+      for (const file of batch.files) {
+        const localPath = path.join(batch.outDir, "files", file.channel, file.file);
+        const assetId = assetIdByShot.get(file.ref);
+        if (!assetId || !(await exists(localPath))) {
+          continue;
+        }
+        const key = variationFileKey(pack.workspaceId, pack.jobId, batch.variation, file.channel, file.file);
+        const { bytes } = await uploader.upload(localPath, key);
+        variants.push({
+          workspaceId: pack.workspaceId,
+          assetId,
+          channelSpecId: file.specId,
+          r2Key: key,
+          filename: file.file,
+          bytes,
+          width: file.width,
+          height: file.height,
+          picked: false,
+        });
+      }
+    }
+
     const packRows: Array<typeof packFiles.$inferInsert> = [];
     for (const channel of pack.channels) {
       const zipPath = path.join(pack.outDir, `${channel}.zip`);
@@ -459,6 +485,8 @@ export class DbJobStore implements JobStore {
         bytes,
         width: file.width,
         height: file.height,
+        // An extra scene version run again still waits for the seller's pick.
+        ...(parseVariationShotId(file.ref) !== null ? { picked: false } : {}),
       });
     }
     if (variants.length === 0) {

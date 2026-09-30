@@ -16,6 +16,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { OutputOptionsInput } from "@curvi/pipeline/output-options";
+import { SellerAnswerPicks } from "@curvi/pipeline/questions";
 import { hasSpec } from "@curvi/specs";
 import { InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { isWorkspaceSourceKey } from "@/lib/r2";
@@ -27,7 +28,13 @@ import { RESTARTING_MESSAGE } from "@/lib/services/errors";
 import type { CreateJobResult } from "@/lib/services/types";
 import { RETRY_AFTER_SECONDS } from "@/lib/services/workspace-response";
 import { productIdSchema } from "@/lib/validation/ids";
-import { angleRoleSchema, sellerLinesSchema, skuSchema, targetBoxSchema } from "@/lib/validation/seller-inputs";
+import {
+  angleRoleSchema,
+  endorsementLinesSchema,
+  sellerLinesSchema,
+  skuSchema,
+  targetBoxSchema,
+} from "@/lib/validation/seller-inputs";
 
 export const dynamic = "force-dynamic";
 
@@ -58,11 +65,23 @@ const JobRequest = z.object({
   sku: skuSchema.optional(),
   boxContents: sellerLinesSchema.optional(),
   comparisonFacts: sellerLinesSchema.optional(),
+  // Press quotes or awards the A+ endorsement module prints as typed; never
+  // written by a model (PHASE_16 workstream 2).
+  endorsements: endorsementLinesSchema.optional(),
   // The seller's output options (PHASE_15), strict: an unknown key, a bad
   // hex, a brand index out of range or a value only a later release honors
   // is a 400. The service resolves them against the brand kit, the plan and
   // the flags.
   outputOptions: OutputOptionsInput.optional(),
+  // The question step's taps (PHASE_16 workstream 4): ids and values only.
+  // The service resolves them against the questions stored for that upload,
+  // so no label the client sends ever reaches the pack.
+  sellerAnswers: z
+    .object({
+      key: z.string().min(1).max(512),
+      picks: SellerAnswerPicks,
+    })
+    .optional(),
 });
 
 export async function POST(request: Request): Promise<NextResponse> {

@@ -416,11 +416,77 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s17_aplus_banner",
+          "id": "s17_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s19_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s20_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s21_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s22_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -432,6 +498,10 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
         {
           "reason": "seller did not supply comparison facts",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "channel not selected",
@@ -1674,6 +1744,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
         {
           "channels": [
             "meta.story_9x16",
+            "meta.reels_9x16",
           ],
           "credits": 0.5,
           "id": "s03_social_9x16",
@@ -1853,6 +1924,111 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
         {
           "reason": "channel not selected",
           "type": "social_9x16",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktok.ad_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
         },
         {
           "reason": "channel not selected",
@@ -2301,11 +2477,77 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s02_aplus_banner",
+          "id": "s02_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s03_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s04_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s05_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s06_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s07_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -2375,6 +2617,10 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
           "type": "comparison",
         },
         {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
+        },
+        {
           "reason": "channel not selected",
           "type": "social_1x1",
         },
@@ -2407,6 +2653,422 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
   },
   {
     "channels": "amazon.aplus.premium_full",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.wide_banner",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.single_image",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.four_images",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.quadrant_image",
     "plan": {
       "shots": [],
       "skipped": [
@@ -4182,6 +4844,111 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
     },
   },
   {
+    "channels": "meta.reels_9x16",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "meta.reels_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
     "channels": "pinterest.pin",
     "plan": {
       "shots": [
@@ -4270,6 +5037,111 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
         {
           "reason": "channel not selected",
           "type": "social_9x16",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok.ad_9x16",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktok.ad_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
         },
         {
           "reason": "channel not selected",
@@ -4501,7 +5373,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
     },
   },
   {
-    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,video",
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
     "plan": {
       "shots": [
         {
@@ -4766,11 +5638,77 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s17_aplus_banner",
+          "id": "s17_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s19_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s20_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s21_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s22_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -4782,7 +5720,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
             "shopify.hero_banner",
           ],
           "credits": 1,
-          "id": "s18_shopify_hero",
+          "id": "s23_shopify_hero",
           "method": "composite_generate",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -4794,7 +5732,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
             "shopify.product",
           ],
           "credits": 0.5,
-          "id": "s19_collection_thumb",
+          "id": "s24_collection_thumb",
           "method": "deterministic",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -4806,7 +5744,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
             "meta.feed_1x1",
           ],
           "credits": 0.5,
-          "id": "s20_social_1x1",
+          "id": "s25_social_1x1",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -4818,7 +5756,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
             "meta.feed_4x5",
           ],
           "credits": 0.5,
-          "id": "s21_social_4x5",
+          "id": "s26_social_4x5",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -4828,9 +5766,11 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
         {
           "channels": [
             "meta.story_9x16",
+            "meta.reels_9x16",
+            "tiktok.ad_9x16",
           ],
           "credits": 0.5,
-          "id": "s22_social_9x16",
+          "id": "s27_social_9x16",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -4842,7 +5782,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
             "pinterest.pin",
           ],
           "credits": 0.5,
-          "id": "s23_social_2x3",
+          "id": "s28_social_2x3",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -4854,7 +5794,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
             "video.amazon_listing",
           ],
           "credits": 2,
-          "id": "s24_video_spin",
+          "id": "s29_video_spin",
           "method": "video_generate",
           "priority": 8,
           "sourceMediaId": "m_front",
@@ -4866,7 +5806,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
             "video.social_9x16",
           ],
           "credits": 6,
-          "id": "s25_video_hero_6s",
+          "id": "s30_video_hero_6s",
           "method": "video_generate",
           "priority": 9,
           "sourceMediaId": "m_front",
@@ -4878,6 +5818,10 @@ exports[`default plan snapshot > plans today's shots for every channel preset: m
         {
           "reason": "seller did not supply comparison facts",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "Pro or Agency only",
@@ -5252,11 +6196,77 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s13_aplus_banner",
+          "id": "s13_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s14_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s15_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s16_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s17_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -5276,6 +6286,10 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
         {
           "reason": "seller did not supply comparison facts",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "channel not selected",
@@ -6251,6 +7265,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
         {
           "channels": [
             "meta.story_9x16",
+            "meta.reels_9x16",
           ],
           "credits": 0.5,
           "id": "s03_social_9x16",
@@ -6414,6 +7429,103 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
         {
           "reason": "channel not selected",
           "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktok.ad_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
         },
         {
           "reason": "needs photo",
@@ -6819,11 +7931,77 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s02_aplus_banner",
+          "id": "s02_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s03_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s04_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s05_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s06_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s07_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -6885,6 +8063,10 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
           "type": "comparison",
         },
         {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
+        },
+        {
           "reason": "channel not selected",
           "type": "social_1x1",
         },
@@ -6917,6 +8099,390 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
   },
   {
     "channels": "amazon.aplus.premium_full",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.wide_banner",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.single_image",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.four_images",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.quadrant_image",
     "plan": {
       "shots": [],
       "skipped": [
@@ -8388,6 +9954,103 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
     },
   },
   {
+    "channels": "meta.reels_9x16",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "meta.reels_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
     "channels": "pinterest.pin",
     "plan": {
       "shots": [
@@ -8468,6 +10131,103 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
         {
           "reason": "channel not selected",
           "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok.ad_9x16",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktok.ad_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
         },
         {
           "reason": "needs photo",
@@ -8674,7 +10434,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
     },
   },
   {
-    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,video",
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
     "plan": {
       "shots": [
         {
@@ -8868,11 +10628,77 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s13_aplus_banner",
+          "id": "s13_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s14_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s15_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s16_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s17_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -8884,7 +10710,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
             "shopify.hero_banner",
           ],
           "credits": 1,
-          "id": "s14_shopify_hero",
+          "id": "s19_shopify_hero",
           "method": "composite_generate",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -8896,7 +10722,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
             "shopify.product",
           ],
           "credits": 0.5,
-          "id": "s15_collection_thumb",
+          "id": "s20_collection_thumb",
           "method": "deterministic",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -8908,7 +10734,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
             "meta.feed_1x1",
           ],
           "credits": 0.5,
-          "id": "s16_social_1x1",
+          "id": "s21_social_1x1",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -8920,7 +10746,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
             "meta.feed_4x5",
           ],
           "credits": 0.5,
-          "id": "s17_social_4x5",
+          "id": "s22_social_4x5",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -8930,9 +10756,11 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
         {
           "channels": [
             "meta.story_9x16",
+            "meta.reels_9x16",
+            "tiktok.ad_9x16",
           ],
           "credits": 0.5,
-          "id": "s18_social_9x16",
+          "id": "s23_social_9x16",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -8944,7 +10772,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
             "pinterest.pin",
           ],
           "credits": 0.5,
-          "id": "s19_social_2x3",
+          "id": "s24_social_2x3",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -8956,7 +10784,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
             "video.social_9x16",
           ],
           "credits": 6,
-          "id": "s20_video_hero_6s",
+          "id": "s25_video_hero_6s",
           "method": "video_generate",
           "priority": 9,
           "sourceMediaId": "m_front",
@@ -8976,6 +10804,10 @@ exports[`default plan snapshot > plans today's shots for every channel preset: n
         {
           "reason": "seller did not supply comparison facts",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "needs photo",
@@ -9374,11 +11206,77 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s14_aplus_banner",
+          "id": "s14_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s15_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s16_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s17_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s19_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -9394,6 +11292,10 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
         {
           "reason": "seller did not supply comparison facts",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "channel not selected",
@@ -10414,6 +12316,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
         {
           "channels": [
             "meta.story_9x16",
+            "meta.reels_9x16",
           ],
           "credits": 0.5,
           "id": "s03_social_9x16",
@@ -10577,6 +12480,103 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
         {
           "reason": "channel not selected",
           "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktok.ad_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
         },
         {
           "reason": "needs photo",
@@ -10991,11 +12991,77 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s02_aplus_banner",
+          "id": "s02_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s03_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s04_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s05_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s06_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s07_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -11057,6 +13123,10 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
           "type": "comparison",
         },
         {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
+        },
+        {
           "reason": "channel not selected",
           "type": "social_1x1",
         },
@@ -11089,6 +13159,390 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
   },
   {
     "channels": "amazon.aplus.premium_full",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.wide_banner",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.single_image",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.four_images",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon.aplus.quadrant_image",
     "plan": {
       "shots": [],
       "skipped": [
@@ -12606,6 +15060,103 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
     },
   },
   {
+    "channels": "meta.reels_9x16",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "meta.reels_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
     "channels": "pinterest.pin",
     "plan": {
       "shots": [
@@ -12686,6 +15237,103 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
         {
           "reason": "channel not selected",
           "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok.ad_9x16",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktok.ad_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
         },
         {
           "reason": "needs photo",
@@ -12892,7 +15540,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
     },
   },
   {
-    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,video",
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
     "plan": {
       "shots": [
         {
@@ -13103,11 +15751,77 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
           "type": "aplus_banner",
         },
         {
+          "callouts": [
+            "pour over rim",
+          ],
           "channels": [
             "amazon.aplus.basic_header",
           ],
           "credits": 0.5,
-          "id": "s14_aplus_banner",
+          "id": "s14_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s15_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s16_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s17_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s19_aplus_banner",
           "method": "template",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -13119,7 +15833,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
             "shopify.hero_banner",
           ],
           "credits": 1,
-          "id": "s15_shopify_hero",
+          "id": "s20_shopify_hero",
           "method": "composite_generate",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -13131,7 +15845,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
             "shopify.product",
           ],
           "credits": 0.5,
-          "id": "s16_collection_thumb",
+          "id": "s21_collection_thumb",
           "method": "deterministic",
           "priority": 6,
           "sourceMediaId": "m_front",
@@ -13143,7 +15857,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
             "meta.feed_1x1",
           ],
           "credits": 0.5,
-          "id": "s17_social_1x1",
+          "id": "s22_social_1x1",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -13155,7 +15869,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
             "meta.feed_4x5",
           ],
           "credits": 0.5,
-          "id": "s18_social_4x5",
+          "id": "s23_social_4x5",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -13165,9 +15879,11 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
         {
           "channels": [
             "meta.story_9x16",
+            "meta.reels_9x16",
+            "tiktok.ad_9x16",
           ],
           "credits": 0.5,
-          "id": "s19_social_9x16",
+          "id": "s24_social_9x16",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -13179,7 +15895,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
             "pinterest.pin",
           ],
           "credits": 0.5,
-          "id": "s20_social_2x3",
+          "id": "s25_social_2x3",
           "method": "template",
           "priority": 7,
           "sourceMediaId": "m_front",
@@ -13191,7 +15907,7 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
             "video.social_9x16",
           ],
           "credits": 6,
-          "id": "s21_video_hero_6s",
+          "id": "s26_video_hero_6s",
           "method": "video_generate",
           "priority": 9,
           "sourceMediaId": "m_front",
@@ -13207,6 +15923,10 @@ exports[`default plan snapshot > plans today's shots for every channel preset: r
         {
           "reason": "seller did not supply comparison facts",
           "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
         },
         {
           "reason": "needs photo",

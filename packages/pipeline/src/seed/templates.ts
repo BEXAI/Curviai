@@ -4,6 +4,8 @@
  * positive instructions because FLUX.2 has no negative prompt field.
  */
 
+import { Shot } from "../schemas";
+
 export const presets = {
   minimal_studio: { surface: "clean matte light gray tabletop in front of a smooth, evenly lit pale gray wall" },
   luxury_marble: { surface: "white Carrara marble slab with soft window light" },
@@ -219,4 +221,324 @@ export const badgeStyle = {
   backgroundHex: "#1B1F24",
   backgroundOpacity: 0.78,
   textHex: "#FFFFFF",
+} as const;
+
+/** One pack bundle (PHASE_16 workstream 1); see packBundles. */
+export interface PackBundle {
+  key: string;
+  label: string;
+  shotTypes: readonly Shot["type"][];
+  aplusModules?: readonly Shot["type"][];
+  extras: Readonly<Record<"scenes" | "backdrops" | "transparentPng" | "graphics" | "cards" | "ads", boolean>>;
+  maxSecondary?: number;
+}
+
+/** The main image of every marketplace: the Amazon main image, the white
+ * front image, a kept front photo and the Shopify collection thumbnail. */
+const MAIN_SHOT_TYPES: readonly Shot["type"][] = ["amazon_main", "alt_angle_white", "original_photo", "collection_thumb"];
+
+/**
+ * Pack bundles (PHASE_16 workstream 1): "how much" a pack makes, next to
+ * Phase 15's Looks, which answer "how it looks". Seed data per CLAUDE.md
+ * rule 2, so the planner, the estimate and the form read one definition.
+ * - shotTypes: the shot types the bundle may plan. Any other shot type is
+ *   skipped as not in the chosen set, before the channel limits.
+ * - aplusModules: the A+ module shot types the bundle adds on top
+ *   (workstream 2 adds its module types here and to Shot.type).
+ * - extras: the Extra images switches the bundle starts from with Remove
+ *   (Keep starts with every extra off). A family can only be on when the
+ *   bundle holds one of its shot types.
+ * - maxSecondary: the most other angle images (a white alternate angle, or
+ *   a kept photo other than the front one) the bundle plans; absent is no cap.
+ * Keys are stored on jobs, so never rename one. `everything` is today's pack
+ * and takes every shot type the schema has, new ones included.
+ */
+export const packBundles = {
+  main: {
+    key: "main",
+    label: "Main image only",
+    shotTypes: MAIN_SHOT_TYPES,
+    extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: false, ads: false },
+    maxSecondary: 0,
+  },
+  listing: {
+    key: "listing",
+    label: "Listing set",
+    shotTypes: [
+      ...MAIN_SHOT_TYPES,
+      "cutout_png",
+      "sweep_gray",
+      "sweep_brand",
+      "lifestyle",
+      "infographic",
+      "dimensions",
+      "in_the_box",
+      "comparison",
+    ],
+    extras: { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: false, ads: false },
+  },
+  aplus: {
+    key: "aplus",
+    label: "A+ set",
+    shotTypes: MAIN_SHOT_TYPES,
+    aplusModules: [
+      "aplus_banner",
+      "aplus_pain_points",
+      "aplus_features",
+      "aplus_ingredients",
+      "aplus_results",
+      "aplus_how_to",
+      "aplus_endorsement",
+    ],
+    extras: { scenes: false, backdrops: false, transparentPng: false, graphics: false, cards: true, ads: false },
+    maxSecondary: 0,
+  },
+  everything: {
+    key: "everything",
+    label: "Everything",
+    shotTypes: Shot.shape.type.options,
+    // The ads family (PHASE_16 workstream 3) is shown here but starts off.
+    extras: { scenes: true, backdrops: true, transparentPng: true, graphics: true, cards: true, ads: false },
+  },
+} as const satisfies Record<string, PackBundle>;
+
+export type PackBundleKey = keyof typeof packBundles;
+
+// ---------------------------------------------------------------------------
+// A+ modules (PHASE_16 workstream 2): template cards around the real product.
+
+/** How a module's lines are drawn: a dotted list, numbered steps, short
+ * labels, or the seller's quotes. */
+export type AplusModuleLayout = "list" | "steps" | "labels" | "quotes";
+
+/** One A+ module; see aplusModules. */
+export interface AplusModuleSeed {
+  /** Plain name, for logs and the copy request. */
+  label: string;
+  /** The registry spec the module is rendered for (docs/verification.md,
+   * 2026-09-29). Every module uses the 970 by 600 header today, the one A+
+   * spec the new pack form offers; the 970 by 300 wide banner and the
+   * smaller image slots stay in the registry, coming soon, until a module
+   * that suits them ships. */
+  specId: string;
+  /** Where the lines come from: the copy_generator recipe (then the claims
+   * guard), or only what the seller typed. */
+  copy: "generated" | "seller";
+  layout: AplusModuleLayout;
+  /** Fewest and most lines the module prints. Fewer usable lines than
+   * minLines skips the module; it is never padded. */
+  minLines: number;
+  maxLines: number;
+  /** Analyzer compliance flags that drop the module (a results card never
+   * ships for a product flagged for a medical or food claim). */
+  dropOnComplianceFlags?: readonly string[];
+  /** What the copy request asks the recipe to write, in plain words. */
+  brief: string;
+}
+
+/**
+ * The six A+ modules workstream 2 adds next to the hero banner
+ * (aplus_banner), in plan order. Seed data per CLAUDE.md rule 2: specs,
+ * line counts and briefs change here, never in the planner or renderer.
+ */
+export const aplusModules = {
+  aplus_features: {
+    label: "features",
+    specId: "amazon.aplus.basic_header",
+    copy: "generated",
+    layout: "list",
+    minLines: 3,
+    maxLines: 5,
+    brief: "Headline and 3 to 5 short lines, each one feature you can see in the photos or the seller named.",
+  },
+  aplus_pain_points: {
+    label: "pain points",
+    specId: "amazon.aplus.basic_header",
+    copy: "generated",
+    layout: "list",
+    minLines: 3,
+    maxLines: 5,
+    brief: "Headline and 3 to 5 short lines, each an everyday problem the product's visible features solve, phrased as the problem solved.",
+  },
+  aplus_how_to: {
+    label: "how to use",
+    specId: "amazon.aplus.basic_header",
+    copy: "generated",
+    layout: "steps",
+    minLines: 3,
+    maxLines: 5,
+    brief: "Headline and 3 to 5 short steps in order, each starting with a verb, for using the product as the photos show it.",
+  },
+  aplus_ingredients: {
+    label: "ingredients or materials",
+    specId: "amazon.aplus.basic_header",
+    copy: "generated",
+    layout: "labels",
+    minLines: 2,
+    maxLines: 5,
+    brief: "Headline and 2 to 5 short labels, each one material or ingredient exactly as the profile or the seller names it.",
+  },
+  aplus_results: {
+    label: "results",
+    specId: "amazon.aplus.basic_header",
+    copy: "generated",
+    layout: "list",
+    minLines: 3,
+    maxLines: 5,
+    dropOnComplianceFlags: ["medical_claim", "food_claim"],
+    brief: "Headline and 3 to 5 short lines on what everyday use looks like, in plain terms, with no numbers and no health, body or efficacy outcomes.",
+  },
+  aplus_endorsement: {
+    label: "endorsement",
+    specId: "amazon.aplus.basic_header",
+    copy: "seller",
+    layout: "quotes",
+    minLines: 1,
+    maxLines: 3,
+    brief: "Only the press quotes or awards the seller typed, never written by a model and never customer reviews.",
+  },
+} as const satisfies Record<string, AplusModuleSeed>;
+
+export type AplusModuleKey = keyof typeof aplusModules;
+
+/**
+ * A+ copy slot limits and the claims guard (PHASE_16 workstream 2). The
+ * Amazon hosted guideline suggests titles of 30 characters for image
+ * modules; our cards print on the image itself, so a headline and each line
+ * keep to the Shot schema's 40 character cap (docs/verification.md).
+ * - maxModulesPerDocument: an A+ document holds at most 7 modules for a
+ *   selling partner (SP-API aplusContent 2020-11-01, checked 2026-09-29), so
+ *   a pack never plans more A+ files than that.
+ * - blockedTerms: words that make a medical, efficacy, guarantee or ranking
+ *   claim. A generated line holding one is dropped unless the seller typed
+ *   that word; a generated number is dropped unless the seller typed it.
+ */
+export const aplusCopy = {
+  headlineMaxChars: 40,
+  lineMaxChars: 40,
+  maxModulesPerDocument: 7,
+  blockedTerms: [
+    "cure",
+    "cures",
+    "treat",
+    "treats",
+    "treatment",
+    "heal",
+    "heals",
+    "healing",
+    "prevent",
+    "prevents",
+    "relief",
+    "relieve",
+    "relieves",
+    "remedy",
+    "therapy",
+    "therapeutic",
+    "medical",
+    "medicinal",
+    "clinical",
+    "clinically",
+    "proven",
+    "doctor",
+    "doctors",
+    "dermatologist",
+    "fda",
+    "approved",
+    "certified",
+    "guarantee",
+    "guaranteed",
+    "detox",
+    "immune",
+    "disease",
+    "anti aging",
+    "antibacterial",
+    "kills",
+    "germs",
+    "weight loss",
+    "burns fat",
+    "percent",
+    "per cent",
+    "twice",
+    "double",
+    "triple",
+    "best",
+    "number one",
+    "#1",
+    "no. 1",
+    "miracle",
+    "top rated",
+    "satisfaction guaranteed",
+    "instant results",
+    "permanent",
+  ],
+} as const;
+
+// ---------------------------------------------------------------------------
+// Ads formats (PHASE_16 workstream 3): the moodboard pin, the carousel and the
+// static ad pack. Every size, safe zone and text limit comes from the
+// registry; these are the layout choices and the words the planner may print.
+
+/** One beat of the carousel story, in slide order. */
+export type CarouselBeat = "hook" | "benefit" | "details" | "in_the_box" | "cta";
+
+/**
+ * The formats of the ads extra family, seed data per CLAUDE.md rule 2.
+ * - lineMaxChars: the longest line printed on an ads image, the Shot
+ *   schema's 40 character cap. A placement whose registry text limit is
+ *   shorter (Facebook feed headlines, 27) takes only headlines that fit.
+ * - pin: the 2:3 moodboard pin, the product (on its scene when scenes are
+ *   on) with one short line.
+ * - carousel: slides of one wide canvas cut into equal parts (founder
+ *   decision 4). The story runs hook, benefits (one slide each, at most
+ *   maxBenefitSlides), details (up to maxDetailLines features), in the box
+ *   (only with the seller's lines), then the call to action. Fewer than
+ *   minSlides and the carousel is skipped; never more than maxSlides (the
+ *   largest carousel docs/verification.md names: Pinterest's 10 for the
+ *   sales objective; Meta's own card limit is not verified yet).
+ * - adPack: static ad variants, each a headline and a call to action,
+ *   rendered for every picked placement inside its safe zone. The variant
+ *   count is the most the product's usable headlines allow, from
+ *   minVariants to maxVariants; fewer than minVariants and the pack is
+ *   skipped. Calls to action are plain phrases, one per variant in order.
+ */
+export const adsFormats = {
+  lineMaxChars: 40,
+  pin: {
+    specId: "pinterest.pin",
+  },
+  carousel: {
+    specId: "meta.feed_4x5",
+    minSlides: 3,
+    maxSlides: 10,
+    maxBenefitSlides: 3,
+    maxDetailLines: 3,
+    beats: ["hook", "benefit", "details", "in_the_box", "cta"] as readonly CarouselBeat[],
+    callToAction: "Shop now",
+    /** The continuous background runs from the card color at the first
+     * slide's left edge to the card color mixed this much with the accent
+     * at the last slide's right edge. */
+    gradientAccentShare: 0.14,
+  },
+  adPack: {
+    placements: [
+      "meta.feed_1x1",
+      "meta.feed_4x5",
+      "meta.story_9x16",
+      "meta.reels_9x16",
+      "tiktok.ad_9x16",
+      "pinterest.pin",
+    ],
+    minVariants: 4,
+    maxVariants: 6,
+    callsToAction: ["Shop now", "See the details", "Get yours today", "Take a closer look", "Find out more", "Order yours"],
+  },
+  /** Slots the copy_generator recipe (version 3) writes for the planned ad
+   * variants. The recipe only rewords shots the planner already made, so
+   * the plan, the estimate and the hold never change; the planner's lines
+   * above stay the fallback. */
+  adCopy: {
+    ctaMaxChars: 24,
+    /** Fewer clean recipe calls to action than this keeps the seed's. */
+    minCallsToAction: 2,
+  },
 } as const;

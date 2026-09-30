@@ -23,6 +23,9 @@ import { buildProductReference, PRODUCT_RESIZE_KERNEL } from "../deterministic/w
 import { fidelityReport } from "../qc/fidelity";
 import { qcKindForSpec } from "../qc/pixelChecks";
 import type opentype from "opentype.js";
+import { aplusModules, type AplusModuleLayout } from "../seed/templates";
+import { APLUS_MODULE_SHOT_TYPES, isAplusModuleType, type AplusModuleShotType } from "../schemas";
+import { sanitizeCopyLine } from "../copy-lint";
 import { loadBrandTemplateFont, loadTemplateFont } from "./font";
 
 export type TemplateStillType =
@@ -34,7 +37,8 @@ export type TemplateStillType =
   | "social_1x1"
   | "social_4x5"
   | "social_9x16"
-  | "social_2x3";
+  | "social_2x3"
+  | AplusModuleShotType;
 
 export const TEMPLATE_STILL_TYPES: ReadonlySet<string> = new Set<TemplateStillType>([
   "infographic",
@@ -46,6 +50,7 @@ export const TEMPLATE_STILL_TYPES: ReadonlySet<string> = new Set<TemplateStillTy
   "social_4x5",
   "social_9x16",
   "social_2x3",
+  ...APLUS_MODULE_SHOT_TYPES,
 ]);
 
 /** Template types that print copy from the shot's callouts. They need a
@@ -55,9 +60,10 @@ export const TEXT_TEMPLATE_TYPES: ReadonlySet<string> = new Set<TemplateStillTyp
   "dimensions",
   "in_the_box",
   "comparison",
+  ...APLUS_MODULE_SHOT_TYPES,
 ]);
 
-type TextTemplateType = "infographic" | "dimensions" | "in_the_box" | "comparison";
+type TextTemplateType = "infographic" | "dimensions" | "in_the_box" | "comparison" | AplusModuleShotType;
 
 function isTextTemplate(type: TemplateStillType): type is TextTemplateType {
   return TEXT_TEMPLATE_TYPES.has(type);
@@ -83,6 +89,9 @@ interface TemplateStillInput {
   /** Same size as productPng, 255 on the product. */
   maskPng: Buffer;
   callouts?: string[];
+  /** A+ module headline (PHASE_16 workstream 2), printed above the module's
+   * lines in the heading font. Other types ignore it. */
+  headline?: string;
   backgroundHex: string;
   textHex: string;
   accentHex: string;
@@ -128,6 +137,8 @@ const MAX_CALLOUTS = 5;
 // Layout proportions. All relative to the canvas so every channel size works.
 const LAYOUT = {
   marginOfShort: 0.06,
+  /** The most of the canvas one safe zone edge may take from a template. */
+  maxSafeZoneShare: 0.4,
   /** Portrait canvases at or above this height over width stack text below the product. */
   stackAspect: 1.15,
   infographic: {
@@ -153,6 +164,23 @@ const LAYOUT = {
     minFontOfShort: 0.018,
   },
   aplus: { boxWidth: 0.86, boxHeight: 0.8 },
+  /** A+ module cards: the product left (or above on a tall canvas), the
+   * headline and lines beside it. */
+  aplusModule: {
+    productShareSide: 0.4,
+    columnStartSide: 0.46,
+    productShareStacked: 0.5,
+    columnStartStacked: 0.55,
+    productPadding: 0.04,
+    fontOfShort: 0.06,
+    minFontOfShort: 0.028,
+    headlineOfFont: 1.4,
+    headlineGapOfFont: 0.8,
+    rowGapOfFont: 0.7,
+    bulletOfFont: 0.42,
+    markerGapOfFont: 0.6,
+    quoteBarOfFont: 0.18,
+  },
   logo: {
     /** Largest logo height and width as shares of the canvas short side. */
     maxHeightOfShort: 0.09,
@@ -195,18 +223,24 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
   if (needsText && !font) {
     throw new TemplateUnavailableError("Template font file could not be found");
   }
+  const headline = isAplusModuleType(type) ? sanitizeCopyLine(input.headline ?? "", MAX_CALLOUT_CHARS) : "";
+  const headlineFont = headline ? pickFont(input.fonts?.heading, [headline]) : null;
 
   const product = await loadProduct(input.productPng, input.maskPng);
   const { width: W, height: H } = canvasSize(spec);
   const canvas = new Canvas(W, H, bg);
-  const safeTop = Math.min(spec.safeZone?.top ?? 0, Math.floor(H / 4));
-  const safeBottom = Math.min(spec.safeZone?.bottom ?? 0, Math.floor(H / 4));
+  // The safe zone (the platform's own interface) is kept clear, up to a
+  // share of the canvas per edge so a template always keeps room to draw.
+  const safeTop = Math.min(spec.safeZone?.top ?? 0, Math.floor(H * LAYOUT.maxSafeZoneShare));
+  const safeBottom = Math.min(spec.safeZone?.bottom ?? 0, Math.floor(H * LAYOUT.maxSafeZoneShare));
+  const safeLeft = Math.min(spec.safeZone?.left ?? 0, Math.floor(W * LAYOUT.maxSafeZoneShare));
+  const safeRight = Math.min(spec.safeZone?.right ?? 0, Math.floor(W * LAYOUT.maxSafeZoneShare));
   const short = Math.min(W, H);
   const margin = Math.round(short * LAYOUT.marginOfShort);
   const content: BBox = {
-    left: margin,
+    left: safeLeft + margin,
     top: safeTop + margin,
-    width: W - 2 * margin,
+    width: W - safeLeft - safeRight - 2 * margin,
     height: H - safeTop - safeBottom - 2 * margin,
   };
 
@@ -222,6 +256,21 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
       break;
     case "aplus_banner":
       placement = fitCentered(product, content, LAYOUT.aplus.boxWidth, LAYOUT.aplus.boxHeight);
+      break;
+    case "aplus_pain_points":
+    case "aplus_features":
+    case "aplus_ingredients":
+    case "aplus_results":
+    case "aplus_how_to":
+    case "aplus_endorsement":
+      placement = await layoutAplusModule(canvas, product, content, {
+        headline: headline && headlineFont ? { text: headline, font: headlineFont } : null,
+        lines: copy,
+        font: font!,
+        layout: aplusModules[type].layout,
+        text,
+        accent,
+      });
       break;
     default:
       placement = fitCentered(product, content, LAYOUT.social.boxWidth, LAYOUT.social.boxHeight);
@@ -261,7 +310,7 @@ export async function renderTemplateStill(input: TemplateStillInput): Promise<Te
  * The brand font for this copy, or the default when the brand font lacks a
  * glyph the copy needs (renderText would drop it and print a wrong word).
  */
-function pickFont(key: string | null | undefined, copy: string[]): opentype.Font | null {
+export function pickFont(key: string | null | undefined, copy: string[]): opentype.Font | null {
   const brand = loadBrandTemplateFont(key);
   const fallback = loadTemplateFont();
   if (!brand || brand === fallback || !fallback) {
@@ -337,6 +386,15 @@ function intersects(a: BBox, b: BBox): boolean {
 
 function usableCopy(type: TextTemplateType, callouts: string[] | undefined): string[] {
   const cleaned = (callouts ?? []).map(sanitizeCallout).filter((c) => c.length > 0);
+  if (isAplusModuleType(type)) {
+    // A module prints its seeded number of lines, never padded: with too few
+    // usable lines there is nothing true enough to show.
+    const { minLines, maxLines } = aplusModules[type];
+    if (cleaned.length < minLines) {
+      throw new TemplateUnavailableError(`The ${type} module needs at least ${minLines} usable lines`);
+    }
+    return cleaned.slice(0, maxLines);
+  }
   if (type === "dimensions") {
     if (cleaned.length === 0) {
       throw new TemplateUnavailableError("Dimensions template needs a dimension label");
@@ -356,35 +414,12 @@ function usableCopy(type: TextTemplateType, callouts: string[] | undefined): str
  * punctuation (CLAUDE.md rule 9), single spaced, at most 40 characters.
  */
 export function sanitizeCallout(raw: string): string {
-  let s = raw.normalize("NFC");
-  // Emojis, pictographs, keycaps, variation selectors, joiners, flags.
-  s = s.replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}⃣︎️‍]/gu, "");
-  // Arrow characters and ASCII arrows.
-  s = s.replace(/[←-⇿⟰-⟿⤀-⥿⬀-⯿]/gu, " ");
-  s = s.replace(/<-+>?|-+>|=+>|<=+/g, " ");
-  // Unicode hyphens (U+2010, U+2011) behave like the ASCII hyphen: kept
-  // inside a word, dropped when spaced. Every other dash character (figure,
-  // en, em, bar, minus sign, small and fullwidth forms) and a doubled ASCII
-  // hyphen ("fast--easy") are always punctuation here; a spaced or leading or
-  // trailing hyphen is too. Hyphens inside words (12-inch) stay.
-  s = s.replace(/[\u2010\u2011]/gu, "-");
-  s = s.replace(/[\u2012-\u2015\u2212\u2E3A\u2E3B\uFE58\uFE63\uFF0D]/gu, " ");
-  s = s.replace(/-{2,}/g, " ");
-  s = s.replace(/(^|\s)-+(?=\s|$)/g, " ");
-  s = s.replace(/^[\s*•·-]+/u, "");
-  // Control characters and collapsed whitespace.
-  s = s.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
-  if (s.length > MAX_CALLOUT_CHARS) {
-    const cut = s.slice(0, MAX_CALLOUT_CHARS);
-    const lastSpace = cut.lastIndexOf(" ");
-    s = (lastSpace >= MAX_CALLOUT_CHARS / 2 ? cut.slice(0, lastSpace) : cut).trim();
-  }
-  return s.replace(/[\s,;:]+$/, "");
+  return sanitizeCopyLine(raw, MAX_CALLOUT_CHARS);
 }
 
 // Spec handling
 
-function canvasSize(spec: ChannelSpec): { width: number; height: number } {
+export function canvasSize(spec: ChannelSpec): { width: number; height: number } {
   let width = spec.width ?? spec.minWidth;
   let height = spec.height ?? spec.minHeight;
   if (width === undefined && height === undefined) {
@@ -406,9 +441,9 @@ function canvasSize(spec: ChannelSpec): { width: number; height: number } {
   return { width, height };
 }
 
-type StillFormat = "jpg" | "png" | "webp";
+export type StillFormat = "jpg" | "png" | "webp";
 
-function pickFormat(spec: ChannelSpec): StillFormat {
+export function pickFormat(spec: ChannelSpec): StillFormat {
   const allowed: readonly string[] = spec.formats ?? ["jpg", "png"];
   for (const f of ["jpg", "png", "webp"] as const) {
     if (allowed.includes(f)) {
@@ -425,7 +460,7 @@ function pickFormat(spec: ChannelSpec): StillFormat {
  * then higher qualities are tried, and lossless PNG after those when the
  * spec allows it. Otherwise the still needs review.
  */
-async function encodeKeepingProduct(
+export async function encodeKeepingProduct(
   raw: RawImage,
   spec: ChannelSpec,
   format: StillFormat,
@@ -493,7 +528,7 @@ async function encodeForSpec(raw: RawImage, spec: ChannelSpec, format: StillForm
 
 // Product handling
 
-interface Product {
+export interface Product {
   /** RGBA crop of the product bounding box, alpha limited by the mask. */
   data: Buffer;
   width: number;
@@ -502,7 +537,7 @@ interface Product {
   crop: BBox;
 }
 
-async function loadProduct(productPng: Buffer, maskPng: Buffer): Promise<Product> {
+export async function loadProduct(productPng: Buffer, maskPng: Buffer): Promise<Product> {
   const rgba = await decodeToRgba(productPng);
   const mask = await decodeMask(maskPng);
   if (rgba.width !== mask.width || rgba.height !== mask.height) {
@@ -528,7 +563,7 @@ async function loadProduct(productPng: Buffer, maskPng: Buffer): Promise<Product
 }
 
 /** Largest product placement inside box, keeping aspect, centered. */
-function fitInto(product: Product, box: BBox): BBox {
+export function fitInto(product: Product, box: BBox): BBox {
   const scale = Math.min(box.width / product.width, box.height / product.height);
   const width = Math.max(1, Math.min(box.width, Math.round(product.width * scale)));
   const height = Math.max(1, Math.min(box.height, Math.round(product.height * scale)));
@@ -693,9 +728,117 @@ async function layoutDimensions(
   return placement;
 }
 
+interface AplusModuleCopy {
+  headline: { text: string; font: opentype.Font } | null;
+  lines: string[];
+  font: opentype.Font;
+  layout: AplusModuleLayout;
+  text: Rgb;
+  accent: Rgb;
+}
+
+/**
+ * An A+ module card: the real product in its own area, and beside it the
+ * headline in the heading font and the module's lines, each after a marker
+ * (a dot for a list, a small square for labels, the step number for steps,
+ * an accent bar for a quote). The largest font size where everything fits
+ * without breaking a word wins; the text never meets the product area.
+ */
+async function layoutAplusModule(canvas: Canvas, product: Product, content: BBox, copy: AplusModuleCopy): Promise<BBox> {
+  const L = LAYOUT.aplusModule;
+  const stacked = canvas.height / canvas.width >= LAYOUT.stackAspect;
+  let productArea: BBox;
+  let column: BBox;
+  if (stacked) {
+    const productH = Math.round(content.height * L.productShareStacked);
+    const columnTop = content.top + Math.round(content.height * L.columnStartStacked);
+    productArea = { left: content.left, top: content.top, width: content.width, height: productH };
+    column = { left: content.left, top: columnTop, width: content.width, height: content.top + content.height - columnTop };
+  } else {
+    const productW = Math.round(content.width * L.productShareSide);
+    const columnLeft = content.left + Math.round(content.width * L.columnStartSide);
+    productArea = { left: content.left, top: content.top, width: productW, height: content.height };
+    column = { left: columnLeft, top: content.top, width: content.left + content.width - columnLeft, height: content.height };
+  }
+  const pad = Math.round(Math.min(productArea.width, productArea.height) * L.productPadding);
+  const placement = fitInto(product, {
+    left: productArea.left + pad,
+    top: productArea.top + pad,
+    width: productArea.width - 2 * pad,
+    height: productArea.height - 2 * pad,
+  });
+
+  const short = Math.min(canvas.width, canvas.height);
+  const minSize = Math.max(8, Math.round(short * L.minFontOfShort));
+  for (let size = Math.round(short * L.fontOfShort); size >= minSize; size = Math.floor(size * 0.9)) {
+    const canShrink = Math.floor(size * 0.9) >= minSize;
+    const head = copy.headline
+      ? await renderText(copy.headline.text, Math.round(size * L.headlineOfFont), column.width, copy.headline.font)
+      : null;
+    if (head && (head.width > column.width || (head.brokeWord && canShrink))) {
+      continue;
+    }
+    const markers =
+      copy.layout === "steps"
+        ? await Promise.all(copy.lines.map((_, i) => renderText(String(i + 1), size, column.width, copy.font)))
+        : [];
+    const bullet = Math.max(2, Math.round(size * L.bulletOfFont));
+    const markerWidth =
+      copy.layout === "steps"
+        ? Math.max(...markers.map((m) => m.width))
+        : copy.layout === "quotes"
+          ? Math.max(2, Math.round(size * L.quoteBarOfFont))
+          : bullet;
+    const indent = markerWidth + Math.round(size * L.markerGapOfFont);
+    const textWidth = column.width - indent;
+    if (textWidth <= size) {
+      break;
+    }
+    const blocks = await Promise.all(copy.lines.map((line) => renderText(line, size, textWidth, copy.font)));
+    if (blocks.some((b) => b.width > textWidth) || (blocks.some((b) => b.brokeWord) && canShrink)) {
+      continue;
+    }
+    const gap = Math.round(size * L.rowGapOfFont);
+    const headGap = head ? Math.round(size * L.headlineGapOfFont) : 0;
+    const listHeight = blocks.reduce((sum, b) => sum + b.height, 0) + gap * (blocks.length - 1);
+    const total = (head?.height ?? 0) + headGap + listHeight;
+    if (total > column.height) {
+      continue;
+    }
+    const listWidth = indent + Math.max(...blocks.map((b) => b.width));
+    const blockWidth = Math.max(listWidth, head?.width ?? 0);
+    const left = stacked ? column.left + Math.floor((column.width - blockWidth) / 2) : column.left;
+    let y = column.top + Math.floor((column.height - total) / 2);
+    if (head) {
+      canvas.blendCoverage(head, left, y, copy.text);
+      y += head.height + headGap;
+    }
+    for (const [i, block] of blocks.entries()) {
+      switch (copy.layout) {
+        case "steps":
+          canvas.blendCoverage(markers[i], left, y, copy.accent);
+          break;
+        case "quotes":
+          canvas.fillRect(left, y, markerWidth, block.height, copy.accent);
+          break;
+        case "labels":
+          canvas.fillRect(left, Math.round(y + block.firstLineMid - bullet / 2), bullet, bullet, copy.accent);
+          break;
+        case "list":
+          canvas.fillCircle(left + bullet / 2, y + block.firstLineMid, bullet / 2, copy.accent);
+          break;
+      }
+      canvas.blendCoverage(block, left + indent, y, copy.text);
+      y += block.height + gap;
+    }
+    return placement;
+  }
+  throw new TemplateUnavailableError("A+ module copy does not fit the canvas");
+}
+
 // Text
 
-interface TextBlock {
+export interface TextBlock {
   /** Single channel coverage, 255 is solid text. */
   coverage: Buffer;
   width: number;
@@ -712,7 +855,7 @@ interface TextBlock {
  * aligned, line height from the font's own metrics. Characters the font has
  * no glyph for are dropped rather than drawn as boxes.
  */
-async function renderText(text: string, sizePx: number, maxWidth: number, font: opentype.Font): Promise<TextBlock> {
+export async function renderText(text: string, sizePx: number, maxWidth: number, font: opentype.Font): Promise<TextBlock> {
   const clean = Array.from(text)
     .filter((ch) => ch === " " || font.charToGlyphIndex(ch) > 0)
     .join("")
@@ -778,7 +921,7 @@ interface Rgb {
   b: number;
 }
 
-class Canvas {
+export class Canvas {
   readonly data: Buffer;
   /** Pixels touched by text or decoration, to prove they never meet the product. */
   private readonly decoration: Uint8Array;
@@ -840,6 +983,43 @@ class Canvas {
         this.blend(x, y, Math.round((hits * 255) / 16), c);
       }
     }
+  }
+
+  /**
+   * Repaints every pixel's background from a function of its position, or
+   * from an RGBA source (the ads formats' continuous background and scene
+   * layer). Background is never decoration, so a product may sit on it.
+   */
+  paintBackground(color: (x: number, y: number) => Rgb): void {
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        const c = color(x, y);
+        const o = (y * this.width + x) * 4;
+        this.data[o] = c.r;
+        this.data[o + 1] = c.g;
+        this.data[o + 2] = c.b;
+        this.data[o + 3] = 255;
+      }
+    }
+  }
+
+  /** The box around every text, line or logo pixel drawn, or null when none was. */
+  decorationBounds(): BBox | null {
+    let left = this.width;
+    let top = this.height;
+    let right = -1;
+    let bottom = -1;
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        if (this.decoration[y * this.width + x]) {
+          if (x < left) left = x;
+          if (x > right) right = x;
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+        }
+      }
+    }
+    return right < 0 ? null : { left, top, width: right - left + 1, height: bottom - top + 1 };
   }
 
   /** True when no text, line or logo pixel was drawn inside box. */

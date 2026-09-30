@@ -1,0 +1,7214 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`planner bundles > plans the aplus bundle for every channel preset 1`] = `
+[
+  {
+    "channels": "amazon.main,amazon.secondary,shopify.product,meta.feed_1x1",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s02_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s02_aplus_banner",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_banner",
+        },
+        {
+          "callouts": [
+            "pour over rim",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s03_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s04_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s05_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s06_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s07_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s08_aplus_banner",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_banner",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "shopify",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s01_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "google",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "google.merchant.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "etsy",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "ebay",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "walmart",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "walmart.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktokshop",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "meta",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "pinterest",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_2x3",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "video",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+            "etsy.listing",
+            "ebay.listing",
+            "walmart.main",
+            "tiktokshop.main",
+            "google.merchant.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s02_aplus_banner",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_banner",
+        },
+        {
+          "callouts": [
+            "pour over rim",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s03_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s04_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s05_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s06_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s07_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s08_aplus_banner",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_banner",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s09_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_2x3",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+]
+`;
+
+exports[`planner bundles > plans the everything bundle for every channel preset 1`] = `
+[
+  {
+    "channels": "amazon.main,amazon.secondary,shopify.product,meta.feed_1x1",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s09_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s10_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+        {
+          "callouts": [
+            "10 x 10 x 12 cm",
+          ],
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s11_dimensions",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "dimensions",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s12_in_the_box",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_pack",
+          "stylePreset": "none",
+          "type": "in_the_box",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s13_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+        {
+          "channels": [
+            "meta.feed_1x1",
+          ],
+          "credits": 0.5,
+          "id": "s14_social_1x1",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_1x1",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 1,
+          "id": "s09_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s10_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s13_aplus_banner",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_banner",
+        },
+        {
+          "callouts": [
+            "pour over rim",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s14_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s15_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s16_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s17_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s19_aplus_banner",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_banner",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+        {
+          "reason": "channel image limit",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel image limit",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel image limit",
+          "type": "in_the_box",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "shopify",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s03_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s04_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s06_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s09_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+        {
+          "callouts": [
+            "10 x 10 x 12 cm",
+          ],
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s10_dimensions",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "dimensions",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s11_in_the_box",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_pack",
+          "stylePreset": "none",
+          "type": "in_the_box",
+        },
+        {
+          "channels": [
+            "shopify.hero_banner",
+          ],
+          "credits": 1,
+          "id": "s12_shopify_hero",
+          "method": "composite_generate",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "shopify_hero",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s13_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "google",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "google.merchant.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s09_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "etsy",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s07_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+        {
+          "callouts": [
+            "10 x 10 x 12 cm",
+          ],
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s08_dimensions",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "dimensions",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s09_in_the_box",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_pack",
+          "stylePreset": "none",
+          "type": "in_the_box",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "ebay",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "walmart",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "walmart.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "walmart.main",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "walmart.main",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktokshop",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "meta",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "meta.feed_1x1",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_1x1",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_1x1",
+        },
+        {
+          "channels": [
+            "meta.feed_4x5",
+          ],
+          "credits": 0.5,
+          "id": "s02_social_4x5",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_4x5",
+        },
+        {
+          "channels": [
+            "meta.story_9x16",
+            "meta.reels_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s03_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "pinterest",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "pinterest.pin",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_2x3",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_2x3",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktok.ad_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s01_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "video",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "video.social_9x16",
+          ],
+          "credits": 6,
+          "id": "s01_video_hero_6s",
+          "method": "video_generate",
+          "priority": 9,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "video_hero_6s",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+            "etsy.listing",
+            "ebay.listing",
+            "walmart.main",
+            "tiktokshop.main",
+            "google.merchant.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+            "walmart.main",
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+            "walmart.main",
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s09_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s10_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+        {
+          "callouts": [
+            "10 x 10 x 12 cm",
+          ],
+          "channels": [
+            "shopify.product",
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s11_dimensions",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "dimensions",
+        },
+        {
+          "channels": [
+            "shopify.product",
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s12_in_the_box",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_pack",
+          "stylePreset": "none",
+          "type": "in_the_box",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s13_aplus_banner",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_banner",
+        },
+        {
+          "callouts": [
+            "pour over rim",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s14_aplus_features",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_features",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s15_aplus_pain_points",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_pain_points",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s16_aplus_how_to",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_how_to",
+        },
+        {
+          "callouts": [
+            "ceramic",
+          ],
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s17_aplus_ingredients",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_ingredients",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s18_aplus_results",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_results",
+        },
+        {
+          "channels": [
+            "amazon.aplus.basic_header",
+          ],
+          "credits": 0.5,
+          "id": "s19_aplus_banner",
+          "method": "template",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "aplus_banner",
+        },
+        {
+          "channels": [
+            "shopify.hero_banner",
+          ],
+          "credits": 1,
+          "id": "s20_shopify_hero",
+          "method": "composite_generate",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "shopify_hero",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s21_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+        {
+          "channels": [
+            "meta.feed_1x1",
+          ],
+          "credits": 0.5,
+          "id": "s22_social_1x1",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_1x1",
+        },
+        {
+          "channels": [
+            "meta.feed_4x5",
+          ],
+          "credits": 0.5,
+          "id": "s23_social_4x5",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_4x5",
+        },
+        {
+          "channels": [
+            "meta.story_9x16",
+            "meta.reels_9x16",
+            "tiktok.ad_9x16",
+          ],
+          "credits": 0.5,
+          "id": "s24_social_9x16",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_9x16",
+        },
+        {
+          "channels": [
+            "pinterest.pin",
+          ],
+          "credits": 0.5,
+          "id": "s25_social_2x3",
+          "method": "template",
+          "priority": 7,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "social_2x3",
+        },
+        {
+          "channels": [
+            "video.social_9x16",
+          ],
+          "credits": 6,
+          "id": "s26_video_hero_6s",
+          "method": "video_generate",
+          "priority": 9,
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "video_hero_6s",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "seller did not add a quote or award",
+          "type": "aplus_endorsement",
+        },
+        {
+          "reason": "needs photo",
+          "type": "video_spin",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "Pro or Agency only",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+]
+`;
+
+exports[`planner bundles > plans the listing bundle for every channel preset 1`] = `
+[
+  {
+    "channels": "amazon.main,amazon.secondary,shopify.product,meta.feed_1x1",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s09_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s10_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+        {
+          "callouts": [
+            "10 x 10 x 12 cm",
+          ],
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s11_dimensions",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "dimensions",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s12_in_the_box",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_pack",
+          "stylePreset": "none",
+          "type": "in_the_box",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s13_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 1,
+          "id": "s09_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "amazon.secondary",
+          ],
+          "credits": 0.5,
+          "id": "s10_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_features",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_pain_points",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_how_to",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_ingredients",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_results",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_endorsement",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+        {
+          "reason": "channel image limit",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel image limit",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel image limit",
+          "type": "in_the_box",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "shopify",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s03_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s04_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s06_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s09_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+        {
+          "callouts": [
+            "10 x 10 x 12 cm",
+          ],
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s10_dimensions",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "dimensions",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s11_in_the_box",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_pack",
+          "stylePreset": "none",
+          "type": "in_the_box",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s12_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "google",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "google.merchant.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s09_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "etsy",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s07_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+        {
+          "callouts": [
+            "10 x 10 x 12 cm",
+          ],
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s08_dimensions",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "dimensions",
+        },
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s09_in_the_box",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_pack",
+          "stylePreset": "none",
+          "type": "in_the_box",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "ebay",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "walmart",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "walmart.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "walmart.main",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "walmart.main",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktokshop",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "meta",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "pinterest",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_2x3",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "video",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+            "etsy.listing",
+            "ebay.listing",
+            "walmart.main",
+            "tiktokshop.main",
+            "google.merchant.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+            "walmart.main",
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s02_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "45 angle on white",
+          "sourceMediaId": "m_45",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+            "walmart.main",
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s03_alt_angle_white",
+          "method": "deterministic",
+          "priority": 2,
+          "scene": "back angle on white",
+          "sourceMediaId": "m_back",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s04_cutout_png",
+          "method": "deterministic",
+          "priority": 2,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "cutout_png",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s05_sweep_gray",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_gray",
+        },
+        {
+          "channels": [
+            "shopify.product",
+            "google.merchant.lifestyle",
+            "etsy.listing",
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s06_sweep_brand",
+          "method": "deterministic",
+          "priority": 3,
+          "sourceMediaId": "m_front",
+          "stylePreset": "minimal_studio",
+          "type": "sweep_brand",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s07_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "morning kitchen counter",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s08_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "office desk",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "google.merchant.lifestyle",
+          ],
+          "credits": 1,
+          "id": "s09_lifestyle",
+          "method": "composite_generate",
+          "priority": 4,
+          "scene": "clean studio scene",
+          "sourceMediaId": "m_front",
+          "stylePreset": "kitchen_lifestyle",
+          "type": "lifestyle",
+        },
+        {
+          "callouts": [
+            "keeps coffee hot",
+            "easy grip handle",
+            "fits any dripper",
+          ],
+          "channels": [
+            "amazon.secondary",
+            "shopify.product",
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s10_infographic",
+          "method": "template",
+          "priority": 4,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "infographic",
+        },
+        {
+          "callouts": [
+            "10 x 10 x 12 cm",
+          ],
+          "channels": [
+            "shopify.product",
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s11_dimensions",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "dimensions",
+        },
+        {
+          "channels": [
+            "shopify.product",
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s12_in_the_box",
+          "method": "template",
+          "priority": 5,
+          "sourceMediaId": "m_pack",
+          "stylePreset": "none",
+          "type": "in_the_box",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s13_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "needs photo",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "seller did not supply comparison facts",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_features",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_pain_points",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_how_to",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_ingredients",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_results",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_endorsement",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_2x3",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+]
+`;
+
+exports[`planner bundles > plans the main bundle for every channel preset 1`] = `
+[
+  {
+    "channels": "amazon.main,amazon.secondary,shopify.product,meta.feed_1x1",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s02_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_features",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_pain_points",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_how_to",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_ingredients",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_results",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_endorsement",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "shopify",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s01_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "google",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "google.merchant.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "etsy",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "etsy.listing",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "ebay",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "ebay.listing",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "walmart",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "walmart.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktokshop",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "tiktokshop.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_alt_angle_white",
+          "method": "deterministic",
+          "priority": 1,
+          "scene": "front angle on white",
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "alt_angle_white",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "infographic",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "dimensions",
+        },
+        {
+          "reason": "no selected channel takes this kind of image",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "meta",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "pinterest",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_2x3",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "tiktok",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "video",
+    "plan": {
+      "shots": [],
+      "skipped": [
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "infographic",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "dimensions",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "channel not selected",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+  {
+    "channels": "amazon,shopify,google,etsy,ebay,walmart,tiktokshop,meta,pinterest,tiktok,video",
+    "plan": {
+      "shots": [
+        {
+          "channels": [
+            "amazon.main",
+            "etsy.listing",
+            "ebay.listing",
+            "walmart.main",
+            "tiktokshop.main",
+            "google.merchant.main",
+          ],
+          "credits": 0.5,
+          "id": "s01_amazon_main",
+          "method": "deterministic",
+          "priority": 1,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "amazon_main",
+        },
+        {
+          "channels": [
+            "shopify.product",
+          ],
+          "credits": 0.5,
+          "id": "s02_collection_thumb",
+          "method": "deterministic",
+          "priority": 6,
+          "sourceMediaId": "m_front",
+          "stylePreset": "none",
+          "type": "collection_thumb",
+        },
+      ],
+      "skipped": [
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "alt_angle_white:side",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "cutout_png",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_gray",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "sweep_brand",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "lifestyle",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "infographic",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "dimensions",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "in_the_box",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "comparison",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_features",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_pain_points",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_how_to",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_ingredients",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_results",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_endorsement",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "aplus_banner",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "shopify_hero",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_1x1",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_4x5",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_9x16",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "social_2x3",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_spin",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_hero_6s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_lifestyle_15s",
+        },
+        {
+          "reason": "not in the chosen set",
+          "type": "video_ugc_hook",
+        },
+      ],
+    },
+  },
+]
+`;

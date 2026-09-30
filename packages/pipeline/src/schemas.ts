@@ -4,6 +4,7 @@
  * z.toJSONSchema via jsonSchemaFor below.
  */
 import { z } from "zod";
+import { variationOptions } from "./seed/variations";
 
 export const Hex = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
@@ -26,10 +27,32 @@ export const ProductProfile = z.object({
 });
 
 export const Shot = z.object({
-  id: z.string(), type: z.enum(["amazon_main","alt_angle_white","cutout_png","sweep_gray","sweep_brand","lifestyle","infographic","dimensions","in_the_box","comparison","aplus_banner","shopify_hero","collection_thumb","social_1x1","social_4x5","social_9x16","social_2x3","video_spin","video_hero_6s","video_lifestyle_15s","video_ugc_hook","original_photo"]),
+  id: z.string(), type: z.enum(["amazon_main","alt_angle_white","cutout_png","sweep_gray","sweep_brand","lifestyle","infographic","dimensions","in_the_box","comparison","aplus_banner","shopify_hero","collection_thumb","social_1x1","social_4x5","social_9x16","social_2x3","video_spin","video_hero_6s","video_lifestyle_15s","video_ugc_hook","original_photo","aplus_pain_points","aplus_features","aplus_ingredients","aplus_results","aplus_how_to","aplus_endorsement","pin_moodboard","carousel_slide","ad_variant"]),
   sourceMediaId: z.string(), method: z.enum(["deterministic","composite_generate","edit_generate","template","video_generate","avatar"]),
   channels: z.array(z.string()), stylePreset: z.string(), scene: z.string().max(400).optional(),
-  callouts: z.array(z.string().max(40)).max(5).optional(), credits: z.number(), priority: z.number().int()
+  callouts: z.array(z.string().max(40)).max(5).optional(), credits: z.number(), priority: z.number().int(),
+  /** A+ module headline (PHASE_16 workstream 2), written by the copy step
+   * after planning; the module's lines ride in callouts. Never asked of the
+   * shot planner: LlmShot leaves it out. */
+  headline: z.string().max(40).optional(),
+  /** Ads formats (PHASE_16 workstream 3). A carousel's slides share one
+   * carouselId; slideIndex counts from 1 and slideCount is the carousel's
+   * length, so every slide knows the whole canvas it is cut from. */
+  carouselId: z.string().max(40).optional(),
+  slideIndex: z.number().int().min(1).max(10).optional(),
+  slideCount: z.number().int().min(1).max(10).optional(),
+  /** An ad variant's key within its pack ("v1" to "v6"). */
+  variantKey: z.string().max(12).optional(),
+  /** The call to action an ad variant or a carousel's last slide prints. */
+  cta: z.string().max(40).optional(),
+  /** Versions of this lifestyle scene the pack makes (PHASE_16 workstream
+   * 6), set by applyVariations when the seller asks for more than one; its
+   * credits already hold the extra ones. Absent is one. Never asked of the
+   * shot planner: LlmShot leaves it out. */
+  variations: z.number().int().min(variationOptions.min + 1).max(variationOptions.max).optional(),
+  /** Which extra version of its scene this shot is (2 to 4), set only on the
+   * shots expandVariations adds at run time. Absent is the scene itself. */
+  variation: z.number().int().min(variationOptions.min + 1).max(variationOptions.max).optional(),
 });
 
 export const ShotList = z.object({ shots: z.array(Shot).max(40), skipped: z.array(z.object({ type: z.string(), reason: z.string() })) });
@@ -40,10 +63,56 @@ export const ShotList = z.object({ shots: z.array(Shot).max(40), skipped: z.arra
  */
 export const DETERMINISTIC_ONLY_SHOT_TYPES = ["original_photo"] as const;
 
-/** Shot without the deterministic only types. The plan recipe's strict tool
- * schema and validateLlmShotList use it, so the LLM tool schema is the one
- * the plan recipe has always had. */
-export const LlmShot = Shot.extend({ type: Shot.shape.type.exclude(DETERMINISTIC_ONLY_SHOT_TYPES) });
+/**
+ * The A+ module shot types (PHASE_16 workstream 2): template cards around
+ * the real product. The deterministic planner plans them and the runner adds
+ * them to an LLM plan; the shot planner recipe never sees them, until pnpm
+ * eval shows it uses them well.
+ */
+export const APLUS_MODULE_SHOT_TYPES = [
+  "aplus_pain_points",
+  "aplus_features",
+  "aplus_ingredients",
+  "aplus_results",
+  "aplus_how_to",
+  "aplus_endorsement",
+] as const;
+export type AplusModuleShotType = (typeof APLUS_MODULE_SHOT_TYPES)[number];
+
+/** True for an A+ module shot type. */
+export function isAplusModuleType(type: string): type is AplusModuleShotType {
+  return (APLUS_MODULE_SHOT_TYPES as readonly string[]).includes(type);
+}
+
+/**
+ * The ads formats (PHASE_16 workstream 3): a moodboard pin, carousel slides
+ * cut from one canvas and static ad variants. The deterministic planner
+ * plans them from the seed; the shot planner recipe never sees them.
+ */
+export const ADS_SHOT_TYPES = ["pin_moodboard", "carousel_slide", "ad_variant"] as const;
+export type AdsShotType = (typeof ADS_SHOT_TYPES)[number];
+
+/** True for an ads format shot type. */
+export function isAdsShotType(type: string): type is AdsShotType {
+  return (ADS_SHOT_TYPES as readonly string[]).includes(type);
+}
+
+/** Shot types the shot planner recipe never plans. */
+const NOT_LLM_SHOT_TYPES = [...DETERMINISTIC_ONLY_SHOT_TYPES, ...APLUS_MODULE_SHOT_TYPES, ...ADS_SHOT_TYPES] as const;
+
+/** Shot without the deterministic only types, the A+ modules and the module
+ * headline. The plan recipe's strict tool schema and validateLlmShotList use
+ * it, so the LLM tool schema is the one the plan recipe has always had. */
+export const LlmShot = Shot.extend({ type: Shot.shape.type.exclude(NOT_LLM_SHOT_TYPES) }).omit({
+  headline: true,
+  carouselId: true,
+  slideIndex: true,
+  slideCount: true,
+  variantKey: true,
+  cta: true,
+  variations: true,
+  variation: true,
+});
 
 export const LlmShotList = z.object({ shots: z.array(LlmShot).max(40), skipped: z.array(z.object({ type: z.string(), reason: z.string() })) });
 

@@ -10,6 +10,7 @@ import {
   optionPhotosOf,
   photoBackgroundsOf,
   photoBlockReason,
+  photoTargetBox,
   sellerDetailsProblem,
   type PhotoItem,
 } from "@/components/app/new-pack-form";
@@ -27,6 +28,7 @@ import {
 } from "@/lib/output-options-form";
 import { estimatePackCredits } from "@/lib/pack-estimate";
 import type { PreflightView } from "@/lib/preflight/types";
+import { sellerAnswersBody, skipPatchFor, targetPickOf } from "@/lib/question-step";
 
 // The new pack form's seller inputs: every photo gets a role, starting with
 // the first role no photo has yet; the optional details are checked with the
@@ -284,6 +286,25 @@ describe("kept photos in section 1", () => {
     expect(photoBlockReason(photo, ["amazon.main"], { kept: true, feedsCutout: true })).toBe(
       "Tap the product this pack is for.",
     );
+  });
+
+  it("asks for the product again after Both and then Skip, and sends no hidden answer", () => {
+    // PHASE_16 workstream 4: "Both" stands in for the chooser only while the
+    // step is shown; skipping it drops the pick so the chooser asks again.
+    const both: PhotoItem = { ...photo, ...targetPickOf("all") };
+    expect(photoBlockReason(both, ["amazon.main"])).toBeNull();
+    expect(photoTargetBox(both)).toBeUndefined();
+    const skipped: PhotoItem = { ...both, ...skipPatchFor(both) };
+    expect(skipped.targetAll).toBe(false);
+    expect(photoBlockReason(skipped, ["amazon.main"])).toBe("Tap the product this pack is for.");
+    expect(sellerAnswersBody({ photo: skipped, questions: [], picks: {}, skipped: true })).toBeUndefined();
+    // Tapping one product in the chooser afterwards sends its box.
+    const chosen: PhotoItem = { ...skipped, chosen: 2 };
+    expect(photoBlockReason(chosen, ["amazon.main"])).toBeNull();
+    expect(photoTargetBox(chosen)).toEqual({ x: 10, y: 0, width: 10, height: 10 });
+    // A single product picked in the step stays through a skip.
+    const pickedInStep: PhotoItem = { ...photo, chosen: 2, targetAll: false };
+    expect(skipPatchFor(pickedInStep)).toBeNull();
   });
 
   it("carries the preflight size and other items into the options", () => {

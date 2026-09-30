@@ -17,6 +17,7 @@ import {
   encodeJpeg,
   encodePng,
   fidelityReport,
+  LlmShot,
   planShots,
   SCENE_COUNT_REASON,
   solidCanvas,
@@ -32,9 +33,12 @@ import {
   resolveOutputOptions,
   ADDED_OVERLAYS_REASON,
   SELLER_OFF_REASON,
+  BUNDLE_OFF_REASON,
   type OutputOptionsInput,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
+import { APLUS_COPY_SHORT_REASON, NO_ENDORSEMENT_REASON } from "@curvi/pipeline/aplus";
+import { isAplusModuleType } from "@curvi/pipeline/schemas";
 import { createHash } from "node:crypto";
 import { creditCosts, CUTOUT_TASK, sceneCountOptions } from "@curvi/pipeline/seed";
 import type { Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
@@ -45,6 +49,13 @@ import path from "node:path";
 import {
   activeRecipe,
   allSettledWithLimit,
+  aplusCopyRecipeFor,
+  sellerTextOf,
+  withAplusModules,
+  withAdsShots,
+  brokenCarouselSlides,
+  carouselRunOrder,
+  runInCarouselOrder,
   creditsForShot,
   deserializeShotOutcome,
   deterministicPlan,
@@ -102,6 +113,7 @@ import {
   withRunDeadline,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
+import { seedRecipe } from "./recipes";
 
 // planShots passes through to the real planner unless a test switches it to
 // fail, to show a planner failure never sinks a valid LLM plan.
@@ -118,7 +130,7 @@ vi.mock("@curvi/pipeline", async (importOriginal) => {
     },
   };
 });
-import { demoProfile, DemoShotGenerator } from "./runtime";
+import { demoAplusCopy, demoProfile, DemoShotGenerator } from "./runtime";
 import { LiveShotGenerator, PRODUCT_TOUCHING } from "./live-runtime";
 
 const intakeKey = activeRecipe("intake").key;
@@ -126,6 +138,7 @@ const analyzeKey = activeRecipe("analyze").key;
 const planKey = activeRecipe("plan").key;
 const qcKey = activeRecipe("qc").key;
 const pickerKey = activeRecipe("pick").key;
+const copyKey = activeRecipe("copy").key;
 
 const intakeFixture = {
   images: [
@@ -145,6 +158,7 @@ interface AiOverrides {
   analyze?: MockProvider;
   plan?: MockProvider;
   qc?: MockProvider;
+  copy?: MockProvider;
 }
 
 function makeAi(overrides: AiOverrides = {}): AiDeps {
@@ -157,6 +171,7 @@ function makeAi(overrides: AiOverrides = {}): AiDeps {
       overrides.plan ??
       new MockProvider({ name: "mock-plan", tasks: [planKey], output: { notAShotList: true } }),
     qc: overrides.qc ?? new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict }),
+    copy: overrides.copy ?? new MockProvider({ name: "mock-copy", tasks: [copyKey], output: demoAplusCopy }),
   };
   const registry = new ProviderRegistry();
   for (const provider of Object.values(providers)) {
@@ -169,6 +184,7 @@ function makeAi(overrides: AiOverrides = {}): AiDeps {
       [analyzeKey]: [providers.analyze.name],
       [planKey]: [providers.plan.name],
       [qcKey]: [providers.qc.name],
+      [copyKey]: [providers.copy.name],
     },
     meter: new InMemoryCostMeter(),
     breakerStore: new InMemoryBreakerStore(),
@@ -1073,7 +1089,9 @@ describe("every selected channel gets its files (2.11)", () => {
     const charges = deps.store.ledger.filter((e) => e.reason === "charge");
     expect(charges).toHaveLength(summary.passed);
     expect(summary.pack!.files).toBe(outputCount(plan.shots));
-    expect(summary.pack!.files).toBeGreaterThan(summary.passed * 2);
+    // Each secondary shot ships to all three channels, so the pack holds at
+    // least two extra files per secondary shot.
+    expect(summary.pack!.files).toBeGreaterThanOrEqual(summary.passed + 2 * secondary.length);
     // Every channel output is on the shot's record.
     expect(deps.store.assets.every((a) => a.status === "passed")).toBe(true);
   });
@@ -1965,7 +1983,7 @@ describe("selection is by channel spec (2.11)", () => {
   it("a bare family still selects every spec in it", async () => {
     const summary = await runGeneratePack({ ...baseInput, channels: ["meta"], creditBudget: 10 }, makeDeps());
     const specs = new Set((await packReport(summary)).map((f) => f.specId));
-    expect([...specs].sort()).toEqual(["meta.feed_1x1", "meta.feed_4x5", "meta.story_9x16"]);
+    expect([...specs].sort()).toEqual(["meta.feed_1x1", "meta.feed_4x5", "meta.reels_9x16", "meta.story_9x16"]);
   });
 });
 
@@ -2682,7 +2700,13 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
   async function liveRun(
     intakeOutput: unknown,
     photo: Buffer,
-    opts: { note?: string; angle?: "front" | "in_the_box"; analyze?: MockProvider; picker?: MockProvider } = {},
+    opts: {
+      note?: string;
+      angle?: "front" | "in_the_box";
+      analyze?: MockProvider;
+      picker?: MockProvider;
+      answers?: GeneratePackInput["sellerAnswers"];
+    } = {},
   ) {
     const ai = makeAi({ intake: intakeWith(intakeOutput), ...(opts.analyze ? { analyze: opts.analyze } : {}) });
     if (opts.picker) {
@@ -2716,6 +2740,7 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
         channels: ["amazon.main"],
         images: [{ mediaId, angle: opts.angle ?? "front" }],
         userDescription: opts.note ?? "Feature only the blue bottle",
+        ...(opts.answers ? { sellerAnswers: opts.answers } : {}),
       },
       deps,
     );
@@ -2809,6 +2834,64 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     expect(colors.files).toBeGreaterThan(0);
     expect(colors.red).toBe(0);
     expect(colors.blue).toBeGreaterThan(0);
+  });
+
+  // docs/phases/PHASE_16.md workstream 4: the question step's answers.
+  describe("seller answers", () => {
+    const unsure = {
+      images: [
+        {
+          ...verdict,
+          products: [
+            { label: "red bottle", box: redBox, matchesIntent: "unclear" },
+            { label: "blue bottle", box: blueBox, matchesIntent: "unclear" },
+          ],
+        },
+      ],
+    };
+    const blueOnly: GeneratePackInput["sellerAnswers"] = {
+      version: 1,
+      target: { value: "item:2", label: "blue bottle", color: "blue", others: ["red bottle"] },
+    };
+
+    it("honors Blue bottle only without the note, with zero red delivered", async () => {
+      const silent = await liveRun(unsure, await twoProductPhoto(), { note: "" });
+      expect(silent.summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+
+      const { summary, deps, calls } = await liveRun(unsure, await twoProductPhoto(), { note: "", answers: blueOnly });
+      expect(summary.state).toBe("done");
+      expect(summary.passed).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.target?.label).toBe("blue bottle");
+        expect(call.target?.others.map((o) => o.label)).toEqual(["red bottle"]);
+      }
+      const colors = await deliveredColors(deps);
+      expect(colors.files).toBeGreaterThan(0);
+      expect(colors.red).toBe(0);
+      expect(colors.blue).toBeGreaterThan(0);
+      expect(deps.store.inventories.get(baseInput.jobId)?.photos[0].rule).toBe("answer");
+      // The answer becomes the seller intent kept on the job.
+      expect(deps.store.sellerIntents.get(baseInput.jobId)).toEqual({
+        featureOnly: "blue bottle",
+        exclude: ["red bottle"],
+        mustKeep: [],
+        styleNotes: null,
+      });
+    });
+
+    it("outweighs a note that names the other product", async () => {
+      const { summary, calls } = await liveRun(unsure, await twoProductPhoto(), { note: "the red one", answers: blueOnly });
+      expect(summary.state).toBe("done");
+      for (const call of calls) {
+        expect(call.target?.label).toBe("blue bottle");
+      }
+    });
+
+    it("runs on the note alone when the stored answers are out of shape", async () => {
+      const broken = { version: 7 } as unknown as GeneratePackInput["sellerAnswers"];
+      const { summary } = await liveRun(unsure, await twoProductPhoto(), { note: "", answers: broken });
+      expect(summary.error).toBe(MULTIPLE_PRODUCTS_MESSAGE);
+    });
   });
 
   it("refuses the shot at no charge when the picked product touches the other one", async () => {
@@ -3315,6 +3398,30 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
     expect(deps.store.assets.some((a) => a.shotType === "lifestyle")).toBe(false);
   });
 
+  it("accepts an LLM plan under a smaller bundle, skipping the shots outside it instead of falling back", async () => {
+    const llmPlan = {
+      shots: [
+        mainShot,
+        planShot("a1", "alt_angle_white", "deterministic", ["amazon.secondary"], 2),
+        planShot("l1", "lifestyle", "composite_generate", ["amazon.secondary"], 5),
+      ],
+      skipped: [],
+    };
+    const plan = new MockProvider({ name: "mock-plan", tasks: [planKey], output: llmPlan });
+    const deps = makeDeps({ ai: makeAi({ plan }) });
+    const summary = await runGeneratePack(
+      { ...baseInput, channels: ["amazon.main", "amazon.secondary"], output: resolved({ bundle: "main" }) },
+      deps,
+    );
+    expect(summary.state).toBe("done");
+    expect(summary.plannerSource).toBe("llm");
+    expect(summary.skipped.filter((s) => s.reason === BUNDLE_OFF_REASON).map((s) => s.type).sort()).toEqual([
+      "alt_angle_white",
+      "lifestyle",
+    ]);
+    expect(deps.store.assets.map((a) => a.shotType)).toEqual(["amazon_main"]);
+  });
+
   it("covers meta.feed_1x1 with the front image when cards are off, on both planner paths", async () => {
     const input: GeneratePackInput = {
       ...baseInput,
@@ -3697,6 +3804,338 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
   });
 });
 
+describe("A+ modules in the runner (PHASE_16 workstream 2)", () => {
+  class ShotRecorder implements ShotGenerator {
+    private readonly demo = new DemoShotGenerator();
+    readonly calls: ShotGenerateArgs[] = [];
+    async generate(args: ShotGenerateArgs): Promise<ShotGeneration> {
+      this.calls.push(args);
+      return this.demo.generate(args);
+    }
+  }
+  const aplusInput: GeneratePackInput = { ...baseInput, channels: ["amazon"], creditBudget: 30 };
+  const moduleCalls = (generator: ShotRecorder) => generator.calls.filter((c) => isAplusModuleType(c.shot.type));
+
+  it("writes module copy through the copy recipe, books its spend and prints only guarded lines", async () => {
+    const copy = new MockProvider({
+      name: "mock-copy",
+      tasks: [copyKey],
+      costMicros: 1234,
+      output: {
+        ads: { headlines: [], callsToAction: [] },
+        modules: [
+          ...demoAplusCopy.modules.filter((m) => m.type !== "aplus_results"),
+          {
+            type: "aplus_results",
+            headline: "Warm for 6 hours",
+            lines: ["Warm drinks at your desk", "Hot for 6 hours", "Clinically proven grip", "Easy cleanup after", "A steady grip"],
+          },
+        ],
+      },
+    });
+    const generator = new ShotRecorder();
+    const deps = makeDeps({ ai: makeAi({ copy }), generator });
+    const summary = await runGeneratePack(aplusInput, deps);
+    expect(summary.state).toBe("done");
+    expect(copy.invocations).toBe(1);
+    expect(copy.calls[0].stepId).toBe("copy");
+    expect(summary.costMicros).toBeGreaterThanOrEqual(1234);
+
+    const results = moduleCalls(generator).find((c) => c.shot.type === "aplus_results")?.shot;
+    expect(results?.callouts).toEqual(["Warm drinks at your desk", "Easy cleanup after", "A steady grip"]);
+    // The headline held a figure the seller never typed, so it was dropped.
+    expect(results?.headline).toBeUndefined();
+    const features = moduleCalls(generator).find((c) => c.shot.type === "aplus_features")?.shot;
+    expect(features?.headline).toBe("Made for your daily coffee");
+    for (const call of moduleCalls(generator)) {
+      expect(call.shot.method).toBe("template");
+      expect(call.shot.credits).toBe(creditCosts.deterministic);
+    }
+    // No quote or award: the endorsement is skipped, never written.
+    expect(summary.skipped).toContainEqual({ type: "aplus_endorsement", reason: NO_ENDORSEMENT_REASON });
+  });
+
+  it("prints the seller's endorsement lines exactly as typed", async () => {
+    const copy = new MockProvider({ name: "mock-copy", tasks: [copyKey], output: demoAplusCopy });
+    const generator = new ShotRecorder();
+    const deps = makeDeps({ ai: makeAi({ copy }), generator });
+    const summary = await runGeneratePack(
+      { ...aplusInput, endorsements: ["Loved by coffee fans", "  Gift Guide pick 2026 "] },
+      deps,
+    );
+    expect(summary.state).toBe("done");
+    const endorsement = moduleCalls(generator).find((c) => c.shot.type === "aplus_endorsement")?.shot;
+    expect(endorsement?.callouts).toEqual(["Loved by coffee fans", "Gift Guide pick 2026"]);
+    expect(endorsement?.headline).toBeUndefined();
+  });
+
+  it("never fails the pack when the copy call fails: modules fall back to guarded planner lines or are skipped, not charged", async () => {
+    const copy = new MockProvider({ name: "mock-copy", tasks: [copyKey], failTimes: Infinity });
+    const generator = new ShotRecorder();
+    const deps = makeDeps({ ai: makeAi({ copy }), generator });
+    const summary = await runGeneratePack(aplusInput, deps);
+    expect(summary.state).toBe("done");
+    // demoProfile's features ("12 ounce capacity", "dishwasher safe") leave
+    // one guarded line, and it has one material: nothing reaches a minimum.
+    expect(moduleCalls(generator)).toEqual([]);
+    for (const type of ["aplus_features", "aplus_pain_points", "aplus_how_to", "aplus_ingredients", "aplus_results"]) {
+      expect(summary.skipped).toContainEqual({ type, reason: APLUS_COPY_SHORT_REASON });
+    }
+    const charged = deps.store.ledger.filter((e) => e.reason === "charge").map((e) => e.ref ?? "");
+    expect(charged.some((id) => /aplus_(features|pain|how|ingredients|results)/.test(id))).toBe(false);
+  });
+
+  it("runs the compiled version 2 when a job is assigned copy_generator version 1", () => {
+    const v1 = { ...seedRecipe("copy"), version: 1 };
+    expect(aplusCopyRecipeFor({ copy: v1 }).version).toBeGreaterThanOrEqual(2);
+    const v2 = seedRecipe("copy");
+    expect(aplusCopyRecipeFor({ copy: v2 })).toBe(v2);
+  });
+
+  it("reads every string the seller typed for the claims guard", () => {
+    expect(
+      sellerTextOf({ userDescription: "Holds 12 oz", boxContents: ["Mug"], comparisonFacts: [], endorsements: ["Award 2026"] }),
+    ).toEqual(["Holds 12 oz", "Mug", "Award 2026"]);
+  });
+
+  it("adds the deterministic modules to an LLM plan after its first banner", () => {
+    const fallback = fittedPlan(aplusInput);
+    const llmShots = fallback.shots.filter((s) => !isAplusModuleType(s.type));
+    const merged = withAplusModules({ shots: llmShots, skipped: [] }, fallback);
+    const types = merged.shots.map((s) => s.type);
+    const firstBanner = types.indexOf("aplus_banner");
+    const modules = fallback.shots.filter((s) => isAplusModuleType(s.type)).map((s) => s.type);
+    expect(modules.length).toBeGreaterThan(0);
+    expect(types.slice(firstBanner + 1, firstBanner + 1 + modules.length)).toEqual(modules);
+    expect(withAplusModules({ shots: llmShots, skipped: [] }, null).shots).toEqual(llmShots);
+  });
+});
+
+describe("ads formats in a pack (PHASE_16 workstream 3)", () => {
+  const adsOutput = (input: OutputOptionsInput): ResolvedOutputOptions =>
+    resolveOutputOptions(normalizeOutputOptions(input), { colorHex: "#FFFFFF", brandSweepHex: "#FFFFFF", keepMediaIds: [] });
+
+  it("ships the carousel as a numbered folder and the ad variants by placement", async () => {
+    const input: GeneratePackInput = {
+      ...baseInput,
+      channels: ["meta", "pinterest", "tiktok"],
+      creditBudget: 60,
+      output: adsOutput({ extras: { ads: true, scenes: false } }),
+    };
+    const summary = await runGeneratePack(input, makeDeps());
+    expect(summary.state).toBe("done");
+    const files = await packReport(summary);
+    const carousel = files.filter((f) => f.file.startsWith("carousel/")).map((f) => f.file.replace(/\.\w+$/, ""));
+    expect(carousel.length).toBeGreaterThanOrEqual(3);
+    expect(carousel).toEqual(carousel.map((_, i) => `carousel/${String(i + 1).padStart(2, "0")}`));
+    for (const placement of ["feed_1x1", "feed_4x5", "story_9x16", "reels_9x16"]) {
+      const count = files.filter((f) => f.channel === "meta" && f.file.startsWith(`ads/${placement}/`)).length;
+      expect(count, placement).toBeGreaterThanOrEqual(4);
+    }
+    expect(files.filter((f) => f.channel === "tiktok" && f.file.startsWith("ads/ad_9x16/")).length).toBeGreaterThanOrEqual(4);
+    expect(files.some((f) => f.channel === "pinterest" && f.file.startsWith("ads/pin/"))).toBe(true);
+    expect(summary.chargedCredits).toBeLessThanOrEqual(input.creditBudget);
+    // Off (the default), the same pack makes none of them.
+    const off = await runGeneratePack({ ...input, jobId: "job-ads-off", output: adsOutput({}) }, makeDeps());
+    const offFiles = await packReport(off);
+    expect(offFiles.some((f) => f.file.startsWith("carousel/") || f.file.startsWith("ads/"))).toBe(false);
+  });
+
+  it("rewords the planned ad variants from the copy recipe without changing the plan", async () => {
+    class PlanStore extends InMemoryJobStore {
+      readonly plans: Shot[][] = [];
+      async savePlan(plan: { shots: Shot[] }): Promise<void> {
+        this.plans.push(plan.shots);
+      }
+    }
+    const headlines = [
+      "A mug for slow mornings",
+      "Your desk coffee companion",
+      "Coffee that travels with you",
+      "Easy grip for busy days",
+      "Pour, sip and repeat",
+      "The mug that fits your day",
+      "Made for your daily coffee",
+      "Morning coffee done right",
+    ];
+    const callsToAction = ["Get yours", "See the mug"];
+    const input: GeneratePackInput = {
+      ...baseInput,
+      channels: ["meta", "pinterest", "tiktok"],
+      creditBudget: 60,
+      output: adsOutput({ extras: { ads: true, scenes: false } }),
+    };
+    const plainStore = new PlanStore();
+    const plain = await runGeneratePack(input, makeDeps({ store: plainStore }));
+    const copy = new MockProvider({
+      name: "mock-copy",
+      tasks: [copyKey],
+      output: { ...demoAplusCopy, ads: { headlines, callsToAction } },
+    });
+    const store = new PlanStore();
+    const summary = await runGeneratePack({ ...input, jobId: "job-ad-copy" }, makeDeps({ ai: makeAi({ copy }), store }));
+    expect(summary.state).toBe("done");
+    expect(copy.calls).toHaveLength(1);
+    const variants = store.plans[0].filter((s) => s.type === "ad_variant");
+    expect(variants.length).toBeGreaterThan(0);
+    for (const variant of variants) {
+      expect(headlines).toContain(variant.headline);
+      expect(callsToAction).toContain(variant.cta);
+    }
+    // Only words change: the same shots, channels and credits as the planner's.
+    const shape = (shots: Shot[]) => shots.map((s) => [s.id, s.type, s.channels.join(","), s.credits]);
+    expect(shape(store.plans[0])).toEqual(shape(plainStore.plans[0]));
+    expect(summary.chargedCredits).toBe(plain.chargedCredits);
+  });
+
+  it("adds the deterministic plan's ads formats to an LLM plan", () => {
+    const main: Shot = {
+      id: "s1",
+      type: "amazon_main",
+      sourceMediaId: "m1",
+      method: "deterministic",
+      channels: ["amazon.main"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 1,
+    };
+    const ad: Shot = { ...main, id: "s9_ad_variant", type: "ad_variant", method: "template", channels: ["tiktok.ad_9x16"], variantKey: "v1" };
+    const fallback = { shots: [main, ad], skipped: [{ type: "ad_variant:meta.feed_4x5", reason: "short" }] };
+    const merged = withAdsShots({ shots: [main], skipped: [] }, fallback);
+    expect(merged.shots.map((s) => s.type)).toEqual(["amazon_main", "ad_variant"]);
+    expect(merged.skipped).toEqual([{ type: "ad_variant:meta.feed_4x5", reason: "short" }]);
+    expect(withAdsShots({ shots: [main], skipped: [] }, null).shots).toEqual([main]);
+  });
+
+  it("runs a scene carousel's first slide before its other slides, and returns outcomes in plan order", async () => {
+    const slide = (i: number, method: Shot["method"]): Shot => ({
+      id: `c${i}-${method}`,
+      type: "carousel_slide",
+      sourceMediaId: "m1",
+      method,
+      channels: ["meta.feed_4x5"],
+      stylePreset: "none",
+      credits: 0,
+      priority: 7,
+      carouselId: "c1",
+      slideIndex: i,
+      slideCount: 3,
+    });
+    const other: Shot = { ...slide(1, "template"), id: "social", type: "social_4x5" };
+    const scenes = [slide(1, "composite_generate"), slide(2, "composite_generate"), other, slide(3, "composite_generate")];
+    const [first, second] = carouselRunOrder(scenes);
+    expect(first.map((s) => s.id)).toEqual(["c1-composite_generate", "social"]);
+    expect(second.map((s) => s.id)).toEqual(["c2-composite_generate", "c3-composite_generate"]);
+    // Template carousels need no second pass.
+    expect(carouselRunOrder([slide(1, "template"), slide(2, "template")])[1]).toEqual([]);
+
+    const calls: string[][] = [];
+    const outcomes = await runInCarouselOrder(scenes, { jobId: "j", workspaceId: "w" }, async (shots) => {
+      calls.push(shots.map((s) => s.id));
+      return shots.map((s) => ({ shotId: s.id }) as ShotOutcome);
+    });
+    expect(calls).toEqual([
+      ["c1-composite_generate", "social"],
+      ["c2-composite_generate", "c3-composite_generate"],
+    ]);
+    expect(outcomes.map((o) => o.shotId)).toEqual(scenes.map((s) => s.id));
+  });
+
+  it("ships no carousel slide and charges none when one slide fails QC", async () => {
+    // Slide 1 fails QC (far below the spec's minimum size); the others pass.
+    const demo = new DemoShotGenerator();
+    const generator: ShotGenerator = {
+      generate: async (args) =>
+        args.shot.type === "carousel_slide" && args.shot.slideIndex === 1
+          ? {
+              image: solidCanvas(64, 64, 255, 255, 255),
+              mask: null,
+              encoded: { buffer: Buffer.from("stub"), format: "png" },
+              costMicros: 0,
+            }
+          : demo.generate(args),
+    };
+    const input: GeneratePackInput = {
+      ...baseInput,
+      channels: ["meta", "pinterest", "tiktok"],
+      creditBudget: 60,
+      output: adsOutput({ extras: { ads: true, scenes: false } }),
+    };
+    const whole = await runGeneratePack(input, makeDeps());
+    const wholeSlides = (await packReport(whole)).filter((f) => f.file.startsWith("carousel/")).length;
+    expect(wholeSlides).toBeGreaterThanOrEqual(3);
+
+    const deps = makeDeps({ generator });
+    const summary = await runGeneratePack({ ...input, jobId: "job-carousel-broken" }, deps);
+    expect(summary.state).toBe("done");
+    const files = await packReport(summary);
+    expect(files.some((f) => f.file.startsWith("carousel/"))).toBe(false);
+    const slides = deps.store.assets.filter((a) => a.shotType === "carousel_slide");
+    expect(slides.length).toBe(wholeSlides);
+    expect(slides.every((a) => a.status === "needs_review")).toBe(true);
+    expect(summary.chargedCredits).toBe(whole.chargedCredits - wholeSlides * creditCosts.deterministic);
+  });
+
+  it("finds the passing slides of a carousel that lost one, scene or template", () => {
+    const slide = (i: number, carouselId = "c1"): Shot => ({
+      id: `${carouselId}-${i}`,
+      type: "carousel_slide",
+      sourceMediaId: "m1",
+      method: "composite_generate",
+      channels: ["meta.feed_4x5"],
+      stylePreset: "none",
+      credits: i === 1 ? creditCosts.generativeStill : 0,
+      priority: 7,
+      carouselId,
+      slideIndex: i,
+      slideCount: 3,
+    });
+    const other: Shot = { ...slide(1), id: "social", type: "social_4x5", carouselId: undefined };
+    const shots = [slide(1), slide(2), slide(3), other];
+    const status = (failed: string[]) =>
+      shots.map((s) => ({ shotId: s.id, status: failed.includes(s.id) ? ("needs_review" as const) : ("passed" as const) }));
+    expect([...brokenCarouselSlides(shots, status(["c1-1"]))].sort()).toEqual(["c1-2", "c1-3"]);
+    expect([...brokenCarouselSlides(shots, status(["c1-3"]))].sort()).toEqual(["c1-1", "c1-2"]);
+    expect(brokenCarouselSlides(shots, status([])).size).toBe(0);
+    expect(brokenCarouselSlides(shots, status(["social"])).size).toBe(0);
+    // A slide that never ran counts as lost.
+    expect([...brokenCarouselSlides(shots, status([]).filter((o) => o.shotId !== "c1-2"))].sort()).toEqual([
+      "c1-1",
+      "c1-3",
+    ]);
+  });
+
+  it("drops a whole carousel when the budget cannot keep every slide", () => {
+    const slides: Shot[] = [1, 2, 3].map((i) => ({
+      id: `c${i}`,
+      type: "carousel_slide",
+      sourceMediaId: "m1",
+      method: "template",
+      channels: ["meta.feed_4x5"],
+      stylePreset: "none",
+      credits: creditCosts.deterministic,
+      priority: 7,
+      carouselId: "c1",
+      slideIndex: i,
+      slideCount: 3,
+    }));
+    const flags = runPlanFlags(adsOutput({ extras: { ads: true } }), [{ mediaId: "m1" }]);
+    const fitted = fitShotsToChannels(
+      { shots: slides.map((s) => ({ ...s })), skipped: [] },
+      {
+        channels: ["meta.feed_4x5"],
+        mode: "listing",
+        budget: creditCosts.deterministic * 2,
+        profile: demoProfile,
+        primaryMediaId: "m1",
+        output: flags,
+      },
+    );
+    expect(fitted.shots.filter((s) => s.type === "carousel_slide")).toEqual([]);
+    expect(fitted.skipped.filter((s) => s.type === "carousel_slide").length).toBe(3);
+  });
+});
+
 describe("audit trigger fixes: LLM calls", () => {
   it("asks for emit_result with tool_choice auto, which every seeded model accepts", async () => {
     const intake = new MockProvider({ name: "mock-intake", tasks: [intakeKey], output: intakeFixture });
@@ -3815,7 +4254,9 @@ describe("audit trigger fixes: LLM plans get one method per type and only specs 
       hasComparisonFacts: true,
       hasVideoSource: true,
     });
-    const planned = plan.shots.filter((s) => s.type !== "original_photo");
+    // The kept photo, the A+ modules and the ads formats (PHASE_16) are
+    // never planned by the LLM, so only the LLM shot types are held here.
+    const planned = plan.shots.filter((s) => LlmShot.shape.type.safeParse(s.type).success);
     expect(planned.length).toBeGreaterThan(5);
     for (const s of planned) {
       expect(SHOT_TYPE_RULES[s.type as keyof typeof SHOT_TYPE_RULES].method, s.type).toBe(s.method);

@@ -12,6 +12,8 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { sql, uploadPreflights, type Db, type UploadPreflight } from "@curvi/db";
+import { resolveSellerAnswers, SellerQuestion, type SellerAnswers } from "@curvi/pipeline/questions";
+import { channelChoices, moodChoices, questionSet } from "@curvi/pipeline/seed";
 import type { UploadPreflightArgs, UploadPreflightRun } from "@curvi/trigger/preflight";
 import { noteKey, PREFLIGHT_FRESH_MS, type PreflightIntake } from "@curvi/trigger/preflight-intake";
 import { isWorkspaceKey } from "@/lib/r2";
@@ -106,6 +108,75 @@ export function preflightProductBoxOf(
   const [bx, by, bw, bh] = numbers as number[];
   const inside = bx >= 0 && by >= 0 && bw > 0 && bh > 0 && bx + bw <= 1.0001 && by + bh <= 1.0001;
   return inside ? { x: bx, y: by, width: bw, height: bh } : undefined;
+}
+
+/**
+ * The questions the preflight asked about an upload (upload_preflights.result
+ * questions, PHASE_16 workstream 4), each read with the shared schema; an
+ * entry out of shape is left out. Any age: the seller answered the questions
+ * the form showed, which are the row's latest.
+ */
+export function preflightQuestionsOf(row: UploadPreflight | undefined): SellerQuestion[] {
+  if (!row || row.status === "blocked" || row.status === "unavailable") {
+    return [];
+  }
+  const raw = (row.result as { questions?: unknown } | null | undefined)?.questions;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.flatMap((entry) => {
+    const parsed = SellerQuestion.safeParse(entry);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
+/**
+ * The seller's answers for a pack (generation_jobs.seller_answers): the taps
+ * sent with the pack, resolved against the questions stored for the upload
+ * they were asked about. The upload must be one of the pack's photos; a tap
+ * that matches no stored option is dropped, so every label is the server's.
+ * Null when nothing is left, which is also a skipped step.
+ */
+export function sellerAnswersFor(
+  preflights: ReadonlyMap<string, UploadPreflight>,
+  packKeys: readonly string[],
+  sent: { key: string; picks: Record<string, string> } | undefined,
+): SellerAnswers | null {
+  if (!sent || !packKeys.includes(sent.key)) {
+    return null;
+  }
+  return resolveSellerAnswers(preflightQuestionsOf(preflights.get(sent.key)), sent.picks);
+}
+
+/**
+ * The questions a caller with no upload preflight may answer (the v1 API
+ * and MCP): channels and mood, each offering every seed choice, so any
+ * seed value resolves. Target, use and audience need the photo's inventory
+ * or model written options and are never offered here.
+ */
+export function choiceQuestions(): SellerQuestion[] {
+  return [
+    {
+      id: "channels",
+      kind: "channels",
+      options: [
+        ...channelChoices.map((c) => ({ value: c.value, label: c.label })),
+        { value: questionSet.allOption.value, label: questionSet.allOption.manyLabel },
+      ],
+    },
+    { id: "mood", kind: "mood", options: moodChoices.map((m) => ({ value: m.value, label: m.label })) },
+  ];
+}
+
+/** Answers sent by value with no preflight, resolved against choiceQuestions. */
+export function sellerAnswersFromChoices(sent: { channels?: string; mood?: string } | undefined): SellerAnswers | null {
+  if (!sent) {
+    return null;
+  }
+  const picks: Record<string, string> = {};
+  if (sent.channels !== undefined) picks.channels = sent.channels;
+  if (sent.mood !== undefined) picks.mood = sent.mood;
+  return resolveSellerAnswers(choiceQuestions(), picks);
 }
 
 /**

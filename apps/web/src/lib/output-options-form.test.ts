@@ -147,7 +147,9 @@ describe("the output options reducer", () => {
       type: "background",
       background: "remove",
     });
-    expect(EXTRA_FAMILY_KEYS.every((f) => on.choices.extras[f])).toBe(true);
+    // Every family but ads, which starts off in every look (PHASE_16 workstream 3).
+    expect(EXTRA_FAMILY_KEYS.filter((f) => f !== "ads").every((f) => on.choices.extras[f])).toBe(true);
+    expect(on.choices.extras.ads).toBeUndefined();
     // Flipping to the side it is already on changes nothing.
     const same = initialOutputForm();
     expect(outputFormReducer(same, { type: "background", background: "remove" })).toBe(same);
@@ -495,6 +497,7 @@ describe("analytics", () => {
       extras_off: 5,
       kept_photos: 3,
       fit: "auto",
+      bundle: "everything",
     });
     expect(JSON.stringify(props)).not.toMatch(/#[0-9A-F]{6}/i);
     // The caller counts kept photos after each photo's own background, so a

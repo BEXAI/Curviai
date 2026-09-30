@@ -37,10 +37,28 @@ import {
   type SpendCaps,
 } from "@curvi/ai";
 import { createHash } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import {
   applyAddedOverlays,
+  applyAplusCopy,
   applyOriginalSizes,
+  aplusCopyRequest,
+  AplusCopyResult,
   badgeEligible,
+  capAplusModules,
+  CAROUSEL_INCOMPLETE_REASON,
+  dropIncompleteCarousels,
+  isAdsShotType,
+  packGroupFor,
+  isAplusModuleType,
+  needsAplusCopy,
+  applyAdCopy,
+  needsAdCopy,
+  packCopyRequest,
+  PackCopyResult,
+  NO_ENDORSEMENT_REASON,
+  printableEndorsements,
   applyBrandStylePreset,
   buildPack,
   capSceneCount,
@@ -50,6 +68,7 @@ import {
   lifestyleScenesFor,
   reservedSlotsFor,
   sellerOffShotTypes,
+  skipBundleOffShots,
   skipSellerOffShots,
   uprightSize,
   CHANNEL_LIMIT_REASON,
@@ -94,6 +113,13 @@ import {
   matchProducts,
   itemLabel,
   noteSignals,
+  answerFor,
+  answerScenePreset,
+  applySceneAnswers,
+  intentWithAnswers,
+  parseSellerAnswers,
+  profileWithAnswers,
+  type SellerAnswers,
   unionBox,
   needsVisionPick,
   pickerNumbering,
@@ -126,16 +152,20 @@ import {
   planFlagsOf,
   ResolvedOutputOptions,
   sceneCountOf,
+  scenePresetOf,
   SELLER_OFF_REASON,
   specAcceptsImage,
   type OutputPlanFlags,
   type PlannedImageKind,
 } from "@curvi/pipeline/output-options";
 import {
+  adCopyRecipe,
+  aplusCopyRecipe,
   creditCosts,
   HARMONIZE_TASK,
   CUTOUT_TASK,
   qcJudgePolicy,
+  questionSet,
   recipeSeedRows,
   SCENE_PLATE_TASK,
   sceneCountOptions,
@@ -144,6 +174,7 @@ import {
   type TierKey,
 } from "@curvi/pipeline/seed";
 import { PackAssetTreatment } from "@curvi/pipeline/treatment";
+import { applyVariations, expandVariations, isExtraVariation } from "@curvi/pipeline/variations";
 import {
   getSpec,
   hasSpec,
@@ -159,6 +190,7 @@ import { isWorkspaceObjectKey } from "./object-keys";
 import {
   llmModelProviderName,
   recipeFor,
+  seedRecipe,
   recipeVariantsOf,
   seedJobRecipes,
   type JobRecipes,
@@ -202,6 +234,10 @@ export const SHOT_CHANNEL_FULL =
   "This channel already has as many images as it allows, so this one was left out of the pack and not charged.";
 /** Plain copy for a passing shot the packager left out for another reason. */
 export const SHOT_NOT_DELIVERED = "This image could not be added to the pack, so it was left out and not charged.";
+/** Plain copy for a passing carousel slide left out because another slide
+ * of its carousel could not be made (a carousel ships whole or not at all). */
+export const SHOT_CAROUSEL_INCOMPLETE =
+  "Another slide in this carousel could not be made, so this slide was left out and not charged.";
 /** Skipped reason for shots whose method no live provider delivers yet. */
 export const PROVIDER_NOT_ENABLED = "provider not enabled";
 /** Skipped reason for shots none of whose channel specs the seller picked. */
@@ -327,6 +363,26 @@ export interface StoredPack {
   channels: string[];
   files: number;
   reportPath: string;
+  /** The extra versions of lifestyle scenes (PHASE_16 workstream 6), one
+   * batch per version number. They are stored unpicked, never zipped and
+   * never counted in files; the seller picks which ones ship. */
+  variations?: StoredVariationFiles[];
+}
+
+/** The files of one extra scene version number, as buildPack wrote them
+ * under outDir/files/{channel}/{file}. */
+export interface StoredVariationFiles {
+  variation: number;
+  outDir: string;
+  files: Array<{
+    file: string;
+    channel: string;
+    specId: string;
+    /** The extra version's shot id. */
+    ref: string;
+    width: number | null;
+    height: number | null;
+  }>;
 }
 
 /** Minimal persistence interface. The app wires this to @curvi/db; tests and
@@ -1148,6 +1204,10 @@ export interface GeneratePackInput {
   /** Comparison facts the seller can back up, printed on the comparison
    * image; a non empty list implies hasComparisonFacts. */
   comparisonFacts?: string[];
+  /** Press quotes or awards the seller typed for the A+ endorsement module
+   * (PHASE_16 workstream 2), one per line, printed exactly as typed. Without
+   * one the module is skipped; a model never writes one. */
+  endorsements?: string[];
   hasVideoSource?: boolean;
   /** Workspace brand kit colors (hex), for brand colored stills. */
   brandColors?: string[];
@@ -1164,6 +1224,13 @@ export interface GeneratePackInput {
    * Absent means today's pack. Parsed again with the shared schema at the
    * start of the run: anything else fails the job before any spend. */
   output?: ResolvedOutputOptions;
+  /** The seller's answers to the question step (PHASE_16 workstream 4,
+   * generation_jobs.seller_answers), resolved by the web app against the
+   * stored questions. Read with the shared schema (parseSellerAnswers):
+   * answers only ever help, so an unreadable value is dropped, never a
+   * reason to fail the pack. They outweigh the note in the product choice,
+   * the seller intent and the scenes. */
+  sellerAnswers?: SellerAnswers;
 }
 
 /** Job error when the payload's output options fail the shared schema or
@@ -1514,6 +1581,19 @@ export function sellerWroteNote(note: string | null | undefined, intent: SellerI
   return (note ?? "").trim().length > 0 || !!intent?.featureOnly?.trim() || (intent?.exclude.length ?? 0) > 0;
 }
 
+/** The job's seller answers read with the shared schema, or null (none, or
+ * out of shape, which is logged and ignored). */
+export function jobSellerAnswers(input: Pick<GeneratePackInput, "jobId" | "sellerAnswers">): SellerAnswers | null {
+  if (input.sellerAnswers === undefined || input.sellerAnswers === null) {
+    return null;
+  }
+  const answers = parseSellerAnswers(input.sellerAnswers);
+  if (!answers) {
+    console.warn(`[runner] job ${input.jobId} seller answers failed the shared schema; running on the note alone`);
+  }
+  return answers;
+}
+
 /**
  * Picks the product each photo is for from the product inventory first, and
  * from intake alone (selectTargets) for photos without one: the demo
@@ -1533,13 +1613,17 @@ export function inventorySelection(
   note: string | undefined,
   jobId: string,
   picks: ReadonlyMap<string, VisionPick> = new Map(),
+  answers: SellerAnswers | null = null,
 ): { selection: TargetSelection; photos: PhotoInventoryResult[] } {
   const legacy = selectTargets(intake, judged, jobId);
   const selection: TargetSelection = { targets: { ...legacy.targets }, ambiguous: [...legacy.ambiguous] };
   const photos: PhotoInventoryResult[] = [];
   const mapped = intake.images.length === judged.length;
   const signals = noteSignals(note, intake.sellerIntent ?? null);
-  const noteGiven = sellerWroteNote(note, intake.sellerIntent ?? null);
+  // The seller's target answer (PHASE_16 workstream 4) outweighs the note
+  // on every photo; the chooser tap on its own photo still wins over it.
+  const answer = answerFor(answers?.target, questionSet.allOption.value);
+  const noteGiven = sellerWroteNote(note, intake.sellerIntent ?? null) || answer !== null;
   judged.forEach((photo, i) => {
     const inventory = cutouts.get(photo.mediaId);
     const image = mapped ? intake.images[i] : undefined;
@@ -1553,6 +1637,7 @@ export function inventorySelection(
       signals,
       multiItem: !!photo.angle && MULTI_ITEM_ANGLES.has(photo.angle),
       chosenBox: photo.targetBox ?? null,
+      answer,
     };
     let decision = chooseInventoryTarget(choiceInput);
     // The vision tie breaker, when the rules could not decide and the
@@ -2722,6 +2807,7 @@ async function packAssetFor(
     ref: shot.id,
     digitalSource: digitalSourceFor(shot.method, ctx.mode),
     ...(treatment ? { treatment } : {}),
+    ...(packGroupFor(shot) ? { group: packGroupFor(shot) } : {}),
     ...(generation.passthrough ? { passthroughSha256: generation.passthrough.sha256 } : {}),
   };
 }
@@ -3231,10 +3317,22 @@ export function validateLlmShotList(raw: unknown, rules: LlmPlanRules): LlmPlanC
     const method = SHOT_TYPE_RULES[shot.type].method;
     return shot.method === method ? shot : { ...shot, method };
   });
+  const enabled: Shot[] = [];
   for (const shot of packshotsFixed) {
     if (excluded.has(shot.method)) {
       skipped.push({ type: shot.type, reason: PROVIDER_NOT_ENABLED });
-    } else if (off.has(shot.type)) {
+    } else {
+      enabled.push(shot);
+    }
+  }
+  // Shots outside the pack's bundle (PHASE_16) are skipped with
+  // BUNDLE_OFF_REASON before every check, as fitShotsToChannels would skip
+  // them, so a plan that names lifestyle or A+ shots under a smaller set is
+  // trimmed, not rejected and paid for twice. The bundle picks a smaller
+  // set, so these never ask for cover.
+  const inBundle = skipBundleOffShots(enabled, rules.output, skipped);
+  for (const shot of inBundle) {
+    if (off.has(shot.type)) {
       // The seller turned this family off: skipped before every check, so a
       // plan that follows the recipe is neither rejected nor charged for it.
       skipped.push({ type: shot.type, reason: SELLER_OFF_REASON, channels: pickedOf(shot) });
@@ -3447,6 +3545,7 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
     shots.push({ ...shot, channels: kept });
   }
   shots = skipSellerOffShots(shots, opts.output, skipped);
+  shots = capAplusModules(shots, skipped);
   shots = capSceneCount(shots, opts.output, skipped);
   shots = applyOriginalSizes(shots, opts.output, skipped);
   shots = applyAddedOverlays(shots, opts.output, skipped);
@@ -3479,7 +3578,12 @@ export function fitShotsToChannels(plan: RunnerPlan | ShotList, opts: FitOptions
 
   shots = coverSellerOffSpecs(shots, skipped, opts.output, { frontMediaId: opts.primaryMediaId, frontUsable });
   shots = capShotsPerChannel(shots, skipped, reservedSlotsFor(shots, sceneCountOf(opts.output)));
+  // Scene variations (PHASE_16 workstream 6): the extra versions join each
+  // lifestyle shot's credits before the trim, as in planShots.
+  shots = applyVariations(shots, opts.output);
   shots = trimShotsToBudget(shots, opts.budget, skipped);
+  // A carousel ships whole or not at all (PHASE_16 workstream 3).
+  shots = dropIncompleteCarousels(shots, skipped);
 
   // Shot ids key the ledger charges; a duplicate would hold credits forever.
   const seen = new Set<string>();
@@ -3538,17 +3642,31 @@ export function deterministicPlan(profile: ProductProfile, options: RunnerPlanOp
   return fitShotsToChannels(planShots(profile, everything), fit);
 }
 
-/** The seller's printable lines for the in_the_box and comparison images. */
+/** The seller's printable lines for the in_the_box, comparison and A+
+ * endorsement images. */
 export interface SellerCopy {
   boxContents: string[];
   comparisonFacts: string[];
+  endorsements: string[];
 }
 
-export function sellerCopyOf(input: Pick<GeneratePackInput, "boxContents" | "comparisonFacts">): SellerCopy {
+export function sellerCopyOf(
+  input: Pick<GeneratePackInput, "boxContents" | "comparisonFacts" | "endorsements">,
+): SellerCopy {
   return {
     boxContents: printableSellerLines(input.boxContents),
     comparisonFacts: printableSellerLines(input.comparisonFacts),
+    endorsements: printableEndorsements(input.endorsements),
   };
+}
+
+/** Reason withSellerCopy records for a seller line shot without lines. */
+function noSellerLinesReason(type: Shot["type"]): string {
+  return type === "in_the_box"
+    ? NO_BOX_CONTENTS_REASON
+    : type === "comparison"
+      ? NO_COMPARISON_FACTS_REASON
+      : NO_ENDORSEMENT_REASON;
 }
 
 /**
@@ -3564,19 +3682,146 @@ export function withSellerCopy(plan: ShotList, copy: SellerCopy): ShotList {
   const shots: Shot[] = [];
   for (const shot of plan.shots) {
     const lines =
-      shot.type === "in_the_box" ? copy.boxContents : shot.type === "comparison" ? copy.comparisonFacts : null;
+      shot.type === "in_the_box"
+        ? copy.boxContents
+        : shot.type === "comparison"
+          ? copy.comparisonFacts
+          : shot.type === "aplus_endorsement"
+            ? copy.endorsements
+            : null;
     if (lines === null) {
       shots.push(shot);
     } else if (lines.length > 0) {
       shots.push({ ...shot, callouts: [...lines] });
     } else {
-      skipped.push({
-        type: shot.type,
-        reason: shot.type === "in_the_box" ? NO_BOX_CONTENTS_REASON : NO_COMPARISON_FACTS_REASON,
-      });
+      skipped.push({ type: shot.type, reason: noSellerLinesReason(shot.type) });
     }
   }
   return { shots, skipped };
+}
+
+/**
+ * Adds the deterministic plan's A+ module shots to an LLM plan (PHASE_16
+ * workstream 2): the shot planner recipe never plans modules (LlmShot leaves
+ * them out), so without this an LLM plan would never carry one and a pack's
+ * modules would depend on which planner ran. The modules go right after the plan's first
+ * A+ banner, so the page's module cap (capAplusModules) drops a second
+ * banner before a module; a plan with no banner gets them at the end. The
+ * fallback's skipped module entries come along, so the board says why a
+ * module is missing. fitShotsToChannels makes the ids unique. Pure.
+ */
+export function withAplusModules(plan: RunnerPlan, fallback: ShotList | null): RunnerPlan {
+  if (!fallback) {
+    return plan;
+  }
+  const modules = fallback.shots.filter((shot) => isAplusModuleType(shot.type));
+  const moduleSkips = fallback.skipped.filter((entry) => isAplusModuleType(entry.type));
+  if (modules.length === 0 && moduleSkips.length === 0) {
+    return plan;
+  }
+  const banner = plan.shots.findIndex((shot) => shot.type === "aplus_banner");
+  const at = banner >= 0 ? banner + 1 : plan.shots.length;
+  return {
+    shots: [...plan.shots.slice(0, at), ...modules.map((shot) => ({ ...shot })), ...plan.shots.slice(at)],
+    skipped: [...plan.skipped, ...moduleSkips],
+  };
+}
+
+/**
+ * Adds the deterministic plan's ads formats (PHASE_16 workstream 3: the
+ * moodboard pin, the carousel slides and the ad variants) to an LLM plan,
+ * at its end, with their skipped entries. The shot planner recipe never
+ * plans them (LlmShot leaves them out), so without this a pack's ads would
+ * depend on which planner ran. fitShotsToChannels makes the ids unique. Pure.
+ */
+export function withAdsShots(plan: RunnerPlan, fallback: ShotList | null): RunnerPlan {
+  if (!fallback) {
+    return plan;
+  }
+  const ads = fallback.shots.filter((shot) => isAdsShotType(shot.type));
+  const adsSkips = fallback.skipped.filter((entry) => isAdsShotType(entry.type.split(":")[0] ?? ""));
+  if (ads.length === 0 && adsSkips.length === 0) {
+    return plan;
+  }
+  return {
+    shots: [...plan.shots, ...ads.map((shot) => ({ ...shot }))],
+    skipped: [...plan.skipped, ...adsSkips],
+  };
+}
+
+/**
+ * The order the fan out runs a pack's shots in (founder decision 4): a
+ * carousel with a scene layer makes that layer once, on its first slide, so
+ * its other slides wait for a second pass; every other shot runs in the
+ * first. Returns the passes, the second empty for a pack without one.
+ */
+export function carouselRunOrder(shots: readonly Shot[]): [Shot[], Shot[]] {
+  const later = (shot: Shot): boolean =>
+    shot.type === "carousel_slide" && COMPOSITE_METHODS.has(shot.method) && (shot.slideIndex ?? 1) > 1;
+  return [shots.filter((shot) => !later(shot)), shots.filter(later)];
+}
+
+/**
+ * The passing carousel slides that must not ship (PHASE_16 workstream 3: a
+ * carousel ships whole or not at all): every passing slide of a carousel
+ * whose other slide ended in needs review, or never ran. The plan time
+ * check (dropIncompleteCarousels) cannot see a slide that fails QC, and a
+ * scene carousel's later slides pass on the layer its failed first slide
+ * made, at no charge of their own. Pure.
+ */
+export function brokenCarouselSlides(
+  shots: readonly Shot[],
+  outcomes: ReadonlyArray<Pick<ShotOutcome, "shotId" | "status">>,
+): Set<string> {
+  const passed = new Set(outcomes.filter((o) => o.status === "passed").map((o) => o.shotId));
+  const slides = shots.filter((shot) => shot.type === "carousel_slide" && shot.carouselId && passed.has(shot.id));
+  if (slides.length === 0) {
+    return new Set();
+  }
+  const whole = new Set(dropIncompleteCarousels(slides, []).map((shot) => shot.id));
+  return new Set(slides.filter((shot) => !whole.has(shot.id)).map((shot) => shot.id));
+}
+
+/** Runs shots through the fan out in carouselRunOrder and returns the
+ * outcomes in the shots' own order. */
+export async function runInCarouselOrder(
+  shots: Shot[],
+  ctx: ShotContext,
+  runShots: (shots: Shot[], ctx: ShotContext) => Promise<ShotOutcome[]>,
+): Promise<ShotOutcome[]> {
+  const [first, second] = carouselRunOrder(shots);
+  if (second.length === 0) {
+    return runShots(shots, ctx);
+  }
+  const outcomes = [...(await runShots(first, ctx)), ...(await runShots(second, ctx))];
+  const byId = new Map(outcomes.map((outcome) => [outcome.shotId, outcome]));
+  return shots.map((shot) => byId.get(shot.id)).filter((outcome): outcome is ShotOutcome => outcome !== undefined);
+}
+
+/**
+ * The copy_generator recipe the A+ copy step runs: the job's assignment
+ * when it is version 2 or later (aplusCopyRecipe), else the compiled seed,
+ * so a worker ahead of the re-seed never sends module slots to the
+ * version 1 prompt.
+ */
+export function aplusCopyRecipeFor(recipes: JobRecipes | undefined): ResolvedRecipe {
+  const assigned = recipeFor(recipes, "copy");
+  return assigned.key === aplusCopyRecipe.key && assigned.version >= aplusCopyRecipe.minVersion
+    ? assigned
+    : seedRecipe("copy");
+}
+
+/** Every string the seller typed for this pack: the claims guard allows a
+ * figure or a claim word in generated copy only when it appears here. */
+export function sellerTextOf(
+  input: Pick<GeneratePackInput, "userDescription" | "boxContents" | "comparisonFacts" | "endorsements">,
+): string[] {
+  return [
+    input.userDescription ?? "",
+    ...(input.boxContents ?? []),
+    ...(input.comparisonFacts ?? []),
+    ...(input.endorsements ?? []),
+  ].filter((text) => text.trim().length > 0);
 }
 
 /** Default wait before the one delayed retry of transiently failed shots. */
@@ -3870,10 +4115,12 @@ export async function runGeneratePack(
     if (!intake.value) {
       throw new Error("Intake response failed schema validation");
     }
-    // The seller's note as structured intent (intake version 3), kept on
-    // the job so follow ups and retries keep it. Data only: never a reason
-    // to fail the pack.
-    const sellerIntent = intake.value.sellerIntent;
+    // The seller's note as structured intent (intake version 3), with the
+    // question step's answers over it (PHASE_16 workstream 4), kept on the
+    // job so follow ups and retries keep it. Data only: never a reason to
+    // fail the pack.
+    const answers = jobSellerAnswers(input);
+    const sellerIntent = intentWithAnswers(intake.value.sellerIntent, answers) ?? undefined;
     if (sellerIntent) {
       try {
         await store.saveSellerIntent?.(input.jobId, sellerIntent);
@@ -3954,6 +4201,8 @@ export async function runGeneratePack(
       cutouts,
       input.userDescription,
       input.jobId,
+      new Map(),
+      answers,
     );
     // The vision tie breaker: a photo of 2 to 6 pieces the rules left
     // ambiguous or in conflict, with a note to go on, is shown to the
@@ -3996,6 +4245,7 @@ export async function runGeneratePack(
         input.userDescription,
         input.jobId,
         picks,
+        answers,
       ));
     }
     if (inventoryPhotos.length > 0) {
@@ -4041,10 +4291,15 @@ export async function runGeneratePack(
       throw new Error(moderationBlockedMessage(profileBlock));
     }
     // A photo the seller marked with a role is that angle, whatever the
-    // analyzer saw, so the planner plans it from that exact photo.
-    const profile = withSellerAngles(
-      analysis.value,
-      images.map((image) => image.angle),
+    // analyzer saw, so the planner plans it from that exact photo. The
+    // answered mood, use and audience lead the scenes and the buyer
+    // (PHASE_16 workstream 4), on both planners.
+    const profile = profileWithAnswers(
+      withSellerAngles(
+        analysis.value,
+        images.map((image) => image.angle),
+      ),
+      answers,
     );
     await store.saveProfile?.(input.jobId, profile);
 
@@ -4142,7 +4397,10 @@ export async function runGeneratePack(
       : { ok: false, reason: plannerUnavailable ?? KEPT_PHOTO_PLAN_REJECTION };
     let chosen: ShotList | null = null;
     if (check.ok) {
-      const fitted = fitShotsToChannels(fillSceneCount(check.shotList, profile, flags), fit);
+      const fitted = fitShotsToChannels(
+        fillSceneCount(withAdsShots(withAplusModules(check.shotList, fallback), fallback), profile, flags),
+        fit,
+      );
       const fittedSpecs = coveredSpecs(fitted.shots);
       const uncovered = fallback ? [...coveredSpecs(fallback.shots)].filter((specId) => !fittedSpecs.has(specId)) : [];
       if (uncovered.length === 0) {
@@ -4168,14 +4426,82 @@ export async function runGeneratePack(
       chosen = fallback;
       plannerSource = "deterministic";
     }
-    // The seller's scene style for this pack, else the brand kit's style
-    // preset, replaces the planner's category pick on every shot that uses a
-    // preset (PHASE_15 P1).
-    const shotList: ShotList = withSellerCopy(
-      applyBrandStylePreset(chosen, input.brand?.stylePreset, profile, output?.scenePreset),
+    // The seller's scene style for this pack, else the answered mood's
+    // preset (PHASE_16 workstream 4), else the brand kit's style preset,
+    // replaces the planner's category pick on every shot that uses a preset
+    // (PHASE_15 P1). The answered scenes lead the lifestyle shots.
+    const scenePreset = scenePresetOf(output) ?? answerScenePreset(answers);
+    let shotList: ShotList = withSellerCopy(
+      applyBrandStylePreset(applySceneAnswers(chosen, answers), input.brand?.stylePreset, profile, scenePreset),
       sellerCopy,
     );
-    plannedShots = shotList.shots.length;
+    // A+ module copy (PHASE_16 workstream 2): one copy_generator call writes
+    // every module the plan holds, then the claims guard keeps only lines
+    // with no figure or claim word the seller did not type. A failed or
+    // refused call never fails the pack: a module falls back to the
+    // planner's own lines, or is skipped and never charged.
+    // Ad copy (PHASE_16 workstream 3): copy_generator version 3 or later
+    // (adCopyRecipe) also rewords the planned ad variants in the same call.
+    // applyAdCopy only swaps words, so the plan, estimate and hold stand.
+    const copyRecipe = aplusCopyRecipeFor(recipes);
+    const writesAdCopy = copyRecipe.key === adCopyRecipe.key && copyRecipe.version >= adCopyRecipe.minVersion;
+    if (needsAplusCopy(shotList.shots) || (writesAdCopy && needsAdCopy(shotList.shots))) {
+      await assertLive();
+      const ctx = { jobId: input.jobId, workspaceId: input.workspaceId, stepId: "copy" };
+      let copy: AplusCopyResult | null = null;
+      let packCopy: PackCopyResult | null = null;
+      try {
+        if (writesAdCopy) {
+          const answer = await bookedLlm(
+            llmJson<PackCopyResult>(
+              deps.ai,
+              copyRecipe,
+              PackCopyResult,
+              packCopyRequest(profile, shotList.shots, wrapUserDescription(input.userDescription)),
+              ctx,
+              undefined,
+              PackCopyResult,
+            ),
+          );
+          packCopy = answer.value;
+          copy = answer.value;
+        } else {
+          const answer = await bookedLlm(
+            llmJson<AplusCopyResult>(
+              deps.ai,
+              copyRecipe,
+              AplusCopyResult,
+              aplusCopyRequest(
+                profile,
+                shotList.shots.map((shot) => shot.type).filter(isAplusModuleType),
+                wrapUserDescription(input.userDescription),
+              ),
+              ctx,
+              undefined,
+              AplusCopyResult,
+            ),
+          );
+          copy = answer.value;
+        }
+      } catch (copyErr) {
+        console.warn(`[runner] job ${input.jobId} copy call failed; modules and ads use the planner's lines`, copyErr);
+      }
+      const sellerText = sellerTextOf(input);
+      const applied = applyAplusCopy(shotList.shots, copy, { sellerText });
+      shotList = {
+        shots: applyAdCopy(applied.shots, packCopy, { sellerText }),
+        skipped: [...shotList.skipped, ...applied.skipped],
+      };
+    }
+    // Scene variations (PHASE_16 workstream 6): each marked lifestyle shot
+    // runs as the scene itself plus one shot per extra version, each its own
+    // generation around the same real product through the same checks. The
+    // plan's credits already hold them, one generativeStill per version.
+    const runList = expandVariations(shotList.shots);
+    const extraVariationOf = new Map(
+      runList.filter(isExtraVariation).map((shot) => [shot.id, shot.variation as number] as const),
+    );
+    plannedShots = runList.length;
     skipped = [
       ...conceptExcluded.map((channel) => ({
         type: channel,
@@ -4184,7 +4510,7 @@ export async function runGeneratePack(
       ...shotList.skipped,
     ];
     try {
-      await store.savePlan?.({ jobId: input.jobId, workspaceId: input.workspaceId, shots: shotList.shots, skipped });
+      await store.savePlan?.({ jobId: input.jobId, workspaceId: input.workspaceId, shots: runList, skipped });
     } catch (planErr) {
       console.warn(`[runner] could not record the plan for job ${input.jobId}`, planErr);
     }
@@ -4267,21 +4593,47 @@ export async function runGeneratePack(
           ),
         );
       });
-    const firstPass = await runShots(shotList.shots, ctx);
-    const outcomes = await retryTransientShots(firstPass, shotList.shots, ctx, runShots, deps, runStartedAt);
+    // A carousel's scene layer is made by its first slide before the others run.
+    const ordered = (shots: Shot[], c: ShotContext) => runInCarouselOrder(shots, c, runShots);
+    const firstPass = await ordered(runList, ctx);
+    const outcomes = await retryTransientShots(firstPass, runList, ctx, ordered, deps, runStartedAt);
     costMicros += outcomes.reduce((sum, o) => sum + o.costMicros, 0);
 
     // QC accounting, part one: release every shot that needs review now.
     // Passing shots stay held until their files are delivered (below), so a
     // pack that never ships is never charged.
     await advance(transition(state, "shots_generated"));
-    const passing = outcomes.filter((o) => o.status === "passed");
+    const broken = brokenCarouselSlides(runList, outcomes);
+    const passing = outcomes.filter((o) => o.status === "passed" && !broken.has(o.shotId));
     for (const outcome of outcomes) {
       if (outcome.status !== "passed") {
         needsReview += 1;
         if (outcome.credits > 0) {
           await applyLedger(ledger.releaseForFailedShot(outcome.shotId, outcome.credits));
         }
+      }
+    }
+    // A carousel ships whole or not at all (PHASE_16 workstream 3): a slide
+    // that passed in a carousel whose other slide did not is left out and
+    // not charged, like a shot the packager left out.
+    for (const outcome of outcomes) {
+      if (!broken.has(outcome.shotId)) continue;
+      needsReview += 1;
+      if (outcome.credits > 0) {
+        await applyLedger(
+          ledger.releaseForUndeliveredShot(outcome.shotId, outcome.credits, CAROUSEL_INCOMPLETE_REASON),
+        );
+      }
+      try {
+        await store.markShotUndelivered?.({
+          jobId: input.jobId,
+          workspaceId: input.workspaceId,
+          shotId: outcome.shotId,
+          shotType: outcome.shotType,
+          reason: SHOT_CAROUSEL_INCOMPLETE,
+        });
+      } catch (markErr) {
+        console.warn(`[runner] could not mark carousel slide ${outcome.shotId} as not delivered`, markErr);
       }
     }
     // A pack fails only when nothing in it can be delivered.
@@ -4298,18 +4650,58 @@ export async function runGeneratePack(
     // atomically with the rows that deliver the pack.
     await advance(transition(state, "qc_done"));
     await assertLive();
-    const packAssets = passing
-      .flatMap((o) => o.packAssets ?? [])
-      .map((asset) => (input.socialBadge && badgeEligible(asset.specId) ? { ...asset, badge: true } : asset));
+    const badged = (outcome: ShotOutcome): ShotPackAsset[] =>
+      (outcome.packAssets ?? []).map((asset) =>
+        input.socialBadge && badgeEligible(asset.specId) ? { ...asset, badge: true } : asset,
+      );
+    // The pack ships the scene itself; an extra version waits unpicked.
+    const packAssets = passing.filter((o) => !extraVariationOf.has(o.shotId)).flatMap(badged);
     const families = [...selectedFamilies(effectiveChannels)];
+    const packIntent = enforcedIntent(targets, exclude);
+    const packInventoryPhotos = packInventory(inventoryPhotos, judgedImages);
     const built = await buildPack(packAssets, families, {
       outDir: deps.packOutDir,
       writeFiles: true,
-      intent: enforcedIntent(targets, exclude),
-      inventory: packInventory(inventoryPhotos, judgedImages),
+      intent: packIntent,
+      inventory: packInventoryPhotos,
     });
     if (built.report.files.length === 0) {
       throw new Error("None of the shots in this pack could be delivered, so nothing was charged.");
+    }
+    // Each extra version number is packaged on its own, with the same
+    // checks, so its files meet the channel rules the day the seller picks
+    // them; they never enter the channel zips.
+    const variationBatches: StoredVariationFiles[] = [];
+    const variationDropped: typeof built.report.dropped = [];
+    const extraPassing = passing.filter((o) => extraVariationOf.has(o.shotId));
+    for (const variation of [...new Set(extraPassing.map((o) => extraVariationOf.get(o.shotId)!))].sort((a, b) => a - b)) {
+      const assets = extraPassing.filter((o) => extraVariationOf.get(o.shotId) === variation).flatMap(badged);
+      const batchDir = path.join(built.outDir, "variations", `v${variation}`);
+      await mkdir(batchDir, { recursive: true });
+      const batch = await buildPack(assets, families, {
+        outDir: batchDir,
+        writeFiles: true,
+        intent: packIntent,
+        inventory: packInventoryPhotos,
+      });
+      variationDropped.push(...batch.report.dropped);
+      const files = batch.report.files.flatMap((f) =>
+        f.ref === null
+          ? []
+          : [
+              {
+                file: f.file,
+                channel: f.channel,
+                specId: f.specId,
+                ref: f.ref,
+                width: f.measured?.width ?? null,
+                height: f.measured?.height ?? null,
+              },
+            ],
+      );
+      if (files.length > 0) {
+        variationBatches.push({ variation, outDir: batch.outDir, files });
+      }
     }
     const toSave: StoredPack = {
       jobId: input.jobId,
@@ -4318,6 +4710,7 @@ export async function runGeneratePack(
       channels: built.report.channels,
       files: built.report.files.length,
       reportPath: built.reportPath,
+      ...(variationBatches.length > 0 ? { variations: variationBatches } : {}),
     };
     await assertLive();
     await store.savePack(toSave);
@@ -4329,11 +4722,14 @@ export async function runGeneratePack(
     // amazon.secondary over the channel image limit, is released like a
     // shot that needs review (Update.md 2.10, 2.12). The heartbeat keeps
     // the reconciler off the job while the charges land.
-    const delivered = new Set(
-      built.report.files.map((f) => f.ref).filter((ref): ref is string => ref !== null),
-    );
+    // An extra scene version counts as delivered once its files are stored
+    // (unpicked): the seller asked and paid for it, at the seed price.
+    const delivered = new Set([
+      ...built.report.files.map((f) => f.ref).filter((ref): ref is string => ref !== null),
+      ...variationBatches.flatMap((batch) => batch.files.map((f) => f.ref)),
+    ]);
     const droppedFor = new Map<string, string>();
-    for (const drop of built.report.dropped) {
+    for (const drop of [...built.report.dropped, ...variationDropped]) {
       if (drop.ref !== null && !droppedFor.has(drop.ref)) {
         droppedFor.set(drop.ref, drop.reason);
       }

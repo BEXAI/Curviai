@@ -217,6 +217,23 @@ export const FEATURES = {
     status: "coming_soon",
     mentions: /product URL|paste a (product )?(URL|link)/i,
   },
+  // PHASE_16 workstreams 1 to 3, live in the new pack form.
+  packBundles: { label: "Pack sets that choose how much a pack makes", status: "live" },
+  aplusModules: { label: "Amazon A+ content modules", status: "live" },
+  adsFormats: { label: "Moodboard pins, social carousels and static ad packs", status: "live" },
+  // PHASE_16 workstream 5. Flip each flag in the change that ships it: the
+  // v1 API and the MCP server together, the CLI and the skill once the CLI
+  // is published and the skill has a public home.
+  agentApi: {
+    label: "A public API and an MCP server for AI agents",
+    status: "coming_soon",
+    mentions: /Curvi API|public API|API keys?\b|\bMCP\b/i,
+  },
+  agentSkill: {
+    label: "The curvi command line tool and a Curvi skill for AI coding agents",
+    status: "coming_soon",
+    mentions: /command line|\bCLI\b|agent skill|Curvi skill/i,
+  },
 } as const satisfies Record<string, Feature>;
 
 export type FeatureKey = keyof typeof FEATURES;
@@ -263,6 +280,7 @@ const CHANNEL_NAMES: readonly { family: string; name: string }[] = [
   { family: "google", name: "Google Merchant" },
   { family: "meta", name: "Meta" },
   { family: "pinterest", name: "Pinterest" },
+  { family: "tiktok", name: "TikTok" },
 ];
 
 /**
@@ -284,6 +302,32 @@ export const CHANNEL_SPECS: readonly ChannelSpecAvailability[] = [
     status: "coming_soon",
     mentions: /A plus premium/i,
   },
+  // The standard A+ image slots (PHASE_16 workstream 2): in the registry,
+  // but no module targets them yet.
+  {
+    specId: "amazon.aplus.wide_banner",
+    files: "A plus wide banners",
+    status: "coming_soon",
+    mentions: /A plus wide banner/i,
+  },
+  {
+    specId: "amazon.aplus.single_image",
+    files: "A plus single images",
+    status: "coming_soon",
+    mentions: /A plus single image/i,
+  },
+  {
+    specId: "amazon.aplus.four_images",
+    files: "A plus four image rows",
+    status: "coming_soon",
+    mentions: /A plus four image/i,
+  },
+  {
+    specId: "amazon.aplus.quadrant_image",
+    files: "A plus quadrant images",
+    status: "coming_soon",
+    mentions: /A plus quadrant/i,
+  },
   { specId: "shopify.product", files: "product images", status: "live" },
   { specId: "shopify.hero_banner", files: "hero banners", status: "live" },
   { specId: "walmart.main", files: "main images", status: "live" },
@@ -295,7 +339,11 @@ export const CHANNEL_SPECS: readonly ChannelSpecAvailability[] = [
   { specId: "meta.feed_1x1", files: "feed squares", status: "live" },
   { specId: "meta.feed_4x5", files: "feed portraits", status: "live" },
   { specId: "meta.story_9x16", files: "stories", status: "live" },
+  // PHASE_16 workstream 3: the story card for every 9:16 placement, and the
+  // ad pack when the seller turns the ads extra on.
+  { specId: "meta.reels_9x16", files: "Reels", status: "live" },
   { specId: "pinterest.pin", files: "pins", status: "live" },
+  { specId: "tiktok.ad_9x16", files: "in feed ads", status: "live" },
 ];
 
 export function familyOf(specId: string): string {
