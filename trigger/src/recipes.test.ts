@@ -262,7 +262,8 @@ describe("dbRecipeLoader", () => {
 
   it("reads active rows, so a seeded table plus a new version is an A/B test", async () => {
     await loadRecipes(db as unknown as Db, recipeSeedRows);
-    const planner = recipeSeedRows.find((r) => r.stage === "plan" && r.active)!;
+    // The serving planner; its rollback predecessor stays at weight 0.
+    const planner = recipeSeedRows.find((r) => r.stage === "plan" && r.version === seedRecipe("plan").version)!;
     const next = planner.version + 10;
     await loadRecipes(db as unknown as Db, [
       { ...planner, version: next, fallbackModels: [], body: { system: "planner next" }, trafficPct: 50 },
@@ -283,10 +284,8 @@ describe("dbRecipeLoader", () => {
     }
     expect([...versions].sort((a, b) => a - b)).toEqual([planner.version, next]);
     const recipes = await catalog.forJob("job-1");
-    expect(recipes.intake!.models).toEqual([
-      recipeSeedRows[0].model,
-      ...(recipeSeedRows[0].fallbackModels ?? []),
-    ]);
+    expect(recipes.intake!.models).toEqual(seedRecipe("intake").models);
+    expect(recipes.intake!.version).toBe(seedRecipe("intake").version);
   });
 });
 

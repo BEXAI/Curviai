@@ -10,10 +10,12 @@
  * fallbackModels is the failover order the router walks, so swapping or
  * reordering models is a table update, not a deploy.
  *
- * Canary (docs/phases/PHASE_17.md workstream 5): a new version ships active
- * at trafficPct 0 beside the version that serves today, so the deploy changes
- * nothing. Each canary step is a re-seed that moves weight between the two;
- * the compiled fallback is servingRecipeSeedRow, the row with the most weight.
+ * Rollout (docs/phases/PHASE_17.md workstream 5): the OpenAI version of every
+ * key serves 100% of traffic, as production has since the switch by SQL on
+ * 2026-10-01, and its Claude predecessor stays active at trafficPct 0 as the
+ * one-row rollback. loadRecipes upserts traffic_pct and active, so these
+ * weights must match production or a re-seed moves traffic. The compiled
+ * fallback is servingRecipeSeedRow, the row with the most weight.
  */
 import { z } from "zod";
 import type { Shot } from "../schemas";
@@ -162,11 +164,27 @@ const SHOT_PLANNER_V2_SYSTEM = `${SHOT_PLANNER_SYSTEM}
  * and Claude Opus 5.5 (audit 2026-09-29). Both think adaptively by default at
  * high (Sonnet 5) or medium (Opus 5.5) effort, and thinking tokens share the
  * max_tokens budget, so these recipes run at medium effort with an explicit
- * budget and a timeout sized to it. Haiku 4.5 takes no effort field.
+ * budget and a timeout sized to it. The Claude intake, analyzer, planner and
+ * judge versions run Sonnet 5 first and Opus 5.5 second at this effort.
  */
 const EXTRACTION_MODEL_OPTIONS = {
   "claude-sonnet-5": { effort: "medium" },
   "claude-opus-5-5": { effort: "medium" },
+} as const satisfies Record<string, RecipeModelOptions>;
+
+/**
+ * Effort for the Claude versions of the light recipes (copy, picker, brand
+ * and questions). They ran on Claude Haiku 4.5, which takes no effort field,
+ * until 2026-10-01; Haiku's retirement commitment runs only to 2026-10-15
+ * (docs/verification.md), so they now run Sonnet 5 first and Opus 5.5 second.
+ * Both think adaptively by default (Sonnet 5 at high effort, Opus 5.5 at
+ * medium, and Opus 5.5 cannot turn thinking off), and thinking shares the
+ * max_tokens budget, so these short answers run at low effort with the same
+ * budget as their OpenAI successor.
+ */
+const CLAUDE_LIGHT_MODEL_OPTIONS = {
+  "claude-sonnet-5": { effort: "low" },
+  "claude-opus-5-5": { effort: "low" },
 } as const satisfies Record<string, RecipeModelOptions>;
 
 const COPY_GENERATOR_SYSTEM = `Write short selling copy for images. Inputs: ProductProfile and shot. Output JSON with callouts (each 2 to 5 words, no claims you cannot see or the seller did not state), altText (under 125 characters, describes the image literally, includes product name and color), seoSlug (lowercase words joined by single hyphens, under 60 characters), and optional amazonTitle (under 200 characters) and five bullets (each under 250 characters). No emojis, no ALL CAPS, no "best", "number one", or medical claims.`;
@@ -251,12 +269,14 @@ function withJsonLine(system: string): string {
  * Effort per model for the OpenAI versions. OpenAI reasoning tokens count
  * toward max_output_tokens, so every model in a chain gets an explicit effort
  * rather than its default (medium). gpt-6.1-sol rejects "none", so its lowest
- * is "low". The Claude fallbacks keep today's options: medium on Sonnet 5 and
- * nothing on Haiku 4.5, which rejects effort.
+ * is "low". The Claude fallback is Sonnet 5 in every chain (founder decision
+ * 1; Haiku 4.5 left the chains on 2026-10-01): medium on the hard steps,
+ * intake and the judge, low on the light steps.
  */
 const LIGHT_MODEL_OPTIONS = {
   "gpt-6-luna": { effort: "low" },
   "gpt-6.1-sol": { effort: "low" },
+  "claude-sonnet-5": { effort: "low" },
 } as const satisfies Record<string, RecipeModelOptions>;
 
 const HARD_MODEL_OPTIONS = {
@@ -353,17 +373,20 @@ export const recipeSeedRows: RecipeRow[] = [
     key: "intake_normalizer",
     version: 6,
     stage: "intake",
-    model: "claude-haiku-4-5-20251001",
-    fallbackModels: ["claude-sonnet-5"],
+    // Claude Haiku 4.5 until 2026-10-01; its retirement commitment runs only
+    // to 2026-10-15, so the rollback version runs Sonnet 5, then Opus 5.5.
+    model: "claude-sonnet-5",
+    fallbackModels: ["claude-opus-5-5"],
+    // Rollback only: version 7 serves every job (switched 2026-10-01).
+    trafficPct: 0,
     body: {
       system: INTAKE_NORMALIZER_V6_SYSTEM,
-      // Six photos with up to 12 boxed products each, plus thinking on the
-      // Sonnet fallback, can pass the 4096 token adapter default.
+      // Six photos with up to 12 boxed products each, plus adaptive
+      // thinking, can pass the 4096 token adapter default.
       maxTokens: 8000,
       modelOptions: EXTRACTION_MODEL_OPTIONS,
       timeoutMs: 120_000,
     },
-    // Serves every job until the version 7 canary (PHASE_17 workstream 5).
     active: true,
   },
   {
@@ -374,8 +397,8 @@ export const recipeSeedRows: RecipeRow[] = [
     // gpt-5.6-terra, not gpt-6.1-sol, so a model family outage leaves a
     // second OpenAI model with documented image token math.
     fallbackModels: ["gpt-5.6-terra", "claude-sonnet-5"],
-    // Canary weight (PHASE_17 workstream 5): 0 until the founder raises it.
-    trafficPct: 0,
+    // Serves every job since 2026-10-01 (PHASE_17 workstream 5).
+    trafficPct: 100,
     body: {
       system: withJsonLine(INTAKE_NORMALIZER_V6_SYSTEM),
       maxTokens: 16000,
@@ -422,7 +445,8 @@ export const recipeSeedRows: RecipeRow[] = [
       modelOptions: EXTRACTION_MODEL_OPTIONS,
       timeoutMs: 120_000,
     },
-    // Serves every job until the version 4 canary (PHASE_17 workstream 5).
+    // Rollback only: version 4 serves every job (switched 2026-10-01).
+    trafficPct: 0,
     active: true,
   },
   {
@@ -431,7 +455,7 @@ export const recipeSeedRows: RecipeRow[] = [
     stage: "analyze",
     model: "gpt-6.1-sol",
     fallbackModels: ["gpt-5.6-sol", "claude-sonnet-5"],
-    trafficPct: 0,
+    trafficPct: 100,
     body: {
       system: withJsonLine(PRODUCT_ANALYZER_V3_SYSTEM),
       // OpenAI advises reserving at least 25,000 output tokens for
@@ -468,7 +492,8 @@ export const recipeSeedRows: RecipeRow[] = [
       modelOptions: EXTRACTION_MODEL_OPTIONS,
       timeoutMs: 180_000,
     },
-    // Serves every job until the version 3 canary (PHASE_17 workstream 5).
+    // Rollback only: version 3 serves every job (switched 2026-10-01).
+    trafficPct: 0,
     active: true,
   },
   {
@@ -477,7 +502,7 @@ export const recipeSeedRows: RecipeRow[] = [
     stage: "plan",
     model: "gpt-6.1-sol",
     fallbackModels: ["gpt-5.6-sol", "claude-sonnet-5"],
-    trafficPct: 0,
+    trafficPct: 100,
     body: {
       system: withJsonLine(SHOT_PLANNER_V2_SYSTEM),
       maxTokens: 32000,
@@ -509,10 +534,19 @@ export const recipeSeedRows: RecipeRow[] = [
     key: "copy_generator",
     version: 3,
     stage: "copy",
-    model: "claude-haiku-4-5-20251001",
-    fallbackModels: ["claude-sonnet-5"],
-    body: { system: COPY_GENERATOR_V3_SYSTEM, maxTokens: 2048 },
-    // Serves every job until the version 4 canary (PHASE_17 workstream 5).
+    // Claude Haiku 4.5 until 2026-10-01 (see CLAUDE_LIGHT_MODEL_OPTIONS).
+    model: "claude-sonnet-5",
+    fallbackModels: ["claude-opus-5-5"],
+    // Rollback only: version 4 serves every job (switched 2026-10-01).
+    trafficPct: 0,
+    body: {
+      system: COPY_GENERATOR_V3_SYSTEM,
+      // Adaptive thinking shares the budget, so 2048 (sized for Haiku) is
+      // raised to version 4's.
+      maxTokens: 8000,
+      modelOptions: CLAUDE_LIGHT_MODEL_OPTIONS,
+      timeoutMs: 120_000,
+    },
     active: true,
   },
   {
@@ -520,8 +554,8 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 4,
     stage: "copy",
     model: "gpt-6-luna",
-    fallbackModels: ["gpt-6.1-sol", "claude-haiku-4-5-20251001"],
-    trafficPct: 0,
+    fallbackModels: ["gpt-6.1-sol", "claude-sonnet-5"],
+    trafficPct: 100,
     body: {
       system: withJsonLine(COPY_GENERATOR_V3_SYSTEM),
       maxTokens: 8000,
@@ -534,14 +568,20 @@ export const recipeSeedRows: RecipeRow[] = [
     key: "qc_judge",
     version: 1,
     stage: "qc",
-    model: "claude-haiku-4-5-20251001",
-    fallbackModels: ["claude-sonnet-5"],
+    // Claude Haiku 4.5 until 2026-10-01 (see CLAUDE_LIGHT_MODEL_OPTIONS).
+    model: "claude-sonnet-5",
+    fallbackModels: ["claude-opus-5-5"],
+    // Rollback only: version 2 serves every job (switched 2026-10-01).
+    trafficPct: 0,
     body: {
       system: QC_JUDGE_SYSTEM,
-      // Escalation chain: Haiku first pass, Sonnet on borderline, Opus on disputes.
-      escalation: ["claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5-5"],
+      // Escalation chain: Sonnet first pass and on borderline, Opus on disputes.
+      escalation: ["claude-sonnet-5", "claude-opus-5-5"],
+      // Sonnet 5 at version 2's Claude effort, with version 2's budget.
+      maxTokens: 8000,
+      modelOptions: EXTRACTION_MODEL_OPTIONS,
+      timeoutMs: 120_000,
     },
-    // Serves every job until the version 2 canary (PHASE_17 workstream 5).
     active: true,
   },
   {
@@ -551,7 +591,7 @@ export const recipeSeedRows: RecipeRow[] = [
     model: "gpt-6-luna",
     // Claude last (founder decision 1): Sonnet 5, today's judge fallback.
     fallbackModels: ["gpt-6.1-sol", "claude-sonnet-5"],
-    trafficPct: 0,
+    trafficPct: 100,
     body: {
       system: withJsonLine(QC_JUDGE_SYSTEM),
       // Escalation chain: Luna first pass, 6.1 Sol on borderline, Astra on disputes.
@@ -567,10 +607,18 @@ export const recipeSeedRows: RecipeRow[] = [
     key: "target_picker",
     version: 1,
     stage: "pick",
-    model: "claude-haiku-4-5-20251001",
-    fallbackModels: ["claude-sonnet-5"],
-    body: { system: TARGET_PICKER_SYSTEM, maxTokens: 512 },
-    // Serves every job until the version 2 canary (PHASE_17 workstream 5).
+    // Claude Haiku 4.5 until 2026-10-01 (see CLAUDE_LIGHT_MODEL_OPTIONS).
+    model: "claude-sonnet-5",
+    fallbackModels: ["claude-opus-5-5"],
+    // Rollback only: version 2 serves every job (switched 2026-10-01).
+    trafficPct: 0,
+    body: {
+      system: TARGET_PICKER_SYSTEM,
+      // 512 (sized for Haiku) leaves no room for thinking; version 2's budget.
+      maxTokens: 4000,
+      modelOptions: CLAUDE_LIGHT_MODEL_OPTIONS,
+      timeoutMs: 60_000,
+    },
     active: true,
   },
   {
@@ -578,8 +626,8 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 2,
     stage: "pick",
     model: "gpt-6-luna",
-    fallbackModels: ["gpt-6.1-sol", "claude-haiku-4-5-20251001"],
-    trafficPct: 0,
+    fallbackModels: ["gpt-6.1-sol", "claude-sonnet-5"],
+    trafficPct: 100,
     body: {
       system: withJsonLine(TARGET_PICKER_SYSTEM),
       maxTokens: 4000,
@@ -593,10 +641,18 @@ export const recipeSeedRows: RecipeRow[] = [
     key: "brand_palette_namer",
     version: 1,
     stage: "brand",
-    model: "claude-haiku-4-5-20251001",
-    fallbackModels: ["claude-sonnet-5"],
-    body: { system: BRAND_PALETTE_NAMER_SYSTEM, maxTokens: 512 },
-    // Serves every job until the version 2 canary (PHASE_17 workstream 5).
+    // Claude Haiku 4.5 until 2026-10-01 (see CLAUDE_LIGHT_MODEL_OPTIONS).
+    model: "claude-sonnet-5",
+    fallbackModels: ["claude-opus-5-5"],
+    // Rollback only: version 2 serves every job (switched 2026-10-01).
+    trafficPct: 0,
+    body: {
+      system: BRAND_PALETTE_NAMER_SYSTEM,
+      // 512 (sized for Haiku) leaves no room for thinking; version 2's budget.
+      maxTokens: 2000,
+      modelOptions: CLAUDE_LIGHT_MODEL_OPTIONS,
+      timeoutMs: 60_000,
+    },
     active: true,
   },
   {
@@ -604,14 +660,18 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 2,
     stage: "brand",
     model: "gpt-6-luna",
-    fallbackModels: ["gpt-6.1-sol", "claude-haiku-4-5-20251001"],
-    trafficPct: 0,
+    fallbackModels: ["gpt-6.1-sol", "claude-sonnet-5"],
+    trafficPct: 100,
     body: {
       system: withJsonLine(BRAND_PALETTE_NAMER_SYSTEM),
       maxTokens: 2000,
       // Naming a few colors needs no reasoning on Luna; gpt-6.1-sol rejects
-      // "none", so it runs at its lowest effort.
-      modelOptions: { "gpt-6-luna": { effort: "none" }, "gpt-6.1-sol": { effort: "low" } },
+      // "none", so it and the Claude fallback run at their lowest effort.
+      modelOptions: {
+        "gpt-6-luna": { effort: "none" },
+        "gpt-6.1-sol": { effort: "low" },
+        "claude-sonnet-5": { effort: "low" },
+      },
       timeoutMs: 60_000,
       imageDetail: "low",
     },
@@ -621,10 +681,18 @@ export const recipeSeedRows: RecipeRow[] = [
     key: "question_planner",
     version: 1,
     stage: "question",
-    model: "claude-haiku-4-5-20251001",
-    fallbackModels: ["claude-sonnet-5"],
-    body: { system: QUESTION_PLANNER_SYSTEM, maxTokens: 1024 },
-    // Serves every job until the version 2 canary (PHASE_17 workstream 5).
+    // Claude Haiku 4.5 until 2026-10-01 (see CLAUDE_LIGHT_MODEL_OPTIONS).
+    model: "claude-sonnet-5",
+    fallbackModels: ["claude-opus-5-5"],
+    // Rollback only: version 2 serves every job (switched 2026-10-01).
+    trafficPct: 0,
+    body: {
+      system: QUESTION_PLANNER_SYSTEM,
+      // 1024 (sized for Haiku) leaves little room for thinking; version 2's budget.
+      maxTokens: 4000,
+      modelOptions: CLAUDE_LIGHT_MODEL_OPTIONS,
+      timeoutMs: 60_000,
+    },
     active: true,
   },
   {
@@ -632,8 +700,8 @@ export const recipeSeedRows: RecipeRow[] = [
     version: 2,
     stage: "question",
     model: "gpt-6-luna",
-    fallbackModels: ["gpt-6.1-sol", "claude-haiku-4-5-20251001"],
-    trafficPct: 0,
+    fallbackModels: ["gpt-6.1-sol", "claude-sonnet-5"],
+    trafficPct: 100,
     body: {
       system: withJsonLine(QUESTION_PLANNER_SYSTEM),
       maxTokens: 4000,
@@ -653,9 +721,10 @@ export function servesTraffic(row: RecipeRow): boolean {
 /**
  * The compiled seed row a stage runs on when the recipes table cannot be
  * read: among its active rows, the one with the most traffic (the newest on a
- * tie). During a canary (PHASE_17 workstream 5) a key has two active rows,
- * the serving one and its successor at a lower weight, and only the recipes
- * table splits traffic between them. Undefined when the stage has none.
+ * tie). A key may have two active rows (PHASE_17 workstream 5): the serving
+ * one and its predecessor at weight 0 kept for rollback, or during a canary
+ * the serving one and its successor at a lower weight; only the recipes table
+ * splits traffic between them. Undefined when the stage has none.
  */
 export function servingRecipeSeedRow(stage: RecipeRow["stage"], rows: readonly RecipeRow[] = recipeSeedRows): RecipeRow | undefined {
   let best: RecipeRow | undefined;

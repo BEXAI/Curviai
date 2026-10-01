@@ -140,6 +140,10 @@ describe("Anthropic request bodies (phase 17 workstream 1)", () => {
     for (const row of recipeSeedRows) {
       // The proof covers the Claude versions that existed before Phase 17;
       // the OpenAI versions (workstream 3) are new requests, not changes.
+      // On 2026-10-01 the Claude rollback versions that ran on Haiku 4.5
+      // (intake v6, copy v3, qc v1, picker v1, brand v1, questions v1) moved
+      // to Sonnet 5 then Opus 5.5 with a stated effort and budget, a
+      // deliberate change to their hashes; every other hash is unchanged.
       if (llmModelProviders[row.model] !== "anthropic") continue;
       const recipe = recipeFromRow({
         id: `${row.key}-v${row.version}`,

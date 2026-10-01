@@ -139,7 +139,7 @@ export function seedRecipe(stage: RecipeStage): ResolvedRecipe {
 
 /**
  * The other active seed versions of a recipe's key and stage, newest first:
- * the canary rows (trafficPct 0 included) the live wiring appends to the
+ * the rollback or canary rows (trafficPct 0 included) the live wiring appends to the
  * key's routing chain (live-runtime.ts wireLiveProviders). When none of a
  * job's own models has a key set, the runner runs the call on the first of
  * these whose models do, with that version's prompt, budget, efforts and
