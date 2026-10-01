@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { entitlementsFor, isFeatureLive, type TierFeature, type TierKey } from "@curvi/pipeline/seed";
 import {
   channelAvailability,
+  checkAssistantAccess,
   checkBrandKitEntitlement,
   checkChannelEntitlements,
   tierKeyOf,
@@ -180,5 +181,23 @@ describe("checkBrandKitEntitlement", () => {
       reason: "upgrade_required",
       message: "Brand kits come with the Starter plan and above. Upgrade on the billing page to save one.",
     });
+  });
+});
+
+describe("checkAssistantAccess", () => {
+  it("lets every plan use Curvi from an assistant, unknown plans included (PHASE_19 decision 3)", () => {
+    for (const plan of [...ALL_TIERS, "enterprise", null, undefined]) {
+      expect(checkAssistantAccess(plan), String(plan)).toEqual({ ok: true });
+    }
+  });
+
+  it("refuses with neutral copy, never an upgrade prompt, if a plan ever drops it", () => {
+    const refused = checkAssistantAccess("free", () => false);
+    expect(refused).toEqual({
+      ok: false,
+      reason: "not_in_plan",
+      message: "Using Curvi from ChatGPT is not part of this workspace's current plan.",
+    });
+    expect(JSON.stringify(refused)).not.toMatch(/upgrade|billing|pricing|Growth|Starter/i);
   });
 });

@@ -16,17 +16,19 @@
  *
  * Written directly instead of with @modelcontextprotocol/sdk: the surface
  * is a handful of methods, and this adds no dependency.
+ *
+ * This file is the transport and the authentication branch; the tools are
+ * in ./mcp-tools (PHASE_19 P19-02 split them so the sign in and tool work
+ * edit different files).
  */
 
-import { z } from "zod";
 import { API_AUTH_COPY, authenticateApiKey, type ApiAuthResult } from "@/lib/api-keys/auth";
 import { bearerKeyOf, prefixOf, type ApiScope } from "@/lib/api-keys/format";
 import { isSameOrigin } from "@/lib/http/same-origin";
 import { readBodyLimited } from "@/lib/http/read-body";
-import { checkMainImage, createPack, getPack, listChannels, listPackFiles, type ApiContext, type ApiResult } from "./actions";
 import { API_PHOTO_BODY_MAX_BYTES } from "./http";
+import { MCP_INSTRUCTIONS, findTool, toolList, toolResult } from "./mcp-tools";
 import { API_VERSION } from "./openapi";
-import { CreatePackRequest, MainImageCheckRequest } from "./schemas";
 
 /** Modern revisions this server speaks, newest first. */
 export const MODERN_PROTOCOL_VERSIONS = ["2026-07-28"] as const;
@@ -38,12 +40,6 @@ export const PROTOCOL_VERSION_META = "io.modelcontextprotocol/protocolVersion";
 const SERVER_INFO_META = "io.modelcontextprotocol/serverInfo";
 
 export const SERVER_INFO = { name: "curvi", title: "Curvi", version: API_VERSION } as const;
-
-export const MCP_INSTRUCTIONS =
-  "Curvi makes marketplace ready product image packs from real product photos and never redraws the product. " +
-  "Call list_channels to see the channels and bundles. Call create_pack with photo links, channels and a fresh idempotency_key; it holds credits. " +
-  "Then call get_pack until finished is true, with include_files to get download links that work for 15 minutes. " +
-  "check_main_image checks an Amazon main image for free.";
 
 export const JSONRPC = {
   parseError: -32700,
@@ -88,140 +84,41 @@ export function decodeHeaderValue(value: string): string | null {
   }
 }
 
-// Tools
+// Resources
 
-const CreatePackArgs = z
-  .object({
-    ...CreatePackRequest.shape,
-    idempotency_key: z
-      .string()
-      .min(1)
-      .max(200)
-      .describe("A fresh value for each new pack; send the same value again only to retry the same request."),
-  })
-  .strict();
-
-const GetPackArgs = z
-  .object({
-    pack_id: z.string().describe("The pack id create_pack returned."),
-    include_files: z
-      .boolean()
-      .optional()
-      .describe("Also list the delivered files with download links signed for 15 minutes."),
-  })
-  .strict();
-
-const ListChannelsArgs = z.object({}).strict();
-
-interface ToolDefinition {
-  name: string;
-  title: string;
-  description: string;
-  scope: ApiScope | null;
-  args: z.ZodType;
-  annotations: Record<string, boolean>;
-  /** args is the parsed arguments; raw is what the client sent, for tools
-   * whose action parses again and must not see the schema's defaults. */
-  run: (ctx: ApiContext, args: never, raw: Record<string, unknown>) => Promise<ApiResult>;
+/**
+ * The UI resources the server serves through resources/list, resources/read
+ * and resources/templates/list: the pack viewer (PHASE_19 P19-19, shipped by
+ * deploy after the first publication, decision 6). With no provider the
+ * server advertises no resources capability and those methods answer Method
+ * not found, as before.
+ */
+export interface McpResourceProvider {
+  /** The resources/list entries (uri, name, mimeType, _meta). */
+  list(): Array<Record<string, unknown>>;
+  /** The resources/read contents for a uri, or null when there is none. */
+  read(uri: string): Array<Record<string, unknown>> | null;
 }
 
-function inputSchemaOf(schema: z.ZodType): Record<string, unknown> {
-  const json = z.toJSONSchema(schema, { io: "input", unrepresentable: "any", target: "draft-2020-12" }) as Record<
-    string,
-    unknown
-  >;
-  const { $schema: _dialect, ...rest } = json;
-  return rest;
-}
+/** The provider production serves. P19-19 (p19/ui) sets it to the viewer. */
+const SERVED_RESOURCES: McpResourceProvider | null = null;
 
-export const MCP_TOOLS: readonly ToolDefinition[] = [
-  {
-    name: "create_pack",
-    title: "Create a pack",
-    description:
-      "Start a Curvi pack from real product photos for the chosen channels. Holds credits like the web form. Returns the pack; poll get_pack until finished.",
-    scope: "packs:write",
-    args: CreatePackArgs,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    run: async (ctx, args: z.infer<typeof CreatePackArgs>, raw) => {
-      // createPack parses the body itself: pass it as sent, so the output
-      // options' defaults do not clash with the bundle or look shortcuts.
-      const { idempotency_key: _key, ...body } = raw;
-      return createPack(ctx, body, args.idempotency_key);
-    },
-  },
-  {
-    name: "get_pack",
-    title: "Get a pack",
-    description: "Read a pack's status and per shot results, and optionally its files with short lived download links.",
-    scope: "packs:read",
-    args: GetPackArgs,
-    annotations: { readOnlyHint: true, openWorldHint: false },
-    run: async (ctx, args: z.infer<typeof GetPackArgs>) => {
-      const pack = await getPack(ctx, args.pack_id);
-      if (pack.status !== 200 || !args.include_files) {
-        return pack;
-      }
-      const files = await listPackFiles(ctx, args.pack_id);
-      if (files.status !== 200) {
-        return files;
-      }
-      const filesBody = files.body as { files: unknown[]; notice?: string };
-      return {
-        status: 200,
-        body: {
-          ...(pack.body as Record<string, unknown>),
-          files: filesBody.files,
-          ...(filesBody.notice ? { filesNotice: filesBody.notice } : {}),
-        },
-      };
-    },
-  },
-  {
-    name: "check_main_image",
-    title: "Check an Amazon main image",
-    description:
-      "Check an Amazon main image against the real rules: longest side, pure white edges and product fill. Free, uses no credits.",
-    scope: "checks",
-    args: MainImageCheckRequest,
-    annotations: { readOnlyHint: true, openWorldHint: true },
-    run: async (ctx, args: z.infer<typeof MainImageCheckRequest>) => checkMainImage(ctx, args),
-  },
-  {
-    name: "list_channels",
-    title: "List channels",
-    description: "List the channel specs and pack bundles create_pack accepts, with availability on this workspace's plan.",
-    scope: null,
-    args: ListChannelsArgs,
-    annotations: { readOnlyHint: true, openWorldHint: false },
-    run: async (ctx) => listChannels(ctx),
-  },
-];
-
-export function toolList(): Array<Record<string, unknown>> {
-  return MCP_TOOLS.map((tool) => ({
-    name: tool.name,
-    title: tool.title,
-    description: tool.description,
-    inputSchema: inputSchemaOf(tool.args),
-    annotations: tool.annotations,
-  }));
-}
-
-function toolResult(result: ApiResult): Record<string, unknown> {
-  const body = result.body as Record<string, unknown>;
-  if (result.status < 400) {
-    return { content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body, isError: false };
-  }
-  const message = typeof body?.error === "string" ? body.error : "The call failed.";
-  const issues = Array.isArray(body?.issues) ? ` ${(body.issues as string[]).join(" ")}` : "";
-  return { content: [{ type: "text", text: `${message}${issues}` }], structuredContent: body, isError: true };
-}
+const RESOURCE_METHODS = new Set(["resources/list", "resources/read", "resources/templates/list"]);
 
 // Request handling
 
 export interface McpDeps {
   authenticate?: (headers: Headers, scope: ApiScope | null) => Promise<ApiAuthResult>;
+  /** Replaces the served resources in tests; null serves none. */
+  resources?: McpResourceProvider | null;
+}
+
+function resourcesOf(deps: McpDeps): McpResourceProvider | null {
+  return deps.resources === undefined ? SERVED_RESOURCES : deps.resources;
+}
+
+function capabilitiesOf(deps: McpDeps): Record<string, unknown> {
+  return resourcesOf(deps) ? { tools: {}, resources: {} } : { tools: {} };
 }
 
 interface ParsedRequest {
@@ -277,8 +174,15 @@ function mismatch(id: JsonRpcId, message: string): Response {
   return rpcError(id, { code: JSONRPC.headerMismatch, message: `Header mismatch: ${message}` }, 400);
 }
 
-/** Validates the mirrored headers of a modern request; null when they hold. */
-function modernHeaderProblem(request: Request, parsed: ParsedRequest, version: string): Response | null {
+/** Validates the mirrored headers of a modern request; null when they hold.
+ * Mcp-Name mirrors params.name on tools/call and params.uri on
+ * resources/read (checked only while resources are served). */
+function modernHeaderProblem(
+  request: Request,
+  parsed: ParsedRequest,
+  version: string,
+  resourcesServed: boolean,
+): Response | null {
   const headerVersion = request.headers.get("mcp-protocol-version");
   if (headerVersion === null) {
     return mismatch(parsed.id, "the MCP-Protocol-Version header is missing");
@@ -293,27 +197,48 @@ function modernHeaderProblem(request: Request, parsed: ParsedRequest, version: s
   if (headerMethod !== parsed.method) {
     return mismatch(parsed.id, `Mcp-Method header value '${headerMethod}' does not match body value '${parsed.method}'`);
   }
-  if (parsed.method === "tools/call") {
+  const nameField =
+    parsed.method === "tools/call" ? "name" : parsed.method === "resources/read" && resourcesServed ? "uri" : null;
+  if (nameField) {
     const rawName = request.headers.get("mcp-name");
     if (rawName === null) {
       return mismatch(parsed.id, "the Mcp-Name header is missing");
     }
     const name = decodeHeaderValue(rawName);
-    if (name !== parsed.params.name) {
+    if (name !== parsed.params[nameField]) {
       return mismatch(parsed.id, "Mcp-Name header value does not match body value");
     }
   }
   return null;
 }
 
-function discoverResult(): Record<string, unknown> {
+function discoverResult(deps: McpDeps): Record<string, unknown> {
   return {
     resultType: "complete",
     supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
-    capabilities: { tools: {} },
+    capabilities: capabilitiesOf(deps),
     _meta: { [SERVER_INFO_META]: SERVER_INFO },
     instructions: MCP_INSTRUCTIONS,
   };
+}
+
+/** resources/list, resources/read and resources/templates/list from the
+ * served provider. P19-13 adds ttlMs and cacheScope (MCP 2026-07-28
+ * CacheableResult) once the values pass the rule 7 check. */
+function resourcesMethod(parsed: ParsedRequest, provider: McpResourceProvider, complete: Record<string, unknown>): Response {
+  if (parsed.method === "resources/list") {
+    return rpcResponse(parsed.id, { result: { ...complete, resources: provider.list() } });
+  }
+  if (parsed.method === "resources/templates/list") {
+    return rpcResponse(parsed.id, { result: { ...complete, resourceTemplates: [] } });
+  }
+  const uri = parsed.params.uri;
+  const contents = typeof uri === "string" ? provider.read(uri) : null;
+  if (!contents) {
+    // MCP 2026-07-28 answers an unknown resource with Invalid Params.
+    return rpcError(parsed.id, { code: JSONRPC.invalidParams, message: "Resource not found", data: { uri } }, 200);
+  }
+  return rpcResponse(parsed.id, { result: { ...complete, contents } });
 }
 
 async function callTool(
@@ -324,7 +249,7 @@ async function callTool(
   preAuth: ApiAuthResult | null,
 ): Promise<Response> {
   const name = parsed.params.name;
-  const tool = MCP_TOOLS.find((t) => t.name === name);
+  const tool = findTool(name);
   if (!tool) {
     return rpcError(parsed.id, { code: JSONRPC.invalidParams, message: `Unknown tool: ${String(name)}` }, 200);
   }
@@ -434,7 +359,7 @@ export async function handleMcpPost(request: Request, deps: McpDeps = {}): Promi
     if (typeof metaVersion !== "string" || !(MODERN_PROTOCOL_VERSIONS as readonly string[]).includes(metaVersion)) {
       return unsupported(parsed.id, metaVersion);
     }
-    const problem = modernHeaderProblem(request, parsed, metaVersion);
+    const problem = modernHeaderProblem(request, parsed, metaVersion, resourcesOf(deps) !== null);
     if (problem) {
       return problem;
     }
@@ -447,6 +372,10 @@ export async function handleMcpPost(request: Request, deps: McpDeps = {}): Promi
     }
   }
   const complete = modern ? { resultType: "complete" } : {};
+  const resources = resourcesOf(deps);
+  if (resources && RESOURCE_METHODS.has(parsed.method)) {
+    return resourcesMethod(parsed, resources, complete);
+  }
 
   switch (parsed.method) {
     case "initialize": {
@@ -458,14 +387,14 @@ export async function handleMcpPost(request: Request, deps: McpDeps = {}): Promi
       return rpcResponse(parsed.id, {
         result: {
           protocolVersion: version,
-          capabilities: { tools: {} },
+          capabilities: capabilitiesOf(deps),
           serverInfo: SERVER_INFO,
           instructions: MCP_INSTRUCTIONS,
         },
       });
     }
     case "server/discover":
-      return rpcResponse(parsed.id, { result: discoverResult() });
+      return rpcResponse(parsed.id, { result: discoverResult(deps) });
     case "ping":
       return rpcResponse(parsed.id, { result: { ...complete } });
     case "tools/list":

@@ -46,7 +46,8 @@ export type TierFeature =
   | "clientWorkspaces"
   | "clientReviewLinks"
   | "whiteLabelShare"
-  | "apiAccess";
+  | "apiAccess"
+  | "assistantAccess";
 
 export type FeatureStatus = "live" | "coming_soon";
 
@@ -74,6 +75,12 @@ export const featureStatus: Record<TierFeature, FeatureStatus> = {
   // Workspace API keys, the public API v1 and the hosted MCP server
   // (PHASE_16 workstream 5, founder decision 5: Growth and up).
   apiAccess: "live",
+  // Using Curvi from ChatGPT or another assistant through an OAuth sign in
+  // to the hosted MCP server (PHASE_19 founder decision 3: every plan, Free
+  // included, on the web app's credit rules). OpenAI's plugin guidelines do
+  // not allow a plugin that is a worse version of the website, and every
+  // plan can make packs on the web. API keys stay behind apiAccess.
+  assistantAccess: "live",
 };
 
 export interface TierEntitlements {
@@ -187,17 +194,18 @@ export type TierKey = TierDefinition["key"];
  * for Agency; it keeps Pro's three per workspace.
  */
 export const tierEntitlements: Record<TierKey, TierEntitlements> = {
-  free: { brandKits: 0, clientWorkspaces: 0, features: ["sharePage"] },
+  free: { brandKits: 0, clientWorkspaces: 0, features: ["sharePage", "assistantAccess"] },
   starter: {
     brandKits: 1,
     clientWorkspaces: 0,
-    features: ["sharePage", "brandKit", "templatedVideo"],
+    features: ["sharePage", "assistantAccess", "brandKit", "templatedVideo"],
   },
   growth: {
     brandKits: 1,
     clientWorkspaces: 0,
     features: [
       "sharePage",
+      "assistantAccess",
       "brandKit",
       "templatedVideo",
       "generativeVideo",
@@ -211,6 +219,7 @@ export const tierEntitlements: Record<TierKey, TierEntitlements> = {
     clientWorkspaces: 0,
     features: [
       "sharePage",
+      "assistantAccess",
       "brandKit",
       "templatedVideo",
       "generativeVideo",
@@ -228,6 +237,7 @@ export const tierEntitlements: Record<TierKey, TierEntitlements> = {
     clientWorkspaces: 10,
     features: [
       "sharePage",
+      "assistantAccess",
       "brandKit",
       "templatedVideo",
       "generativeVideo",

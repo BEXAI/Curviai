@@ -18,6 +18,7 @@
  */
 
 import {
+  canUse,
   channelFamilyFeatures,
   entitlementsFor,
   isEntitled,
@@ -27,6 +28,7 @@ import {
   type TierFeature,
   type TierKey,
 } from "@curvi/pipeline/seed";
+import { MCP_COPY } from "@/lib/api-v1/mcp-copy";
 import { isSpecLive, specFilesNameFor } from "@/lib/marketing-facts";
 
 /** Maps a workspaces.plan value to a tier key; unknown plans read as free. */
@@ -156,6 +158,25 @@ export function channelAvailability(
   return check.reason === "feature_unavailable"
     ? { status: "coming_soon" }
     : { status: "upgrade_required", upgradeTo: check.upgradeTo };
+}
+
+export type AssistantAccessCheck = { ok: true } | { ok: false; reason: "not_in_plan"; message: string };
+
+/**
+ * Whether a workspace's plan lets its members use Curvi from ChatGPT or
+ * another assistant through an OAuth sign in (seed assistantAccess, PHASE_19
+ * founder decision 3: on for every plan). The refusal is the neutral MCP
+ * copy, never an upgrade prompt, because it reaches the assistant and
+ * OpenAI's plugin guidelines forbid promoting a plan there. API keys keep
+ * their own Growth and up check (lib/api-keys/manage checkApiAccess).
+ */
+export function checkAssistantAccess(
+  plan: string | null | undefined,
+  can: (tier: TierKey, feature: TierFeature) => boolean = canUse,
+): AssistantAccessCheck {
+  return can(tierKeyOf(plan), "assistantAccess")
+    ? { ok: true }
+    : { ok: false, reason: "not_in_plan", message: MCP_COPY.assistantAccessOff };
 }
 
 export type BrandKitCheck = { ok: true } | { ok: false; reason: "upgrade_required"; message: string };

@@ -39,6 +39,7 @@ import { checkRows, flattenOnWhite, measurePixels, summaryLine } from "@/lib/too
 import { isUuid } from "@/lib/validation/ids";
 import { discardStoredPhotos, readPhoto, storePackPhotos, type PhotoDeps } from "./photos";
 import {
+  CHAT_FILE_FIELDS,
   CreatePackRequest,
   MainImageCheckRequest,
   type ErrorBody,
@@ -95,11 +96,15 @@ function rateLimited(decision: RateLimitDecision): ApiResult {
   };
 }
 
-/** The form's policy, by client IP and then by subject. */
+/** The form's policy, by client IP and then by subject (the caller's own
+ * rate subject unless another is named). It takes the caller so PHASE_19
+ * P19-21 can skip the IP rule for ipExempt callers; until then every caller
+ * is counted by IP exactly as before. */
 export async function overLimit(
   policy: RateLimitPolicyName,
   headers: Headers,
-  subject: string,
+  caller: ApiCaller,
+  subject: string = caller.rateSubject,
 ): Promise<ApiResult | null> {
   const ip = clientIp(headers);
   if (ip !== "unknown") {
@@ -114,6 +119,13 @@ export async function overLimit(
 
 function issuesOf(error: z.ZodError): string[] {
   return error.issues.map((issue) => (issue.path.length > 0 ? `${issue.path.join(".")}: ${issue.message}` : issue.message));
+}
+
+/** A chat attachment field (CHAT_FILE_FIELDS) refused as the strict schema
+ * refused it before the field existed. PHASE_19 P19-15 replaces this with
+ * the attachment fetch. */
+function chatFileRefused(field: (typeof CHAT_FILE_FIELDS)[number]): ApiResult {
+  return errorResult(400, "invalid_request", API_COPY.invalid, { issues: [`Unrecognized key: "${field}"`] });
 }
 
 /** Live spec ids per channel name, for "amazon" style channel entries. */
@@ -246,7 +258,7 @@ export function withLook(raw: unknown): unknown {
 /** POST /api/v1/packs and the create_pack tool. */
 export async function createPack(ctx: ApiContext, rawBody: unknown, idempotencyKey: string | null): Promise<ApiResult> {
   const { caller } = ctx;
-  const limited = await overLimit("jobs.create", ctx.headers, caller.rateSubject);
+  const limited = await overLimit("jobs.create", ctx.headers, caller);
   if (limited) {
     return limited;
   }
@@ -268,6 +280,9 @@ export async function createPack(ctx: ApiContext, rawBody: unknown, idempotencyK
     return errorResult(400, "invalid_request", API_COPY.invalid, { issues: issuesOf(parsed.error) });
   }
   const request = parsed.data;
+  if (request.images !== undefined) {
+    return chatFileRefused("images");
+  }
 
   const { channels, unknown } = expandChannels(request.channels);
   if (unknown.length > 0) {
@@ -289,7 +304,7 @@ export async function createPack(ctx: ApiContext, rawBody: unknown, idempotencyK
       return errorResult(503, "uploads_not_configured", API_COPY.uploadsOff);
     }
     if (photos.some((photo) => photo.url !== undefined)) {
-      const importLimited = await overLimit("imports.photo", ctx.headers, `ws:${workspaceId}`);
+      const importLimited = await overLimit("imports.photo", ctx.headers, caller, `ws:${workspaceId}`);
       if (importLimited) {
         return importLimited;
       }
@@ -403,13 +418,16 @@ export async function listPackFiles(ctx: ApiContext, id: string): Promise<ApiRes
  * Amazon main image checker, run on the server with the registry's rules.
  * Reads pixels only; nothing is stored and no credit is used. */
 export async function checkMainImage(ctx: ApiContext, rawBody: unknown): Promise<ApiResult> {
-  const limited = await overLimit("uploads.preflight", ctx.headers, ctx.caller.rateSubject);
+  const limited = await overLimit("uploads.preflight", ctx.headers, ctx.caller);
   if (limited) {
     return limited;
   }
   const parsed = MainImageCheckRequest.safeParse(rawBody);
   if (!parsed.success) {
     return errorResult(400, "invalid_request", API_COPY.invalid, { issues: issuesOf(parsed.error) });
+  }
+  if (parsed.data.image !== undefined) {
+    return chatFileRefused("image");
   }
   const read = await readPhoto(parsed.data, ctx.photos);
   if (!read.ok) {

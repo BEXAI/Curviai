@@ -3,7 +3,6 @@ import { setApiKeyBackendForTests } from "@/lib/api-keys/backend";
 import { API_PHOTO_BODY_MAX_BYTES } from "@/lib/api-v1/http";
 import {
   JSONRPC,
-  MCP_TOOLS,
   MCP_UNKEYED_BODY_MAX_BYTES,
   PROTOCOL_VERSION_META,
   SUPPORTED_PROTOCOL_VERSIONS,
@@ -12,6 +11,7 @@ import {
   preAuthenticate,
   withScope,
 } from "@/lib/api-v1/mcp";
+import { MCP_TOOLS } from "@/lib/api-v1/mcp-tools";
 import { MainImageCheckResponse, PackResponse } from "@/lib/api-v1/schemas";
 import { DEMO_KEY_ID, demoApiFixture, mainImagePng, type DemoApiFixture } from "@/lib/api-v1/test-fixtures";
 import { MemoryRateLimitStore, setRateLimitStoreForTests } from "@/lib/rate-limit";
