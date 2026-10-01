@@ -11,10 +11,11 @@ services:
     repo: https://github.com/BEXAI/Curviai
     branch: main
     region: oregon
-    # The plan is the founder's call (it costs money). Free instances spin down
-    # after 15 idle minutes, run on 0.1 CPU and 512 MB, and Render says not to
-    # use them in production. See docs/LAUNCH_CHECKLIST.md, Render plan upgrade.
-    plan: free
+    # Standard compute plan (legacy name Standard): 1 CPU, 2 GB RAM, $25 a month
+    # on the founder's Render dashboard (2026-10-01). Paid instances never spin
+    # down, so idle time no longer kills packs. The plan is the founder's call
+    # (it costs money); see docs/LAUNCH_CHECKLIST.md, Render plan upgrade.
+    plan: 1c-2g
     # && so a failed install stops the build instead of building on a broken tree.
     buildCommand: pnpm install --frozen-lockfile && pnpm run build
     startCommand: pnpm run start
@@ -43,10 +44,12 @@ services:
         value: "22"
       - key: NEXT_PUBLIC_SITE_URL
         value: https://curvi.ai
-      # Packs the inline runner runs at once; the rest wait in order. 1 fits a
-      # 512 MB free instance. Raise it with the plan (docs/LAUNCH_CHECKLIST.md).
+      # Packs the inline runner runs at once; the rest wait in order. 2 on the
+      # 2 GB plan (1 on 512 MB, 3 on 4 GB). Raise it only while Render's memory
+      # graph stays well below the limit with that many packs running
+      # (docs/LAUNCH_CHECKLIST.md, Render plan upgrade).
       - key: CURVI_INLINE_PACK_CONCURRENCY
-        value: "1"
+        value: "2"
       # Values are set in the Render dashboard, never committed. sync: false makes
       # Render prompt for them when a Blueprint first creates the service; it
       # ignores them for an existing service. Every variable below is described

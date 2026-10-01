@@ -118,7 +118,7 @@ Added 2026-09-29. The code is on `p15/output-options`; the full status is in doc
 - Disclosure for AI generated people in ads; Amazon policy check.
 
 ### Hosting and messaging
-- Render paid plan (the free plan sleeps and kills running packs on every deploy).
+- Render paid plan: done 2026-10-01, `1c-2g` (1 CPU, 2 GB, $25 a month). Still set `CURVI_INLINE_PACK_CONCURRENCY` = `2` in the Render dashboard (the hand made service does not follow render.yaml), and confirm `maxShutdownDelaySeconds` 300 (docs/LAUNCH_CHECKLIST.md steps 8 and 9).
 - Resend sending domain (SPF, DKIM, DMARC) and Supabase custom SMTP, so signup and pack ready emails arrive.
 - Loops for lifecycle email; PostHog key and funnel; Sentry; Upstash for shared rate limits and the landing page preview.
 

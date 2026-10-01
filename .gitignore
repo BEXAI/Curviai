@@ -16,3 +16,13 @@ compass_artifact_*.md
 .claude/worktrees/
 eval/golden/generated/
 .claude/scheduled_tasks.lock
+
+# Photos dropped in the repo root by hand (the repository is public)
+/*.jpg
+/*.jpeg
+/*.JPG
+/*.JPEG
+/*.png
+/*.heic
+/*.HEIC
+/*.webp
