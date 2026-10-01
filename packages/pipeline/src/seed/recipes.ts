@@ -233,9 +233,15 @@ No emojis, no arrows and no dashes.`;
 /**
  * The OpenAI recipe versions (docs/phases/PHASE_17.md workstream 3). Each
  * keeps its predecessor's system prompt verbatim and adds this one line, since
- * the answer arrives as a JSON schema response format rather than a tool call.
+ * on OpenAI the answer arrives as a JSON schema response format rather than a
+ * tool call. Every chain ends on a Claude model (founder decision 1), and the
+ * Anthropic adapter still offers the result as the emit_result tool with
+ * tool_choice auto, so the line also tells the model to call an offered tool:
+ * a bare "return only the JSON" would push Claude to answer in plain text and
+ * skip the strict tool schema, the failure the runner's re-ask exists for.
  */
-const JSON_ONLY_LINE = "Return only the JSON object described by the schema.";
+const JSON_ONLY_LINE =
+  "Return only the JSON object described by the schema. When a tool is offered for the result, return the object by calling that tool, never as plain text.";
 
 function withJsonLine(system: string): string {
   return `${system}\n${JSON_ONLY_LINE}`;

@@ -172,7 +172,7 @@ New `packages/ai/src/adapters/openaiLLM.ts`, built on shared.ts and modeled on o
    - Add a seed test that every recipe model and every fallback is priced and mapped.
 2. **New recipe versions,** with the previous versions kept and set inactive (the pattern used since intake v2):
    - intake_normalizer v7, product_analyzer v4, shot_planner v3, copy_generator v4, qc_judge v2, target_picker v2, brand_palette_namer v2, question_planner v2.
-   - Each one keeps its predecessor's system prompt verbatim. Add one line only where the API needs it: "Return only the JSON object described by the schema." Remove any tool wording.
+   - Each one keeps its predecessor's system prompt verbatim. Add one line only where the API needs it: "Return only the JSON object described by the schema. When a tool is offered for the result, return the object by calling that tool, never as plain text." The second sentence keeps the Claude fallback at the end of every chain on the emit_result tool. Remove any other tool wording.
    - Each sets `model`, `fallbackModels`, `maxTokens` (used as max_output_tokens), `modelOptions` effort per model, and `timeoutMs` per the Model choice table.
    - Set `trafficPct` for the canary (Workstream 5).
 3. **`wireLiveProviders`:**
