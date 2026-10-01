@@ -491,18 +491,23 @@ export function wireLiveProviders(
           model,
           priceTable: openaiPrices,
           imageTokenMultiplier,
+          fetchFn: fetchFn as typeof fetch,
         }),
       );
     } else {
-      registry.register(new AnthropicLLMProvider({ name, tasks: recipeTasks, apiKey, model, priceTable }));
+      registry.register(
+        new AnthropicLLMProvider({ name, tasks: recipeTasks, apiKey, model, priceTable, fetchFn: fetchFn as typeof fetch }),
+      );
     }
     registeredLlm.add(name);
   }
   if (registeredLlm.size > 0) {
     // The routing table keeps the seed order as the default chain, filtered
     // to the registered providers: the serving version's models first, then
-    // those of any other active version (a canary), so a job whose own
-    // chain has no key set still runs on the models that do.
+    // those of any other active version (a canary). A job whose own chain
+    // has no key set runs on that canary version itself, body included
+    // (pipeline-runner.ts runnableRecipe), so this table is only the chain
+    // of a call that names no recipe models.
     for (const key of recipeTasks) {
       const rows = recipeSeedRows.filter((recipe) => recipe.key === key && recipe.active);
       if (rows.length === 0) continue;

@@ -128,6 +128,21 @@ export function seedRecipe(stage: RecipeStage): ResolvedRecipe {
   return fromSeed(row);
 }
 
+/**
+ * The other active seed versions of a recipe's key and stage, newest first:
+ * the canary rows (trafficPct 0 included) the live wiring appends to the
+ * key's routing chain (live-runtime.ts wireLiveProviders). When none of a
+ * job's own models has a key set, the runner runs the call on the first of
+ * these whose models do, with that version's prompt, budget, efforts and
+ * image detail, so a model never gets a body written for another provider.
+ */
+export function standbySeedRecipes(recipe: Pick<ResolvedRecipe, "key" | "stage" | "version">): ResolvedRecipe[] {
+  return recipeSeedRows
+    .filter((row) => row.active && row.key === recipe.key && row.stage === recipe.stage && row.version !== recipe.version)
+    .sort((a, b) => b.version - a.version)
+    .map(fromSeed);
+}
+
 /** The recipe a job runs for a stage: its assignment, else the seed. */
 export function recipeFor(recipes: JobRecipes | undefined, stage: RecipeStage): ResolvedRecipe {
   return recipes?.[stage] ?? seedRecipe(stage);

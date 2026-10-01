@@ -196,6 +196,7 @@ import {
   seedRecipe,
   recipeVariantsOf,
   seedJobRecipes,
+  standbySeedRecipes,
   type JobRecipes,
   type RecipeResolver,
   type ResolvedRecipe,
@@ -1892,6 +1893,36 @@ export function recipeChain(ai: Pick<AiDeps, "registry">, recipe: ResolvedRecipe
   return recipe.models.map(llmModelProviderName).filter((name) => ai.registry.get(name) !== undefined);
 }
 
+/** Recipe versions already reported as standing in, so the warning is
+ * logged once per process rather than on every call. */
+const reportedStandbys = new Set<string>();
+
+/**
+ * The recipe a call runs on: the job's own, unless none of its models has a
+ * live provider while an active standby version of the same key does (only
+ * OPENAI_API_KEY set and the job on a Claude serving version, or the
+ * reverse). The standby then runs with its own prompt, output budget, effort
+ * per model and image detail, never the body written for the other
+ * provider's models. Unchanged in demo mode, where no version is live.
+ */
+export function runnableRecipe(ai: Pick<AiDeps, "registry">, recipe: ResolvedRecipe): ResolvedRecipe {
+  if (recipeChain(ai, recipe).length > 0) {
+    return recipe;
+  }
+  const standby = standbySeedRecipes(recipe).find((candidate) => recipeChain(ai, candidate).length > 0);
+  if (!standby) {
+    return recipe;
+  }
+  const report = `${recipe.key}:${recipe.version}:${standby.version}`;
+  if (!reportedStandbys.has(report)) {
+    reportedStandbys.add(report);
+    console.warn(
+      `[runner] recipe ${recipe.key} v${recipe.version} has no live model; running v${standby.version}, whose models are live`,
+    );
+  }
+  return standby;
+}
+
 /**
  * Image blocks with the recipe's seeded resolution hint (body.imageDetail)
  * applied wherever a block does not already carry one. Providers that take
@@ -1917,6 +1948,7 @@ export async function llmJson<T>(
   contentBlocks?: LlmContentBlock[],
   outputSchema?: z.ZodType,
 ): Promise<LlmCall<T>> {
+  recipe = runnableRecipe(ai, recipe);
   const text = JSON.stringify(payload);
   const input: LlmRequest = {
     system: recipe.system,
