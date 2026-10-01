@@ -274,6 +274,8 @@ Recorded 2026-10-01 on the integration branch `p17/integration` (head af572b3 be
 - `llmJson` sends `strictToolSchema` to every provider, and the OpenAI adapter converts it to the strict OpenAI shape itself. `openaiStrictSchema` in packages/pipeline is the checked form the limit tests run on.
 - The live eval runs one provider per run and scores it against a stored Claude baseline (`--provider anthropic --record-baseline`), not both providers in one run.
 - An OpenAI model is wired only when it has both a cached input price and a seeded image multiplier, so a row missing either is skipped rather than metered at zero.
+- With only one LLM key set, a job assigned a version whose models have no key runs on the newest active seed version of the same key whose models do (`runnableRecipe` in trigger/src/pipeline-runner.ts), with that version's prompt, budget, efforts and image detail. So with only `OPENAI_API_KEY`, the trafficPct 0 OpenAI versions serve every job rather than the Claude bodies running on OpenAI.
+- Monitoring runs off the provider call path: the counter writes and founder emails go in the background, and the Resend send gives up after 10 seconds. A founder email that fails for a reason that may pass (Resend down, 429 or 5xx) gives its claim back and is tried again after 15 minutes on a later LLM call.
 
 ### Known gaps
 

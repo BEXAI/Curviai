@@ -60,4 +60,11 @@ describe("PgCapStore", () => {
     // A claim never moves a spend total.
     expect(await store.get("caps:global:2026-09-28")).toBe(100_000);
   });
+
+  it("gives a released key back to the next caller", async () => {
+    expect(await store.claim("alerts:llm_quota:openai:2026-12-01T09")).toBe(true);
+    await store.release("alerts:llm_quota:openai:2026-12-01T09");
+    expect(await store.claim("alerts:llm_quota:openai:2026-12-01T09")).toBe(true);
+    expect(await store.claim("alerts:llm_quota:openai:2026-12-01T09")).toBe(false);
+  });
 });

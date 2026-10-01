@@ -267,6 +267,9 @@ export function composeCreditExpiryReminder(window: LlmCreditWindow, day: string
   };
 }
 
+/** How long after a failed founder email the same alert is tried again. */
+export const LLM_ALERT_RETRY_MS = 15 * 60_000;
+
 export interface LlmAlertNotifierOptions {
   /** Records the events row; absent in envless demo runs. */
   db?: Pick<Db, "insert"> | null;
@@ -274,6 +277,9 @@ export interface LlmAlertNotifierOptions {
   readEnv?: ReadEnv;
   fetchImpl?: FetchLike;
   log?: Pick<Console, "error" | "warn">;
+  now?: () => Date;
+  /** Wait before a failed send is tried again. Default LLM_ALERT_RETRY_MS. */
+  retryAfterMs?: number;
 }
 
 export interface LlmAlertResult {
@@ -282,13 +288,20 @@ export interface LlmAlertResult {
   deduped: boolean;
   delivered: "email" | "log" | null;
   eventRecorded: boolean;
+  /** True when the email could not be sent for now: the claim was given
+   * back, so a later call tries again after the retry wait. */
+  retryScheduled?: boolean;
 }
 
 /** Sends each founder alert once per dedupe key: by email when Resend is
  * set up, else as a structured error log line, and always as an events row
- * when a database is wired. Never throws. */
+ * when a database is wired. A send that fails for a reason that may pass
+ * (Resend down, slow or rate limiting) gives its claim back, so a later
+ * call tries again after the retry wait. Never throws. */
 export class LlmAlertNotifier {
   private readonly claimedHere = new Set<string>();
+  /** Keys whose send failed, with the earliest time to try again. */
+  private readonly retryAt = new Map<string, number>();
   private readonly dedupe: AlertDedupe;
   private readonly log: Pick<Console, "error" | "warn">;
 
@@ -313,6 +326,11 @@ export class LlmAlertNotifier {
     if (this.claimedHere.has(key)) {
       return result;
     }
+    const nowMs = (this.opts.now?.() ?? new Date()).getTime();
+    const retryAt = this.retryAt.get(key);
+    if (retryAt !== undefined && nowMs < retryAt) {
+      return result;
+    }
     this.claimedHere.add(key);
     let claimed = true;
     try {
@@ -327,6 +345,7 @@ export class LlmAlertNotifier {
     result.deduped = false;
 
     const sent = await sendFounderEmail(email, { readEnv: this.opts.readEnv, fetchImpl: this.opts.fetchImpl });
+    this.retryAt.delete(key);
     if (sent.ok) {
       result.delivered = "email";
       this.log.warn(JSON.stringify({ level: "warn", event: LLM_ALERT_EVENT_NAMES[kind], period, ...props, delivered: "email" }));
@@ -338,7 +357,20 @@ export class LlmAlertNotifier {
         subject: email.subject,
         message: email.text,
         notice: sent.notice,
+        ...(sent.retryable ? { retryInMs: this.opts.retryAfterMs ?? LLM_ALERT_RETRY_MS } : {}),
       });
+      if (sent.retryable) {
+        // Give the claim back, here and in the shared store, so the reminder
+        // or alert is not used up by a Resend outage.
+        this.claimedHere.delete(key);
+        this.retryAt.set(key, nowMs + (this.opts.retryAfterMs ?? LLM_ALERT_RETRY_MS));
+        result.retryScheduled = true;
+        try {
+          await this.dedupe.release?.(key);
+        } catch (err) {
+          this.logJson("llm_alert_release_failed", { kind, period, error: errorText(err) });
+        }
+      }
     }
     if (this.opts.db) {
       try {
@@ -383,6 +415,8 @@ export class LlmMonitor {
   private readonly log: Pick<Console, "info" | "error">;
   /** Days whose credit reminders this process already checked. */
   private readonly creditCheckedDays = new Set<string>();
+  /** Background observations and alerts not yet settled. */
+  private readonly pending = new Set<Promise<unknown>>();
 
   constructor(private readonly opts: LlmMonitorOptions = {}) {
     this.store = opts.store ?? new InMemoryLlmCounterStore();
@@ -407,6 +441,31 @@ export class LlmMonitor {
     await this.checkCreditExpiry(this.opts.now?.() ?? entry.at);
   }
 
+  /**
+   * Runs work off the provider call path: the counter upsert and the
+   * founder email must never hold a seller's call, least of all the quota
+   * failover to Claude. Errors are logged; flush() waits for the rest.
+   */
+  track(work: Promise<unknown>): void {
+    const tracked = work.catch((err: unknown) => {
+      this.log.error(JSON.stringify({ level: "error", event: "llm_monitor_failed", error: errorText(err) }));
+    });
+    this.pending.add(tracked);
+    void tracked.finally(() => this.pending.delete(tracked));
+  }
+
+  /** Waits for background observations and alerts, for tests and shutdown. */
+  async flush(): Promise<void> {
+    while (this.pending.size > 0) {
+      await Promise.allSettled([...this.pending]);
+    }
+  }
+
+  /** AiDeps.onProviderQuota in the runtime: the quota alert in the background. */
+  readonly onProviderQuotaInBackground = (info: ProviderQuotaInfo): void => {
+    this.track(this.onProviderQuota(info));
+  };
+
   /** AiDeps.onProviderQuota: alerts the founder when a watched family
    * (OpenAI) answers provider_quota, once per family and UTC hour. */
   readonly onProviderQuota = async (info: ProviderQuotaInfo): Promise<void> => {
@@ -429,12 +488,18 @@ export class LlmMonitor {
     for (const window of this.creditWindows) {
       const reminder = dueCreditReminder(window, day);
       if (reminder === null) continue;
+      const period = `${window.family}:${reminder}`;
       await this.alerts.notify(
         "llm_credit_expiry",
-        `${window.family}:${reminder}`,
+        period,
         composeCreditExpiryReminder(window, day),
         { family: window.family, expiresOn: window.expiresOn, reminder, day, daysLeft: daysUntil(day, window.expiresOn) },
       );
+      // A reminder whose send failed for now gave its claim back: check
+      // again on a later call today (the notifier spaces the retries).
+      if (!this.alerts.claimedInProcess("llm_credit_expiry", period)) {
+        this.creditCheckedDays.delete(day);
+      }
     }
   }
 
@@ -477,15 +542,17 @@ export class LlmMonitor {
   }
 }
 
-/** The runtime's cost meter: the in memory meter plus the LLM monitor. */
+/** The runtime's cost meter: the in memory meter plus the LLM monitor,
+ * which runs in the background (LlmMonitor.track), so the router's await
+ * on record never waits on Postgres or Resend. */
 export class LlmMonitorMeter extends InMemoryCostMeter {
   constructor(readonly monitor: LlmMonitor) {
     super();
   }
 
-  override record(entry: CostMeterEntry): Promise<void> {
+  override async record(entry: CostMeterEntry): Promise<void> {
     super.record(entry);
-    return this.monitor.observe(entry);
+    this.monitor.track(this.monitor.observe(entry));
   }
 }
 

@@ -427,7 +427,9 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     onInternalError: reportAiInternalError,
     onProviderQuota: async (info: ProviderQuotaInfo) => {
       await quotaNotifier.onProviderQuota(info);
-      await llmMonitor.onProviderQuota(info);
+      // The founder email runs in the background: the router awaits this
+      // hook before it fails over, and a slow Resend must not hold that.
+      llmMonitor.onProviderQuotaInBackground(info);
     },
   };
   const wiring = wireLiveProviders(registry, routing);
