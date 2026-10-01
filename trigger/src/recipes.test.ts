@@ -17,6 +17,7 @@ import {
 import {
   dbRecipeLoader,
   llmModelProviderName,
+  openaiLlmPriceTable,
   pickVariant,
   RecipeCatalog,
   recipeFor,
@@ -111,6 +112,28 @@ describe("recipeFromRow", () => {
     expect(recipeFromRow({ ...row, body: { system: "" } })).toBeNull();
     expect(recipeFromRow({ ...row, stage: "render" })).toBeNull();
     expect(recipeFromRow({ ...row, model: "" })).toBeNull();
+  });
+});
+
+describe("openaiLlmPriceTable", () => {
+  it("carries the seeded cache write price to the OpenAI adapter", () => {
+    expect(openaiLlmPriceTable(llmModelPrices["gpt-6.1-sol"]!)).toEqual({
+      inputMicrosPerMTok: 2_000_000,
+      cachedInputMicrosPerMTok: 100_000,
+      cacheWriteMicrosPerMTok: 2_500_000,
+      outputMicrosPerMTok: 10_000_000,
+    });
+    expect(
+      openaiLlmPriceTable({ inputMicrosPerMTok: 1, cachedInputMicrosPerMTok: 1, outputMicrosPerMTok: 1 }),
+    ).not.toHaveProperty("cacheWriteMicrosPerMTok");
+    expect(openaiLlmPriceTable(llmModelPrices["claude-sonnet-5"]!)).toBeUndefined();
+  });
+
+  it("seeds a cache write price on every OpenAI model", () => {
+    for (const [model, provider] of Object.entries(llmModelProviders)) {
+      if (provider !== "openai") continue;
+      expect(llmModelPrices[model]?.cacheWriteMicrosPerMTok, model).toBeGreaterThan(0);
+    }
   });
 });
 
