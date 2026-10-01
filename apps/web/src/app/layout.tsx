@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Bricolage_Grotesque, Geist, Geist_Mono } from "next/font/google";
+import { AdsPixel } from "@/components/ads-pixel";
 import { Analytics } from "@/components/analytics";
 import { CookieConsent } from "@/components/cookie-consent";
 import { siteUrl } from "@/lib/env";
@@ -52,6 +53,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="theme-dark min-h-screen bg-night font-sans text-ink-950 antialiased">
         {children}
         <Analytics />
+        <AdsPixel />
         <CookieConsent />
       </body>
     </html>

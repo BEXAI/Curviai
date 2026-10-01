@@ -53,8 +53,9 @@ export default function PrivacyPage() {
           <h2 className="text-base font-semibold text-ink-950">Cookies and analytics</h2>
           <p className="mt-2">
             We use essential cookies to keep you signed in. We also use analytics cookies from PostHog
-            to learn which pages help sellers, but only if you accept them in the cookie banner. If you
-            decline, or have not chosen yet, no analytics code loads. You can change your choice at any
+            to learn which pages help sellers, and the OpenAI Ads pixel to measure which ads bring
+            sellers here, but only if you accept them in the cookie banner. If you decline, or have not
+            chosen yet, no analytics or advertising code loads. You can change your choice at any
             time from Cookie settings in the site footer.
           </p>
         </section>

@@ -19,9 +19,17 @@ export const CONSENT_OPEN_EVENT = "curvi:consent-open";
 
 export type ConsentChoice = "granted" | "denied";
 
-/** True when analytics is configured at all; without it there is nothing to consent to. */
+/**
+ * The OpenAI Ads Manager pixel id (a public id, not a secret). Set
+ * NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID to an empty string to turn the pixel off.
+ */
+export function openaiAdsPixelId(): string {
+  return process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID ?? "KpwKcUT18gMx18HnxhkL6K";
+}
+
+/** True when analytics or the ads pixel is configured; without either there is nothing to consent to. */
 export function analyticsConfigured(): boolean {
-  return Boolean(process.env.NEXT_PUBLIC_POSTHOG_KEY);
+  return Boolean(process.env.NEXT_PUBLIC_POSTHOG_KEY) || Boolean(openaiAdsPixelId());
 }
 
 /** The stored choice in a Cookie header or document.cookie string. */
@@ -74,8 +82,8 @@ export function openConsentSettings(): void {
 /** Plain copy for the banner (CLAUDE.md rule 9). */
 export const CONSENT_COPY = {
   message:
-    "We would like to use analytics cookies to learn which pages help sellers. They stay off unless you accept. You can change this later from Cookie settings in the site footer.",
-  accept: "Accept analytics",
+    "We would like to use analytics and advertising cookies to learn which pages help sellers and which ads bring them here. They stay off unless you accept. You can change this later from Cookie settings in the site footer.",
+  accept: "Accept cookies",
   decline: "Decline",
   privacyLink: "Privacy policy",
   settings: "Cookie settings",

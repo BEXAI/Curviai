@@ -51,7 +51,7 @@ function contentSecurityPolicy(env: Record<string, string | undefined> = process
     [...new Set(values.filter((v): v is string => Boolean(v)))].join(" ");
   const directives: Array<[string, string]> = [
     ["default-src", "'self'"],
-    ["script-src", unique(["'self'", "'unsafe-inline'", dev && "'unsafe-eval'", "https://*.posthog.com", posthog])],
+    ["script-src", unique(["'self'", "'unsafe-inline'", dev && "'unsafe-eval'", "https://*.posthog.com", posthog, "https://bzrcdn.openai.com"])],
     ["style-src", "'self' 'unsafe-inline'"],
     ["img-src", unique(["'self'", "data:", "blob:", r2])],
     ["font-src", "'self' data:"],
@@ -65,6 +65,7 @@ function contentSecurityPolicy(env: Record<string, string | undefined> = process
         supabase && supabase.replace(/^http/, "ws"),
         "https://*.posthog.com",
         posthog,
+        "https://*.openai.com",
         r2,
       ]),
     ],

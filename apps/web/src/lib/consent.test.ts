@@ -85,9 +85,13 @@ describe("cookie banner", () => {
     }
   });
 
-  it("shows the footer settings link only when analytics is configured", () => {
+  it("shows the footer settings link only when analytics or the ads pixel is configured", () => {
     vi.stubEnv("NEXT_PUBLIC_POSTHOG_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID", "");
     expect(renderToStaticMarkup(React.createElement(CookieSettingsLink, {}))).toBe("");
+    vi.stubEnv("NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID", "pixel_test");
+    expect(renderToStaticMarkup(React.createElement(CookieSettingsLink, {}))).toContain(CONSENT_COPY.settings);
+    vi.stubEnv("NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID", "");
     vi.stubEnv("NEXT_PUBLIC_POSTHOG_KEY", "phc_test");
     expect(renderToStaticMarkup(React.createElement(CookieSettingsLink, {}))).toContain(CONSENT_COPY.settings);
   });
