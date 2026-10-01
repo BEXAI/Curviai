@@ -15,6 +15,11 @@
  *
  * The questions stage (PHASE_16 workstream 4) runs the question step's
  * golden set in eval/questions.ts: no images, no provider.
+ *
+ * --live (PHASE_17 workstream 4) runs the LLM golden set and the prompt
+ * injection fixtures through a real provider instead: see eval/live/cli.ts.
+ * It is off unless asked for, refuses to run in CI or without the key, and
+ * is never reached by the stages above.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -453,6 +458,10 @@ function assertStage(value: string): Stage {
 }
 
 async function main(): Promise<void> {
+  if (process.argv.includes("--live")) {
+    const { liveMain } = await import("./live/cli");
+    process.exit(await liveMain(process.argv.slice(2)));
+  }
   const stage = parseStage(process.argv.slice(2));
   console.log(`Curvi pipeline eval, stage: ${stage}`);
   if (stage === "questions") {
