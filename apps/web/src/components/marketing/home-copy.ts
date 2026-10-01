@@ -59,7 +59,7 @@ export const homeProof = {
   galleryLink: "See more before and after examples",
   differenceTitle: "Your product is never redrawn. That is the difference.",
   difference:
-    "Unlike general AI image generators that hallucinate your text, warp your logos, and distort your packaging, Curvi locks 100% of your original product pixels while automatically compiling channel-compliant, ready-to-list asset suites for Amazon, Shopify, and social channels. It ensures that the subject of your original photo remains unchanged.",
+    "General AI image generators redraw the whole picture, product included, and wording, caps and colors can still drift. Curvi cuts your product out of your own photo and builds only the background and scene around it, then checks every file for color change inside your product before it ships.",
 };
 
 export const homeHowItWorks = {
@@ -181,7 +181,7 @@ export const homeFeatures: HomeFeature[] = [
   {
     key: "fidelity",
     title: "Fidelity lock",
-    body: "Your real product pixels are never regenerated. Labels, logos and textures in the output match your photo exactly.",
+    body: "Never redrawn by AI. Curvi cuts out your real product and builds the scene around it, then measures the color inside your product on every file.",
     status: "live",
   },
   {

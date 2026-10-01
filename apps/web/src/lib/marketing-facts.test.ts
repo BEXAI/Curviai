@@ -400,7 +400,7 @@ describe("unqualifiedClaims", () => {
   it("passes copy about live features", () => {
     expect(
       unqualifiedClaims(
-        "Your real product pixels are never regenerated. Labels, logos and textures match your photo exactly.",
+        "Never redrawn by AI. Curvi cuts out your real product and builds the scene around it, then measures the color inside your product on every file.",
       ),
     ).toEqual([]);
   });

@@ -493,3 +493,38 @@ export function unqualifiedClaims(text: string): string[] {
     .filter((sentence) => patterns.some((pattern) => pattern.test(sentence)))
     .filter((sentence) => !/coming soon/i.test(sentence));
 }
+
+// Product identity claims (docs/phases/PHASE_18.md P18-09 part 1).
+
+/**
+ * Words that say a product, label or pixel came out exactly as photographed.
+ * "exactly" before a number ("exactly 2000 x 2000") is a size, not a claim.
+ */
+const IDENTITY_WORDS =
+  /\b(?:exactly(?! \d)|identical(?:ly)?|byte for byte|pixel for pixel|pixel perfect|untouched|unchanged)\b|\b100 ?(?:%|percent) of (?:your |the )?(?:original )?product/i;
+
+/** What such a sentence is about. Background and edge pixels are not the product. */
+const PRODUCT_SUBJECT =
+  /\b(?:labels?|logos?|textures?|stitching|packag(?:e|es|ing)|products?|photos?|photographed|upload|original)\b|(?<!\b(?:background|edge) )\bpixels?\b/i;
+
+/** A kept photo is the seller's own file, byte for byte, so the claim is true there. */
+const KEPT_PHOTO = /\bkept\b|\bas uploaded\b|\bas you took it\b/i;
+
+/** "not byte for byte copies" denies identity rather than claiming it. */
+const DENIED = /\bnot (?:a |the )?(?:byte for byte|pixel for pixel|identical|exact)/i;
+
+/**
+ * Sentences that claim the product comes out identical to the photo. Every
+ * product file is resized for its channel, so the share of byte identical
+ * product pixels ranged from 0.02 to 73 percent in the latest eval; the true
+ * claims are "never redrawn" and the measured color check (docs/marketing.md
+ * section 6.5, C-01 and C-02). Sentences about kept photos, which are the
+ * seller's own file, are allowed. Copy that makes no such claim returns [].
+ */
+export function identityClaims(text: string): string[] {
+  const sentences = text.match(/[^.!?]+[.!?]*/g) ?? [];
+  return sentences
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => IDENTITY_WORDS.test(sentence) && PRODUCT_SUBJECT.test(sentence))
+    .filter((sentence) => !KEPT_PHOTO.test(sentence) && !DENIED.test(sentence));
+}

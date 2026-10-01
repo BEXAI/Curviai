@@ -71,7 +71,7 @@ function introLines(): string[] {
     "",
     SITE_DESCRIPTION,
     "",
-    "Curvi is for e-commerce professionals who post products on Shopify, Amazon and other marketplaces. Upload one product photo and Curvi builds the listing images each channel needs. The product is masked first, and the pixels inside the mask are never regenerated, so labels, logos and textures stay identical to the original photo.",
+    "Curvi is for e-commerce professionals who post products on Shopify, Amazon and other marketplaces. Upload one product photo and Curvi builds the listing images each channel needs. The product is masked first, and the pixels inside the mask are never regenerated, so labels, logos and textures are never redrawn by AI. Every finished file is measured for color change inside the product before it ships.",
     "",
     `Positioning: Curvi is an ${SITE_CATEGORY}. ${SITE_POSITIONING} Other e-commerce photo tools also start from the seller's photo; Curvi adds automated channel compliance: every file is measured against the channel's image rules, a whole listing pack is compiled from one photo in one run, and a shot that still fails its checks is marked for review and not charged.`,
     "",

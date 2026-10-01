@@ -1,3 +1,4 @@
+import { QC_THRESHOLDS } from "@curvi/pipeline/qc-thresholds";
 import { creditCosts } from "@curvi/pipeline/seed";
 import { isStripeConfigured } from "@/lib/env";
 import {
@@ -68,8 +69,8 @@ export const helpArticles: HelpArticle[] = [
     slug: "will-ai-change-my-product",
     title: "Will the AI change my product or label?",
     body: [
-      "No. This is the core promise. Curvi masks your product first and treats those pixels as untouchable. Backgrounds, shadows, scenes and lighting are generated around the mask.",
-      "That is why label text, logos, stitching and textures in the output match your photo exactly. If a generated scene would require repainting the product itself, Curvi does not produce it.",
+      `No. Curvi never redraws your product. It cuts your product out of your photo, places it on the new background, and checks every finished file: the average color difference inside your product must be at most ${QC_THRESHOLDS.main.maxMeanDeltaE} for main images and ${QC_THRESHOLDS.other.maxMeanDeltaE} for the rest.`,
+      "Resizing for each channel means most files are not byte for byte copies, and the check measures exactly that.",
     ],
     structured: "always",
   },

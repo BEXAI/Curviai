@@ -72,7 +72,7 @@ export default async function GalleryPage() {
         <h1 className="text-4xl font-bold tracking-tight text-ink-950">Makeover gallery</h1>
         <p className="mt-4 text-lg text-ink-600">
           Each case shows a phone photo on the left and a studio result on the right, with the
-          product pixels identical in both.
+          product never redrawn.
         </p>
       </div>
 
