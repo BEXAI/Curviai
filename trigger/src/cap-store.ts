@@ -111,4 +111,10 @@ export class PgCapStore implements CapStore {
     );
     return rows.length > 0;
   }
+
+  /** Gives a claimed one time key back (an alert whose email failed to
+   * send), so the next caller in any process can claim it again. */
+  async release(key: string): Promise<void> {
+    await this.db.execute(sql`delete from spend_cap_counters where key = ${key}`);
+  }
 }

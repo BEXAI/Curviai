@@ -15,12 +15,14 @@ import { createTestDb } from "@curvi/db/testing";
 import { llmCreditWindows, llmFallbackAlertPolicy } from "@curvi/pipeline/seed";
 import { PgCapStore } from "./cap-store";
 import { RESEND_EMAILS_URL } from "./digest";
+import { InMemoryAlertDedupe, sendFounderEmail } from "./spend-alerts";
 import {
   InMemoryLlmCounterStore,
   LLM_ALERT_EVENT_NAMES,
   LlmAlertNotifier,
   LlmMonitor,
   LlmMonitorMeter,
+  LLM_ALERT_RETRY_MS,
   composeCreditExpiryReminder,
   composeFallbackAlert,
   dueCreditReminder,
@@ -141,6 +143,7 @@ describe("LlmMonitor counters and the cost report", () => {
     await meter.record(entry({ provider: SOL, task: "product_analyzer", costMicros: 4_000, usage: usage(3_000, 0, 1_500, 1_200) }));
     await meter.record(entry({ provider: SONNET, costMicros: 9_000, usage: usage(2_000, 0, 600, 0) }));
     await meter.record(entry({ provider: "nano-banana-2", task: "scene_plate", costMicros: 39_000, usage: undefined }));
+    await monitor.flush();
 
     // The in memory meter still sees every attempt.
     expect(meter.entries).toHaveLength(4);
@@ -264,6 +267,7 @@ describe("OpenAI provider_quota alert", () => {
         { chain: [LUNA, SONNET], onProviderQuota: monitor.onProviderQuota },
       );
       expect(result.provider).toBe(SONNET);
+      await monitor.flush();
     } finally {
       errorLog.mockRestore();
     }
@@ -271,6 +275,140 @@ describe("OpenAI provider_quota alert", () => {
     expect(await packLlmSpend(store, "job-q")).toEqual({ anthropic: 3_600 });
     const hour = new Date().toISOString().slice(0, 13);
     expect(store.totals.get(llmHourKey(hour, "fallback_calls"))).toBe(1);
+  });
+});
+
+describe("monitoring stays off the provider call path", () => {
+  it("returns from the meter without waiting on the counter store", async () => {
+    let release: () => void = () => {};
+    const hanging = new Promise<Map<string, number>>((resolve) => {
+      release = () => resolve(new Map());
+    });
+    const log = quietLog();
+    const monitor = new LlmMonitor({
+      store: { addMany: () => hanging, listByPrefix: async () => new Map() },
+      alerts: new LlmAlertNotifier({ log }),
+      log,
+      now: () => AT,
+    });
+    const meter = new LlmMonitorMeter(monitor);
+    const outcome = await Promise.race([
+      meter.record(entry()).then(() => "returned"),
+      new Promise((resolve) => setTimeout(() => resolve("held"), 50)),
+    ]);
+    expect(outcome).toBe("returned");
+    expect(meter.entries).toHaveLength(1);
+    release();
+    await monitor.flush();
+  });
+
+  it("fails over to Claude while the OpenAI quota email is still hanging", async () => {
+    const log = quietLog();
+    let sends = 0;
+    const alerts = new LlmAlertNotifier({
+      log,
+      readEnv: mailer().readEnv,
+      // Resend never answers until the send times out.
+      fetchImpl: (_url, init) => {
+        sends += 1;
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      },
+    });
+    const monitor = new LlmMonitor({ alerts, log, now: () => AT });
+    const registry = new ProviderRegistry();
+    registry.register(
+      new MockProvider({
+        name: LUNA,
+        failTimes: Infinity,
+        failWith: () => new ProviderError("openai:gpt-6-luna responded 429: credit_balance_exhausted", LUNA, "copy_generator", false, undefined, {
+          code: "provider_quota",
+        }),
+      }),
+    );
+    const answer: LlmResult = { json: { ok: true }, text: "", finish: "complete", usage: usage(800, 0, 200, 0), raw: {} };
+    registry.register(new MockProvider({ name: SONNET, output: answer, costMicros: 3_600 }));
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const call = callWithFailover(
+        registry,
+        {},
+        new LlmMonitorMeter(monitor),
+        new InMemoryBreakerStore(),
+        { task: "copy_generator", input: {}, jobId: "job-h", workspaceId: "ws-1" },
+        { chain: [LUNA, SONNET], onProviderQuota: monitor.onProviderQuotaInBackground },
+      );
+      const outcome = await Promise.race([
+        call.then((r) => r.provider),
+        new Promise((resolve) => setTimeout(() => resolve("held"), 1_000)),
+      ]);
+      expect(outcome).toBe(SONNET);
+      expect(sends).toBe(1);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it("gives up a founder email that Resend never answers", async () => {
+    const sent = await sendFounderEmail(
+      { subject: "s", text: "t" },
+      {
+        readEnv: mailer().readEnv,
+        timeoutMs: 20,
+        fetchImpl: (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("timed out")));
+          }),
+      },
+    );
+    expect(sent).toMatchObject({ ok: false, retryable: true });
+  });
+});
+
+describe("a founder alert whose email fails", () => {
+  it("is tried again after the retry wait instead of being used up", async () => {
+    let now = new Date("2026-12-01T09:00:00Z");
+    const log = quietLog();
+    const mail = mailer();
+    let failing = true;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) =>
+      failing ? new Response("unavailable", { status: 503 }) : mail.fetchImpl(url, init),
+    );
+    const dedupe = new InMemoryAlertDedupe();
+    const alerts = new LlmAlertNotifier({ readEnv: mail.readEnv, fetchImpl, log, dedupe, now: () => now });
+    const monitor = new LlmMonitor({ alerts, log, now: () => now });
+
+    await monitor.observe(entry());
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(mail.sent).toHaveLength(0);
+
+    // Inside the retry wait: no new send.
+    failing = false;
+    now = new Date(now.getTime() + LLM_ALERT_RETRY_MS - 1_000);
+    await monitor.observe(entry());
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // After it: the reminder goes out, once.
+    now = new Date(now.getTime() + 2_000);
+    await monitor.observe(entry());
+    await monitor.observe(entry());
+    expect(mail.sent).toHaveLength(1);
+    expect(mail.sent[0].subject).toBe("Curvi: the OpenAI credits expire on 2026-12-31");
+    // The shared claim is held again, so no other process sends it.
+    expect(await dedupe.claim("alerts:llm_credit_expiry:openai:2026-12-01")).toBe(false);
+  });
+
+  it("keeps the claim when the email is not set up, so nothing retries", async () => {
+    const log = quietLog();
+    const fetchImpl = vi.fn();
+    const dedupe = new InMemoryAlertDedupe();
+    const alerts = new LlmAlertNotifier({ readEnv: () => undefined, fetchImpl, log, dedupe });
+    const first = await alerts.notify("llm_quota", "openai:2026-12-01T09", { subject: "s", text: "t" }, {});
+    expect(first).toMatchObject({ delivered: "log" });
+    expect(first.retryScheduled).toBeUndefined();
+    expect(await dedupe.claim("alerts:llm_quota:openai:2026-12-01T09")).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
