@@ -457,3 +457,18 @@ What changes for the founder:
 3. **Scenes degrade instead of failing the pack.** When every image provider is down, packs still deliver the white background, alternate angle, cutout and sweep files, and each lifestyle scene is marked "Paused, the scene service is unavailable, not charged". Only delivered files are charged.
 4. **One automatic retry.** Shots that fail on a timeout, 429, 5xx or network error run once more 30 seconds later in the same run (not for quota answers, safety refusals or other 4xx).
 5. **Preflight on the new pack page.** While the cutout service is down the page says "Packs are paused for a few minutes while an image service recovers. Nothing will be charged." and Create pack is disabled; while only scenes are down a softer banner says white background and cutout files still work.
+
+## Site visitor count (site-visitors)
+
+Migration 0027 and one new server only environment variable. Render's dashboard reports no visitors, and PostHog loads only after cookie consent, so neither counts everyone. The site now counts page views itself, the way Plausible documents it: no cookies and nothing stored on the device, so no consent banner change. A small script on every page (components/visit-beacon.tsx) posts the page path, the UTM tags and, on the first page only, the referrer to `POST /api/visits`. The server skips bots, prefetches and other sites, hashes the client IP and user agent with a salt that changes every UTC day, and stores only that code (`site_visits`). Neither the IP nor the user agent is stored, and salts older than yesterday are deleted, so a code cannot be linked across days. At most 500 page views are stored per code and day.
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `OPS_EMAILS` | `apps/web/src/lib/ops.ts` | Nobody can open `/app/ops/visitors` (it answers 404 for everyone). | Comma separated sign in emails, compared without regard to case, whose confirmed accounts may open the operator pages. Server only. |
+
+What changes for the founder:
+
+1. **Apply migration 0027** (pnpm db:migrate, staging first). Additive; RLS on both tables with no policies, and anon and authenticated lose every privilege on them and on the `site_visits_daily` view.
+2. **Set `OPS_EMAILS` on Render,** Save only, then deploy.
+3. **Open `/app/ops/visitors`** signed in with a listed email: unique visitors and page views for today, yesterday, the last 7 and 30 days, a 30 day daily chart, top pages, the sites that sent visitors, UTM sources and campaigns, and phones against computers. A person who visits on two days counts on each day, so totals over several days are daily visitors added up, and the page says so.
+4. **Read the count as close, not exact.** People who block scripts are missed, people sharing one address with the same browser count once, and a script that forges a new IP header on every request can inflate it until the client IP header behind Render is verified (docs/verification.md, "Site visitor count"). Browsers driven by automation, headless browsers and known crawlers are not counted. An iPad on iPadOS 13 or later reports a Mac user agent and counts as a computer.

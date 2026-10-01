@@ -11,7 +11,7 @@ export default function PrivacyPage() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16">
       <h1 className="text-3xl font-bold tracking-tight text-ink-950">Privacy policy</h1>
-      <p className="mt-2 text-sm text-ink-500">Last updated September 28, 2026</p>
+      <p className="mt-2 text-sm text-ink-500">Last updated October 1, 2026</p>
       <div className="mt-8 space-y-6 text-sm leading-relaxed text-ink-700">
         <section>
           <h2 className="text-base font-semibold text-ink-950">What we collect</h2>
@@ -55,8 +55,20 @@ export default function PrivacyPage() {
             We use essential cookies to keep you signed in. We also use analytics cookies from PostHog
             to learn which pages help sellers, and the OpenAI Ads pixel to measure which ads bring
             sellers here, but only if you accept them in the cookie banner. If you decline, or have not
-            chosen yet, no analytics or advertising code loads. You can change your choice at any
-            time from Cookie settings in the site footer.
+            chosen yet, neither of them loads and no analytics or advertising cookie is set. You can
+            change your choice at any time from Cookie settings in the site footer.
+          </p>
+        </section>
+        <section data-testid="privacy-visitor-count">
+          <h2 className="text-base font-semibold text-ink-950">How we count visitors</h2>
+          <p className="mt-2">
+            We count visits to this site ourselves, without cookies and without storing anything on
+            your device. When a page opens, your browser tells our server which page it was, any
+            campaign tags in its link and, for the first page of a visit, which site sent you there.
+            Our server mixes your IP address and browser details with a random code that changes every
+            day and keeps only the scrambled result. We never store your IP address or browser details,
+            and we delete each daily code within two days, so the count cannot identify you or follow
+            you from one day to the next.
           </p>
         </section>
         <section>

@@ -41,6 +41,8 @@ const EXPECTED_TABLES = [
   "upload_preflights",
   "api_keys",
   "favorites",
+  "site_visits",
+  "site_visit_salts",
 ];
 
 const USER_A = "00000000-0000-4000-8000-00000000000a";

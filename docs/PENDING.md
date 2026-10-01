@@ -4,6 +4,17 @@ Date: 2026-09-28. Production: main 939dc1b on Render, database at migration 0013
 
 The discovery sweep of 2026-09-28 found 205 open items (docs/phases/PHASE_10.md). Batch 1 addressed 88 of them. The 117 items below have not been started. Duplicates across the sweep are merged here. Nothing in this file is built yet.
 
+## Site visitor count founder steps (cookieless, first party)
+
+Added 2026-10-01. The code is on `site-visitors`. Render's dashboard reports no visitors and PostHog only counts people who accept cookies, so the site now counts page views itself without cookies (apps/web/src/lib/visits) and shows them at `/app/ops/visitors` to the people listed in `OPS_EMAILS`. The details are in docs/LAUNCH_CHECKLIST.md, "Site visitor count". Do these in order.
+
+1. **Apply migration 0027 in production** with pnpm db:migrate, staging first. It adds the `site_visits` and `site_visit_salts` tables (RLS on, no client privileges) and the `site_visits_daily` view. It is additive: the code before it keeps working, and the new code stores nothing until the tables exist (the beacon route always answers 204 and logs the failure).
+2. **Set `OPS_EMAILS` on Render** (Environment, Save only): your sign in email, or several separated by commas. Server only; never a `NEXT_PUBLIC_` name. Unset means nobody can open the page.
+3. **Add `OPS_EMAILS=` to .env.example by hand,** with the comment `# Operator emails (comma separated) that may open /app/ops/visitors. Server only. Unset: nobody.` (env files are blocked for the agents).
+4. **Deploy the web app,** then open https://curvi.ai/app/ops/visitors signed in with that email. Anyone else gets a 404. The counts start from the deploy; there is no history before it.
+5. **Optional:** in the Supabase SQL editor, `select * from site_visits_daily order by day desc;` gives the same daily numbers.
+6. **Later:** check which client IP header Render passes (docs/verification.md, "Site visitor count"), since a script that forges that header on every request can inflate the unique count.
+
 ## Phase 17 founder steps (every LLM call moves to OpenAI, Claude last)
 
 Added 2026-10-01. The code is on `p17/integration`; the full status is in docs/phases/PHASE_17.md, "Implementation status". No migration is needed. The OpenAI credits expire on December 31, 2026 (founder decision 4). Haiku 4.5's retirement commitment runs only to 2026-10-15, so finish the canary for the Haiku recipes (step 6, groups 1 to 3) before then. Do these in order.

@@ -3,6 +3,7 @@ import { Bricolage_Grotesque, Geist, Geist_Mono } from "next/font/google";
 import { AdsPixel } from "@/components/ads-pixel";
 import { Analytics } from "@/components/analytics";
 import { CookieConsent } from "@/components/cookie-consent";
+import { VisitBeacon } from "@/components/visit-beacon";
 import { siteUrl } from "@/lib/env";
 import { SITE_DESCRIPTION, SITE_KEYWORDS, SITE_NAME, SITE_TITLE } from "@/lib/seo";
 import "./globals.css";
@@ -52,6 +53,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${inter.variable} ${grotesk.variable} ${jbMono.variable}`}>
       <body className="theme-dark min-h-screen bg-night font-sans text-ink-950 antialiased">
         {children}
+        <VisitBeacon />
         <Analytics />
         <AdsPixel />
         <CookieConsent />
