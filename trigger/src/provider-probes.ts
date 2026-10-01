@@ -38,7 +38,7 @@ import {
   type ImageModelSeedRow,
   type LlmProviderFamily,
 } from "@curvi/pipeline/seed";
-import { llmModelProviderName } from "./recipes";
+import { llmModelProviderName, openaiLlmPriceTable } from "./recipes";
 
 export type ReadEnv = (name: string) => string | undefined;
 type FetchLike = typeof fetch;
@@ -105,29 +105,30 @@ export function liveProviderTargets(readEnv: ReadEnv = readEnvDefault, fetchFn?:
     const family = Object.hasOwn(llmModelProviders, model) ? llmModelProviders[model] : undefined;
     if (!family) continue;
     const imageTokenMultiplier = llmImageTokenMultipliers[model];
-    if (family === "openai" && imageTokenMultiplier === undefined) continue;
+    const openaiPrices = openaiLlmPriceTable(priceTable);
+    // An OpenAI model without a seeded multiplier or cached input price is
+    // never wired (live-runtime fails closed), so it is not probed either.
+    const openaiConfig =
+      family === "openai" && imageTokenMultiplier !== undefined && openaiPrices
+        ? { priceTable: openaiPrices, imageTokenMultiplier }
+        : undefined;
+    if (family === "openai" && !openaiConfig) continue;
     const name = llmModelProviderName(model);
     const envVar = LLM_KEY_ENV[family];
     const apiKey = readEnv(envVar);
+    let provider: Provider | null = null;
+    if (apiKey) {
+      provider = openaiConfig
+        ? new OpenaiLLMProvider({ name, tasks: [], apiKey, model, ...openaiConfig, fetchFn })
+        : new AnthropicLLMProvider({ name, tasks: [], apiKey, model, priceTable, fetchFn });
+    }
     targets.push({
       name,
       kind: "llm",
       envVar,
       stages: llmStagesFor(model),
       configured: Boolean(apiKey),
-      provider: !apiKey
-        ? null
-        : family === "openai"
-          ? new OpenaiLLMProvider({
-              name,
-              tasks: [],
-              apiKey,
-              model,
-              priceTable,
-              imageTokenMultiplier: imageTokenMultiplier ?? 0,
-              fetchFn,
-            })
-          : new AnthropicLLMProvider({ name, tasks: [], apiKey, model, priceTable, fetchFn }),
+      provider,
     });
   }
 

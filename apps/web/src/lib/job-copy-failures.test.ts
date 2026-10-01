@@ -157,9 +157,17 @@ const openaiLlm401 = new ProviderError(
   false,
 );
 const openaiRefusal = new ProviderError(
-  "openai:gpt-6-luna refused the request (refusal output)",
+  "OpenAI declined the request (refusal)",
   "openai:gpt-6-luna",
   "intake_normalizer",
+  false,
+  undefined,
+  { code: "content_blocked" },
+);
+const openaiContentFilter = new ProviderError(
+  "OpenAI stopped the reply (incomplete: content_filter)",
+  "openai:gpt-6-luna",
+  "copy_generator",
   false,
   undefined,
   { code: "content_blocked" },
@@ -301,6 +309,7 @@ const CASES: Array<[string, JobErrorKind]> = [
   [chain("copy_generator", openaiRate429), "serviceBusy"],
   [chain("intake_normalizer", openaiRate429, anthropic529), "serviceBusy"],
   [chain("intake_normalizer", openaiRefusal), "contentBlocked"],
+  [chain("copy_generator", openaiContentFilter), "contentBlocked"],
   ['No active recipe seeded for stage "intake"', "setup"],
 
   // Spend caps (packages/ai caps.ts and router.ts, the runner's pack cap).

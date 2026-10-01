@@ -15,7 +15,6 @@
  * reply: it speaks LlmRequest and LlmResult, and the adapters translate.
  */
 
-import * as ai from "@curvi/ai";
 import {
   AllProvidersFailedError,
   ANTHROPIC_API_KEY_ENV,
@@ -25,6 +24,7 @@ import {
   InMemoryCostMeter,
   isLlmResult,
   OPENAI_API_KEY_ENV,
+  OpenaiLLMProvider,
   ProviderError,
   ProviderRegistry,
   type FetchLike,
@@ -32,7 +32,12 @@ import {
   type LlmResult,
   type Provider,
 } from "@curvi/ai";
-import { llmModelPrices, llmModelProviders, type LlmProviderFamily } from "../../src/seed/models";
+import {
+  llmImageTokenMultipliers,
+  llmModelPrices,
+  llmModelProviders,
+  type LlmProviderFamily,
+} from "../../src/seed/models";
 
 /** One recipe call the harness makes. */
 export interface LlmCallSpec {
@@ -237,22 +242,6 @@ export interface LiveProviderOptions {
   fetchFn?: FetchLike;
 }
 
-type LlmProviderConstructor = new (config: {
-  name: string;
-  tasks: string[];
-  model: string;
-  priceTable: (typeof llmModelPrices)[string];
-  apiKey?: string;
-  fetchFn?: FetchLike;
-}) => Provider;
-
-/** The OpenAI LLM adapter (PHASE_17 workstream 2) when @curvi/ai exports
- * it, looked up by name so this harness builds before that adapter lands. */
-export function openaiLlmProviderClass(): LlmProviderConstructor | null {
-  const exported = (ai as unknown as Record<string, unknown>).OpenaiLLMProvider;
-  return typeof exported === "function" ? (exported as LlmProviderConstructor) : null;
-}
-
 /**
  * The @curvi/ai provider for one model, priced from the seed (rule 2). The
  * model must be priced and mapped to the family asked for.
@@ -276,9 +265,16 @@ export function liveLlmProvider(family: LlmProviderFamily, model: string, opts: 
   if (family === "anthropic") {
     return new AnthropicLLMProvider(config);
   }
-  const OpenaiLLMProvider = openaiLlmProviderClass();
-  if (!OpenaiLLMProvider) {
-    throw new Error("@curvi/ai does not export OpenaiLLMProvider yet (PHASE_17 workstream 2)");
+  // The same seed rows live-runtime wires from: an OpenAI model needs a
+  // cached input price and an image token multiplier.
+  const { cachedInputMicrosPerMTok } = priceTable;
+  const imageTokenMultiplier = llmImageTokenMultipliers[model];
+  if (cachedInputMicrosPerMTok === undefined || imageTokenMultiplier === undefined) {
+    throw new Error(`Model ${model} needs a cached input price and an image token multiplier in the seed`);
   }
-  return new OpenaiLLMProvider(config);
+  return new OpenaiLLMProvider({
+    ...config,
+    priceTable: { ...priceTable, cachedInputMicrosPerMTok },
+    imageTokenMultiplier,
+  });
 }

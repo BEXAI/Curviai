@@ -1892,6 +1892,19 @@ export function recipeChain(ai: Pick<AiDeps, "registry">, recipe: ResolvedRecipe
   return recipe.models.map(llmModelProviderName).filter((name) => ai.registry.get(name) !== undefined);
 }
 
+/**
+ * Image blocks with the recipe's seeded resolution hint (body.imageDetail)
+ * applied wherever a block does not already carry one. Providers that take
+ * no hint ignore it, so only OpenAI requests change.
+ */
+export function withImageDetail(
+  blocks: readonly LlmContentBlock[],
+  detail: "low" | "high" | undefined,
+): LlmContentBlock[] {
+  if (!detail) return [...blocks];
+  return blocks.map((block) => (block.type === "image" && !block.detail ? { ...block, detail } : block));
+}
+
 /** One recipe call through @curvi/ai with the answer parsed against the
  * schema; exported so the preflight at upload runs intake exactly as a pack
  * does (trigger/src/preflight.ts). */
@@ -1907,7 +1920,9 @@ export async function llmJson<T>(
   const text = JSON.stringify(payload);
   const input: LlmRequest = {
     system: recipe.system,
-    messages: [{ role: "user", content: [...(contentBlocks ?? []), { type: "text", text }] }],
+    messages: [
+      { role: "user", content: [...withImageDetail(contentBlocks ?? [], recipe.imageDetail), { type: "text", text }] },
+    ],
   };
   if (recipe.maxTokens !== undefined) {
     input.maxOutputTokens = recipe.maxTokens;

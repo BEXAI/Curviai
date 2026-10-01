@@ -79,6 +79,24 @@ export function llmModelProviderName(model: string): string {
   return provider ? `${provider}:${model}` : `unmapped:${model}`;
 }
 
+/**
+ * The OpenAI price table for a seeded LLM price row, or undefined when the
+ * row has no cached input price. The OpenAI adapter bills cached input at
+ * its own rate, so a row without one is never wired (fail closed).
+ */
+export function openaiLlmPriceTable(row: {
+  inputMicrosPerMTok: number;
+  cachedInputMicrosPerMTok?: number;
+  outputMicrosPerMTok: number;
+}): { inputMicrosPerMTok: number; cachedInputMicrosPerMTok: number; outputMicrosPerMTok: number } | undefined {
+  if (row.cachedInputMicrosPerMTok === undefined) return undefined;
+  return {
+    inputMicrosPerMTok: row.inputMicrosPerMTok,
+    cachedInputMicrosPerMTok: row.cachedInputMicrosPerMTok,
+    outputMicrosPerMTok: row.outputMicrosPerMTok,
+  };
+}
+
 function uniqueModels(models: readonly string[]): string[] {
   return [...new Set(models.filter((m) => m.length > 0))];
 }

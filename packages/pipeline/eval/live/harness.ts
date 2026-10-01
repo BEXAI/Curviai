@@ -18,7 +18,6 @@
 
 import { z } from "zod";
 import type { LlmContentBlock, LlmFinish, LlmRequest, LlmUsage } from "@curvi/ai";
-import * as pipelineSchemas from "../../src/schemas";
 import {
   IntakeAnswer,
   IntakeToolResult,
@@ -103,16 +102,11 @@ export function stageSchemas(row: Pick<RecipeRow, "stage" | "key" | "version">):
 }
 
 /**
- * The strict output schema for a provider family. OpenAI strict mode needs
- * every property required with nullable optionals (openaiStrictSchema,
- * PHASE_17 workstream 2); until schemas.ts exports it, every family gets the
- * schema the runner sends today.
+ * The strict output schema the runner sends (llmJson): strictToolSchema for
+ * every family. The OpenAI adapter converts it to OpenAI's strict form
+ * itself (openaiStrictJsonSchema), so eval requests match production.
  */
-export function strictSchemaFor(family: LlmProviderFamily, schema: z.ZodType): Record<string, unknown> {
-  const openai = (pipelineSchemas as unknown as Record<string, unknown>).openaiStrictSchema;
-  if (family === "openai" && typeof openai === "function") {
-    return (openai as (s: z.ZodType) => Record<string, unknown>)(schema);
-  }
+export function strictSchemaFor(_family: LlmProviderFamily, schema: z.ZodType): Record<string, unknown> {
   return strictToolSchema(schema);
 }
 
@@ -248,6 +242,16 @@ function addUsage(total: LlmUsage, more: LlmUsage): void {
 }
 
 /** The request llmJson builds for this case, strict or not. */
+/** Mirrors the runner's withImageDetail (trigger/src/pipeline-runner.ts):
+ * the recipe's seeded image detail on every image block without one. */
+export function withImageDetail(
+  blocks: readonly LlmContentBlock[],
+  detail: "low" | "high" | undefined,
+): LlmContentBlock[] {
+  if (!detail) return [...blocks];
+  return blocks.map((block) => (block.type === "image" && !block.detail ? { ...block, detail } : block));
+}
+
 export function buildRequest(
   selected: SelectedRecipe,
   family: LlmProviderFamily,
@@ -261,7 +265,10 @@ export function buildRequest(
     messages: [
       {
         role: "user",
-        content: [...goldenCase.blocks, { type: "text", text: JSON.stringify(goldenCase.payload(row)) }],
+        content: [
+          ...withImageDetail(goldenCase.blocks, row.body.imageDetail),
+          { type: "text", text: JSON.stringify(goldenCase.payload(row)) },
+        ],
       },
     ],
     output: {

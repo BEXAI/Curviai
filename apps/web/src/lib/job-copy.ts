@@ -571,9 +571,10 @@ const RULES: readonly Rule[] = [
       "declined",
       "blocked the prompt",
       "stop_reason refusal",
-      // An OpenAI refusal output part (PHASE_17 workstream 2).
-      "refused the request",
-      "refusal output",
+      // OpenAI (packages/ai/src/adapters/openaiLLM.ts): a refusal output
+      // part is "declined the request (refusal)" and matches "declined"; a
+      // reply stopped by its content filter ends "incomplete: content_filter".
+      "content_filter",
       "moderat",
       "safety system",
     ),

@@ -123,7 +123,7 @@ import { ORIGINAL_NOT_PREPARED, renderOriginalShot } from "./live-original";
 import type { LiveProduct, StillRender } from "./live-product";
 import { isWorkspaceObjectKey } from "./object-keys";
 import { R2_REQUEST_TIMEOUTS } from "./r2";
-import { llmModelProviderName, seedRecipe } from "./recipes";
+import { llmModelProviderName, openaiLlmPriceTable, seedRecipe } from "./recipes";
 import {
   failureSpendMicros,
   isSpendCapBlock,
@@ -481,9 +481,17 @@ export function wireLiveProviders(
       const imageTokenMultiplier = llmImageTokenMultipliers[model];
       // An OpenAI model without a seeded multiplier cannot estimate its
       // image input for the caps, so it is never registered (fail closed).
-      if (imageTokenMultiplier === undefined) continue;
+      const openaiPrices = openaiLlmPriceTable(priceTable);
+      if (imageTokenMultiplier === undefined || !openaiPrices) continue;
       registry.register(
-        new OpenaiLLMProvider({ name, tasks: recipeTasks, apiKey, model, priceTable, imageTokenMultiplier }),
+        new OpenaiLLMProvider({
+          name,
+          tasks: recipeTasks,
+          apiKey,
+          model,
+          priceTable: openaiPrices,
+          imageTokenMultiplier,
+        }),
       );
     } else {
       registry.register(new AnthropicLLMProvider({ name, tasks: recipeTasks, apiKey, model, priceTable }));
