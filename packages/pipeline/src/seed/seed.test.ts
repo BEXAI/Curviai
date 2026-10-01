@@ -294,7 +294,8 @@ describe("recipe seed rows", () => {
 });
 
 describe("OpenAI recipe versions (docs/phases/PHASE_17.md workstream 3)", () => {
-  const JSON_LINE = "Return only the JSON object described by the schema.";
+  const JSON_LINE =
+    "Return only the JSON object described by the schema. When a tool is offered for the result, return the object by calling that tool, never as plain text.";
   // Key, new version, predecessor, chain, effort per model, maxTokens, image detail.
   const expected = [
     {
@@ -392,7 +393,11 @@ describe("OpenAI recipe versions (docs/phases/PHASE_17.md workstream 3)", () => 
     const next = row(want.key, want.version);
     const prev = row(want.key, want.from);
     expect(next.body.system).toBe(`${prev.body.system}\n${JSON_LINE}`);
-    expect(next.body.system).not.toMatch(/\btool\b|emit_result/i);
+    // No provider specific tool name; the only tool wording is the JSON
+    // line's generic "call the offered tool", which keeps the Claude
+    // fallback at the end of every chain on its emit_result tool.
+    expect(next.body.system).not.toMatch(/emit_result/i);
+    expect(next.body.system.replace(JSON_LINE, "")).not.toMatch(/\btool\b/i);
     expect(next.stage).toBe(prev.stage);
   });
 
