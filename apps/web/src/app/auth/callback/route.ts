@@ -5,6 +5,7 @@ import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { recordTermsAcceptanceSafely } from "@/lib/trust/terms";
+import { isFreshVerification, welcomePath } from "@/lib/verification";
 
 /**
  * Supabase auth code exchange. Email confirmation, password recovery and
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
   }
   if (code) {
     let userId: string | null = null;
-    let user: { id: string; created_at?: string | null } | null = null;
+    let user: { id: string; created_at?: string | null; email_confirmed_at?: string | null } | null = null;
     try {
       const { data, error } = await supabase.auth.exchangeCodeForSession(code);
       if (error) {
@@ -55,6 +56,10 @@ export async function GET(request: NextRequest) {
     const registration = user ? registrationConversion(user, `${url.origin}/signup`) : null;
     if (registration) {
       await sendAdsConversion(registration, { cookieHeader: request.headers.get("cookie") });
+    }
+    // A link that just verified the email goes to the welcome page first.
+    if (isFreshVerification(user)) {
+      return NextResponse.redirect(new URL(welcomePath(next), url.origin));
     }
   }
   return NextResponse.redirect(new URL(next, url.origin));
