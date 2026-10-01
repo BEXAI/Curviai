@@ -681,8 +681,9 @@ describe("a live pack end to end (fake providers, real renderers)", () => {
     const heroShots = store.assets.filter((a) => a.shotType === "shopify_hero" && a.status === "passed").length;
     expect(scene.calls).toBe(2 * (lifestyleShots + heroShots));
     // Every channel output renders and is checked at full size, so this pack
-    // needs more than the default per test budget.
-  }, 120_000);
+    // needs more than the default per test budget. About 30 s on a laptop, but
+    // past 120 s on a 2 core GitHub runner (CI run 36852635885), hence 360 s.
+  }, 360_000);
 });
 
 /** Small textured cutout: seeded noise and gradients inside an ellipse. */
