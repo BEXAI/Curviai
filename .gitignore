@@ -26,3 +26,7 @@ eval/golden/generated/
 /*.heic
 /*.HEIC
 /*.webp
+
+# Research notes and reports stay local (the repository is public)
+/reports/
+/research_notes/
