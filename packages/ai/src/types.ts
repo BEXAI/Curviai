@@ -7,6 +7,8 @@
  * exported shapes without updating dependents in the same commit.
  */
 
+import type { LlmUsage } from "./llm";
+
 export type ProviderKind = "llm" | "image" | "video" | "cutout" | "upscale" | "avatar";
 
 /** Task names are stable routing keys, e.g. "analyze_product", "scene_plate",
@@ -70,6 +72,17 @@ export interface CostMeterEntry {
   stepId?: string;
   attempt: number;
   at: Date;
+  /**
+   * Token usage of an LLM attempt (docs/phases/PHASE_17.md workstream 6):
+   * uncached and cached input apart, output, and the reasoning tokens
+   * inside the output. Set on a success that returned an LlmResult and on a
+   * billed failure whose adapter reported its usage (a truncated or refused
+   * reply). Absent for image, cutout and other non LLM calls.
+   */
+  usage?: LlmUsage;
+  /** The first provider of the chain this call walked, so a monitor can
+   * tell a call its primary served from one a fallback served. */
+  primaryProvider?: string;
 }
 
 export interface CostMeter {
@@ -181,6 +194,13 @@ export interface ProviderErrorDetails {
    * attempt on the same provider, never longer than its backoff cap.
    */
   retryAfterMs?: number;
+  /**
+   * Token usage the failed LLM attempt was billed for, when the adapter
+   * read it from the reply (a refusal, a truncated or an empty answer). The
+   * router puts it on the meter entry, so reasoning tokens spent on a
+   * truncated reply are still logged.
+   */
+  usage?: LlmUsage;
 }
 
 export class ProviderError extends Error {
@@ -191,6 +211,8 @@ export class ProviderError extends Error {
   readonly transient: boolean;
   /** See ProviderErrorDetails.retryAfterMs. Undefined when the provider sent none. */
   readonly retryAfterMs: number | undefined;
+  /** See ProviderErrorDetails.usage. Undefined when the adapter read none. */
+  readonly usage: LlmUsage | undefined;
 
   constructor(
     message: string,
@@ -209,6 +231,7 @@ export class ProviderError extends Error {
     this.billedCostMicros = Number.isFinite(billed) && billed > 0 ? Math.ceil(billed) : 0;
     const wait = details.retryAfterMs;
     this.retryAfterMs = wait !== undefined && Number.isFinite(wait) && wait >= 0 ? Math.ceil(wait) : undefined;
+    this.usage = details.usage;
   }
 }
 

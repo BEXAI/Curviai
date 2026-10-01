@@ -167,6 +167,45 @@ describe("callWithFailover", () => {
     expect(h.meter.totalForJob("j1")).toBe(123);
   });
 
+  it("meters LLM usage and the chain's primary provider on success and on a billed failure", async () => {
+    const usage = { inputTokens: 1_200, cachedInputTokens: 1_024, outputTokens: 600, reasoningTokens: 450 };
+    const truncatedUsage = { inputTokens: 1_200, cachedInputTokens: 0, outputTokens: 16_000, reasoningTokens: 16_000 };
+    const p1 = new MockProvider({
+      name: "openai:gpt-6-luna",
+      failTimes: Infinity,
+      failWith: () =>
+        new ProviderError("stopped at max_output_tokens", "openai:gpt-6-luna", TASK, false, undefined, {
+          code: "output_truncated",
+          billedCostMicros: 8_120,
+          usage: truncatedUsage,
+        }),
+    });
+    const p2 = new MockProvider({
+      name: "anthropic:claude-sonnet-5",
+      output: { json: { ok: true }, text: "", finish: "complete", usage, raw: {} },
+      costMicros: 8_400,
+    });
+    // A plain (non LlmResult) output carries no usage.
+    const p3 = new MockProvider({ name: "image", output: "png", costMicros: 5 });
+    const h = harness([p1, p2, p3]);
+
+    await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), { sleep: h.sleep });
+    const [failed, served] = h.meter.entries;
+    expect(failed).toMatchObject({ ok: false, usage: truncatedUsage, primaryProvider: "openai:gpt-6-luna" });
+    expect(served).toMatchObject({
+      ok: true,
+      provider: "anthropic:claude-sonnet-5",
+      usage,
+      primaryProvider: "openai:gpt-6-luna",
+    });
+    expect(h.meter.llmUsageForTask(TASK)).toMatchObject({ calls: 2, reasoningTokens: 16_450, cachedInputTokens: 1_024 });
+
+    const plain = harness([p3]);
+    await callWithFailover(plain.registry, plain.routing, plain.meter, plain.store, req(), { sleep: plain.sleep });
+    expect(plain.meter.entries[0].usage).toBeUndefined();
+    expect(plain.meter.entries[0].primaryProvider).toBe("image");
+  });
+
   it("opens the breaker after 5 failures, skips the provider, then allows after 120s", async () => {
     const p1 = new MockProvider({ name: "p1", failTimes: Infinity });
     const p2 = new MockProvider({ name: "p2", output: "two" });

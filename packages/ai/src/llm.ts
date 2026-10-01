@@ -106,6 +106,22 @@ export function isLlmResult(value: unknown): value is LlmResult {
   return "json" in v && typeof v.text === "string" && typeof v.finish === "string" && typeof v.usage === "object";
 }
 
+/** Zero usage, the start of a sum. */
+export function emptyLlmUsage(): LlmUsage {
+  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
+}
+
+/**
+ * The provider family of a registered LLM provider name. The live runtime
+ * registers each model as "<family>:<model>" (trigger/src/recipes.ts
+ * llmModelProviderName), so the family is the part before the first colon.
+ * Null for a name without one (test and demo providers).
+ */
+export function llmProviderFamilyOf(providerName: string): string | null {
+  const colon = providerName.indexOf(":");
+  return colon > 0 ? providerName.slice(0, colon) : null;
+}
+
 /**
  * The JSON a free text answer holds: the whole text, else a fenced block,
  * else the outermost object literal. Null when none parses. Adapters use it
