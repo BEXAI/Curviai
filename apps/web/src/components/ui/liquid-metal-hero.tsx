@@ -208,8 +208,8 @@ export function PageMetalBackdrop() {
       {/* Sized to the large viewport (100lvh), not inset-0: on iPhone Safari a
           fixed layer pinned to bottom resizes every time the toolbar shows or
           hides, which resizes the WebGL canvas mid scroll. */}
-      <LiquidMetalBackdrop className="pointer-events-none fixed left-0 top-0 -z-10 h-[100lvh] w-full" />
-      <div aria-hidden="true" className="page-metal-veil pointer-events-none fixed left-0 top-0 -z-10 h-[100lvh] w-full" />
+      <LiquidMetalBackdrop className="pointer-events-none fixed left-0 top-0 -z-10 h-[100lvh] w-full [transform:translateZ(0)]" />
+      <div aria-hidden="true" className="page-metal-veil pointer-events-none fixed left-0 top-0 -z-10 h-[100lvh] w-full [transform:translateZ(0)]" />
       <LiquidMetalMotionToggle className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-[max(1rem,env(safe-area-inset-right))] z-40" />
     </>
   );

@@ -22,11 +22,14 @@ import { cn } from "@curvi/ui";
  * chunk that fails to load drops back to the fallback for the rest of the
  * visit, and never takes the page down.
  *
- * Offscreen and hidden tab pausing come from the library itself: it stops
- * its animation loop when this element leaves the viewport or the tab is
- * hidden. That only works because the backdrop is scoped to the hero, never
- * position fixed. While the shader runs, LiquidMetalMotionToggle offers a
- * pause (WCAG 2.2.2), remembered in this browser.
+ * The library stops its animation loop when the tab is hidden or the element
+ * leaves the viewport. On the home page the backdrop is fixed behind every
+ * section, so it never leaves the viewport; to save battery it also rests
+ * after IDLE_PAUSE_MS without scrolling, typing, pointer or touch input, and
+ * moves again on the next input. A shader that has not drawn a first frame
+ * within FIRST_FRAME_TIMEOUT_MS is dropped for the static metal. While the
+ * shader runs, LiquidMetalMotionToggle offers a pause (WCAG 2.2.2),
+ * remembered in this browser.
  */
 const LiquidMetalCanvas = dynamic(() => import("./liquid-metal-canvas"), {
   ssr: false,
@@ -35,15 +38,20 @@ const LiquidMetalCanvas = dynamic(() => import("./liquid-metal-canvas"), {
 
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
 /** Any real screen, phones and tablets included: the metal moves on every capable device. */
-const DESKTOP_SCREEN = "(min-width: 20rem) and (min-height: 20rem)";
+const SHADER_SCREEN = "(min-width: 20rem) and (min-height: 20rem)";
 const MIN_DEVICE_MEMORY_GB = 4;
 const MIN_CPU_CORES = 4;
 const IDLE_TIMEOUT_MS = 2000;
+/** The metal rests after this long without input, and moves again on the next input. */
+export const IDLE_PAUSE_MS = 45_000;
+/** A shader that has not drawn by then is dropped for the static metal. */
+export const FIRST_FRAME_TIMEOUT_MS = 10_000;
+const ACTIVITY_EVENTS = ["scroll", "pointermove", "pointerdown", "keydown", "touchstart", "wheel"] as const;
 const PAUSED_STORAGE_KEY = "curvi.heroMotionPaused";
 
 export interface ShaderEnvironment {
   reducedMotion: boolean;
-  /** Matches DESKTOP_SCREEN. */
+  /** Matches SHADER_SCREEN. */
   wideScreen: boolean;
   saveData: boolean;
   /** navigator.deviceMemory in GB, where the browser reports it. */
@@ -85,7 +93,7 @@ function readEnvironment(): ShaderEnvironment {
   const nav = navigator as Navigator & { connection?: { saveData?: boolean }; deviceMemory?: number };
   return {
     reducedMotion: window.matchMedia(REDUCED_MOTION).matches,
-    wideScreen: window.matchMedia(DESKTOP_SCREEN).matches,
+    wideScreen: window.matchMedia(SHADER_SCREEN).matches,
     saveData: nav.connection?.saveData === true,
     deviceMemory: typeof nav.deviceMemory === "number" ? nav.deviceMemory : undefined,
     hardwareConcurrency: nav.hardwareConcurrency > 0 ? nav.hardwareConcurrency : undefined,
@@ -186,6 +194,7 @@ class ShaderBoundary extends Component<{ onError: () => void; children: ReactNod
 export function LiquidMetalBackdrop({ className }: { className?: string }) {
   const [enabled, setEnabled] = useState(false);
   const [shown, setShown] = useState(false);
+  const [idle, setIdle] = useState(false);
   const { paused } = useMotionState();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const failRef = useRef<() => void>(() => {});
@@ -193,7 +202,7 @@ export function LiquidMetalBackdrop({ className }: { className?: string }) {
   useEffect(() => {
     setMotionState({ paused: readPausedPreference() });
     const motion = window.matchMedia(REDUCED_MOTION);
-    const desktop = window.matchMedia(DESKTOP_SCREEN);
+    const desktop = window.matchMedia(SHADER_SCREEN);
     const wrapper = wrapperRef.current;
     let failed = false;
     let cancelIdle = () => {};
@@ -243,6 +252,31 @@ export function LiquidMetalBackdrop({ className }: { className?: string }) {
     };
   }, []);
 
+  // A shader that never draws would keep rendering, invisible, behind the
+  // static metal: drop it once FIRST_FRAME_TIMEOUT_MS passes without a frame.
+  useEffect(() => {
+    if (!enabled || shown) return;
+    const id = window.setTimeout(() => failRef.current(), FIRST_FRAME_TIMEOUT_MS);
+    return () => window.clearTimeout(id);
+  }, [enabled, shown]);
+
+  // Rest after IDLE_PAUSE_MS without input; any input moves it again.
+  useEffect(() => {
+    if (!enabled) return;
+    let timer = 0;
+    const arm = () => {
+      window.clearTimeout(timer);
+      setIdle(false);
+      timer = window.setTimeout(() => setIdle(true), IDLE_PAUSE_MS);
+    };
+    arm();
+    for (const name of ACTIVITY_EVENTS) window.addEventListener(name, arm, { passive: true });
+    return () => {
+      window.clearTimeout(timer);
+      for (const name of ACTIVITY_EVENTS) window.removeEventListener(name, arm);
+    };
+  }, [enabled]);
+
   // The shader has drawn its first frame: start the crossfade from the CSS metal.
   const onDrawn = useCallback(() => {
     requestAnimationFrame(() => {
@@ -263,9 +297,9 @@ export function LiquidMetalBackdrop({ className }: { className?: string }) {
     >
       <div data-testid="hero-metal-fallback" className="hero-metal-fallback absolute inset-0" />
       {enabled ? (
-        // Oversized past the hero's edges, which clip it: the full bleed metal
-        // fades to its back color near its own borders, and that fade stays
-        // out of view.
+        // Oversized past the backdrop's edges, which clip it: the full bleed
+        // metal fades to its back color near its own borders, and that fade
+        // stays out of view.
         <div
           className={cn(
             "absolute inset-x-[-10%] inset-y-[-18%] transition-opacity duration-[900ms] ease-out",
@@ -273,7 +307,7 @@ export function LiquidMetalBackdrop({ className }: { className?: string }) {
           )}
         >
           <ShaderBoundary onError={onShaderError}>
-            <LiquidMetalCanvas paused={paused} onDrawn={onDrawn} />
+            <LiquidMetalCanvas paused={paused || idle} onDrawn={onDrawn} />
           </ShaderBoundary>
         </div>
       ) : null}

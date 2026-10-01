@@ -299,6 +299,17 @@ test.describe("the WebGL shader", () => {
     await expect(page.getByTestId("hero-metal-fallback")).toBeAttached();
   });
 
+  test("rests after a while without input and moves again on the next input", async ({ page }) => {
+    test.setTimeout(120_000);
+    await gotoWithShader(page);
+    await expect.poll(() => shaderSpeed(page)).toBeGreaterThan(0);
+    // IDLE_PAUSE_MS is 45 seconds.
+    await expect.poll(() => shaderSpeed(page), { timeout: 60_000, intervals: [5_000] }).toBe(0);
+    await page.mouse.move(200, 200);
+    await page.mouse.move(240, 220);
+    await expect.poll(() => shaderSpeed(page)).toBeGreaterThan(0);
+  });
+
   test("keeps moving behind every section as the page scrolls", async ({ page }) => {
     await gotoWithShader(page);
     await expect.poll(() => shaderSpeed(page)).toBeGreaterThan(0);
