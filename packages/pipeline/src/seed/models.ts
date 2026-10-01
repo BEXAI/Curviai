@@ -12,6 +12,9 @@ export interface LlmPriceTable {
   /** USD micros per million cached input tokens, where the provider bills
    * them apart (OpenAI). Absent for a model metered at the input rate. */
   cachedInputMicrosPerMTok?: number;
+  /** USD micros per million cache write tokens, where the provider bills
+   * them apart (OpenAI 5.6 and later: 1.25 times the input rate). */
+  cacheWriteMicrosPerMTok?: number;
   /** USD micros per million output tokens (reasoning tokens included). */
   outputMicrosPerMTok: number;
 }
@@ -26,14 +29,14 @@ export const llmModelPrices: Record<string, LlmPriceTable> = {
   "claude-haiku-4-5-20251001": { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 5_000_000 },
   "claude-sonnet-5": { inputMicrosPerMTok: 2_000_000, outputMicrosPerMTok: 10_000_000 },
   "claude-opus-5-5": { inputMicrosPerMTok: 4_000_000, outputMicrosPerMTok: 20_000_000 },
-  "gpt-6-luna": { inputMicrosPerMTok: 100_000, cachedInputMicrosPerMTok: 10_000, outputMicrosPerMTok: 500_000 },
-  "gpt-6.1-sol": { inputMicrosPerMTok: 2_000_000, cachedInputMicrosPerMTok: 100_000, outputMicrosPerMTok: 10_000_000 },
+  "gpt-6-luna": { inputMicrosPerMTok: 100_000, cachedInputMicrosPerMTok: 10_000, cacheWriteMicrosPerMTok: 125_000, outputMicrosPerMTok: 500_000 },
+  "gpt-6.1-sol": { inputMicrosPerMTok: 2_000_000, cachedInputMicrosPerMTok: 100_000, cacheWriteMicrosPerMTok: 2_500_000, outputMicrosPerMTok: 10_000_000 },
   // Promotional price: the pricing page says it holds "at least through
   // November 21, 2026" (checked 2026-10-01). Re-check it on 2026-11-21 and
   // update this row if the list price changes.
-  "gpt-5.6-sol": { inputMicrosPerMTok: 4_000_000, cachedInputMicrosPerMTok: 400_000, outputMicrosPerMTok: 20_000_000 },
-  "gpt-5.6-terra": { inputMicrosPerMTok: 2_000_000, cachedInputMicrosPerMTok: 200_000, outputMicrosPerMTok: 12_000_000 },
-  "gpt-6-astra": { inputMicrosPerMTok: 10_000_000, cachedInputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 50_000_000 },
+  "gpt-5.6-sol": { inputMicrosPerMTok: 4_000_000, cachedInputMicrosPerMTok: 400_000, cacheWriteMicrosPerMTok: 5_000_000, outputMicrosPerMTok: 20_000_000 },
+  "gpt-5.6-terra": { inputMicrosPerMTok: 2_000_000, cachedInputMicrosPerMTok: 200_000, cacheWriteMicrosPerMTok: 2_500_000, outputMicrosPerMTok: 12_000_000 },
+  "gpt-6-astra": { inputMicrosPerMTok: 10_000_000, cachedInputMicrosPerMTok: 1_000_000, cacheWriteMicrosPerMTok: 12_500_000, outputMicrosPerMTok: 50_000_000 },
 };
 
 /** The LLM provider families an adapter exists for. */

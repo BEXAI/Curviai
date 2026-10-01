@@ -298,9 +298,64 @@ describe("OpenaiLLMProvider reply", () => {
     expect(res.output.json).toEqual({ label: "mug", styleNotes: null });
     expect(res.output.finish).toBe("complete");
     expect(res.output.text).toBe('{"label":"mug","note":null,"styleNotes":null}');
-    expect(res.output.usage).toEqual({ inputTokens: 1000, cachedInputTokens: 400, outputTokens: 300, reasoningTokens: 200 });
+    // input_tokens (1000) counts the 400 cached tokens, so the uncached
+    // input is 600: the same meaning as Anthropic's input_tokens.
+    expect(res.output.usage).toEqual({ inputTokens: 600, cachedInputTokens: 400, outputTokens: 300, reasoningTokens: 200 });
     // (600 * 2 + 400 * 0.1 + 300 * 10) = 1200 + 40 + 3000 micros.
     expect(res.costMicros).toBe(4240);
+  });
+
+  it("meters cache write tokens at 1.25 times the input rate by default", async () => {
+    const { fetchFn } = replyFetch(
+      completed('{"label":"mug","styleNotes":null}', {
+        input_tokens: 10_000,
+        input_tokens_details: { cached_tokens: 0, cache_write_tokens: 8_000 },
+        output_tokens: 0,
+        output_tokens_details: { reasoning_tokens: 0 },
+      }),
+    );
+    const res = await provider(fetchFn).invoke<LlmRequest, LlmResult>(request);
+    // Cache writes are uncached input, so they stay in inputTokens.
+    expect(res.output.usage).toEqual({ inputTokens: 10_000, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
+    // 2,000 * 2 + 8,000 * 2.5 = 4,000 + 20,000 micros.
+    expect(res.costMicros).toBe(24_000);
+  });
+
+  it("meters cache write tokens at the seeded price when one is set", async () => {
+    const { fetchFn } = replyFetch(
+      completed('{"label":"mug","styleNotes":null}', {
+        input_tokens: 10_000,
+        input_tokens_details: { cached_tokens: 8_000, cache_write_tokens: 1_000 },
+        output_tokens: 0,
+        output_tokens_details: { reasoning_tokens: 0 },
+      }),
+    );
+    const p = new OpenaiLLMProvider({
+      name: "openai:gpt-test-model",
+      tasks: ["intake"],
+      apiKey: "test-key",
+      model: "gpt-test-model",
+      priceTable: { ...PRICES, cacheWriteMicrosPerMTok: 3_000_000 },
+      imageTokenMultiplier: MULTIPLIER,
+      fetchFn,
+    });
+    const res = await p.invoke<LlmRequest, LlmResult>(request);
+    expect(res.output.usage).toEqual({ inputTokens: 2_000, cachedInputTokens: 8_000, outputTokens: 0, reasoningTokens: 0 });
+    // 1,000 * 2 + 1,000 * 3 + 8,000 * 0.1 = 2,000 + 3,000 + 800 micros.
+    expect(res.costMicros).toBe(5_800);
+  });
+
+  it("never reports negative uncached input when cached exceeds the total", async () => {
+    const { fetchFn } = replyFetch(
+      completed('{"label":"mug","styleNotes":null}', {
+        input_tokens: 100,
+        input_tokens_details: { cached_tokens: 500 },
+        output_tokens: 0,
+      }),
+    );
+    const res = await provider(fetchFn).invoke<LlmRequest, LlmResult>(request);
+    expect(res.output.usage.inputTokens).toBe(0);
+    expect(res.output.usage.cachedInputTokens).toBe(100);
   });
 
   it("joins every output_text part", async () => {
@@ -509,7 +564,9 @@ describe("OpenaiLLMProvider cost estimate", () => {
     const imagePartChars = JSON.stringify({ type: "input_image" }).length + 1;
     expect(imageTokens - Math.ceil(imagePartChars / 3)).toBeGreaterThanOrEqual(textTokens + 1762 - 1);
     expect(imageTokens).toBeLessThanOrEqual(textTokens + 1762 + Math.ceil(imagePartChars / 3) + 1);
-    expect(p.estimateCostMicros(text)).toBe(Math.ceil((textTokens * 2_000_000 + 1000 * 10_000_000) / 1_000_000));
+    // Input is priced at the cache write rate (1.25 times input), the
+    // higher of the two, so a call that writes the cache never under reserves.
+    expect(p.estimateCostMicros(text)).toBe(Math.ceil((textTokens * 2_500_000 + 1000 * 10_000_000) / 1_000_000));
   });
 
   it("takes the per image maximum for an unreadable image", () => {
@@ -524,7 +581,11 @@ describe("OpenaiLLMProvider cost estimate", () => {
   it("meters cached input at its own price", () => {
     const p = provider(replyFetch({}).fetchFn);
     expect(p.costOf({ inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0 })).toBe(2_000_000);
-    expect(p.costOf({ inputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 0 })).toBe(100_000);
+    expect(p.costOf({ inputTokens: 0, cachedInputTokens: 1_000_000, outputTokens: 0 })).toBe(100_000);
+    expect(p.costOf({ inputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 0 })).toBe(2_100_000);
+    expect(p.costOf({ inputTokens: 1_000_000, cachedInputTokens: 0, cacheWriteTokens: 1_000_000, outputTokens: 0 })).toBe(
+      2_500_000,
+    );
     expect(p.costOf({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 1_000_000 })).toBe(10_000_000);
     expect(p.costOf({ inputTokens: 1, cachedInputTokens: 0, outputTokens: 0 })).toBe(2);
   });

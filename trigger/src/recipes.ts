@@ -87,12 +87,21 @@ export function llmModelProviderName(model: string): string {
 export function openaiLlmPriceTable(row: {
   inputMicrosPerMTok: number;
   cachedInputMicrosPerMTok?: number;
+  cacheWriteMicrosPerMTok?: number;
   outputMicrosPerMTok: number;
-}): { inputMicrosPerMTok: number; cachedInputMicrosPerMTok: number; outputMicrosPerMTok: number } | undefined {
+}):
+  | {
+      inputMicrosPerMTok: number;
+      cachedInputMicrosPerMTok: number;
+      cacheWriteMicrosPerMTok?: number;
+      outputMicrosPerMTok: number;
+    }
+  | undefined {
   if (row.cachedInputMicrosPerMTok === undefined) return undefined;
   return {
     inputMicrosPerMTok: row.inputMicrosPerMTok,
     cachedInputMicrosPerMTok: row.cachedInputMicrosPerMTok,
+    ...(row.cacheWriteMicrosPerMTok !== undefined ? { cacheWriteMicrosPerMTok: row.cacheWriteMicrosPerMTok } : {}),
     outputMicrosPerMTok: row.outputMicrosPerMTok,
   };
 }

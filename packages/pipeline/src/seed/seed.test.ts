@@ -450,26 +450,31 @@ describe("OpenAI recipe versions (docs/phases/PHASE_17.md workstream 3)", () => 
     expect(llmModelPrices["gpt-6-luna"]).toEqual({
       inputMicrosPerMTok: 100_000,
       cachedInputMicrosPerMTok: 10_000,
+      cacheWriteMicrosPerMTok: 125_000,
       outputMicrosPerMTok: 500_000,
     });
     expect(llmModelPrices["gpt-6.1-sol"]).toEqual({
       inputMicrosPerMTok: 2_000_000,
       cachedInputMicrosPerMTok: 100_000,
+      cacheWriteMicrosPerMTok: 2_500_000,
       outputMicrosPerMTok: 10_000_000,
     });
     expect(llmModelPrices["gpt-5.6-sol"]).toEqual({
       inputMicrosPerMTok: 4_000_000,
       cachedInputMicrosPerMTok: 400_000,
+      cacheWriteMicrosPerMTok: 5_000_000,
       outputMicrosPerMTok: 20_000_000,
     });
     expect(llmModelPrices["gpt-5.6-terra"]).toEqual({
       inputMicrosPerMTok: 2_000_000,
       cachedInputMicrosPerMTok: 200_000,
+      cacheWriteMicrosPerMTok: 2_500_000,
       outputMicrosPerMTok: 12_000_000,
     });
     expect(llmModelPrices["gpt-6-astra"]).toEqual({
       inputMicrosPerMTok: 10_000_000,
       cachedInputMicrosPerMTok: 1_000_000,
+      cacheWriteMicrosPerMTok: 12_500_000,
       outputMicrosPerMTok: 50_000_000,
     });
     for (const [model, provider] of Object.entries(llmModelProviders)) {

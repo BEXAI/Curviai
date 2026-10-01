@@ -106,8 +106,31 @@ export interface OpenaiLLMPriceTable {
   inputMicrosPerMTok: number;
   /** USD micros per million cached input tokens. */
   cachedInputMicrosPerMTok: number;
+  /** USD micros per million cache write tokens (input_tokens_details.
+   * cache_write_tokens). From seed data; when absent, the 5.6 and later
+   * rule applies: 1.25 times the uncached input rate (prompt caching guide,
+   * checked 2026-10-01). */
+  cacheWriteMicrosPerMTok?: number;
   /** USD micros per million output tokens (reasoning tokens included). */
   outputMicrosPerMTok: number;
+}
+
+/** Cache writes bill at this multiple of the uncached input rate on 5.6 and
+ * later models when the seed row sets no cache write price. */
+const DEFAULT_CACHE_WRITE_INPUT_MULTIPLE = 1.25;
+
+/** The metered token counts of one OpenAI reply. */
+export interface OpenaiLLMMeteredUsage {
+  /** Uncached input tokens: usage.input_tokens less the cached tokens, so it
+   * means what Anthropic's input_tokens means. Cache writes are included. */
+  inputTokens: number;
+  /** Tokens read from the prompt cache (input_tokens_details.cached_tokens). */
+  cachedInputTokens: number;
+  /** The part of inputTokens written to the prompt cache
+   * (input_tokens_details.cache_write_tokens). */
+  cacheWriteTokens?: number;
+  /** Output tokens, reasoning tokens included. */
+  outputTokens: number;
 }
 
 export interface OpenaiLLMConfig extends AdapterCommonConfig {
@@ -176,7 +199,7 @@ interface ResponsesReply {
   output?: Array<{ type?: string; content?: ResponsesOutputPart[] }>;
   usage?: {
     input_tokens?: number;
-    input_tokens_details?: { cached_tokens?: number };
+    input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
     output_tokens?: number;
     output_tokens_details?: { reasoning_tokens?: number };
   };
@@ -276,7 +299,8 @@ export class OpenaiLLMProvider implements CostAwareProvider {
    * from the JSON size of the instructions, input and text format at one
    * token per three characters, with image parts left out of that count and
    * priced from their pixel size with the patch formula (openaiImageTokens).
-   * All input is priced as uncached. Output is the full max_output_tokens
+   * All input is priced at the higher of the uncached and cache write
+   * rates. Output is the full max_output_tokens
    * budget, the hard ceiling the API enforces (reasoning included).
    */
   estimateCostMicros(req: ProviderRequest): number {
@@ -285,7 +309,8 @@ export class OpenaiLLMProvider implements CostAwareProvider {
     const inputTokens = this.estimateInputTokens(body);
     const outputTokens = body.max_output_tokens as number;
     return Math.ceil(
-      (inputTokens * this.priceTable.inputMicrosPerMTok + outputTokens * this.priceTable.outputMicrosPerMTok) /
+      (inputTokens * Math.max(this.priceTable.inputMicrosPerMTok, this.cacheWriteMicrosPerMTok()) +
+        outputTokens * this.priceTable.outputMicrosPerMTok) /
         1_000_000,
     );
   }
@@ -315,14 +340,39 @@ export class OpenaiLLMProvider implements CostAwareProvider {
       : openaiImageTokens(0, 0, this.imageTokenMultiplier, this.imageSizing);
   }
 
-  /** Metered cost of a reply: uncached input, cached input and output
-   * (which already includes the reasoning tokens) at their own prices. */
-  costOf(usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number }): number {
-    const cached = Math.min(usage.cachedInputTokens, usage.inputTokens);
+  private cacheWriteMicrosPerMTok(): number {
+    return (
+      this.priceTable.cacheWriteMicrosPerMTok ??
+      Math.ceil(this.priceTable.inputMicrosPerMTok * DEFAULT_CACHE_WRITE_INPUT_MULTIPLE)
+    );
+  }
+
+  /** The metered usage of a reply. OpenAI's input_tokens counts cached and
+   * cache write tokens too; both are taken out of their parent count here. */
+  private meteredUsage(usage: ResponsesReply["usage"]): OpenaiLLMMeteredUsage & { reasoningTokens: number } {
+    const total = Math.max(0, usage?.input_tokens ?? 0);
+    const cached = Math.min(Math.max(0, usage?.input_tokens_details?.cached_tokens ?? 0), total);
+    const inputTokens = total - cached;
+    const cacheWrite = Math.min(Math.max(0, usage?.input_tokens_details?.cache_write_tokens ?? 0), inputTokens);
+    return {
+      inputTokens,
+      cachedInputTokens: cached,
+      ...(cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {}),
+      outputTokens: usage?.output_tokens ?? 0,
+      reasoningTokens: usage?.output_tokens_details?.reasoning_tokens ?? 0,
+    };
+  }
+
+  /** Metered cost of a reply: ordinary uncached input, cache writes, cached
+   * input and output (which already includes the reasoning tokens) at their
+   * own prices. */
+  costOf(usage: OpenaiLLMMeteredUsage): number {
+    const cacheWrite = Math.min(usage.cacheWriteTokens ?? 0, usage.inputTokens);
     const prices = this.priceTable;
     return Math.ceil(
-      ((usage.inputTokens - cached) * prices.inputMicrosPerMTok +
-        cached * prices.cachedInputMicrosPerMTok +
+      ((usage.inputTokens - cacheWrite) * prices.inputMicrosPerMTok +
+        cacheWrite * this.cacheWriteMicrosPerMTok() +
+        usage.cachedInputTokens * prices.cachedInputMicrosPerMTok +
         usage.outputTokens * prices.outputMicrosPerMTok) /
         1_000_000,
     );
@@ -339,13 +389,10 @@ export class OpenaiLLMProvider implements CostAwareProvider {
       signal: signalOf(req),
     });
 
-    const usage = {
-      inputTokens: data.usage?.input_tokens ?? 0,
-      cachedInputTokens: data.usage?.input_tokens_details?.cached_tokens ?? 0,
-      outputTokens: data.usage?.output_tokens ?? 0,
-      reasoningTokens: data.usage?.output_tokens_details?.reasoning_tokens ?? 0,
-    };
-    const costMicros = this.costOf(usage);
+    const metered = this.meteredUsage(data.usage);
+    const costMicros = this.costOf(metered);
+    // LlmUsage carries no cache write field; those tokens stay in inputTokens.
+    const { cacheWriteTokens: _cacheWrite, ...usage } = metered;
     const fail = (message: string, code: "content_blocked" | "output_truncated" | "empty_output") =>
       new ProviderError(message, this.name, req.task, false, undefined, { code, billedCostMicros: costMicros, usage });
 
