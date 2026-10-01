@@ -13,7 +13,8 @@ const NIGHT = [7, 8, 13] as const;
 
 const hero = (page: Page) => page.getByTestId("liquid-metal-hero");
 const backdrop = (page: Page) => page.getByTestId("hero-backdrop");
-const heroCanvas = (page: Page) => hero(page).locator("canvas");
+// The metal is fixed behind the whole home page, outside the hero section.
+const heroCanvas = (page: Page) => backdrop(page).locator("canvas");
 
 type ShaderMount = { currentSpeed: number; speed: number };
 
@@ -129,7 +130,7 @@ test.describe("without JavaScript", () => {
       "href",
       "/tools/main-image-checker",
     );
-    await expect(hero(page).getByTestId("hero-metal-fallback")).toBeVisible();
+    await expect(page.getByTestId("hero-metal-fallback")).toBeVisible();
     await expect(heroCanvas(page)).toHaveCount(0);
     await expect(page.getByTestId("hero-motion-toggle")).toHaveCount(0);
   });
@@ -174,7 +175,7 @@ test.describe("reduced motion", () => {
 
   test("keeps the static metal, never mounts the shader and shows every item at once", async ({ page }) => {
     await page.goto("/");
-    await expect(hero(page).getByTestId("hero-metal-fallback")).toBeVisible();
+    await expect(page.getByTestId("hero-metal-fallback")).toBeVisible();
     // Nothing in the hero animates or waits at opacity 0 through a delay. The
     // logo color layer over the metal is a static overlay at partial opacity.
     const hidden = await hero(page)
@@ -267,16 +268,16 @@ test.describe("phones and tablets", () => {
   });
 });
 
-test("the hero loads without errors and keeps the backdrop inside it", async ({ page }) => {
+test("the hero loads without errors and the metal sits fixed behind the page", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
   await page.waitForTimeout(3000);
   expect(errors).toEqual([]);
   await expect(page.getByRole("heading", { level: 1, name: HEADLINE })).toBeVisible();
-  // Nothing in the hero is fixed to the viewport, so the library's offscreen
-  // pause works and the metal never sits behind the rest of the page, and
-  // nothing blurs what is behind it on every frame the shader draws.
+  // The metal is one fixed layer behind every section, outside the hero;
+  // nothing in the hero blurs what is behind it on every frame the shader draws.
+  expect(await backdrop(page).evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
   const styles = await hero(page)
     .locator("*")
     .evaluateAll((elements) =>
@@ -285,9 +286,8 @@ test("the hero loads without errors and keeps the backdrop inside it", async ({ 
         return { position: style.position, backdrop: style.backdropFilter };
       }),
     );
-  expect(styles.map((style) => style.position)).not.toContain("fixed");
   expect(styles.filter((style) => style.backdrop !== "none")).toEqual([]);
-  await expect(hero(page).getByTestId("hero-metal-fallback")).toBeAttached();
+  await expect(page.getByTestId("hero-metal-fallback")).toBeAttached();
 });
 
 test.describe("the WebGL shader", () => {
@@ -296,16 +296,15 @@ test.describe("the WebGL shader", () => {
   test("turns on for a capable desktop and fades in over the static metal", async ({ page }) => {
     await gotoWithShader(page);
     await expect.poll(() => shaderSpeed(page)).toBeGreaterThan(0);
-    await expect(hero(page).getByTestId("hero-metal-fallback")).toBeAttached();
+    await expect(page.getByTestId("hero-metal-fallback")).toBeAttached();
   });
 
-  test("pauses offscreen and resumes when the hero is back in view", async ({ page }) => {
+  test("keeps moving behind every section as the page scrolls", async ({ page }) => {
     await gotoWithShader(page);
     await expect.poll(() => shaderSpeed(page)).toBeGreaterThan(0);
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await expect.poll(() => shaderSpeed(page)).toBe(0);
-    await page.evaluate(() => window.scrollTo(0, 0));
     await expect.poll(() => shaderSpeed(page)).toBeGreaterThan(0);
+    await expect(backdrop(page)).toBeInViewport();
   });
 
   test("stops live when reduced motion is switched on", async ({ page }) => {

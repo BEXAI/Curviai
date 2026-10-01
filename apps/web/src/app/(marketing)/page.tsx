@@ -29,7 +29,7 @@ import {
 import { FeatureIcon, FeatureTile, PackTile, SectionHeader, glassTile } from "@/components/marketing/home-parts";
 import { pillarPages } from "@/components/marketing/pillar-copy";
 import { specSlug } from "@/components/marketing/spec-slug";
-import { LiquidMetalHero } from "@/components/ui/liquid-metal-hero";
+import { LiquidMetalHero, PageMetalBackdrop } from "@/components/ui/liquid-metal-hero";
 import { isStripeConfigured } from "@/lib/env";
 import {
   packsForCredits,
@@ -83,7 +83,9 @@ export default function HomePage() {
     // overflow-x-clip, not overflow-hidden: it clips the wide glow layers
     // without making this div a scroll container, which would stop the
     // .reveal view() timelines and the sticky FAQ aside from tracking the page.
-    <div className="theme-base relative overflow-x-clip bg-night text-ink-100">
+    <div className="theme-base relative overflow-x-clip text-ink-100">
+      {/* One liquid metal behind the whole page; no section paints its own background. */}
+      <PageMetalBackdrop />
       <JsonLd
         data={jsonLdGraph([
           organizationJsonLd(),
@@ -95,6 +97,7 @@ export default function HomePage() {
 
       {/* 1. Liquid metal hero: the brand moment, the SEO headline and the two main actions. */}
       <LiquidMetalHero
+        backdrop="page"
         titleId="home-hero-title"
         badge={homeHero.eyebrow}
         title={
@@ -117,10 +120,6 @@ export default function HomePage() {
 
       {/* Sections 2 to 4 share one glow layer, so there is no seam under the hero's fade. */}
       <div className="relative">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(40rem_60rem_at_0%_36rem,rgb(45_212_191/0.12),transparent_70%),radial-gradient(56rem_36rem_at_100%_70rem,rgb(236_72_153/0.1),transparent_70%),radial-gradient(36rem_24rem_at_45%_110rem,rgb(139_92_246/0.07),transparent)]"
-        />
 
         {/* 2. Before and after: the product promise in the first scroll. */}
         <section aria-labelledby="home-proof-title" className="relative">
@@ -232,7 +231,7 @@ export default function HomePage() {
       </div>
 
       {/* 5. Proof on every file: the compliance report. */}
-      <section aria-labelledby="home-report-title" className="border-y border-white/10 bg-white/[0.02]">
+      <section aria-labelledby="home-report-title">
         {/* grid-cols-1, not the implicit auto column: a track that grows to the
             example report's min-content width would overflow a phone. */}
         <div className={cn(container, sectionSpace, "grid grid-cols-1 gap-12 lg:grid-cols-12 lg:items-center")}>
@@ -290,7 +289,7 @@ export default function HomePage() {
       </section>
 
       {/* 7. Pricing, from the seed tiers. */}
-      <section aria-labelledby="home-pricing-title" className="border-y border-white/10 bg-white/[0.02]">
+      <section aria-labelledby="home-pricing-title">
         <div className={cn(container, sectionSpace)}>
           <SectionHeader id="home-pricing-title" title={homePricing.title} />
           <p className="mx-auto mt-4 max-w-2xl text-center text-base text-ink-300 sm:text-lg" data-testid="home-pack-size">
@@ -391,7 +390,7 @@ export default function HomePage() {
       </section>
 
       {/* 9. Guides and free tools: internal links and a no signup way in. */}
-      <section aria-labelledby="home-guides-title" className="border-t border-white/10">
+      <section aria-labelledby="home-guides-title">
         <div className={cn(container, sectionSpace)}>
           <SectionHeader id="home-guides-title" eyebrow={homeGuides.eyebrow} title={homeGuides.title} />
           <nav aria-label="Guides" className="mt-12">
@@ -428,9 +427,7 @@ export default function HomePage() {
       {/* 10. Closing call to action, bookended by the static CSS metal (no second
           WebGL context). The metal shows at the edges; a pool of night sits
           behind the text so it keeps its contrast. */}
-      <section aria-labelledby="home-closing-title" className="relative isolate overflow-hidden border-t border-white/10">
-        <div aria-hidden="true" className="hero-metal-fallback absolute inset-0 -z-10" />
-        <div aria-hidden="true" className="closing-metal-scrim absolute inset-0 -z-10" />
+      <section aria-labelledby="home-closing-title" className="relative">
         <div className="reveal mx-auto max-w-3xl px-6 py-24 text-center sm:py-32">
           <h2
             id="home-closing-title"

@@ -414,6 +414,25 @@ body.theme-dark > * {
 }
 
 /*
+ * Whole page metal (PageMetalBackdrop): a veil over the fixed metal so text in
+ * every section reads, lighter at the edges so the metal still shows.
+ */
+.page-metal-veil {
+  background-image:
+    linear-gradient(to right, rgb(7 8 13 / 0.45), rgb(7 8 13 / 0.86) 22%, rgb(7 8 13 / 0.86) 78%, rgb(7 8 13 / 0.45));
+}
+
+/* The hero's text pool when the metal is page wide: no fade to night at the bottom. */
+.hero-metal-pool {
+  background-image: radial-gradient(
+    ellipse 56rem 30rem at 50% 46%,
+    rgb(7 8 13 / 0.85) 0 55%,
+    rgb(7 8 13 / 0.4) 82%,
+    transparent
+  );
+}
+
+/*
  * The closing section's scrim: the static metal shows at the edges and a
  * pool of night sits behind the heading, the email form and the small print.
  */

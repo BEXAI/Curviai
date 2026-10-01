@@ -44,6 +44,12 @@ export type LiquidMetalHeroProps = {
   /** id for the headline; the section is labelled by it. */
   titleId?: string;
   className?: string;
+  /**
+   * "section": the metal sits inside the hero only. "page": the page mounts
+   * one fixed metal behind every section (PageMetalBackdrop), so the hero
+   * draws none of its own and keeps only its text pool.
+   */
+  backdrop?: "section" | "page";
 } & SecondaryCta;
 
 const lift = "motion-safe:hover:-translate-y-0.5";
@@ -83,6 +89,7 @@ export function LiquidMetalHero({
   features,
   titleId = "liquid-metal-hero-title",
   className,
+  backdrop = "section",
 }: LiquidMetalHeroProps) {
   const items = (features ?? []).map((feature) =>
     typeof feature === "string" ? { label: feature, icon: undefined } : feature,
@@ -94,8 +101,11 @@ export function LiquidMetalHero({
       data-testid="liquid-metal-hero"
       className={cn("relative isolate flex min-h-[calc(100svh-4rem)] items-center overflow-hidden", className)}
     >
-      <LiquidMetalBackdrop className="absolute inset-0 z-0" />
-      <div aria-hidden="true" className="hero-metal-scrim pointer-events-none absolute inset-0 z-[1]" />
+      {backdrop === "section" ? <LiquidMetalBackdrop className="absolute inset-0 z-0" /> : null}
+      <div
+        aria-hidden="true"
+        className={cn("pointer-events-none absolute inset-0 z-[1]", backdrop === "section" ? "hero-metal-scrim" : "hero-metal-pool")}
+      />
 
       <div className="relative z-10 mx-auto w-full max-w-6xl px-6 pb-16 pt-20 text-center sm:pb-20">
         {badge ? (
@@ -181,7 +191,23 @@ export function LiquidMetalHero({
         ) : null}
       </div>
 
-      <LiquidMetalMotionToggle className="absolute bottom-4 right-4 z-20" />
+      {backdrop === "section" ? <LiquidMetalMotionToggle className="absolute bottom-4 right-4 z-20" /> : null}
     </section>
+  );
+}
+
+/**
+ * The liquid metal fixed behind a whole page: every section scrolls over
+ * it. A night veil sits above the metal so text in any section keeps its
+ * contrast, and the pause control stays in the corner of the screen. The
+ * page itself must not paint a background over it.
+ */
+export function PageMetalBackdrop() {
+  return (
+    <>
+      <LiquidMetalBackdrop className="pointer-events-none fixed inset-0 -z-10" />
+      <div aria-hidden="true" className="page-metal-veil pointer-events-none fixed inset-0 -z-10" />
+      <LiquidMetalMotionToggle className="fixed bottom-4 right-4 z-40" />
+    </>
   );
 }
