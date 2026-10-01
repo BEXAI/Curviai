@@ -12,4 +12,5 @@ export * from "./router";
 export * from "./caps";
 export * from "./probe";
 export * from "./llm";
+export * from "./openaiSchema";
 export * from "./adapters";

@@ -264,6 +264,23 @@ export function backoffDelayMs(attemptIndex: number, retry: RetryOptions, random
   return Math.round(raw * (0.5 + random() * 0.5));
 }
 
+/**
+ * The wait before the next attempt on the same provider: the jittered
+ * backoff, raised to the provider's Retry-After when it asked for longer,
+ * but never above maxDelayMs. A provider asking for minutes is better
+ * served by failing over than by holding the call.
+ */
+export function retryDelayMs(
+  attemptIndex: number,
+  retry: RetryOptions,
+  random: () => number,
+  retryAfterMs: number | undefined,
+): number {
+  const backoff = backoffDelayMs(attemptIndex, retry, random);
+  if (retryAfterMs === undefined) return backoff;
+  return Math.max(backoff, Math.min(retryAfterMs, retry.maxDelayMs));
+}
+
 /** Dispatches the caps hook to the matching SpendCaps checkAndReserve. */
 async function reserveForCaps(caps: CapsHook, req: ProviderRequest, costMicros: number): Promise<CapReservation> {
   switch (caps.capKind) {
@@ -617,7 +634,7 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
             errors.push(providerError);
             break;
           }
-          await sleep(backoffDelayMs(attemptIndex, retry, random));
+          await sleep(retryDelayMs(attemptIndex, retry, random, providerError.retryAfterMs));
           continue;
         }
 

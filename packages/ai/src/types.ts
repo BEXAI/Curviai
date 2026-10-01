@@ -139,7 +139,8 @@ export interface RouteOptions {
  *   error or missing identifiers); the call fails closed.
  * - provider_quota: the provider refused because the account ran out of
  *   quota, credit or plan images (HTTP 402, Photoroom style "exhausted the
- *   number of images", BFL "Insufficient credits", OpenAI insufficient_quota,
+ *   number of images", BFL "Insufficient credits", OpenAI insufficient_quota
+ *   or an OpenAI billing error.code such as credit_balance_exhausted,
  *   Gemini RESOURCE_EXHAUSTED on a billing or daily quota). Never retried on
  *   the same provider: the router opens that provider's breaker at once for
  *   a long cooldown and fails over. It is not transient: waiting a few
@@ -173,6 +174,13 @@ export interface ProviderErrorDetails {
    * the provider is struggling so later calls stop paying for it.
    */
   transient?: boolean;
+  /**
+   * How long the provider asked the caller to wait before trying again, in
+   * milliseconds, read from a Retry-After (or retry-after-ms) header on a
+   * 429 or 5xx answer. The router waits at least this long before the next
+   * attempt on the same provider, never longer than its backoff cap.
+   */
+  retryAfterMs?: number;
 }
 
 export class ProviderError extends Error {
@@ -181,6 +189,8 @@ export class ProviderError extends Error {
   readonly billedCostMicros: number;
   /** See ProviderErrorDetails.transient. Never true for content_blocked. */
   readonly transient: boolean;
+  /** See ProviderErrorDetails.retryAfterMs. Undefined when the provider sent none. */
+  readonly retryAfterMs: number | undefined;
 
   constructor(
     message: string,
@@ -197,6 +207,8 @@ export class ProviderError extends Error {
       details.code === "content_blocked" || details.code === "provider_quota" ? false : (details.transient ?? retryable);
     const billed = details.billedCostMicros ?? 0;
     this.billedCostMicros = Number.isFinite(billed) && billed > 0 ? Math.ceil(billed) : 0;
+    const wait = details.retryAfterMs;
+    this.retryAfterMs = wait !== undefined && Number.isFinite(wait) && wait >= 0 ? Math.ceil(wait) : undefined;
   }
 }
 

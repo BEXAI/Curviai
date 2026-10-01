@@ -4,6 +4,9 @@
  * z.toJSONSchema via jsonSchemaFor below.
  */
 import { z } from "zod";
+// The pure schema module, not the package root: this file reaches client
+// bundles, which must not pull in the provider adapters.
+import { openaiSchemaLimitProblems, openaiStrictJsonSchema } from "@curvi/ai/openai-schema";
 import { variationOptions } from "./seed/variations";
 
 export const Hex = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
@@ -471,4 +474,28 @@ function toStrict(node: unknown): unknown {
  */
 export function strictToolSchema(schema: z.ZodType): Record<string, unknown> {
   return toStrict(z.toJSONSchema(schema)) as Record<string, unknown>;
+}
+
+/**
+ * JSON Schema for OpenAI strict structured outputs (docs/phases/PHASE_17.md
+ * workstream 2): every property listed in required, optional fields as a
+ * union with null, additionalProperties false on every object, the
+ * supported bounds (minItems, maxItems, minimum, maximum, pattern, format)
+ * kept and the rest (minLength, maxLength, allOf, not, conditionals)
+ * dropped. Throws when the schema breaks OpenAI's size limits (5,000
+ * properties, 10 levels of nesting, 1,000 enum values).
+ *
+ * The OpenAI adapter applies the same conversion to whatever schema a
+ * request carries, and removes the nulls on optional fields from the
+ * answer again, so the lenient answer schemas (IntakeAnswer,
+ * ProductProfileAnswer, TargetPickAnswer, QuestionPlanAnswer) parse it
+ * unchanged.
+ */
+export function openaiStrictSchema(schema: z.ZodType): Record<string, unknown> {
+  const out = openaiStrictJsonSchema(z.toJSONSchema(schema));
+  const problems = openaiSchemaLimitProblems(out);
+  if (problems.length > 0) {
+    throw new Error(`Schema breaks the OpenAI strict schema limits: ${problems.join("; ")}`);
+  }
+  return out;
 }
