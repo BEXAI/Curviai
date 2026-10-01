@@ -253,10 +253,12 @@ New `packages/ai/src/adapters/openaiLLM.ts`, built on shared.ts and modeled on o
 
 ## Founder decisions
 
-1. Keep Claude as the last fallback during the credit window (recommended), or remove it immediately.
-2. Ask OpenAI sales for Zero Data Retention on the Curvi project (recommended before 100%; uploads are seller photos).
-3. Whether to add the free omni-moderation check (P1).
-4. The date the OpenAI credits expire, so the alert and the fallback plan can be set before then.
+Decided 2026-10-01.
+
+1. Claude stays as the third option: OpenAI primary, OpenAI second, Claude last, in every chain.
+2. No Zero Data Retention request. Every call still sends `store: false`.
+3. No omni-moderation check. Workstream 4 item 4 is dropped.
+4. The OpenAI credits expire on December 31, 2026. The spend alert also fires 30 days before (2026-12-01) and on 2026-12-24, so the switch back to paid OpenAI or to Claude primary is decided before then.
 
 ## Backlog
 
