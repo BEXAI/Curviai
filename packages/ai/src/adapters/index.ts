@@ -3,6 +3,7 @@ export * from "./anthropicLLM";
 export * from "./geminiImage";
 export * from "./bflFlux";
 export * from "./openaiImage";
+export * from "./openaiLLM";
 export * from "./photoroomCutout";
 export * from "./falGateway";
 export * from "./falCutout";

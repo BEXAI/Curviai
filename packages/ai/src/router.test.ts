@@ -10,6 +10,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   effectiveTimeoutMs,
   ProviderTimeoutError,
+  retryDelayMs,
 } from "./router";
 import { MockProvider } from "./testing";
 import {
@@ -94,6 +95,35 @@ describe("callWithFailover", () => {
     expect(h.sleeps).toEqual([100, 200]);
     expect(result.provider).toBe("p2");
     expect(result.attempts).toBe(4);
+  });
+
+  it("waits at least the provider's Retry-After, never above maxDelayMs", () => {
+    const retry = { retries: 3, baseDelayMs: 100, maxDelayMs: 2000 };
+    expect(retryDelayMs(0, retry, () => 1, undefined)).toBe(100);
+    expect(retryDelayMs(0, retry, () => 1, 50)).toBe(100);
+    expect(retryDelayMs(0, retry, () => 1, 1500)).toBe(1500);
+    expect(retryDelayMs(0, retry, () => 1, 60_000)).toBe(2000);
+  });
+
+  it("sleeps for a retryable error's Retry-After before the next attempt", async () => {
+    let calls = 0;
+    const p1 = new MockProvider({ name: "p1", output: "one", costMicros: 1 });
+    const invoke = p1.invoke.bind(p1);
+    p1.invoke = (async (r: ProviderRequest) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new ProviderError("p1 responded 429: busy", "p1", TASK, true, undefined, { retryAfterMs: 1200 });
+      }
+      return invoke(r);
+    }) as typeof p1.invoke;
+    const h = harness([p1]);
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), {
+      sleep: h.sleep,
+      random: () => 1,
+      retry: { retries: 2, baseDelayMs: 100, maxDelayMs: 4000 },
+    });
+    expect(result.provider).toBe("p1");
+    expect(h.sleeps).toEqual([1200]);
   });
 
   it("caps backoff at maxDelayMs and applies half to full jitter", () => {

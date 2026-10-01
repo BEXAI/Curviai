@@ -83,6 +83,51 @@ export function billedFailure(err: unknown, provider: string, task: string, bill
 export type HttpErrorClassifier = (status: number, bodyText: string) => ProviderErrorCode | undefined;
 
 /**
+ * OpenAI error codes that mean the account cannot pay for more work: the
+ * prepaid credits are used up, or an organization or project spend or usage
+ * limit was reached (error codes guide, checked 2026-09-30,
+ * docs/verification.md). Waiting never fixes them, so they are never retried.
+ */
+export const OPENAI_BILLING_ERROR_CODES: readonly string[] = [
+  "credit_balance_exhausted",
+  "organization_spend_limit_exceeded",
+  "project_spend_limit_exceeded",
+  "organization_usage_limit_exceeded",
+];
+
+/** error.code from a JSON error body, the shape OpenAI and others use.
+ * Undefined when the body is not JSON or the code is not a string. */
+export function jsonErrorCode(bodyText: string): string | undefined {
+  try {
+    const code = (JSON.parse(bodyText) as { error?: { code?: unknown } } | null)?.error?.code;
+    return typeof code === "string" ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The wait a provider asked for, in milliseconds: retry-after-ms when sent,
+ * else Retry-After as seconds or as an HTTP date. Undefined when neither is
+ * present or readable.
+ */
+export function retryAfterMsFrom(headers: Headers | undefined, nowMs: number = Date.now()): number | undefined {
+  if (!headers) return undefined;
+  const ms = headers.get("retry-after-ms");
+  if (ms !== null && ms.trim() !== "" && Number.isFinite(Number(ms)) && Number(ms) >= 0) {
+    return Number(ms);
+  }
+  const value = headers.get("retry-after");
+  if (value === null || value.trim() === "") return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) {
+    return seconds >= 0 ? seconds * 1000 : undefined;
+  }
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - nowMs) : undefined;
+}
+
+/**
  * Recognizes an answer that says the provider account ran out of quota,
  * credit or plan images, so the router stops asking that provider
  * (provider_quota) instead of retrying it. Matches:
@@ -90,12 +135,20 @@ export type HttpErrorClassifier = (status: number, bodyText: string) => Provider
  * - "You have exhausted the number of images in your plan" (a cutout plan);
  * - BFL "Insufficient credits";
  * - OpenAI `insufficient_quota` and Anthropic "credit balance is too low";
+ * - OpenAI billing answers by `error.code` (OPENAI_BILLING_ERROR_CODES):
+ *   credits used up and spend or usage limits reached. OpenAI sends these as
+ *   HTTP 429 like a rate limit, so the code is what tells them apart; a 429
+ *   with rate_limit_exceeded or slow_down stays a transient, retried 429;
  * - fal "Exhausted balance" and "User is locked";
  * - Gemini RESOURCE_EXHAUSTED when it names a billing, prepayment or daily
  *   quota, never a per minute rate limit, which stays a transient 429.
  */
 export function quotaErrorCode(status: number, bodyText: string): ProviderErrorCode | undefined {
   if (status === 402) return "provider_quota";
+  const errorCode = jsonErrorCode(bodyText);
+  if (errorCode !== undefined && OPENAI_BILLING_ERROR_CODES.includes(errorCode)) {
+    return "provider_quota";
+  }
   const body = bodyText.toLowerCase();
   const plainMarkers = [
     "exhausted the number of images",
@@ -121,6 +174,7 @@ export function quotaErrorCode(status: number, bodyText: string): ProviderErrorC
  * The ProviderError for a non 2xx answer. The adapter's own classifier runs
  * first (for example a moderation refusal to content_blocked), then the
  * quota check. 5xx and 429 are transient and retryable; other 4xx are not.
+ * A retryable answer carries the provider's Retry-After wait, if any.
  * A content block or a quota answer is never retryable, whatever the status.
  */
 export function httpProviderError(
@@ -129,11 +183,15 @@ export function httpProviderError(
   status: number,
   bodyText: string,
   classify?: HttpErrorClassifier,
+  retryAfterMs?: number,
 ): ProviderError {
   const code = classify?.(status, bodyText) ?? quotaErrorCode(status, bodyText);
   const retryable = code !== "content_blocked" && code !== "provider_quota" && (status >= 500 || status === 429);
+  // The message shape "<provider> responded <status>: <body>" is matched by
+  // the runner (isBadRequest) to retry a refused strict schema; keep it.
   return new ProviderError(`${provider} responded ${status}: ${bodyText.slice(0, 500)}`, provider, task, retryable, undefined, {
     code,
+    ...(retryable && retryAfterMs !== undefined ? { retryAfterMs } : {}),
   });
 }
 
@@ -159,7 +217,7 @@ export async function requestJson<T>(
   }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw httpProviderError(provider, task, res.status, body, classify);
+    throw httpProviderError(provider, task, res.status, body, classify, retryAfterMsFrom(res.headers));
   }
   return (await res.json()) as T;
 }

@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { httpProviderError, quotaErrorCode, requestJson } from "./adapters/shared";
+import {
+  httpProviderError,
+  OPENAI_BILLING_ERROR_CODES,
+  quotaErrorCode,
+  requestJson,
+  retryAfterMsFrom,
+} from "./adapters/shared";
 import { CircuitBreaker, InMemoryBreakerStore, processBreakerStore, QUOTA_OPEN_SECONDS } from "./breaker";
 import { InMemoryCostMeter } from "./meter";
 import { ProviderRegistry } from "./registry";
@@ -30,6 +36,10 @@ describe("quotaErrorCode", () => {
     [403, '{"detail":"User is locked. Reason: Exhausted balance."}'],
     [429, '{"error":{"code":429,"message":"Your prepayment credits are depleted.","status":"RESOURCE_EXHAUSTED"}}'],
     [429, '{"error":{"code":429,"message":"Quota exceeded for metric: generate_content_requests_per_day, limit: 0","status":"RESOURCE_EXHAUSTED"}}'],
+    [429, '{"error":{"message":"Credits used up","type":"insufficient_quota","code":"credit_balance_exhausted"}}'],
+    [429, '{"error":{"message":"Spend limit","type":"insufficient_quota","code":"organization_spend_limit_exceeded"}}'],
+    [429, '{"error":{"message":"Spend limit","type":"requests","code":"project_spend_limit_exceeded"}}'],
+    [429, '{"error":{"message":"Usage limit","type":"requests","code":"organization_usage_limit_exceeded"}}'],
   ])("reads %i %s as provider_quota", (status, body) => {
     expect(quotaErrorCode(status, body)).toBe("provider_quota");
   });
@@ -37,6 +47,9 @@ describe("quotaErrorCode", () => {
   it.each([
     [429, '{"error":{"code":429,"message":"Quota exceeded for metric: requests per minute","status":"RESOURCE_EXHAUSTED"}}'],
     [429, '{"error":{"code":"rate_limit_exceeded"}}'],
+    [429, '{"error":{"code":"slow_down","message":"Please slow down"}}'],
+    [503, '{"error":{"code":"server_is_overloaded"}}'],
+    [429, "credit_balance_exhausted in plain text is not an error code"],
     [503, "overloaded"],
     [401, "invalid key"],
     [400, "bad prompt"],
@@ -49,6 +62,41 @@ describe("quotaErrorCode", () => {
     expect(err).toMatchObject({ code: "provider_quota", retryable: false, transient: false });
     const busy = httpProviderError("openai-image", "scene_plate", 429, "slow down");
     expect(busy).toMatchObject({ code: undefined, retryable: true, transient: true });
+  });
+
+  it("never retries an OpenAI billing code, and keeps rate limits retryable with Retry-After", () => {
+    for (const code of OPENAI_BILLING_ERROR_CODES) {
+      const err = httpProviderError("openai:m", "intake", 429, JSON.stringify({ error: { code } }), undefined, 1000);
+      expect(err).toMatchObject({ code: "provider_quota", retryable: false, transient: false, retryAfterMs: undefined });
+    }
+    for (const code of ["rate_limit_exceeded", "slow_down"]) {
+      const err = httpProviderError("openai:m", "intake", 429, JSON.stringify({ error: { code } }), undefined, 1000);
+      expect(err).toMatchObject({ code: undefined, retryable: true, transient: true, retryAfterMs: 1000 });
+    }
+    const bad = httpProviderError("openai:m", "intake", 400, '{"error":{"code":"invalid_value"}}', undefined, 1000);
+    expect(bad).toMatchObject({ retryable: false, retryAfterMs: undefined });
+    expect(bad.message).toMatch(/^openai:m responded 400: /);
+  });
+
+  it("reads Retry-After as milliseconds, seconds or an HTTP date", () => {
+    expect(retryAfterMsFrom(new Headers({ "retry-after-ms": "250", "retry-after": "9" }))).toBe(250);
+    expect(retryAfterMsFrom(new Headers({ "retry-after": "2" }))).toBe(2000);
+    const now = Date.parse("2026-10-01T00:00:00Z");
+    expect(retryAfterMsFrom(new Headers({ "retry-after": "Thu, 01 Oct 2026 00:00:05 GMT" }), now)).toBe(5000);
+    expect(retryAfterMsFrom(new Headers({ "retry-after": "Thu, 01 Oct 2020 00:00:05 GMT" }), now)).toBe(0);
+    expect(retryAfterMsFrom(new Headers({ "retry-after": "soon" }))).toBeUndefined();
+    expect(retryAfterMsFrom(new Headers({ "retry-after": "-1" }))).toBeUndefined();
+    expect(retryAfterMsFrom(new Headers())).toBeUndefined();
+    expect(retryAfterMsFrom(undefined)).toBeUndefined();
+  });
+
+  it("requestJson carries the Retry-After of a retryable answer", async () => {
+    const fetchFn = (async () =>
+      new Response('{"error":{"code":"rate_limit_exceeded"}}', { status: 429, headers: { "retry-after": "1" } })) as typeof fetch;
+    await expect(requestJson(fetchFn, "openai:m", "intake", "https://api.openai.com/v1/responses", {})).rejects.toMatchObject({
+      retryable: true,
+      retryAfterMs: 1000,
+    });
   });
 
   it("keeps an adapter's own classification first", () => {

@@ -120,7 +120,8 @@ describe("client safe modules", () => {
         expect(spec, `${file} imports ${spec}`).not.toMatch(/^(sharp|node:|fs$|path$|exiftool)/);
         // seed/templates.ts reads Shot from ../schemas (PHASE_16 packBundles), the same module;
         // the Shot schema and the options read the variation limits (PHASE_16 workstream 6).
-        expect(["zod", "@curvi/specs", "./schemas", "../schemas", "./seed/brand", "./seed/templates", "./seed/variations"], `${file} imports ${spec}`).toContain(spec);
+        // schemas.ts reads the OpenAI strict schema converter, a module with no imports (PHASE_17).
+        expect(["zod", "@curvi/specs", "@curvi/ai/openai-schema", "./schemas", "../schemas", "./seed/brand", "./seed/templates", "./seed/variations"], `${file} imports ${spec}`).toContain(spec);
       }
     }
   });
