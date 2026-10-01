@@ -31,6 +31,9 @@ export type ReadEnv = (name: string) => string | undefined;
 export interface AlertDedupe {
   /** True for the first caller to claim the key, false for every later one. */
   claim(key: string): Promise<boolean>;
+  /** Gives a claimed key back, so a later caller can claim it again (an
+   * alert whose email could not be sent). */
+  release?(key: string): Promise<void>;
 }
 
 export class InMemoryAlertDedupe implements AlertDedupe {
@@ -43,7 +46,15 @@ export class InMemoryAlertDedupe implements AlertDedupe {
     this.claimed.add(key);
     return true;
   }
+
+  async release(key: string): Promise<void> {
+    this.claimed.delete(key);
+  }
 }
+
+/** How long the founder email may take before the send is given up. A hung
+ * Resend must never hold a worker. */
+export const FOUNDER_EMAIL_TIMEOUT_MS = 10_000;
 
 export interface SpendAlertNotifierOptions {
   /** Records the events row; null or absent in envless demo runs. */
@@ -209,35 +220,8 @@ export class SpendAlertNotifier {
     return result;
   }
 
-  private async sendEmail(email: SpendAlertEmail): Promise<{ ok: boolean; notice?: string }> {
-    const apiKey = this.readEnv("RESEND_API_KEY");
-    const to = this.readEnv("FOUNDER_ALERT_EMAIL");
-    if (!apiKey || !to) {
-      return {
-        ok: false,
-        notice: "Set RESEND_API_KEY and FOUNDER_ALERT_EMAIL to email spend alerts to the founder.",
-      };
-    }
-    try {
-      const fetchImpl = this.opts.fetchImpl ?? fetch;
-      const res = await fetchImpl(RESEND_EMAILS_URL, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: this.readEnv("FOUNDER_ALERT_FROM") ?? DEFAULT_ALERT_FROM,
-          to: [to],
-          subject: email.subject,
-          text: email.text,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        return { ok: false, notice: `Resend returned status ${res.status}. ${body}`.trim() };
-      }
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, notice: `Resend could not be reached. ${errorText(err)}` };
-    }
+  private sendEmail(email: SpendAlertEmail): Promise<{ ok: boolean; notice?: string }> {
+    return sendFounderEmail(email, { readEnv: this.readEnv, fetchImpl: this.opts.fetchImpl });
   }
 
   private track(promise: Promise<unknown>): void {
@@ -250,6 +234,54 @@ export class SpendAlertNotifier {
 
   private logJson(event: string, fields: Record<string, unknown>): void {
     this.log.error(JSON.stringify({ level: "error", event, ...fields }));
+  }
+}
+
+/**
+ * Emails the founder through the Resend REST API when RESEND_API_KEY and
+ * FOUNDER_ALERT_EMAIL are set (FOUNDER_ALERT_FROM overrides the sender).
+ * Never throws: a missing setting or a failed send comes back as a notice,
+ * so the caller logs the alert instead. retryable marks a send that may work
+ * later (Resend unreachable, timed out, 429 or 5xx), as opposed to missing
+ * settings or a request Resend rejects. The send gives up after timeoutMs.
+ */
+export async function sendFounderEmail(
+  email: SpendAlertEmail,
+  opts: { readEnv?: ReadEnv; fetchImpl?: FetchLike; timeoutMs?: number } = {},
+): Promise<{ ok: boolean; notice?: string; retryable?: boolean }> {
+  const readEnv = opts.readEnv ?? readEnvDefault;
+  const apiKey = readEnv("RESEND_API_KEY");
+  const to = readEnv("FOUNDER_ALERT_EMAIL");
+  if (!apiKey || !to) {
+    return {
+      ok: false,
+      notice: "Set RESEND_API_KEY and FOUNDER_ALERT_EMAIL to email spend alerts to the founder.",
+    };
+  }
+  try {
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const res = await fetchImpl(RESEND_EMAILS_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: readEnv("FOUNDER_ALERT_FROM") ?? DEFAULT_ALERT_FROM,
+        to: [to],
+        subject: email.subject,
+        text: email.text,
+      }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? FOUNDER_EMAIL_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return {
+        ok: false,
+        notice: `Resend returned status ${res.status}. ${body}`.trim(),
+        retryable: res.status === 429 || res.status >= 500,
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, notice: `Resend could not be reached. ${errorText(err)}`, retryable: true };
   }
 }
 

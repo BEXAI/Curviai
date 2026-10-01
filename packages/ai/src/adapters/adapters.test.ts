@@ -7,6 +7,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CostAwareProvider } from "../router";
+import type { LlmRequest } from "../llm";
 import { ProviderError, type ProviderRequest } from "../types";
 import {
   ANTHROPIC_IMAGE_TOKEN_LIMITS,
@@ -146,7 +147,7 @@ describe("estimateCostMicros", () => {
         }),
         req: {
           task: "analyze_product",
-          input: { messages: [{ role: "user", content: "describe this ceramic mug" }], maxTokens: 1024 },
+          input: { system: "", messages: textMessages("describe this ceramic mug"), maxOutputTokens: 1024 },
         },
       },
       {
@@ -270,7 +271,7 @@ describe("estimateCostMicros", () => {
     });
     const req: ProviderRequest = {
       task: "analyze_product",
-      input: { messages: [{ role: "user", content: "hi" }], maxTokens: 1000 },
+      input: { system: "", messages: textMessages("hi"), maxOutputTokens: 1000 },
     };
     // At least the full output budget priced at the output rate.
     expect(provider.estimateCostMicros(req)).toBeGreaterThanOrEqual(15_000);
@@ -300,7 +301,7 @@ describe("estimateCostMicros", () => {
     });
     const res = await provider.invoke({
       task: "qc",
-      input: { messages: [{ role: "user", content: "judge" }], model: "escalation-model" },
+      input: { system: "", messages: textMessages("judge"), model: "escalation-model" },
     });
     expect(bodies[0].model).toBe("escalation-model");
     // One million input tokens at the escalation rate, not the default rate.
@@ -318,13 +319,13 @@ describe("estimateCostMicros", () => {
     await expect(
       provider.invoke({
         task: "qc",
-        input: { messages: [{ role: "user", content: "judge" }], model: "unpriced-model" },
+        input: { system: "", messages: textMessages("judge"), model: "unpriced-model" },
       }),
     ).rejects.toThrow(/no price table/);
     expect(() =>
       provider.estimateCostMicros({
         task: "qc",
-        input: { messages: [{ role: "user", content: "judge" }], model: "unpriced-model" },
+        input: { system: "", messages: textMessages("judge"), model: "unpriced-model" },
       }),
     ).toThrow(/no price table/);
   });
@@ -373,6 +374,11 @@ function webpBytes(chunk: "VP8 " | "VP8L" | "VP8X", width: number, height: numbe
 }
 
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
+
+/** A neutral request with one user message of plain text. */
+function textMessages(text: string): LlmRequest["messages"] {
+  return [{ role: "user", content: [{ type: "text", text }] }];
+}
 
 function anthropic(fetchFn?: typeof fetch) {
   return new AnthropicLLMProvider({
@@ -426,11 +432,12 @@ describe("Anthropic image aware cost estimate (Update.md 5.3)", () => {
   it("estimates a 1568x1568 photo block at under 5k tokens, not its base64 length", () => {
     const data = b64(jpegBytes(1568, 1568, 300_000));
     expect(data.length).toBeGreaterThan(400_000);
-    const photo = { type: "image", source: { type: "base64", media_type: "image/jpeg", data } };
-    const text = { type: "text", text: "Describe this ceramic mug." };
-    const withPhotos = (count: number) => ({
-      messages: [{ role: "user" as const, content: [...new Array(count).fill(photo), text] }],
-      maxTokens: 1024,
+    const photo = { type: "image" as const, mediaType: "image/jpeg" as const, base64: data };
+    const text = { type: "text" as const, text: "Describe this ceramic mug." };
+    const withPhotos = (count: number): LlmRequest => ({
+      system: "",
+      messages: [{ role: "user", content: [...new Array<typeof photo>(count).fill(photo), text] }],
+      maxOutputTokens: 1024,
     });
     const provider = anthropic();
 
@@ -445,32 +452,28 @@ describe("Anthropic image aware cost estimate (Update.md 5.3)", () => {
     expect(micros).toBeLessThan(50_000);
   });
 
-  it("prices URL, file and unreadable image sources at the per image maximum", () => {
+  it("prices empty and unreadable image data at the per image maximum", () => {
     const provider = anthropic();
-    const tokensFor = (source: unknown) =>
-      provider.estimateInputTokens({ messages: [{ role: "user", content: [{ type: "image", source }] }] });
+    const tokensFor = (base64: string) =>
+      provider.estimateInputTokens({
+        system: "",
+        messages: [{ role: "user", content: [{ type: "image", mediaType: "image/jpeg", base64 }] }],
+      });
     const max = ANTHROPIC_IMAGE_TOKEN_LIMITS.maxTokens;
-    expect(tokensFor({ type: "url", url: "https://example.test/a.jpg" })).toBeGreaterThanOrEqual(max);
-    expect(tokensFor({ type: "file", file_id: "file_1" })).toBeGreaterThanOrEqual(max);
-    expect(tokensFor({ type: "base64", media_type: "image/jpeg", data: "bm90IGFuIGltYWdl" })).toBeGreaterThanOrEqual(max);
-    expect(tokensFor({ type: "url", url: "https://example.test/a.jpg" })).toBeLessThan(max + 100);
+    expect(tokensFor("bm90IGFuIGltYWdl")).toBeGreaterThanOrEqual(max);
+    expect(tokensFor("")).toBeGreaterThanOrEqual(max);
+    expect(tokensFor("")).toBeLessThan(max + 100);
   });
 
-  it("finds images nested in tool results", () => {
+  it("finds images in every message", () => {
     const provider = anthropic();
     const data = b64(pngBytes(1000, 1000));
     const tokens = provider.estimateInputTokens({
+      system: "",
       messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "t1",
-              content: [{ type: "image", source: { type: "base64", media_type: "image/png", data } }],
-            },
-          ],
-        },
+        { role: "user", content: [{ type: "text", text: "first" }] },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: [{ type: "image", mediaType: "image/png", base64: data }] },
       ],
     });
     expect(tokens).toBeGreaterThanOrEqual(1296);
@@ -480,7 +483,7 @@ describe("Anthropic image aware cost estimate (Update.md 5.3)", () => {
   it("still counts text at one token per three characters", () => {
     const provider = anthropic();
     const text = "x".repeat(3_000);
-    const tokens = provider.estimateInputTokens({ messages: [{ role: "user", content: text }] });
+    const tokens = provider.estimateInputTokens({ system: "", messages: textMessages(text) });
     expect(tokens).toBeGreaterThanOrEqual(1_000);
     expect(tokens).toBeLessThan(1_100);
   });
@@ -605,7 +608,7 @@ describe("safety blocks and empty replies are final (Update.md 5.4)", () => {
         usage: { input_tokens: 1_000_000, output_tokens: 100_000 },
       })) as typeof fetch);
     const err = await failureOf(
-      provider.invoke({ task: "analyze_product", input: { messages: [{ role: "user", content: "hi" }] } }),
+      provider.invoke({ task: "analyze_product", input: { system: "", messages: textMessages("hi") } }),
     );
     expect(err.code).toBe("content_blocked");
     expect(err.retryable).toBe(false);
@@ -617,7 +620,7 @@ describe("safety blocks and empty replies are final (Update.md 5.4)", () => {
     const provider = anthropic((async () =>
       jsonResponse({ content: [], stop_reason: "end_turn", usage: { input_tokens: 500_000, output_tokens: 0 } })) as typeof fetch);
     const err = await failureOf(
-      provider.invoke({ task: "analyze_product", input: { messages: [{ role: "user", content: "hi" }] } }),
+      provider.invoke({ task: "analyze_product", input: { system: "", messages: textMessages("hi") } }),
     );
     expect(err.code).toBe("empty_output");
     expect(err.retryable).toBe(false);

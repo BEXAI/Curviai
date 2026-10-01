@@ -20,6 +20,9 @@ function healthGet(): Request {
 }
 
 beforeEach(() => {
+  // A fixed day before the seeded OpenAI credit reminders (2026-12-01), so
+  // the expected warnings do not change with the calendar.
+  vi.useFakeTimers({ now: new Date("2026-10-01T12:00:00Z"), toFake: ["Date"] });
   fakeDb.execute.mockReset();
   const configNames = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", ...DEFAULT_PROVIDER_ENTRIES.map((e) => e.envVar)];
   for (const name of [...Object.keys(DB_ENV), "RENDER_GIT_COMMIT", "CRON_SECRET", "CURVI_SHOT_CONCURRENCY", ...configNames]) {
@@ -32,6 +35,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
 describe("GET /api/health", () => {
@@ -135,6 +139,9 @@ describe("GET /api/health detailed report", () => {
       const text = JSON.stringify(query);
       if (text.includes("__drizzle_migrations")) return [{ latest: "9999999999999" }];
       if (text.includes("from recipes")) return [];
+      if (text.includes("spend_cap_counters")) {
+        return [{ key: "llm|day|2026-10-01|copy_generator|openai:gpt-6-luna|cost_micros", total_micros: "1234" }];
+      }
       if (text.includes("platform_settings")) {
         return [{ key: "cron:stale-jobs:last_success", value: { at: new Date(Date.now() - 60_000).toISOString() } }];
       }
@@ -165,9 +172,15 @@ describe("GET /api/health detailed report", () => {
     expect(body.details.recipes.drift.length).toBeGreaterThan(0);
     expect(body.details.providerKeys.find((s: { stage: string }) => s.stage === "analyze")).toMatchObject({
       ready: true,
-      keys: [{ envVar: "ANTHROPIC_API_KEY", present: true }],
+      keys: [
+        { envVar: "ANTHROPIC_API_KEY", present: true },
+        { envVar: "OPENAI_API_KEY", present: false },
+      ],
     });
     expect(body.details.runtime.shotConcurrency).toEqual({ configured: "3", effective: 3 });
+    // LLM spend per provider (PHASE_17 workstream 6), in the details only.
+    expect(body.details.llmSpend.byFamily.openai).toMatchObject({ costMicros: 1234 });
+    expect(body.details.llmSpend.days[6]).toBe("2026-10-01");
     expect(typeof body.details.runtime.memory.rssBytes).toBe("number");
     expect(text).not.toContain("sk-live-anthropic-value");
     expect(text).not.toContain(SECRET);

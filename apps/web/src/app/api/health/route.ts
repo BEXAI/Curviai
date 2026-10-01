@@ -22,7 +22,10 @@
  * <CRON_SECRET>` (compared in constant time, lib/cron-auth.ts) also gets
  * `details`: each warning in plain words, the recipe differences (hashes and
  * model ids, never prompts), key presence per stage, cron run times, shot
- * concurrency and memory. A wrong or missing secret gets the public response,
+ * concurrency, memory, and LLM spend and tokens per provider and recipe for
+ * the last 7 days (llmSpend, docs/phases/PHASE_17.md workstream 6). The
+ * OpenAI credit expiry shows as `llm_credits_expiring:openai` from the first
+ * seeded reminder date. A wrong or missing secret gets the public response,
  * never an error, since Render polls this path without one. Key probes live
  * on /api/health/providers.
  *
@@ -79,6 +82,7 @@ function configReport(mode: "demo" | "db", databaseOk: boolean, fresh: boolean):
       storageConfigured: isR2Configured(),
       providerTargets: liveProviderTargets(optionalEnv),
       seedRecipes: recipeSeedRows,
+      includeLlmSpend: fresh,
     }),
   );
 }

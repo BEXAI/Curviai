@@ -23,7 +23,13 @@
 
 import { createHash } from "node:crypto";
 import { eq, recipes, type Db, type JobRecipeVariant } from "@curvi/db";
-import { RecipeRow, recipeSeedRows, type RecipeModelOptions } from "@curvi/pipeline/seed";
+import {
+  llmModelProviders,
+  RecipeRow,
+  recipeSeedRows,
+  servingRecipeSeedRow,
+  type RecipeModelOptions,
+} from "@curvi/pipeline/seed";
 
 export type RecipeStage = RecipeRow["stage"];
 
@@ -40,10 +46,12 @@ export interface ResolvedRecipe {
   system: string;
   /** Output token budget from the recipe body, when it sets one. */
   maxTokens?: number;
-  /** Thinking and effort per model id, from the recipe body. */
+  /** Reasoning effort per model id, from the recipe body. */
   modelOptions?: Record<string, RecipeModelOptions>;
   /** Per attempt provider timeout from the recipe body. */
   timeoutMs?: number;
+  /** Image detail for the call's image blocks, from the recipe body. */
+  imageDetail?: "low" | "high";
   /** A/B weight among the active versions of the key. */
   trafficPct: number;
 }
@@ -60,10 +68,42 @@ export interface RecipeResolver {
   forVariants?(jobId: string, variants: Record<string, JobRecipeVariant>): Promise<JobRecipes>;
 }
 
-/** Registry name of the LLM provider that runs one model. The live wiring
- * registers one per priced model; recipes name models, never providers. */
+/** Registry name of the LLM provider that runs one model,
+ * "<provider>:<model>" with the provider from the llmModelProviders seed. The
+ * live wiring registers one per priced model; recipes name models, never
+ * providers. A model with no provider in the seed fails closed: it gets a
+ * name no provider is registered under, so a chain skips it, as it skips an
+ * unpriced model. */
 export function llmModelProviderName(model: string): string {
-  return `anthropic:${model}`;
+  const provider = Object.hasOwn(llmModelProviders, model) ? llmModelProviders[model] : undefined;
+  return provider ? `${provider}:${model}` : `unmapped:${model}`;
+}
+
+/**
+ * The OpenAI price table for a seeded LLM price row, or undefined when the
+ * row has no cached input price. The OpenAI adapter bills cached input at
+ * its own rate, so a row without one is never wired (fail closed).
+ */
+export function openaiLlmPriceTable(row: {
+  inputMicrosPerMTok: number;
+  cachedInputMicrosPerMTok?: number;
+  cacheWriteMicrosPerMTok?: number;
+  outputMicrosPerMTok: number;
+}):
+  | {
+      inputMicrosPerMTok: number;
+      cachedInputMicrosPerMTok: number;
+      cacheWriteMicrosPerMTok?: number;
+      outputMicrosPerMTok: number;
+    }
+  | undefined {
+  if (row.cachedInputMicrosPerMTok === undefined) return undefined;
+  return {
+    inputMicrosPerMTok: row.inputMicrosPerMTok,
+    cachedInputMicrosPerMTok: row.cachedInputMicrosPerMTok,
+    ...(row.cacheWriteMicrosPerMTok !== undefined ? { cacheWriteMicrosPerMTok: row.cacheWriteMicrosPerMTok } : {}),
+    outputMicrosPerMTok: row.outputMicrosPerMTok,
+  };
 }
 
 function uniqueModels(models: readonly string[]): string[] {
@@ -82,6 +122,7 @@ function fromSeed(row: RecipeRow): ResolvedRecipe {
     ...(typeof row.body.maxTokens === "number" ? { maxTokens: row.body.maxTokens } : {}),
     ...(row.body.modelOptions ? { modelOptions: row.body.modelOptions } : {}),
     ...(typeof row.body.timeoutMs === "number" ? { timeoutMs: row.body.timeoutMs } : {}),
+    ...(row.body.imageDetail ? { imageDetail: row.body.imageDetail } : {}),
     trafficPct: row.trafficPct ?? 100,
   };
 }
@@ -89,11 +130,26 @@ function fromSeed(row: RecipeRow): ResolvedRecipe {
 /** The compiled seed recipe for a stage. Throws when the seed has none, a
  * build mistake the seed tests catch. */
 export function seedRecipe(stage: RecipeStage): ResolvedRecipe {
-  const row = recipeSeedRows.find((r) => r.stage === stage && r.active);
+  const row = servingRecipeSeedRow(stage);
   if (!row) {
     throw new Error(`No active recipe seeded for stage "${stage}"`);
   }
   return fromSeed(row);
+}
+
+/**
+ * The other active seed versions of a recipe's key and stage, newest first:
+ * the canary rows (trafficPct 0 included) the live wiring appends to the
+ * key's routing chain (live-runtime.ts wireLiveProviders). When none of a
+ * job's own models has a key set, the runner runs the call on the first of
+ * these whose models do, with that version's prompt, budget, efforts and
+ * image detail, so a model never gets a body written for another provider.
+ */
+export function standbySeedRecipes(recipe: Pick<ResolvedRecipe, "key" | "stage" | "version">): ResolvedRecipe[] {
+  return recipeSeedRows
+    .filter((row) => row.active && row.key === recipe.key && row.stage === recipe.stage && row.version !== recipe.version)
+    .sort((a, b) => b.version - a.version)
+    .map(fromSeed);
 }
 
 /** The recipe a job runs for a stage: its assignment, else the seed. */
@@ -103,7 +159,14 @@ export function recipeFor(recipes: JobRecipes | undefined, stage: RecipeStage): 
 
 /** The seed stages in order, each with the key the router and providers know. */
 function seedStages(): Array<{ stage: RecipeStage; key: string }> {
-  return recipeSeedRows.filter((r) => r.active).map((r) => ({ stage: r.stage, key: r.key }));
+  const out: Array<{ stage: RecipeStage; key: string }> = [];
+  for (const stage of RecipeRow.shape.stage.options) {
+    const row = servingRecipeSeedRow(stage);
+    if (row) {
+      out.push({ stage, key: row.key });
+    }
+  }
+  return out;
 }
 
 /** Every stage on its compiled seed recipe. */

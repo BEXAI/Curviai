@@ -9,15 +9,93 @@
 export interface LlmPriceTable {
   /** USD micros per million input tokens. */
   inputMicrosPerMTok: number;
-  /** USD micros per million output tokens. */
+  /** USD micros per million cached input tokens, where the provider bills
+   * them apart (OpenAI). Absent for a model metered at the input rate. */
+  cachedInputMicrosPerMTok?: number;
+  /** USD micros per million cache write tokens, where the provider bills
+   * them apart (OpenAI 5.6 and later: 1.25 times the input rate). */
+  cacheWriteMicrosPerMTok?: number;
+  /** USD micros per million output tokens (reasoning tokens included). */
   outputMicrosPerMTok: number;
 }
 
-/** Anthropic list prices per million tokens (plan section 5.1). */
+/**
+ * LLM list prices per million tokens. Claude rows are plan section 5.1.
+ * OpenAI rows are the Standard tier, short context prices from
+ * developers.openai.com/api/docs/pricing, fetched 2026-10-01
+ * (docs/phases/PHASE_17.md workstream 3, docs/verification.md).
+ */
 export const llmModelPrices: Record<string, LlmPriceTable> = {
   "claude-haiku-4-5-20251001": { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 5_000_000 },
   "claude-sonnet-5": { inputMicrosPerMTok: 2_000_000, outputMicrosPerMTok: 10_000_000 },
   "claude-opus-5-5": { inputMicrosPerMTok: 4_000_000, outputMicrosPerMTok: 20_000_000 },
+  "gpt-6-luna": { inputMicrosPerMTok: 100_000, cachedInputMicrosPerMTok: 10_000, cacheWriteMicrosPerMTok: 125_000, outputMicrosPerMTok: 500_000 },
+  "gpt-6.1-sol": { inputMicrosPerMTok: 2_000_000, cachedInputMicrosPerMTok: 100_000, cacheWriteMicrosPerMTok: 2_500_000, outputMicrosPerMTok: 10_000_000 },
+  // Promotional price: the pricing page says it holds "at least through
+  // November 21, 2026" (checked 2026-10-01). Re-check it on 2026-11-21 and
+  // update this row if the list price changes.
+  "gpt-5.6-sol": { inputMicrosPerMTok: 4_000_000, cachedInputMicrosPerMTok: 400_000, cacheWriteMicrosPerMTok: 5_000_000, outputMicrosPerMTok: 20_000_000 },
+  "gpt-5.6-terra": { inputMicrosPerMTok: 2_000_000, cachedInputMicrosPerMTok: 200_000, cacheWriteMicrosPerMTok: 2_500_000, outputMicrosPerMTok: 12_000_000 },
+  "gpt-6-astra": { inputMicrosPerMTok: 10_000_000, cachedInputMicrosPerMTok: 1_000_000, cacheWriteMicrosPerMTok: 12_500_000, outputMicrosPerMTok: 50_000_000 },
+};
+
+/** The LLM provider families an adapter exists for. */
+export type LlmProviderFamily = "anthropic" | "openai";
+
+/**
+ * The provider that serves each LLM model id (docs/phases/PHASE_17.md
+ * workstream 1). The live runtime registers each model under
+ * "<provider>:<model>", and recipes name models only, so a recipe can move
+ * between providers by seed data alone. Every model in llmModelPrices has an
+ * entry here; a model with none is never routed (fail closed).
+ */
+export const llmModelProviders: Record<string, LlmProviderFamily> = {
+  "claude-haiku-4-5-20251001": "anthropic",
+  "claude-sonnet-5": "anthropic",
+  "claude-opus-5-5": "anthropic",
+  "gpt-6-luna": "openai",
+  "gpt-6.1-sol": "openai",
+  "gpt-5.6-sol": "openai",
+  "gpt-5.6-terra": "openai",
+  "gpt-6-astra": "openai",
+};
+
+/** A reasoning effort a recipe may ask of a model (RecipeModelOptions). */
+export type LlmEffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * The efforts each LLM model accepts, so a seed test rejects a recipe that
+ * asks a model for one it answers 400 to. OpenAI values are from the model
+ * pages at developers.openai.com/api/docs/models, fetched 2026-10-01:
+ * gpt-6.1-sol and gpt-6-astra reject "none". Claude values are the audit's
+ * (docs/verification.md, 2026-09-29): Haiku 4.5 rejects effort, and Opus 5.5
+ * rejects thinking disabled, which is what "none" sends.
+ */
+export const llmModelEfforts: Record<string, readonly LlmEffortLevel[]> = {
+  "claude-haiku-4-5-20251001": [],
+  "claude-sonnet-5": ["none", "low", "medium", "high", "xhigh", "max"],
+  "claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
+  "gpt-6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
+  "gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max"],
+  "gpt-5.6-sol": ["none", "low", "medium", "high", "xhigh", "max"],
+  "gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh", "max"],
+  "gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
+};
+
+/**
+ * Image token multiplier per OpenAI LLM model, for the cap estimate of an
+ * image input: ceil(ceil(w/32) * ceil(h/32) * multiplier) after resizing
+ * (images and vision guide, read 2026-09-30). It is documented as 1.2 for
+ * the gpt-5.6 models and gpt-6-astra. It is not documented for gpt-6-luna or
+ * gpt-6.1-sol, so those take the most conservative documented value, 1.72,
+ * until a measured value replaces it (PHASE_17 open item, rule 7).
+ */
+export const llmImageTokenMultipliers: Record<string, number> = {
+  "gpt-6-luna": 1.72,
+  "gpt-6.1-sol": 1.72,
+  "gpt-5.6-sol": 1.2,
+  "gpt-5.6-terra": 1.2,
+  "gpt-6-astra": 1.2,
 };
 
 /** Task name the composite pipeline uses for background plate generation. */

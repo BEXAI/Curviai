@@ -126,6 +126,53 @@ const packCap = new ProviderError(
 
 const chain = (task: string, ...errors: ProviderError[]) => new AllProvidersFailedError(task, errors).message;
 
+// OpenAI LLM chains (docs/phases/PHASE_17.md): registry names are
+// "openai:<model>", and billing answers are HTTP 429 with an error code.
+const openaiCredit429 = new ProviderError(
+  'openai:gpt-6-luna responded 429: {"error":{"message":"You have run out of credits.","type":"insufficient_quota","code":"credit_balance_exhausted"}}',
+  "openai:gpt-6-luna",
+  "intake_normalizer",
+  false,
+  undefined,
+  { code: "provider_quota" },
+);
+const openaiSpend429 = new ProviderError(
+  'openai:gpt-6.1-sol responded 429: {"error":{"message":"Project spend limit reached.","type":"insufficient_quota","code":"project_spend_limit_exceeded"}}',
+  "openai:gpt-6.1-sol",
+  "product_analyzer",
+  false,
+  undefined,
+  { code: "provider_quota" },
+);
+const openaiRate429 = new ProviderError(
+  'openai:gpt-6-luna responded 429: {"error":{"message":"Rate limit reached for gpt-6-luna","type":"requests","code":"rate_limit_exceeded"}}',
+  "openai:gpt-6-luna",
+  "copy_generator",
+  true,
+);
+const openaiLlm401 = new ProviderError(
+  'openai:gpt-6-luna responded 401: {"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}',
+  "openai:gpt-6-luna",
+  "intake_normalizer",
+  false,
+);
+const openaiRefusal = new ProviderError(
+  "OpenAI declined the request (refusal)",
+  "openai:gpt-6-luna",
+  "intake_normalizer",
+  false,
+  undefined,
+  { code: "content_blocked" },
+);
+const openaiContentFilter = new ProviderError(
+  "OpenAI stopped the reply (incomplete: content_filter)",
+  "openai:gpt-6-luna",
+  "copy_generator",
+  false,
+  undefined,
+  { code: "content_blocked" },
+);
+
 /** [stored message, expected kind]. */
 const CASES: Array<[string, JobErrorKind]> = [
   // Screenshots: the ingest refusal and any runner message that names one.
@@ -253,6 +300,16 @@ const CASES: Array<[string, JobErrorKind]> = [
     "setup",
   ],
   ['No providers routed for task "llm.intake"', "setup"],
+  // OpenAI chains with Claude last: billing codes are our account, rate
+  // limits are busy, a refusal is a content block.
+  [chain("intake_normalizer", openaiCredit429), "setup"],
+  [chain("product_analyzer", openaiSpend429), "setup"],
+  [chain("intake_normalizer", openaiCredit429, anthropic529), "setup"],
+  [chain("intake_normalizer", openaiLlm401), "setup"],
+  [chain("copy_generator", openaiRate429), "serviceBusy"],
+  [chain("intake_normalizer", openaiRate429, anthropic529), "serviceBusy"],
+  [chain("intake_normalizer", openaiRefusal), "contentBlocked"],
+  [chain("copy_generator", openaiContentFilter), "contentBlocked"],
   ['No active recipe seeded for stage "intake"', "setup"],
 
   // Spend caps (packages/ai caps.ts and router.ts, the runner's pack cap).
@@ -349,6 +406,8 @@ describe("seller copy guard", () => {
       "Unexpected token < in JSON at position 0",
       "something nobody has seen before",
       "Intake found no sellable product in the uploaded images. Intake saw: {json} 500 ml; <b>openai</b> status [x]",
+      "Intake found no sellable product in the uploaded images. Intake saw: gpt-6-luna said OpenAI blue bottle",
+      'All providers failed for task shot_planner: openai:gpt-6.1-sol: openai:gpt-6.1-sol responded 500: {"error":"boom"}',
     ];
     for (const raw of hostile) {
       assertSellerSafe(publicJobError(raw) ?? "", raw);

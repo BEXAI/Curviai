@@ -12,7 +12,11 @@
  * - recipe drift: active recipes rows against the compiled seed
  *   (lib/recipe-drift.ts);
  * - cron freshness: each scheduled route's last success (lib/cron-health.ts);
- * - CURVI_SHOT_CONCURRENCY, the container memory limit and current RSS.
+ * - CURVI_SHOT_CONCURRENCY, the container memory limit and current RSS;
+ * - the OpenAI credit window from the seed: a warning from the first
+ *   reminder date until the credits expire, and after (lib/llm-spend.ts);
+ * - with includeLlmSpend (the detailed report), LLM spend and tokens per
+ *   provider for the last 7 UTC days (PHASE_17.md workstream 6).
  *
  * The database reads run only when the database answered, each under its own
  * timeout, and a failed read becomes a warning instead of an error.
@@ -23,7 +27,9 @@ import type { LiveProviderTarget, StageKeyReport } from "@curvi/trigger/provider
 import { stageKeyReport } from "@curvi/trigger/provider-probes";
 import { DEFAULT_SHOT_CONCURRENCY, parseShotConcurrency } from "@curvi/trigger/shot-concurrency";
 import { CRON_JOBS, cronFreshness, readCronSuccesses, type CronJob, type CronStatus } from "@/lib/cron-health";
+import { llmCreditWarnings, readLlmSpend } from "@/lib/llm-spend";
 import { compareRecipes, readRecipeRows, type RecipeDrift, type RecipeLike } from "@/lib/recipe-drift";
+import type { LlmSpendReport } from "@curvi/trigger/llm-monitor";
 import { withTimeout, type SqlExecutor } from "@/lib/service-health";
 
 export interface HealthWarning {
@@ -48,6 +54,9 @@ export interface ConfigReport {
   providerKeys: StageKeyReport[];
   /** null when the database was not read. */
   crons: CronStatus[] | null;
+  /** LLM spend per provider and recipe for the last days; null when not
+   * asked for (the public check) or the counters could not be read. */
+  llmSpend: LlmSpendReport | null;
   runtime: {
     shotConcurrency: { configured: string | null; effective: number };
     memory: MemoryReport;
@@ -65,6 +74,9 @@ export interface ConfigReportDeps {
   providerTargets: LiveProviderTarget[];
   seedRecipes: readonly RecipeLike[];
   cronJobs?: readonly CronJob[];
+  /** Read the LLM spend counters too: only for the detailed report, so the
+   * public poll stays at its two reads. */
+  includeLlmSpend?: boolean;
   /** Reads a small text file, null when absent. */
   readTextFile?: (path: string) => string | null;
   rssBytes?: () => number;
@@ -112,8 +124,26 @@ function describeError(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 }
 
+/** The warning for LLM stages no set key covers. The code stays
+ * no_llm_provider; the message names the stages and the keys that would
+ * cover them. */
+function llmStageWarning(missing: StageKeyReport[]): HealthWarning {
+  const stages = missing.map((stage) => stage.stage);
+  const keys = [...new Set(missing.flatMap((stage) => stage.keys.map((key) => key.envVar)))].sort();
+  const one = stages.length === 1;
+  return {
+    code: "no_llm_provider",
+    message: `No model key is set for the ${joinWords(stages)} ${one ? "stage" : "stages"}. Set ${joinWords(keys, "or")} to run ${one ? "it" : "them"} live.`,
+  };
+}
+
+function joinWords(words: readonly string[], conjunction = "and"): string {
+  if (words.length <= 1) return words.join("");
+  return `${words.slice(0, -1).join(", ")} ${conjunction} ${words[words.length - 1]}`;
+}
+
 const STAGE_KIND_WARNINGS: Record<StageKeyReport["kind"], HealthWarning> = {
-  llm: { code: "no_llm_provider", message: "No Anthropic key is set, so the text stages have no live model." },
+  llm: { code: "no_llm_provider", message: "No OpenAI or Anthropic key is set, so the text stages have no live model." },
   image: { code: "no_image_provider", message: "No image provider key is set (Gemini, BFL or OpenAI)." },
   cutout: { code: "no_cutout_provider", message: "No fal key (FAL_KEY) is set, so the cutout stage has no live provider." },
 };
@@ -130,19 +160,32 @@ export async function buildConfigReport(deps: ConfigReportDeps): Promise<ConfigR
 
   const providerKeys = stageKeyReport(deps.providerTargets);
   for (const kind of ["llm", "image", "cutout"] as const) {
-    if (providerKeys.some((stage) => stage.kind === kind && !stage.ready)) {
-      warnings.push(STAGE_KIND_WARNINGS[kind]);
-    }
+    const missing = providerKeys.filter((stage) => stage.kind === kind && !stage.ready);
+    if (missing.length === 0) continue;
+    // An LLM stage runs on any model in its chains, OpenAI or Claude, so the
+    // warning names each stage no set key covers (PHASE_17 workstream 3).
+    warnings.push(kind === "llm" ? llmStageWarning(missing) : STAGE_KIND_WARNINGS[kind]);
   }
+
+  warnings.push(...llmCreditWarnings(now));
 
   let recipes: ConfigReport["recipes"] = null;
   let crons: CronStatus[] | null = null;
+  let llmSpend: LlmSpendReport | null = null;
   if (deps.mode === "db" && deps.databaseOk && deps.db) {
     const db = deps.db();
-    const [recipeRead, cronRead] = await Promise.allSettled([
+    const [recipeRead, cronRead, spendRead] = await Promise.allSettled([
       withTimeout(() => readRecipeRows(db), timeoutMs),
       withTimeout(() => readCronSuccesses(db), timeoutMs),
+      deps.includeLlmSpend ? withTimeout(() => readLlmSpend(db, now), timeoutMs) : Promise.resolve(null),
     ]);
+
+    if (spendRead.status === "fulfilled") {
+      llmSpend = spendRead.value;
+    } else {
+      // Reporting only: the details show null, no warning.
+      logger.warn("[health] LLM spend report could not read spend_cap_counters:", describeError(spendRead.reason));
+    }
 
     if (recipeRead.status === "fulfilled") {
       const drift = compareRecipes(recipeRead.value, deps.seedRecipes);
@@ -204,6 +247,7 @@ export async function buildConfigReport(deps: ConfigReportDeps): Promise<ConfigR
     recipes,
     providerKeys,
     crons,
+    llmSpend,
     runtime: {
       // A whole number is echoed back; anything else is reported as set
       // but ignored, without repeating the value.

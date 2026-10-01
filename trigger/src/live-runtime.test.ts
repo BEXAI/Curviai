@@ -44,8 +44,10 @@ import {
   canvasDefaults,
   imageModelSeedRows,
   llmModelPrices,
+  llmModelProviders,
   recipeSeedRows,
   sceneDefaults,
+  servesTraffic,
   stillStyle,
   templates,
 } from "@curvi/pipeline/seed";
@@ -65,7 +67,7 @@ import {
   type LiveWiring,
 } from "./live-runtime";
 import { llmModelProviderName } from "./recipes";
-import { buildRuntimeDeps, demoRoutingTable } from "./runtime";
+import { buildRuntimeDeps, DEMO_MODE_NOTICE, demoModeNotice, demoRoutingTable } from "./runtime";
 import {
   runGeneratePack,
   runShot,
@@ -82,6 +84,17 @@ function freshBase() {
   return { registry, routing };
 }
 
+describe("demoModeNotice", () => {
+  it("is set only when neither LLM key is set", () => {
+    const env = (names: string[]) => (name: string) => (names.includes(name) ? "key" : undefined);
+    expect(demoModeNotice(env([]))).toBe(DEMO_MODE_NOTICE);
+    expect(demoModeNotice(env(["GEMINI_API_KEY", "FAL_KEY"]))).toBe(DEMO_MODE_NOTICE);
+    expect(demoModeNotice(env(["OPENAI_API_KEY"]))).toBeUndefined();
+    expect(demoModeNotice(env(["ANTHROPIC_API_KEY"]))).toBeUndefined();
+    expect(demoModeNotice(env(["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]))).toBeUndefined();
+  });
+});
+
 describe("wireLiveProviders", () => {
   it("activates nothing without env keys", () => {
     const { registry, routing } = freshBase();
@@ -94,25 +107,79 @@ describe("wireLiveProviders", () => {
     expect(registry.list()).toHaveLength(0);
   });
 
-  it("routes every active recipe task to its seeded Anthropic model chain when the key is set", () => {
+  it("routes every active recipe task to its seeded Anthropic model chain when only that key is set", () => {
     const { registry, routing } = freshBase();
     const wiring = wireLiveProviders(registry, routing, (name) =>
       name === "ANTHROPIC_API_KEY" ? "key" : undefined,
     );
     expect(wiring.llmLive).toBe(true);
-    // One provider per priced model, each serving every recipe task.
-    for (const model of Object.keys(llmModelPrices)) {
-      const provider = registry.get(llmModelProviderName(model));
-      expect(provider).toBeDefined();
+    // One provider per priced Claude model, each serving every recipe task;
+    // no OpenAI model is registered without its key.
+    for (const [model, provider] of Object.entries(llmModelProviders)) {
+      const registered = registry.get(llmModelProviderName(model));
+      if (provider === "openai") {
+        expect(registered, model).toBeUndefined();
+        continue;
+      }
+      expect(registered, model).toBeDefined();
       for (const recipe of recipeSeedRows) {
-        expect(provider?.supports(recipe.key)).toBe(true);
+        expect(registered?.supports(recipe.key)).toBe(true);
       }
     }
-    for (const recipe of recipeSeedRows.filter((r) => r.active)) {
+    // The serving versions are Claude only, so the default chain is exactly
+    // theirs: the canary versions add no Claude model they lack.
+    for (const recipe of recipeSeedRows.filter(servesTraffic)) {
       expect(routing[recipe.key]).toEqual(
         [recipe.model, ...(recipe.fallbackModels ?? [])].map(llmModelProviderName),
       );
     }
+  });
+
+  it("registers one OpenAI provider per OpenAI model and routes the OpenAI models when only OPENAI_API_KEY is set", () => {
+    const { registry, routing } = freshBase();
+    const wiring = wireLiveProviders(registry, routing, (name) => (name === "OPENAI_API_KEY" ? "key" : undefined));
+    expect(wiring.llmLive).toBe(true);
+    for (const [model, provider] of Object.entries(llmModelProviders)) {
+      const registered = registry.get(llmModelProviderName(model));
+      if (provider === "anthropic") {
+        expect(registered, model).toBeUndefined();
+        continue;
+      }
+      expect(registered?.kind, model).toBe("llm");
+      for (const recipe of recipeSeedRows) {
+        expect(registered?.supports(recipe.key)).toBe(true);
+      }
+    }
+    // A chain drops the models whose key is unset instead of failing.
+    expect(routing.intake_normalizer).toEqual(["openai:gpt-6-luna", "openai:gpt-5.6-terra"]);
+    expect(routing.product_analyzer).toEqual(["openai:gpt-6.1-sol", "openai:gpt-5.6-sol"]);
+    expect(routing.shot_planner).toEqual(["openai:gpt-6.1-sol", "openai:gpt-5.6-sol"]);
+    for (const key of ["copy_generator", "qc_judge", "target_picker", "brand_palette_namer", "question_planner"]) {
+      expect(routing[key], key).toEqual(["openai:gpt-6-luna", "openai:gpt-6.1-sol"]);
+    }
+    for (const chain of Object.values(routing)) {
+      expect(chain.every((name) => registry.get(name) !== undefined || name.startsWith("demo"))).toBe(true);
+    }
+  });
+
+  it("puts the serving chain first and the canary's other models after it when both keys are set", () => {
+    const { registry, routing } = freshBase();
+    wireLiveProviders(registry, routing, (name) =>
+      name === "OPENAI_API_KEY" || name === "ANTHROPIC_API_KEY" ? "key" : undefined,
+    );
+    expect(registry.list().filter((provider) => provider.kind === "llm")).toHaveLength(Object.keys(llmModelPrices).length);
+    expect(routing.intake_normalizer).toEqual([
+      "anthropic:claude-haiku-4-5-20251001",
+      "anthropic:claude-sonnet-5",
+      "openai:gpt-6-luna",
+      "openai:gpt-5.6-terra",
+    ]);
+    expect(routing.brand_palette_namer).toEqual([
+      "anthropic:claude-haiku-4-5-20251001",
+      "anthropic:claude-sonnet-5",
+      "openai:gpt-6-luna",
+      "openai:gpt-6.1-sol",
+    ]);
   });
 
   it("builds the scene plate chain from configured image keys in seed order", () => {

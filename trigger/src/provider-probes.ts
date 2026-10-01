@@ -5,7 +5,8 @@
  * probe() checks that key with a free metadata call (@curvi/ai probe.ts).
  *
  * It reads the same env names and the same seed rows as the live wiring
- * (llmModelPrices, imageModelSeedRows, cutoutModelSeedRows, recipeSeedRows), and
+ * (llmModelPrices, llmModelProviders, imageModelSeedRows, cutoutModelSeedRows,
+ * recipeSeedRows), and
  * a test holds the two lists equal, so the health endpoint and the probe
  * route always describe what a pack would actually run on. Nothing here
  * makes a network call; constructing an adapter is free.
@@ -20,6 +21,7 @@ import {
   GeminiImageProvider,
   OPENAI_API_KEY_ENV,
   OpenaiImageProvider,
+  OpenaiLLMProvider,
   FalCutoutProvider,
   type Provider,
 } from "@curvi/ai";
@@ -28,12 +30,15 @@ import {
   HARMONIZE_TASK,
   SCENE_PLATE_TASK,
   imageModelSeedRows,
+  llmImageTokenMultipliers,
   llmModelPrices,
+  llmModelProviders,
   cutoutModelSeedRows,
   recipeSeedRows,
   type ImageModelSeedRow,
+  type LlmProviderFamily,
 } from "@curvi/pipeline/seed";
-import { llmModelProviderName } from "./recipes";
+import { llmModelProviderName, openaiLlmPriceTable } from "./recipes";
 
 export type ReadEnv = (name: string) => string | undefined;
 type FetchLike = typeof fetch;
@@ -41,7 +46,7 @@ type FetchLike = typeof fetch;
 export type LiveProviderKind = "llm" | "image" | "cutout";
 
 export interface LiveProviderTarget {
-  /** Registry name wireLiveProviders registers, e.g. "anthropic:<model>". */
+  /** Registry name wireLiveProviders registers, e.g. "openai:<model>". */
   name: string;
   kind: LiveProviderKind;
   /** Env var holding the key. A name, never a value. */
@@ -63,6 +68,25 @@ export function llmStages(): string[] {
   return [...new Set(recipeSeedRows.filter((row) => row.active).map((row) => row.stage))];
 }
 
+/** The stages whose active recipe versions list model in their chain or
+ * escalation, so a stage report says which keys can run that stage. */
+export function llmStagesFor(model: string): string[] {
+  return llmStages().filter((stage) =>
+    recipeSeedRows.some(
+      (row) =>
+        row.active &&
+        row.stage === stage &&
+        (row.model === model || (row.fallbackModels ?? []).includes(model) || (row.body.escalation ?? []).includes(model)),
+    ),
+  );
+}
+
+/** Env var holding each LLM provider family's key. */
+export const LLM_KEY_ENV: Record<LlmProviderFamily, string> = {
+  anthropic: ANTHROPIC_API_KEY_ENV,
+  openai: OPENAI_API_KEY_ENV,
+};
+
 const IMAGE_KEY_ENV: Record<ImageModelSeedRow["family"], string> = {
   gemini: GEMINI_API_KEY_ENV,
   bfl: BFL_API_KEY_ENV,
@@ -73,19 +97,38 @@ const IMAGE_KEY_ENV: Record<ImageModelSeedRow["family"], string> = {
 export function liveProviderTargets(readEnv: ReadEnv = readEnvDefault, fetchFn?: FetchLike): LiveProviderTarget[] {
   const targets: LiveProviderTarget[] = [];
 
-  const anthropicKey = readEnv(ANTHROPIC_API_KEY_ENV);
-  const stages = llmStages();
+  // One target per priced LLM model, keyed by its provider family
+  // (llmModelProviders), so the probe covers every model a chain can reach.
+  // A model with no provider or no OpenAI image multiplier is never wired,
+  // so it is not listed either.
   for (const [model, priceTable] of Object.entries(llmModelPrices)) {
+    const family = Object.hasOwn(llmModelProviders, model) ? llmModelProviders[model] : undefined;
+    if (!family) continue;
+    const imageTokenMultiplier = llmImageTokenMultipliers[model];
+    const openaiPrices = openaiLlmPriceTable(priceTable);
+    // An OpenAI model without a seeded multiplier or cached input price is
+    // never wired (live-runtime fails closed), so it is not probed either.
+    const openaiConfig =
+      family === "openai" && imageTokenMultiplier !== undefined && openaiPrices
+        ? { priceTable: openaiPrices, imageTokenMultiplier }
+        : undefined;
+    if (family === "openai" && !openaiConfig) continue;
     const name = llmModelProviderName(model);
+    const envVar = LLM_KEY_ENV[family];
+    const apiKey = readEnv(envVar);
+    let provider: Provider | null = null;
+    if (apiKey) {
+      provider = openaiConfig
+        ? new OpenaiLLMProvider({ name, tasks: [], apiKey, model, ...openaiConfig, fetchFn })
+        : new AnthropicLLMProvider({ name, tasks: [], apiKey, model, priceTable, fetchFn });
+    }
     targets.push({
       name,
       kind: "llm",
-      envVar: ANTHROPIC_API_KEY_ENV,
-      stages,
-      configured: Boolean(anthropicKey),
-      provider: anthropicKey
-        ? new AnthropicLLMProvider({ name, tasks: [], apiKey: anthropicKey, model, priceTable, fetchFn })
-        : null,
+      envVar,
+      stages: llmStagesFor(model),
+      configured: Boolean(apiKey),
+      provider,
     });
   }
 

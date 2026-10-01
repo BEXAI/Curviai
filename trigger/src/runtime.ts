@@ -8,7 +8,8 @@
  * runnable end to end without credentials.
  */
 
-import { InMemoryCapStore, InMemoryCostMeter, processBreakerStore, ProviderRegistry, SpendCaps } from "@curvi/ai";
+import { InMemoryCapStore, processBreakerStore, ProviderRegistry, SpendCaps } from "@curvi/ai";
+import type { ProviderQuotaInfo } from "@curvi/ai";
 import type { CapStore, CostAwareProvider, ProviderRequest, ProviderResponse, RoutingTable } from "@curvi/ai";
 import {
   buildProductReferenceFromEncoded,
@@ -33,6 +34,7 @@ import { LiveShotGenerator, makeR2MediaLoader, wireLiveProviders } from "./live-
 import { canvasSizeFor, encodeForSpec, stillQcErosion } from "./shot-outputs";
 import { parseShotConcurrency } from "./shot-concurrency";
 import type { DropWorkspace } from "./drops";
+import { LlmMonitorMeter, processLlmMonitor, type LlmMonitor } from "./llm-monitor";
 import { SpendAlertNotifier } from "./spend-alerts";
 import { processQuotaNotifier, type QuotaEventWriter } from "./provider-quota";
 import {
@@ -349,6 +351,11 @@ export interface RuntimeDepsOptions {
   /** Where provider_quota_exhausted events rows go (the db runtime); logs
    * only without one. */
   quotaEventDb?: QuotaEventWriter;
+  /** LLM usage counters and the OpenAI founder alerts (docs/phases/
+   * PHASE_17.md workstream 6). The db runtime passes one on the shared
+   * counters table; without it a process wide monitor keeps in memory
+   * counters and alerts by log line. */
+  llmMonitor?: LlmMonitor;
 }
 
 const runtimeScope = globalThis as typeof globalThis & { __curviRuntimeSpendAlerts?: SpendAlertNotifier };
@@ -381,6 +388,16 @@ export function reportAiInternalError(err: unknown, context: string): void {
 export const DEMO_MODE_NOTICE =
   "Running in demo mode with in memory providers. Set provider API keys and database env to run against real services.";
 
+/** The env vars that each turn the recipes live: OpenAI or Anthropic
+ * (docs/phases/PHASE_17.md workstream 3). */
+export const LLM_KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"] as const;
+
+/** The pack's demo notice: set only when no LLM key is set, since either
+ * provider runs every recipe. */
+export function demoModeNotice(readEnv: (name: string) => string | undefined = optionalEnv): string | undefined {
+  return LLM_KEY_ENVS.some((name) => readEnv(name) !== undefined) ? undefined : DEMO_MODE_NOTICE;
+}
+
 export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   const registry = new ProviderRegistry();
   registry.register(new DemoLlmProvider());
@@ -393,10 +410,14 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   });
   const routing = demoRoutingTable();
   const onSpendAlert = opts.onSpendAlert ?? defaultSpendAlert();
+  const llmMonitor = opts.llmMonitor ?? processLlmMonitor();
+  const quotaNotifier = processQuotaNotifier(opts.quotaEventDb);
   const ai: PipelineDeps["ai"] = {
     registry,
     routing,
-    meter: new InMemoryCostMeter(),
+    // Every attempt is metered in memory as before; LLM attempts also feed
+    // the usage counters, the per call log line and the founder alerts.
+    meter: new LlmMonitorMeter(llmMonitor),
     // Shared by every pack run in this process, so a provider that is
     // failing or out of quota is skipped by the next pack too, and the web
     // health endpoint and new pack preflight read the same state.
@@ -404,7 +425,12 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     caps,
     onCapAlert: onSpendAlert,
     onInternalError: reportAiInternalError,
-    onProviderQuota: processQuotaNotifier(opts.quotaEventDb).onProviderQuota,
+    onProviderQuota: async (info: ProviderQuotaInfo) => {
+      await quotaNotifier.onProviderQuota(info);
+      // The founder email runs in the background: the router awaits this
+      // hook before it fails over, and a slow Resend must not hold that.
+      llmMonitor.onProviderQuotaInBackground(info);
+    },
   };
   const wiring = wireLiveProviders(registry, routing);
   // Cutouts are cached in R2 per workspace and exact input bytes, so the pack

@@ -25,12 +25,16 @@ import {
   callWithFailover,
   hasProviderErrorCode,
   isProviderChainUnavailable,
+  isLlmResult,
   isTransientChainFailure,
   providerErrorsOf,
   type BreakerStore,
   type CallWithFailoverOptions,
   type CapsHook,
   type CostMeter,
+  type LlmContentBlock,
+  type LlmImageMediaType,
+  type LlmRequest,
   type ProviderQuotaInfo,
   type ProviderRegistry,
   type RoutingTable,
@@ -166,10 +170,9 @@ import {
   CUTOUT_TASK,
   qcJudgePolicy,
   questionSet,
-  recipeSeedRows,
+  servingRecipeSeedRow,
   SCENE_PLATE_TASK,
   sceneCountOptions,
-  type RecipeModelOptions,
   type RecipeRow,
   type TierKey,
 } from "@curvi/pipeline/seed";
@@ -193,6 +196,7 @@ import {
   seedRecipe,
   recipeVariantsOf,
   seedJobRecipes,
+  standbySeedRecipes,
   type JobRecipes,
   type RecipeResolver,
   type ResolvedRecipe,
@@ -255,7 +259,7 @@ const PACK_CAP_REACHED =
  * table through PipelineDeps.recipes; this is the seed the demo wiring and
  * the fallback use. */
 export function activeRecipe(stage: RecipeRow["stage"]): RecipeRow {
-  const recipe = recipeSeedRows.find((r) => r.stage === stage && r.active);
+  const recipe = servingRecipeSeedRow(stage);
   if (!recipe) {
     throw new Error(`No active recipe seeded for stage "${stage}"`);
   }
@@ -1273,24 +1277,7 @@ export interface GeneratePackSummary {
   error?: string;
 }
 
-/** Input shape sent to LLM providers, compatible with the Anthropic adapter.
- * No model field: each provider in the recipe's failover chain runs its own
- * model, so a request pinned to the primary would break the fallbacks. */
-export interface LlmTaskInput {
-  system: string;
-  /** Content is a string, or an array of vision and text blocks. */
-  messages: Array<{ role: "user" | "assistant"; content: unknown }>;
-  /** Forced structured output tool definitions, when a schema is enforced. */
-  tools?: unknown[];
-  toolChoice?: unknown;
-  /** Output token budget from the recipe body; the adapter default otherwise. */
-  maxTokens?: number;
-  /** Thinking and effort per model id from the recipe body; each provider
-   * in the chain sends only its own model's entry. */
-  modelOptions?: Record<string, RecipeModelOptions>;
-}
-
-function sniffImageMime(bytes: Buffer): string {
+function sniffImageMime(bytes: Buffer): LlmImageMediaType {
   if (bytes.length > 3 && bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
   if (bytes.length > 2 && bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
   if (bytes.length > 11 && bytes.toString("ascii", 8, 12) === "WEBP") return "image/webp";
@@ -1324,8 +1311,13 @@ export function intakeImages(
   });
 }
 
+/** A provider neutral image block for a base64 encoded image. */
+function imageBlock(mediaType: LlmImageMediaType, bytes: Buffer): LlmContentBlock {
+  return { type: "image", mediaType, base64: bytes.toString("base64") };
+}
+
 /**
- * Anthropic vision blocks for the uploaded photos, so intake and the product
+ * Vision blocks for the uploaded photos, so intake and the product
  * analyzer judge the actual pixels instead of metadata. Empty when the deps
  * carry no media loader (demo mode) or nothing loads. Only keys under the
  * job's own workspace prefix are ever loaded (Update.md 4.1): the loader
@@ -1336,7 +1328,7 @@ export async function visionBlocks(
   images: GeneratePackInput["images"],
   workspaceId: string,
   limit = ANALYZE_PHOTO_LIMIT,
-): Promise<unknown[]> {
+): Promise<LlmContentBlock[]> {
   return (await visionPhotos(deps, images, workspaceId, limit)).map((photo) => photo.block);
 }
 
@@ -1347,11 +1339,11 @@ async function visionPhotos(
   images: GeneratePackInput["images"],
   workspaceId: string,
   limit = ANALYZE_PHOTO_LIMIT,
-): Promise<Array<{ mediaId: string; block: unknown }>> {
+): Promise<Array<{ mediaId: string; block: LlmContentBlock }>> {
   if (!deps.loadMedia) {
     return [];
   }
-  const photos: Array<{ mediaId: string; block: unknown }> = [];
+  const photos: Array<{ mediaId: string; block: LlmContentBlock }> = [];
   const owned = images.filter((image) => isWorkspaceObjectKey(workspaceId, image.mediaId));
   if (owned.length < images.length) {
     console.warn(`[runner] skipped ${images.length - owned.length} photo keys outside workspace ${workspaceId}`);
@@ -1365,13 +1357,7 @@ async function visionPhotos(
     // per image size limit. Fall back to the original if decoding fails.
     const normalized = await encodeVisionJpeg(bytes).catch(() => bytes);
     const mediaType = normalized === bytes ? sniffImageMime(bytes) : "image/jpeg";
-    photos.push({
-      mediaId: image.mediaId,
-      block: {
-        type: "image",
-        source: { type: "base64", media_type: mediaType, data: normalized.toString("base64") },
-      },
-    });
+    photos.push({ mediaId: image.mediaId, block: imageBlock(mediaType, normalized) });
   }
   return photos;
 }
@@ -1767,14 +1753,12 @@ async function askTargetPicker(
   if (!sheet) {
     return null;
   }
-  const blocks: unknown[] = [
-    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: sheet.buffer.toString("base64") } },
-  ];
+  const blocks: LlmContentBlock[] = [imageBlock("image/jpeg", sheet.buffer)];
   if (deps.loadMedia && isWorkspaceObjectKey(input.workspaceId, request.mediaId)) {
     const bytes = await deps.loadMedia(request.mediaId).catch(() => null);
     const photo = bytes && bytes.length > 0 ? await encodeVisionJpeg(bytes, PICKER_PHOTO_MAX_SIDE).catch(() => null) : null;
     if (photo) {
-      blocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: photo.toString("base64") } });
+      blocks.push(imageBlock("image/jpeg", photo));
     }
   }
   const payload = {
@@ -1890,38 +1874,16 @@ export interface LlmCall<T> {
   costMicros: number;
 }
 
-/** Accepts either a raw JSON object (mock and demo providers) or an
- * Anthropic adapter shaped output with toolUse or text. Plain text answers
- * often wrap JSON in markdown fences or prose, so parsing falls back to the
- * fenced block, then the outermost object literal. */
-function extractJsonOutput(output: unknown): unknown {
-  if (output && typeof output === "object") {
-    const o = output as { toolUse?: { input?: unknown } | null; text?: string | null };
-    if (o.toolUse && o.toolUse.input !== undefined) {
-      return o.toolUse.input;
-    }
-    if (typeof o.text === "string") {
-      const candidates = [o.text];
-      const fenced = o.text.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (fenced) {
-        candidates.push(fenced[1]);
-      }
-      const start = o.text.indexOf("{");
-      const end = o.text.lastIndexOf("}");
-      if (start >= 0 && end > start) {
-        candidates.push(o.text.slice(start, end + 1));
-      }
-      for (const candidate of candidates) {
-        try {
-          return JSON.parse(candidate);
-        } catch {
-          // Try the next candidate.
-        }
-      }
-      return o.text;
-    }
+/** The answer in a provider's output: an adapter's LlmResult json, or the
+ * output itself from a test or demo provider that returns the answer
+ * directly. */
+function answerOf(output: unknown): unknown {
+  if (!isLlmResult(output)) {
+    return output;
   }
-  return output;
+  // A reply with no JSON keeps its text, so a failed answer is still
+  // diagnosable from the raw value.
+  return output.json ?? (output.text !== "" ? output.text : null);
 }
 
 /** The recipe's models as a provider chain, keeping the registered ones.
@@ -1929,6 +1891,49 @@ function extractJsonOutput(output: unknown): unknown {
  * call then takes the routing table's chain for the recipe key. */
 export function recipeChain(ai: Pick<AiDeps, "registry">, recipe: ResolvedRecipe): string[] {
   return recipe.models.map(llmModelProviderName).filter((name) => ai.registry.get(name) !== undefined);
+}
+
+/** Recipe versions already reported as standing in, so the warning is
+ * logged once per process rather than on every call. */
+const reportedStandbys = new Set<string>();
+
+/**
+ * The recipe a call runs on: the job's own, unless none of its models has a
+ * live provider while an active standby version of the same key does (only
+ * OPENAI_API_KEY set and the job on a Claude serving version, or the
+ * reverse). The standby then runs with its own prompt, output budget, effort
+ * per model and image detail, never the body written for the other
+ * provider's models. Unchanged in demo mode, where no version is live.
+ */
+export function runnableRecipe(ai: Pick<AiDeps, "registry">, recipe: ResolvedRecipe): ResolvedRecipe {
+  if (recipeChain(ai, recipe).length > 0) {
+    return recipe;
+  }
+  const standby = standbySeedRecipes(recipe).find((candidate) => recipeChain(ai, candidate).length > 0);
+  if (!standby) {
+    return recipe;
+  }
+  const report = `${recipe.key}:${recipe.version}:${standby.version}`;
+  if (!reportedStandbys.has(report)) {
+    reportedStandbys.add(report);
+    console.warn(
+      `[runner] recipe ${recipe.key} v${recipe.version} has no live model; running v${standby.version}, whose models are live`,
+    );
+  }
+  return standby;
+}
+
+/**
+ * Image blocks with the recipe's seeded resolution hint (body.imageDetail)
+ * applied wherever a block does not already carry one. Providers that take
+ * no hint ignore it, so only OpenAI requests change.
+ */
+export function withImageDetail(
+  blocks: readonly LlmContentBlock[],
+  detail: "low" | "high" | undefined,
+): LlmContentBlock[] {
+  if (!detail) return [...blocks];
+  return blocks.map((block) => (block.type === "image" && !block.detail ? { ...block, detail } : block));
 }
 
 /** One recipe call through @curvi/ai with the answer parsed against the
@@ -1940,46 +1945,40 @@ export async function llmJson<T>(
   schema: { safeParse: (data: unknown) => { success: boolean; data?: T } },
   payload: unknown,
   ctx: { jobId: string; workspaceId: string; stepId: string },
-  contentBlocks?: unknown[],
+  contentBlocks?: LlmContentBlock[],
   outputSchema?: z.ZodType,
 ): Promise<LlmCall<T>> {
+  recipe = runnableRecipe(ai, recipe);
   const text = JSON.stringify(payload);
-  const content: unknown =
-    contentBlocks && contentBlocks.length > 0 ? [...contentBlocks, { type: "text", text }] : text;
-  const input: LlmTaskInput = {
+  const input: LlmRequest = {
     system: recipe.system,
-    messages: [{ role: "user", content }],
+    messages: [
+      { role: "user", content: [...withImageDetail(contentBlocks ?? [], recipe.imageDetail), { type: "text", text }] },
+    ],
   };
   if (recipe.maxTokens !== undefined) {
-    input.maxTokens = recipe.maxTokens;
+    input.maxOutputTokens = recipe.maxTokens;
   }
   if (recipe.modelOptions !== undefined) {
     input.modelOptions = recipe.modelOptions;
   }
   const call = (strict: boolean) => {
     if (outputSchema) {
-      // Structured output per plan 5.2. With strict tool use the API
-      // guarantees the tool input matches the schema (structured outputs
-      // docs, checked 2026-09-28); without it the model can emit a shape
-      // that fails safeParse, which is how intake failed in production.
-      // tool_choice stays "auto": Claude Opus 5.5, the seeded fallback of
-      // analyze and plan, answers 400 to a forced "tool" or "any" choice
-      // (define tools docs, forcing tool use, checked 2026-09-29), so a
-      // forced choice would make the failover step fail every time. The tool
-      // description tells the model to call it, and a reply without the tool
-      // call is retried once below.
-      input.tools = [
-        {
-          name: "emit_result",
-          description:
-            "Always call this tool exactly once to return the task result, as structured data matching the schema exactly. Do not answer in plain text.",
-          input_schema: strict ? strictToolSchema(outputSchema) : z.toJSONSchema(outputSchema),
-          ...(strict ? { strict: true } : {}),
-        },
-      ];
-      input.toolChoice = { type: "auto" };
+      // Structured output per plan 5.2. With a strict schema the API
+      // guarantees the answer matches it (structured outputs docs, checked
+      // 2026-09-28); without it the model can emit a shape that fails
+      // safeParse, which is how intake failed in production. Each adapter
+      // turns this into its provider's structured output (the Anthropic
+      // adapter keeps tool_choice auto, so a model can still answer without
+      // the tool; that reply comes back with json null and is asked again
+      // once below).
+      input.output = {
+        name: "emit_result",
+        schema: strict ? strictToolSchema(outputSchema) : z.toJSONSchema(outputSchema),
+        strict,
+      };
     }
-    return callWithFailover<LlmTaskInput, unknown>(
+    return callWithFailover<LlmRequest, unknown>(
       ai.registry,
       ai.routing,
       ai.meter,
@@ -2005,7 +2004,7 @@ export async function llmJson<T>(
     result = await call(usedStrict);
   } catch (err) {
     // A 400 on the strict request means the API refused the schema or the
-    // strict flag for this model. Retry once as a plain (non strict) tool call, so
+    // strict flag for this model. Retry once without strict, so
     // a schema the grammar compiler rejects never takes packs down.
     if (!outputSchema || !isBadRequest(err)) {
       throw err;
@@ -2017,7 +2016,7 @@ export async function llmJson<T>(
   }
 
   const parseOutput = (output: unknown) => {
-    const extracted = extractJsonOutput(output);
+    const extracted = answerOf(output);
     let attempt = schema.safeParse(extracted);
     if (!attempt.success) {
       // Some models return nested arrays or objects as JSON strings in tool
@@ -2030,11 +2029,11 @@ export async function llmJson<T>(
     return { extracted, attempt };
   };
   let { extracted: raw, attempt: parsed } = parseOutput(result.output);
-  // With tool_choice auto the model can, rarely, answer in text without
-  // calling the tool. When that text does not parse either, ask once more;
-  // the first answer's spend stays on the books.
-  if (!parsed.success && outputSchema && missedToolCall(result.output)) {
-    console.warn(`[runner] ${recipe.key} answered without calling emit_result for job ${ctx.jobId}, asking once more`);
+  // A model can, rarely, answer without the structured output (with no
+  // JSON at all, json is null). Ask once more; the first answer's spend
+  // stays on the books.
+  if (!parsed.success && outputSchema && missedOutput(result.output)) {
+    console.warn(`[runner] ${recipe.key} answered without the structured output for job ${ctx.jobId}, asking once more`);
     const missedMicros = result.costMicros + result.billedFailureMicros;
     strictFailureMicros += missedMicros;
     result = await call(usedStrict);
@@ -2049,9 +2048,9 @@ export async function llmJson<T>(
       .slice(0, 8)
       .map((i) => `${(i.path ?? []).join(".") || "(root)"}:${i.code ?? "invalid"}`)
       .join(", ");
-    const stopReason = (result.output as { stopReason?: unknown } | null)?.stopReason;
+    const finish = isLlmResult(result.output) ? result.output.finish : "unknown";
     console.warn(
-      `[runner] ${recipe.key} output failed schema validation for job ${ctx.jobId} (stop_reason ${String(stopReason ?? "unknown")}): ${where || "no issue detail"}`,
+      `[runner] ${recipe.key} output failed schema validation for job ${ctx.jobId} (finish ${finish}): ${where || "no issue detail"}`,
     );
   }
   return {
@@ -2078,13 +2077,10 @@ export function isBadRequest(err: unknown): boolean {
   return /responded 400\b/.test(errorText(err));
 }
 
-/** True for an Anthropic adapter shaped output with no tool call. Raw JSON
- * outputs (mock and demo providers) have no toolUse field and never count. */
-function missedToolCall(output: unknown): boolean {
-  if (!output || typeof output !== "object" || !("toolUse" in output)) {
-    return false;
-  }
-  return (output as { toolUse?: unknown }).toolUse === null || (output as { toolUse?: unknown }).toolUse === undefined;
+/** True for an adapter's LlmResult that carried no JSON answer. Outputs
+ * from test and demo providers are the answer itself and never count. */
+function missedOutput(output: unknown): boolean {
+  return isLlmResult(output) && (output.json === null || output.json === undefined);
 }
 
 /** Copies a value, replacing string leaves that hold a JSON object or array
@@ -2708,11 +2704,14 @@ export const JUDGE_IMAGE_MAX_SIDE = 768;
  * reference when the generation has one. Empty when the shipped image cannot
  * be encoded, and the judge then runs on the metrics alone.
  */
-export async function judgeImageBlocks(shipped: RawImage, reference: RawImage | undefined): Promise<unknown[]> {
-  const block = async (image: RawImage): Promise<unknown | null> => {
+export async function judgeImageBlocks(
+  shipped: RawImage,
+  reference: RawImage | undefined,
+): Promise<LlmContentBlock[]> {
+  const block = async (image: RawImage): Promise<LlmContentBlock | null> => {
     try {
       const jpeg = await encodeVisionJpeg(await encodeJpeg(image), JUDGE_IMAGE_MAX_SIDE);
-      return { type: "image", source: { type: "base64", media_type: "image/jpeg", data: jpeg.toString("base64") } };
+      return imageBlock("image/jpeg", jpeg);
     } catch (err) {
       console.warn("[runner] could not encode an image for the QC judge", errorText(err));
       return null;

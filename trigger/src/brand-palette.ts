@@ -91,7 +91,7 @@ export async function runBrandPalette(deps: PipelineDeps, args: BrandPaletteArgs
       PaletteNaming,
       paletteNamingPayload(reading),
       { jobId: requestId, workspaceId, stepId: "brand:palette" },
-      [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: image.toString("base64") } }],
+      [{ type: "image", mediaType: "image/jpeg", base64: image.toString("base64") }],
       PaletteNaming,
     );
     run.costMicros += answer.costMicros;

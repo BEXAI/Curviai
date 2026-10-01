@@ -16,6 +16,8 @@
     "./db-store": "./src/db-store.ts",
     "./state": "./src/state.ts",
     "./provider-probes": "./src/provider-probes.ts",
+    "./llm-monitor": "./src/llm-monitor.ts",
+    "./cap-store": "./src/cap-store.ts",
     "./shot-concurrency": "./src/shot-concurrency.ts",
     "./preflight": "./src/preflight.ts",
     "./brand-palette": "./src/brand-palette.ts",
