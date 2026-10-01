@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { registrationConversion, sendAdsConversion } from "@/lib/ads-conversions";
 import { postAuthDestination, postAuthParamsFrom, type AuthErrorCode } from "@/lib/safe-next";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
@@ -35,17 +36,25 @@ export async function GET(request: NextRequest) {
   }
   if (code) {
     let userId: string | null = null;
+    let user: { id: string; created_at?: string | null } | null = null;
     try {
       const { data, error } = await supabase.auth.exchangeCodeForSession(code);
       if (error) {
         return toLogin("link_invalid");
       }
-      userId = data?.user?.id ?? null;
+      user = data?.user ?? null;
+      userId = user?.id ?? null;
     } catch {
       return toLogin("unavailable");
     }
     if (userId && isDbMode()) {
       await recordTermsAcceptanceSafely(getDb(), { userId, source: "signup_callback", headers: request.headers });
+    }
+    // OpenAI Ads "Registration Completed", only for a new account and only
+    // with cookie consent (lib/ads-conversions.ts). Never blocks the sign in.
+    const registration = user ? registrationConversion(user, `${url.origin}/signup`) : null;
+    if (registration) {
+      await sendAdsConversion(registration, { cookieHeader: request.headers.get("cookie") });
     }
   }
   return NextResponse.redirect(new URL(next, url.origin));
