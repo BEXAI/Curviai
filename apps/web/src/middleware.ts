@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { optionalEnv } from "@/lib/env";
+import { publicOrigin } from "@/lib/http/public-origin";
 import { postAuthDestination, postAuthParamsFrom } from "@/lib/safe-next";
 
 /**
@@ -51,7 +52,9 @@ export async function middleware(request: NextRequest) {
     return redirect;
   }
 
-  const { pathname, search, origin } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
+  // nextUrl carries the container address behind the proxy (lib/http/public-origin.ts).
+  const origin = publicOrigin(request);
   const isApp = pathname === "/app" || pathname.startsWith("/app/");
 
   if (!user && isApp) {

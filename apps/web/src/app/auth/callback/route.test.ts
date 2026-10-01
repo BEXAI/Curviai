@@ -21,6 +21,7 @@ function location(response: Response): URL {
 }
 
 beforeEach(() => {
+  vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://curvi.ai");
   supabase = { auth: { exchangeCodeForSession: vi.fn<Exchange>(async () => ({ error: null })) } };
 });
 

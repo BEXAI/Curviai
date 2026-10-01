@@ -20,6 +20,7 @@
  * get JSON.
  */
 
+import { publicOrigin } from "@/lib/http/public-origin";
 import { Readable } from "node:stream";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { NextResponse } from "next/server";
@@ -53,7 +54,7 @@ async function openObject(key: string): Promise<Readable | null> {
  * for the code; a fetch still gets the JSON answer. */
 function refuse(request: Request, jobId: string, code: PackZipRefusal, error: string, status: number): Response {
   if (isPageNavigation(request)) {
-    return NextResponse.redirect(new URL(packZipRefusalPath(jobId, code), request.url), 303);
+    return NextResponse.redirect(new URL(packZipRefusalPath(jobId, code), publicOrigin(request)), 303);
   }
   return NextResponse.json({ error }, { status });
 }

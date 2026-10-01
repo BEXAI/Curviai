@@ -37,6 +37,7 @@ beforeEach(() => {
   refreshSession = false;
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://project.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon");
+  vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://curvi.ai");
 });
 
 afterEach(() => {

@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { publicOrigin } from "@/lib/http/public-origin";
 import { sameOriginOrRefuse } from "@/lib/http/same-origin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -13,5 +14,5 @@ export async function POST(request: NextRequest) {
   if (supabase) {
     await supabase.auth.signOut();
   }
-  return NextResponse.redirect(new URL("/", new URL(request.url).origin), { status: 303 });
+  return NextResponse.redirect(new URL("/", publicOrigin(request)), { status: 303 });
 }

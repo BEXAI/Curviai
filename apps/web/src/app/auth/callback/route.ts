@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { publicOrigin } from "@/lib/http/public-origin";
 import { registrationConversion, sendAdsConversion } from "@/lib/ads-conversions";
 import { postAuthDestination, postAuthParamsFrom, type AuthErrorCode } from "@/lib/safe-next";
 import { isDbMode } from "@/lib/services";
@@ -19,11 +20,13 @@ import { isFreshVerification, welcomePath } from "@/lib/verification";
  */
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);
+  // Behind the proxy the request URL carries the container address; redirects use the public one.
+  const origin = publicOrigin(request);
   const code = url.searchParams.get("code");
-  const next = postAuthDestination(postAuthParamsFrom(url.searchParams), url.origin);
+  const next = postAuthDestination(postAuthParamsFrom(url.searchParams), origin);
 
   const toLogin = (error: AuthErrorCode) => {
-    const login = new URL("/login", url.origin);
+    const login = new URL("/login", origin);
     login.searchParams.set("error", error);
     if (next !== "/app") {
       login.searchParams.set("next", next);
@@ -53,14 +56,14 @@ export async function GET(request: NextRequest) {
     }
     // OpenAI Ads "Registration Completed", only for a new account and only
     // with cookie consent (lib/ads-conversions.ts). Never blocks the sign in.
-    const registration = user ? registrationConversion(user, `${url.origin}/signup`) : null;
+    const registration = user ? registrationConversion(user, `${origin}/signup`) : null;
     if (registration) {
       await sendAdsConversion(registration, { cookieHeader: request.headers.get("cookie") });
     }
     // A link that just verified the email goes to the welcome page first.
     if (isFreshVerification(user)) {
-      return NextResponse.redirect(new URL(welcomePath(next), url.origin));
+      return NextResponse.redirect(new URL(welcomePath(next), origin));
     }
   }
-  return NextResponse.redirect(new URL(next, url.origin));
+  return NextResponse.redirect(new URL(next, origin));
 }
