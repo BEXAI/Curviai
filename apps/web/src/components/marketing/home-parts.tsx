@@ -217,13 +217,30 @@ function visualFor(label: string): PackVisual {
 const checkerboard =
   "bg-[conic-gradient(#e9ecf1_0_25%,#ffffff_0_50%,#e9ecf1_0_75%,#ffffff_0)] bg-[length:0.75rem_0.75rem]";
 
+/** Real files from one Curvi pack (a pink candle), shown where a pack has that kind of file. */
+const PACK_PHOTO = "/home/pack";
+
+function PackPhoto({ src, alt, className }: { src: string; alt: string; className?: string }) {
+  return (
+    <Swatch className={className}>
+      <img src={`${PACK_PHOTO}/${src}`} alt={alt} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+    </Swatch>
+  );
+}
+
 function PackDrawing({ visual }: { visual: PackVisual }) {
   switch (visual) {
     case "main": {
       return (
         <Swatch className="aspect-square w-full max-w-[16rem] bg-white">
-          <span className="absolute inset-[8%] rounded-md border border-dashed border-teal-brand/70" />
-          <ProductGlyph className="w-[42%]" />
+          <img
+            src={`${PACK_PHOTO}/amazon-main.webp`}
+            alt="Amazon main image of a pink candle on pure white"
+            loading="lazy"
+            decoding="async"
+            className="h-full w-full object-contain"
+          />
+          <span className="absolute inset-[6.5%] rounded-md border border-dashed border-teal-brand/70" />
         </Swatch>
       );
     }
@@ -245,30 +262,28 @@ function PackDrawing({ visual }: { visual: PackVisual }) {
       );
     case "cutout":
       return (
-        <Swatch className={cn("aspect-square w-16", checkerboard)}>
-          <ProductGlyph className="w-6" />
+        <Swatch className={cn("aspect-square w-20 p-1", checkerboard)}>
+          <img
+            src={`${PACK_PHOTO}/cutout.webp`}
+            alt="Transparent cutout of the candle"
+            loading="lazy"
+            decoding="async"
+            className="h-full w-full object-contain"
+          />
         </Swatch>
       );
     case "sweep":
       return (
         <span className="flex gap-2">
-          <Swatch className="aspect-square w-11 bg-gradient-to-b from-[#f1f2f5] to-[#b9bec9] sm:w-14">
-            <ProductGlyph className="w-5" />
-          </Swatch>
-          <Swatch className="aspect-square w-11 bg-gradient-to-b from-wine-500 to-wine-900 sm:w-14">
-            <ProductGlyph className="w-5" />
-          </Swatch>
+          <PackPhoto src="sweep-gray.webp" alt="Candle on a gray studio sweep" className="aspect-square w-14 sm:w-20" />
+          <PackPhoto src="sweep-brand.webp" alt="Candle on a brand color sweep" className="aspect-square w-14 sm:w-20" />
         </span>
       );
     case "lifestyle":
       return (
         <span className="grid w-full grid-cols-2 gap-2">
-          <Swatch className="aspect-[4/3] bg-[radial-gradient(circle_at_30%_30%,#f6d9b8,#a8674a_60%,var(--color-wine-950))]">
-            <ProductGlyph className="w-[22%]" />
-          </Swatch>
-          <Swatch className="aspect-[4/3] bg-[radial-gradient(circle_at_70%_20%,#c8f1ea,#2f8f84_55%,#0f2a2e)]">
-            <ProductGlyph className="w-[22%]" />
-          </Swatch>
+          <PackPhoto src="lifestyle-warm.webp" alt="Candle in a warm lifestyle scene" className="aspect-[4/3]" />
+          <PackPhoto src="lifestyle-table.webp" alt="Candle on a table in a lifestyle scene" className="aspect-[4/3]" />
         </span>
       );
     case "infographic":
@@ -294,9 +309,7 @@ function PackDrawing({ visual }: { visual: PackVisual }) {
       );
     case "social":
       return (
-        <Swatch className="aspect-square w-16 bg-[linear-gradient(135deg,var(--color-wine-950),var(--color-wine-700)_55%,var(--color-teal-brand))]">
-          <ProductGlyph className="w-6" />
-        </Swatch>
+        <PackPhoto src="social.webp" alt="Square social post of the candle" className="aspect-square w-20" />
       );
     case "file":
       return <Swatch className="aspect-square w-16 bg-white/10 ring-1 ring-inset ring-white/15" />;
