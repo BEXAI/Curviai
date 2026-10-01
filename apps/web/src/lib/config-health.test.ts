@@ -76,6 +76,29 @@ describe("buildConfigReport without a database", () => {
     expect(JSON.stringify(report)).not.toContain("secret-");
   });
 
+  it.each([
+    [["OPENAI_API_KEY"], false],
+    [["ANTHROPIC_API_KEY"], false],
+    [["OPENAI_API_KEY", "ANTHROPIC_API_KEY"], false],
+    [[], true],
+  ])("with LLM keys %j warns about the text stages: %s", async (llmKeys, warns) => {
+    const readEnv = keysEnv(["GEMINI_API_KEY", "FAL_KEY", ...llmKeys]);
+    const report = await buildConfigReport(baseDeps({ readEnv, providerTargets: liveProviderTargets(readEnv) }));
+    const llm = report.warnings.filter((w) => w.code === "no_llm_provider");
+    expect(llm).toHaveLength(warns ? 1 : 0);
+    for (const stage of report.providerKeys.filter((s) => s.kind === "llm")) {
+      expect(stage.ready, stage.stage).toBe(!warns);
+    }
+    if (warns) {
+      // One warning that names each uncovered stage and both keys, never
+      // only Anthropic.
+      expect(llm[0].message).toBe(
+        "No model key is set for the intake, copy, qc, pick, brand, question, analyze and plan stages. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to run them live.",
+      );
+    }
+    expect(JSON.stringify(report)).not.toContain("secret-");
+  });
+
   it("reports shot concurrency, an invalid value and memory near the limit", async () => {
     const readEnv = keysEnv(ALL_KEYS, { CURVI_SHOT_CONCURRENCY: "4" });
     const ok = await buildConfigReport(

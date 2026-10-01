@@ -566,7 +566,17 @@ const RULES: readonly Rule[] = [
   // Provider safety refusals (content_blocked in packages/ai adapters).
   [
     "contentBlocked",
-    has("content_blocked", "declined", "blocked the prompt", "stop_reason refusal", "moderat", "safety system"),
+    has(
+      "content_blocked",
+      "declined",
+      "blocked the prompt",
+      "stop_reason refusal",
+      // An OpenAI refusal output part (PHASE_17 workstream 2).
+      "refused the request",
+      "refusal output",
+      "moderat",
+      "safety system",
+    ),
   ],
   // Our configuration, keys and accounts.
   [
@@ -590,6 +600,12 @@ const RULES: readonly Rule[] = [
         "maxcostmicros",
         "no active recipe",
         "not configured",
+        // OpenAI billing answers (HTTP 429 with these error codes): our
+        // account is out of credit or over a spend limit, never busy.
+        "credit_balance_exhausted",
+        "spend_limit_exceeded",
+        "usage_limit_exceeded",
+        "insufficient_quota",
       ].some((n) => r.includes(n)),
   ],
   // Runner bookkeeping that should never happen (trigger/src/state.ts).

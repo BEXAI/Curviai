@@ -1,5 +1,6 @@
 export * from "./shared";
 export * from "./anthropicLLM";
+export * from "./openaiLLM";
 export * from "./geminiImage";
 export * from "./bflFlux";
 export * from "./openaiImage";

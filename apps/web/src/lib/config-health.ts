@@ -112,8 +112,26 @@ function describeError(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 }
 
+/** The warning for LLM stages no set key covers. The code stays
+ * no_llm_provider; the message names the stages and the keys that would
+ * cover them. */
+function llmStageWarning(missing: StageKeyReport[]): HealthWarning {
+  const stages = missing.map((stage) => stage.stage);
+  const keys = [...new Set(missing.flatMap((stage) => stage.keys.map((key) => key.envVar)))].sort();
+  const one = stages.length === 1;
+  return {
+    code: "no_llm_provider",
+    message: `No model key is set for the ${joinWords(stages)} ${one ? "stage" : "stages"}. Set ${joinWords(keys, "or")} to run ${one ? "it" : "them"} live.`,
+  };
+}
+
+function joinWords(words: readonly string[], conjunction = "and"): string {
+  if (words.length <= 1) return words.join("");
+  return `${words.slice(0, -1).join(", ")} ${conjunction} ${words[words.length - 1]}`;
+}
+
 const STAGE_KIND_WARNINGS: Record<StageKeyReport["kind"], HealthWarning> = {
-  llm: { code: "no_llm_provider", message: "No Anthropic key is set, so the text stages have no live model." },
+  llm: { code: "no_llm_provider", message: "No OpenAI or Anthropic key is set, so the text stages have no live model." },
   image: { code: "no_image_provider", message: "No image provider key is set (Gemini, BFL or OpenAI)." },
   cutout: { code: "no_cutout_provider", message: "No fal key (FAL_KEY) is set, so the cutout stage has no live provider." },
 };
@@ -130,9 +148,11 @@ export async function buildConfigReport(deps: ConfigReportDeps): Promise<ConfigR
 
   const providerKeys = stageKeyReport(deps.providerTargets);
   for (const kind of ["llm", "image", "cutout"] as const) {
-    if (providerKeys.some((stage) => stage.kind === kind && !stage.ready)) {
-      warnings.push(STAGE_KIND_WARNINGS[kind]);
-    }
+    const missing = providerKeys.filter((stage) => stage.kind === kind && !stage.ready);
+    if (missing.length === 0) continue;
+    // An LLM stage runs on any model in its chains, OpenAI or Claude, so the
+    // warning names each stage no set key covers (PHASE_17 workstream 3).
+    warnings.push(kind === "llm" ? llmStageWarning(missing) : STAGE_KIND_WARNINGS[kind]);
   }
 
   let recipes: ConfigReport["recipes"] = null;

@@ -9,6 +9,11 @@
  * weight, and a job is assigned one version per key from its id. model plus
  * fallbackModels is the failover order the router walks, so swapping or
  * reordering models is a table update, not a deploy.
+ *
+ * Canary (docs/phases/PHASE_17.md workstream 5): a new version ships active
+ * at trafficPct 0 beside the version that serves today, so the deploy changes
+ * nothing. Each canary step is a re-seed that moves weight between the two;
+ * the compiled fallback is servingRecipeSeedRow, the row with the most weight.
  */
 import { z } from "zod";
 import type { Shot } from "../schemas";
@@ -51,6 +56,10 @@ export const RecipeRow = z.object({
       /** Per attempt provider timeout, sized to the output budget. The
        * router default (60 s) applies when unset. */
       timeoutMs: z.number().int().min(1_000).max(600_000).optional(),
+      /** Image detail sent with every image block of the call (PHASE_17
+       * Model choice table). OpenAI treats an unset detail as "original" on
+       * 5.6 and 6 models, so an OpenAI recipe with images always sets it. */
+      imageDetail: z.enum(["low", "high"]).optional(),
     })
     .catchall(z.unknown()),
   active: z.boolean(),
@@ -222,6 +231,35 @@ For target, give one option per item, value "item:" followed by its number and l
 No emojis, no arrows and no dashes.`;
 
 /**
+ * The OpenAI recipe versions (docs/phases/PHASE_17.md workstream 3). Each
+ * keeps its predecessor's system prompt verbatim and adds this one line, since
+ * the answer arrives as a JSON schema response format rather than a tool call.
+ */
+const JSON_ONLY_LINE = "Return only the JSON object described by the schema.";
+
+function withJsonLine(system: string): string {
+  return `${system}\n${JSON_ONLY_LINE}`;
+}
+
+/**
+ * Effort per model for the OpenAI versions. OpenAI reasoning tokens count
+ * toward max_output_tokens, so every model in a chain gets an explicit effort
+ * rather than its default (medium). gpt-6.1-sol rejects "none", so its lowest
+ * is "low". The Claude fallbacks keep today's options: medium on Sonnet 5 and
+ * nothing on Haiku 4.5, which rejects effort.
+ */
+const LIGHT_MODEL_OPTIONS = {
+  "gpt-6-luna": { effort: "low" },
+  "gpt-6.1-sol": { effort: "low" },
+} as const satisfies Record<string, RecipeModelOptions>;
+
+const HARD_MODEL_OPTIONS = {
+  "gpt-6.1-sol": { effort: "medium" },
+  "gpt-5.6-sol": { effort: "medium" },
+  "claude-sonnet-5": { effort: "medium" },
+} as const satisfies Record<string, RecipeModelOptions>;
+
+/**
  * Which shots skip the paid qc_judge call (PHASE_15). A kept photo has no
  * generated pixels to judge: the pixel checks and the fidelity proof decide
  * it. Kept next to the qc_judge recipe so the judge's scope is in one place.
@@ -319,6 +357,30 @@ export const recipeSeedRows: RecipeRow[] = [
       modelOptions: EXTRACTION_MODEL_OPTIONS,
       timeoutMs: 120_000,
     },
+    // Serves every job until the version 7 canary (PHASE_17 workstream 5).
+    active: true,
+  },
+  {
+    key: "intake_normalizer",
+    version: 7,
+    stage: "intake",
+    model: "gpt-6-luna",
+    // gpt-5.6-terra, not gpt-6.1-sol, so a model family outage leaves a
+    // second OpenAI model with documented image token math.
+    fallbackModels: ["gpt-5.6-terra", "claude-sonnet-5"],
+    // Canary weight (PHASE_17 workstream 5): 0 until the founder raises it.
+    trafficPct: 0,
+    body: {
+      system: withJsonLine(INTAKE_NORMALIZER_V6_SYSTEM),
+      maxTokens: 16000,
+      modelOptions: {
+        "gpt-6-luna": { effort: "low" },
+        "gpt-5.6-terra": { effort: "low" },
+        "claude-sonnet-5": { effort: "medium" },
+      },
+      timeoutMs: 180_000,
+      imageDetail: "high",
+    },
     active: true,
   },
   {
@@ -354,6 +416,25 @@ export const recipeSeedRows: RecipeRow[] = [
       modelOptions: EXTRACTION_MODEL_OPTIONS,
       timeoutMs: 120_000,
     },
+    // Serves every job until the version 4 canary (PHASE_17 workstream 5).
+    active: true,
+  },
+  {
+    key: "product_analyzer",
+    version: 4,
+    stage: "analyze",
+    model: "gpt-6.1-sol",
+    fallbackModels: ["gpt-5.6-sol", "claude-sonnet-5"],
+    trafficPct: 0,
+    body: {
+      system: withJsonLine(PRODUCT_ANALYZER_V3_SYSTEM),
+      // OpenAI advises reserving at least 25,000 output tokens for
+      // reasoning at first; trimmed later from measured reasoning tokens.
+      maxTokens: 32000,
+      modelOptions: HARD_MODEL_OPTIONS,
+      timeoutMs: 300_000,
+      imageDetail: "high",
+    },
     active: true,
   },
   {
@@ -380,6 +461,22 @@ export const recipeSeedRows: RecipeRow[] = [
       maxTokens: 16000,
       modelOptions: EXTRACTION_MODEL_OPTIONS,
       timeoutMs: 180_000,
+    },
+    // Serves every job until the version 3 canary (PHASE_17 workstream 5).
+    active: true,
+  },
+  {
+    key: "shot_planner",
+    version: 3,
+    stage: "plan",
+    model: "gpt-6.1-sol",
+    fallbackModels: ["gpt-5.6-sol", "claude-sonnet-5"],
+    trafficPct: 0,
+    body: {
+      system: withJsonLine(SHOT_PLANNER_V2_SYSTEM),
+      maxTokens: 32000,
+      modelOptions: HARD_MODEL_OPTIONS,
+      timeoutMs: 300_000,
     },
     active: true,
   },
@@ -409,6 +506,22 @@ export const recipeSeedRows: RecipeRow[] = [
     model: "claude-haiku-4-5-20251001",
     fallbackModels: ["claude-sonnet-5"],
     body: { system: COPY_GENERATOR_V3_SYSTEM, maxTokens: 2048 },
+    // Serves every job until the version 4 canary (PHASE_17 workstream 5).
+    active: true,
+  },
+  {
+    key: "copy_generator",
+    version: 4,
+    stage: "copy",
+    model: "gpt-6-luna",
+    fallbackModels: ["gpt-6.1-sol", "claude-haiku-4-5-20251001"],
+    trafficPct: 0,
+    body: {
+      system: withJsonLine(COPY_GENERATOR_V3_SYSTEM),
+      maxTokens: 8000,
+      modelOptions: LIGHT_MODEL_OPTIONS,
+      timeoutMs: 120_000,
+    },
     active: true,
   },
   {
@@ -422,6 +535,26 @@ export const recipeSeedRows: RecipeRow[] = [
       // Escalation chain: Haiku first pass, Sonnet on borderline, Opus on disputes.
       escalation: ["claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5-5"],
     },
+    // Serves every job until the version 2 canary (PHASE_17 workstream 5).
+    active: true,
+  },
+  {
+    key: "qc_judge",
+    version: 2,
+    stage: "qc",
+    model: "gpt-6-luna",
+    // Claude last (founder decision 1): Sonnet 5, today's judge fallback.
+    fallbackModels: ["gpt-6.1-sol", "claude-sonnet-5"],
+    trafficPct: 0,
+    body: {
+      system: withJsonLine(QC_JUDGE_SYSTEM),
+      // Escalation chain: Luna first pass, 6.1 Sol on borderline, Astra on disputes.
+      escalation: ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"],
+      maxTokens: 8000,
+      modelOptions: { ...LIGHT_MODEL_OPTIONS, "gpt-6-astra": { effort: "low" }, "claude-sonnet-5": { effort: "medium" } },
+      timeoutMs: 120_000,
+      imageDetail: "high",
+    },
     active: true,
   },
   {
@@ -431,6 +564,23 @@ export const recipeSeedRows: RecipeRow[] = [
     model: "claude-haiku-4-5-20251001",
     fallbackModels: ["claude-sonnet-5"],
     body: { system: TARGET_PICKER_SYSTEM, maxTokens: 512 },
+    // Serves every job until the version 2 canary (PHASE_17 workstream 5).
+    active: true,
+  },
+  {
+    key: "target_picker",
+    version: 2,
+    stage: "pick",
+    model: "gpt-6-luna",
+    fallbackModels: ["gpt-6.1-sol", "claude-haiku-4-5-20251001"],
+    trafficPct: 0,
+    body: {
+      system: withJsonLine(TARGET_PICKER_SYSTEM),
+      maxTokens: 4000,
+      modelOptions: LIGHT_MODEL_OPTIONS,
+      timeoutMs: 60_000,
+      imageDetail: "high",
+    },
     active: true,
   },
   {
@@ -440,6 +590,25 @@ export const recipeSeedRows: RecipeRow[] = [
     model: "claude-haiku-4-5-20251001",
     fallbackModels: ["claude-sonnet-5"],
     body: { system: BRAND_PALETTE_NAMER_SYSTEM, maxTokens: 512 },
+    // Serves every job until the version 2 canary (PHASE_17 workstream 5).
+    active: true,
+  },
+  {
+    key: "brand_palette_namer",
+    version: 2,
+    stage: "brand",
+    model: "gpt-6-luna",
+    fallbackModels: ["gpt-6.1-sol", "claude-haiku-4-5-20251001"],
+    trafficPct: 0,
+    body: {
+      system: withJsonLine(BRAND_PALETTE_NAMER_SYSTEM),
+      maxTokens: 2000,
+      // Naming a few colors needs no reasoning on Luna; gpt-6.1-sol rejects
+      // "none", so it runs at its lowest effort.
+      modelOptions: { "gpt-6-luna": { effort: "none" }, "gpt-6.1-sol": { effort: "low" } },
+      timeoutMs: 60_000,
+      imageDetail: "low",
+    },
     active: true,
   },
   {
@@ -449,6 +618,50 @@ export const recipeSeedRows: RecipeRow[] = [
     model: "claude-haiku-4-5-20251001",
     fallbackModels: ["claude-sonnet-5"],
     body: { system: QUESTION_PLANNER_SYSTEM, maxTokens: 1024 },
+    // Serves every job until the version 2 canary (PHASE_17 workstream 5).
+    active: true,
+  },
+  {
+    key: "question_planner",
+    version: 2,
+    stage: "question",
+    model: "gpt-6-luna",
+    fallbackModels: ["gpt-6.1-sol", "claude-haiku-4-5-20251001"],
+    trafficPct: 0,
+    body: {
+      system: withJsonLine(QUESTION_PLANNER_SYSTEM),
+      maxTokens: 4000,
+      modelOptions: LIGHT_MODEL_OPTIONS,
+      timeoutMs: 60_000,
+      imageDetail: "high",
+    },
     active: true,
   },
 ];
+
+/** Whether a seed row serves traffic: active with a weight above 0. */
+export function servesTraffic(row: RecipeRow): boolean {
+  return row.active && (row.trafficPct ?? 100) > 0;
+}
+
+/**
+ * The compiled seed row a stage runs on when the recipes table cannot be
+ * read: among its active rows, the one with the most traffic (the newest on a
+ * tie). During a canary (PHASE_17 workstream 5) a key has two active rows,
+ * the serving one and its successor at a lower weight, and only the recipes
+ * table splits traffic between them. Undefined when the stage has none.
+ */
+export function servingRecipeSeedRow(stage: RecipeRow["stage"], rows: readonly RecipeRow[] = recipeSeedRows): RecipeRow | undefined {
+  let best: RecipeRow | undefined;
+  for (const row of rows) {
+    if (row.stage !== stage || !servesTraffic(row)) {
+      continue;
+    }
+    const weight = row.trafficPct ?? 100;
+    const bestWeight = best?.trafficPct ?? 100;
+    if (!best || weight > bestWeight || (weight === bestWeight && row.version > best.version)) {
+      best = row;
+    }
+  }
+  return best;
+}

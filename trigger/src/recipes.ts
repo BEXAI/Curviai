@@ -23,7 +23,13 @@
 
 import { createHash } from "node:crypto";
 import { eq, recipes, type Db, type JobRecipeVariant } from "@curvi/db";
-import { llmModelProviders, RecipeRow, recipeSeedRows, type RecipeModelOptions } from "@curvi/pipeline/seed";
+import {
+  llmModelProviders,
+  RecipeRow,
+  recipeSeedRows,
+  servingRecipeSeedRow,
+  type RecipeModelOptions,
+} from "@curvi/pipeline/seed";
 
 export type RecipeStage = RecipeRow["stage"];
 
@@ -44,6 +50,8 @@ export interface ResolvedRecipe {
   modelOptions?: Record<string, RecipeModelOptions>;
   /** Per attempt provider timeout from the recipe body. */
   timeoutMs?: number;
+  /** Image detail for the call's image blocks, from the recipe body. */
+  imageDetail?: "low" | "high";
   /** A/B weight among the active versions of the key. */
   trafficPct: number;
 }
@@ -87,6 +95,7 @@ function fromSeed(row: RecipeRow): ResolvedRecipe {
     ...(typeof row.body.maxTokens === "number" ? { maxTokens: row.body.maxTokens } : {}),
     ...(row.body.modelOptions ? { modelOptions: row.body.modelOptions } : {}),
     ...(typeof row.body.timeoutMs === "number" ? { timeoutMs: row.body.timeoutMs } : {}),
+    ...(row.body.imageDetail ? { imageDetail: row.body.imageDetail } : {}),
     trafficPct: row.trafficPct ?? 100,
   };
 }
@@ -94,7 +103,7 @@ function fromSeed(row: RecipeRow): ResolvedRecipe {
 /** The compiled seed recipe for a stage. Throws when the seed has none, a
  * build mistake the seed tests catch. */
 export function seedRecipe(stage: RecipeStage): ResolvedRecipe {
-  const row = recipeSeedRows.find((r) => r.stage === stage && r.active);
+  const row = servingRecipeSeedRow(stage);
   if (!row) {
     throw new Error(`No active recipe seeded for stage "${stage}"`);
   }
@@ -108,7 +117,14 @@ export function recipeFor(recipes: JobRecipes | undefined, stage: RecipeStage): 
 
 /** The seed stages in order, each with the key the router and providers know. */
 function seedStages(): Array<{ stage: RecipeStage; key: string }> {
-  return recipeSeedRows.filter((r) => r.active).map((r) => ({ stage: r.stage, key: r.key }));
+  const out: Array<{ stage: RecipeStage; key: string }> = [];
+  for (const stage of RecipeRow.shape.stage.options) {
+    const row = servingRecipeSeedRow(stage);
+    if (row) {
+      out.push({ stage, key: row.key });
+    }
+  }
+  return out;
 }
 
 /** Every stage on its compiled seed recipe. */

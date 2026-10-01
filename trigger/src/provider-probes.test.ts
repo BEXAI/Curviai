@@ -1,7 +1,9 @@
 import { ProviderRegistry, isProbeable } from "@curvi/ai";
 import { describe, expect, it } from "vitest";
 import { wireLiveProviders } from "./live-runtime";
+import { llmModelPrices } from "@curvi/pipeline/seed";
 import { liveProviderTargets, stageKeyReport } from "./provider-probes";
+import { llmModelProviderName } from "./recipes";
 import { demoRoutingTable } from "./runtime";
 import { DEFAULT_SHOT_CONCURRENCY, parseShotConcurrency } from "./shot-concurrency";
 
@@ -18,7 +20,14 @@ function wiredNames(names: string[]): string[] {
 }
 
 describe("liveProviderTargets", () => {
-  it.each([[ALL_KEYS], [[]], [["ANTHROPIC_API_KEY"]], [["BFL_API_KEY", "FAL_KEY"]], [["GEMINI_API_KEY", "OPENAI_API_KEY"]]])(
+  it.each([
+    [ALL_KEYS],
+    [[]],
+    [["ANTHROPIC_API_KEY"]],
+    [["OPENAI_API_KEY"]],
+    [["BFL_API_KEY", "FAL_KEY"]],
+    [["GEMINI_API_KEY", "OPENAI_API_KEY"]],
+  ])(
     "lists exactly the providers wireLiveProviders registers for keys %j",
     (names) => {
       const configured = liveProviderTargets(envOf(names))
@@ -73,10 +82,45 @@ describe("liveProviderTargets", () => {
         { envVar: "FAL_KEY_BACKUP", present: false },
       ],
     });
-    for (const stage of ["intake", "analyze", "plan", "copy", "qc"]) {
-      expect(byStage[stage]).toMatchObject({ kind: "llm", ready: false, keys: [{ envVar: "ANTHROPIC_API_KEY", present: false }] });
+    for (const stage of ["intake", "analyze", "plan", "copy", "qc", "pick", "brand", "question"]) {
+      expect(byStage[stage]).toMatchObject({
+        kind: "llm",
+        ready: false,
+        keys: [
+          { envVar: "ANTHROPIC_API_KEY", present: false },
+          { envVar: "OPENAI_API_KEY", present: false },
+        ],
+      });
     }
     expect(JSON.stringify(report)).not.toContain("value-of-");
+  });
+
+  it.each([["OPENAI_API_KEY"], ["ANTHROPIC_API_KEY"]])("counts every LLM stage ready on %s alone", (key) => {
+    const report = stageKeyReport(liveProviderTargets(envOf([key])));
+    const llm = report.filter((entry) => entry.kind === "llm");
+    expect(llm.map((entry) => entry.stage).sort()).toEqual(
+      ["analyze", "brand", "copy", "intake", "pick", "plan", "qc", "question"],
+    );
+    for (const entry of llm) {
+      expect(entry.ready, entry.stage).toBe(true);
+    }
+  });
+
+  it("lists a probe target for every priced LLM model under its provider's key", () => {
+    const targets = liveProviderTargets(envOf(["OPENAI_API_KEY"])).filter((target) => target.kind === "llm");
+    expect(targets.map((target) => target.name).sort()).toEqual(
+      Object.keys(llmModelPrices).map(llmModelProviderName).sort(),
+    );
+    for (const target of targets) {
+      const openai = target.name.startsWith("openai:");
+      expect(target.envVar).toBe(openai ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY");
+      expect(target.configured).toBe(openai);
+    }
+    // Each model serves the stages whose chains or escalation name it.
+    const byName = Object.fromEntries(targets.map((target) => [target.name, target.stages]));
+    expect(byName["openai:gpt-6-astra"]).toEqual(["qc"]);
+    expect(byName["openai:gpt-5.6-terra"]).toEqual(["intake"]);
+    expect(byName["openai:gpt-6.1-sol"]).toEqual(expect.arrayContaining(["analyze", "plan", "copy", "qc", "pick", "brand", "question"]));
   });
 });
 

@@ -23,7 +23,7 @@ import {
   type ShotOutcome,
 } from "../pipeline-runner";
 import { buildR2Handoff } from "../r2";
-import { DEMO_MODE_NOTICE, optionalEnv } from "../runtime";
+import { demoModeNotice } from "../runtime";
 import { generateShot } from "./generate-shot";
 
 export const generatePack = task({
@@ -53,9 +53,9 @@ export const generatePack = task({
     };
 
     const summary = await runGeneratePack(payload, { ...deps, runShots });
-    if (!optionalEnv("ANTHROPIC_API_KEY")) {
-      return { ...summary, notice: DEMO_MODE_NOTICE };
-    }
-    return summary;
+    // Demo mode only when no LLM key is set: either provider runs the
+    // recipes live (docs/phases/PHASE_17.md workstream 3).
+    const notice = demoModeNotice();
+    return notice ? { ...summary, notice } : summary;
   },
 });
