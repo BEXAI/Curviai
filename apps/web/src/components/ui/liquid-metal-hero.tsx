@@ -205,9 +205,12 @@ export function LiquidMetalHero({
 export function PageMetalBackdrop() {
   return (
     <>
-      <LiquidMetalBackdrop className="pointer-events-none fixed inset-0 -z-10" />
-      <div aria-hidden="true" className="page-metal-veil pointer-events-none fixed inset-0 -z-10" />
-      <LiquidMetalMotionToggle className="fixed bottom-4 right-4 z-40" />
+      {/* Sized to the large viewport (100lvh), not inset-0: on iPhone Safari a
+          fixed layer pinned to bottom resizes every time the toolbar shows or
+          hides, which resizes the WebGL canvas mid scroll. */}
+      <LiquidMetalBackdrop className="pointer-events-none fixed left-0 top-0 -z-10 h-[100lvh] w-full" />
+      <div aria-hidden="true" className="page-metal-veil pointer-events-none fixed left-0 top-0 -z-10 h-[100lvh] w-full" />
+      <LiquidMetalMotionToggle className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-[max(1rem,env(safe-area-inset-right))] z-40" />
     </>
   );
 }
