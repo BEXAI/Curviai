@@ -4,6 +4,7 @@ import {
   bigserial,
   boolean,
   check,
+  date,
   foreignKey,
   index,
   integer,
@@ -897,7 +898,67 @@ export const favorites = pgTable(
   ],
 );
 
+/** The class of browser a page view came from, read from its user agent. */
+export type VisitDevice = "mobile" | "tablet" | "desktop";
+
+/**
+ * The cookieless visitor count's daily salt (migration 0027): 32 random bytes
+ * as 64 hex characters, one row per UTC day, made by the first page view of
+ * that day. The web app deletes salts older than yesterday, so once a salt
+ * is gone nobody can recompute a visitor_hash of that day or link it to the
+ * same person on another day. Platform table: RLS on with no policies and no
+ * client privileges; only the owner connection reads or writes it.
+ */
+export const siteVisitSalts = pgTable(
+  "site_visit_salts",
+  {
+    day: date("day", { mode: "string" }).primaryKey(),
+    salt: text("salt").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check("site_visit_salts_salt_check", sql`${t.salt} ~ '^[0-9a-f]{64}$'`)],
+);
+
+/**
+ * One page view of the public site (migration 0027, apps/web/src/lib/visits).
+ * visitor_hash is the first 16 bytes (hex) of sha256(daily salt, site host,
+ * client IP, user agent), so it is the same for one browser all day and
+ * means nothing once the day's salt is deleted. Neither the IP nor the user
+ * agent is stored anywhere. path is normalized (no query string, ids as
+ * :id), referrer_host is a host name only and is set only on the first page
+ * view after a full page load. Platform table: RLS on with no policies and
+ * no client privileges; only the owner connection reads or writes it.
+ */
+export const siteVisits = pgTable(
+  "site_visits",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    day: date("day", { mode: "string" }).notNull(),
+    visitorHash: text("visitor_hash").notNull(),
+    path: text("path").notNull(),
+    referrerHost: text("referrer_host"),
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
+    device: text("device").$type<VisitDevice>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("site_visits_visitor_hash_check", sql`${t.visitorHash} ~ '^[0-9a-f]{32}$'`),
+    check("site_visits_device_check", sql`${t.device} in ('mobile', 'tablet', 'desktop')`),
+    check(
+      "site_visits_lengths_check",
+      sql`char_length(${t.path}) <= 300 and char_length(coalesce(${t.referrerHost}, '')) <= 255 and char_length(coalesce(${t.utmSource}, '')) <= 100 and char_length(coalesce(${t.utmMedium}, '')) <= 100 and char_length(coalesce(${t.utmCampaign}, '')) <= 100`,
+    ),
+    index("site_visits_day_visitor_hash_idx").on(t.day, t.visitorHash),
+    index("site_visits_day_path_idx").on(t.day, t.path),
+  ],
+);
+
 // Inferred row types.
+export type SiteVisit = typeof siteVisits.$inferSelect;
+export type NewSiteVisit = typeof siteVisits.$inferInsert;
+export type SiteVisitSalt = typeof siteVisitSalts.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 export type Favorite = typeof favorites.$inferSelect;
