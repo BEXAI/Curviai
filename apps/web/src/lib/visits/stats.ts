@@ -49,6 +49,10 @@ export interface VisitorStats {
   devices: TopRow[];
 }
 
+function rowsOf<T>(result: unknown): T[] {
+  return (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as T[];
+}
+
 /** Every day from the first to the last, oldest first. */
 function daysFrom(today: string, count: number): string[] {
   return Array.from({ length: count }, (_, i) => daysBefore(today, count - 1 - i));
@@ -76,19 +80,32 @@ export async function loadVisitorStats(db: Db, now: Date): Promise<VisitorStats>
   const today = utcDay(now);
   const from = daysBefore(today, STATS_DAYS - 1);
   const inRange = sql`${siteVisits.day} >= ${from}::date and ${siteVisits.day} <= ${today}::date`;
-  // A visitor on one day: the (day, code) pair, so ranges add daily counts up.
-  const dailyVisitors = sql<number>`count(distinct (${siteVisits.day}, ${siteVisits.visitorHash}))::int`;
   const pageViews = sql<number>`count(*)::int`;
 
-  const top = (key: TopColumn) => {
+  // Top tables in two steps: first one row per (value, day, visitor code)
+  // with its page views, then per value the number of those rows (daily
+  // visitors added up) and their page views. Both steps hash aggregate,
+  // where count(distinct (day, code)) per value has to sort every group.
+  // column is one of the fixed site_visits columns, never request input.
+  const top = async (key: TopColumn): Promise<TopRow[]> => {
     const column = siteVisits[key];
-    return db
-      .select({ label: sql<string>`${column}`, visitors: dailyVisitors, pageViews })
-      .from(siteVisits)
-      .where(sql`${inRange} and ${column} is not null`)
-      .groupBy(column)
-      .orderBy(sql`2 desc`, sql`3 desc`, sql`1`)
-      .limit(TOP_LIMIT);
+    const result = await db.execute(sql`
+      select label, count(*)::int as visitors, sum(n)::int as page_views
+      from (
+        select ${column} as label, ${siteVisits.day}, ${siteVisits.visitorHash}, count(*) as n
+        from ${siteVisits}
+        where ${inRange} and ${column} is not null
+        group by 1, 2, 3
+      ) as per_visitor
+      group by label
+      order by visitors desc, page_views desc, label
+      limit ${TOP_LIMIT}
+    `);
+    return rowsOf<{ label: string; visitors: number | string; page_views: number | string }>(result).map((row) => ({
+      label: String(row.label),
+      visitors: Number(row.visitors),
+      pageViews: Number(row.page_views),
+    }));
   };
 
   const [dailyRows, topPages, topReferrers, topSources, topCampaigns, devices] = await Promise.all([
@@ -110,17 +127,14 @@ export async function loadVisitorStats(db: Db, now: Date): Promise<VisitorStats>
     visitors: Number(byDay.get(day)?.visitors ?? 0),
     pageViews: Number(byDay.get(day)?.pageViews ?? 0),
   }));
-  const numeric = (rows: TopRow[]): TopRow[] =>
-    rows.map((row) => ({ label: row.label, visitors: Number(row.visitors), pageViews: Number(row.pageViews) }));
-
   return {
     today,
     ranges: rangesFrom(daily),
     daily,
-    topPages: numeric(topPages),
-    topReferrers: numeric(topReferrers),
-    topSources: numeric(topSources),
-    topCampaigns: numeric(topCampaigns),
-    devices: numeric(devices),
+    topPages,
+    topReferrers,
+    topSources,
+    topCampaigns,
+    devices,
   };
 }

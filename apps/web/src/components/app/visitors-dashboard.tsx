@@ -20,6 +20,8 @@ export const VISITORS_COPY = {
   empty: "Nothing counted yet.",
   needsDatabase:
     "Visitor counts need the database. Set DATABASE_URL and the Supabase keys, apply migration 0027, and this page fills in as people visit.",
+  needsKey:
+    "Counting is off until VISITS_HASH_KEY is set on the server. Set it to a long random value, for example the output of openssl rand -hex 32, then redeploy.",
   unavailable: "The counts could not be read just now. Reload the page in a minute.",
 } as const;
 
@@ -252,7 +254,7 @@ export function VisitorsHeader() {
   );
 }
 
-/** Shown to an operator when there is no database to read. */
+/** Shown to an operator when there is no database to read or the count is off. */
 export function VisitorsNotice({ message }: { message: string }) {
   return (
     <div className="max-w-3xl space-y-6">
@@ -289,14 +291,14 @@ export function VisitorsDashboard({ stats }: { stats: VisitorStats }) {
       <div className="grid gap-4 lg:grid-cols-2">
         <TopTable
           title="Top pages"
-          description="Last 30 days. Ids in addresses show as :id."
+          description="Last 30 days, daily visitors added up. Ids in addresses show as :id."
           rows={stats.topPages}
           firstColumn="Page"
           testId="visitors-top-pages"
         />
         <TopTable
           title="Sites that sent visitors"
-          description="Last 30 days, from the first page of each visit."
+          description="Last 30 days, daily visitors added up, from the first page of each visit."
           rows={stats.topReferrers}
           firstColumn="Site"
           testId="visitors-top-referrers"
@@ -304,7 +306,7 @@ export function VisitorsDashboard({ stats }: { stats: VisitorStats }) {
         />
         <TopTable
           title="Campaign sources"
-          description="Last 30 days, from utm_source in the link."
+          description="Last 30 days, daily visitors added up, from utm_source in the link."
           rows={stats.topSources}
           firstColumn="Source"
           testId="visitors-top-sources"
@@ -312,7 +314,7 @@ export function VisitorsDashboard({ stats }: { stats: VisitorStats }) {
         />
         <TopTable
           title="Campaigns"
-          description="Last 30 days, from utm_campaign in the link."
+          description="Last 30 days, daily visitors added up, from utm_campaign in the link."
           rows={stats.topCampaigns}
           firstColumn="Campaign"
           testId="visitors-top-campaigns"

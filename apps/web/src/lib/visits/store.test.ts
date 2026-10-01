@@ -6,11 +6,13 @@ import { sql, type Db } from "@curvi/db";
 vi.mock("@/lib/services", () => ({ isDbMode: () => false }));
 vi.mock("@/lib/services/db", () => ({ getDb: () => null }));
 
-const { DbVisitStore, DAILY_PAGE_VIEW_CAP, getVisitStore, setVisitStoreForTests } = await import("./store");
+const { DbVisitStore, DAILY_PAGE_VIEW_CAP, DAILY_PAGE_VIEW_CEILING, deleteExpiredVisitSalts, getVisitStore, setVisitStoreForTests } =
+  await import("./store");
 const { recordVisit } = await import("./record");
 const { loadVisitorStats, rangesFrom } = await import("./stats");
 
 const IP = "203.0.113.77";
+const KEY = "store-test-key-0123456789abcdef0123456789";
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
@@ -25,8 +27,14 @@ function beaconHeaders(overrides: Record<string, string> = {}): Headers {
   return new Headers({ "user-agent": USER_AGENT, "x-forwarded-for": `${IP}, 10.0.0.1`, host: "curvi.ai", ...overrides });
 }
 
-async function visit(store: InstanceType<typeof DbVisitStore>, body: object, now: Date, headers = beaconHeaders()) {
-  return recordVisit(store, { headers, body: JSON.stringify(body), siteHost: "curvi.ai", now });
+async function visit(
+  store: InstanceType<typeof DbVisitStore>,
+  body: object,
+  now: Date,
+  headers = beaconHeaders(),
+  extra: { hashKey?: string | null; allowNewVisitor?: (ip: string) => Promise<boolean> } = {},
+) {
+  return recordVisit(store, { headers, body: JSON.stringify(body), siteHost: "curvi.ai", now, hashKey: KEY, ...extra });
 }
 
 beforeAll(async () => {
@@ -52,6 +60,19 @@ describe("daily salt", () => {
     expect(await b.saltFor("2026-10-01")).toBe(salt);
     const rows = await db.select().from(siteVisitSalts);
     expect(rows).toHaveLength(1);
+  });
+
+  it("deletes salts older than yesterday on a schedule, with no page view at all", async () => {
+    const store = new DbVisitStore(asDb());
+    await store.saltFor("2026-09-27");
+    await store.saltFor("2026-09-28");
+    // The site goes quiet: no page view loads a new day's salt.
+    await deleteExpiredVisitSalts(asDb(), new Date("2026-09-29T23:00:00Z"));
+    let days = (await db.select({ day: siteVisitSalts.day }).from(siteVisitSalts)).map((r) => r.day).sort();
+    expect(days).toEqual(["2026-09-28"]);
+    await deleteExpiredVisitSalts(asDb(), new Date("2026-09-30T00:05:00Z"));
+    days = (await db.select({ day: siteVisitSalts.day }).from(siteVisitSalts)).map((r) => r.day);
+    expect(days).toEqual([]);
   });
 
   it("rotates every UTC day and deletes salts older than yesterday", async () => {
@@ -141,7 +162,7 @@ describe("recordVisit with the database store", () => {
     noAgent.delete("user-agent");
     expect(await visit(store, { path: "/" }, now, noAgent)).toEqual({ stored: false, reason: "no_user_agent" });
     expect(await visit(store, { path: "https://evil.example/" }, now)).toEqual({ stored: false, reason: "invalid" });
-    expect(await recordVisit(store, { headers: beaconHeaders(), body: "not json", siteHost: "curvi.ai", now })).toEqual({
+    expect(await recordVisit(store, { headers: beaconHeaders(), body: "not json", siteHost: "curvi.ai", now, hashKey: KEY })).toEqual({
       stored: false,
       reason: "invalid",
     });
@@ -170,8 +191,68 @@ describe("recordVisit with the database store", () => {
     expect(await visit(store, { path: "/" }, new Date("2026-10-02T00:00:01Z"))).toEqual({ stored: true });
   });
 
-  it("uses a cap of 500 by default", () => {
+  it("uses a cap of 500 per visitor and a ceiling of 100,000 per day by default", () => {
     expect(DAILY_PAGE_VIEW_CAP).toBe(500);
+    expect(DAILY_PAGE_VIEW_CEILING).toBe(100_000);
+  });
+
+  it("stores nothing past the day's ceiling, whoever sends it, and starts again the next day", async () => {
+    const ceiling = 4;
+    const now = new Date("2026-10-01T12:00:00Z");
+    // Rows already stored today by another instance count toward it.
+    const earlier = new DbVisitStore(asDb(), DAILY_PAGE_VIEW_CAP, ceiling);
+    await visit(earlier, { path: "/" }, now);
+    const store = new DbVisitStore(asDb(), DAILY_PAGE_VIEW_CAP, ceiling);
+    const outcomes = [];
+    for (let i = 0; i < 6; i += 1) {
+      // A new user agent each time: a new visitor code each time.
+      outcomes.push(await visit(store, { path: "/" }, now, beaconHeaders({ "user-agent": `${USER_AGENT} r=${i}` })));
+    }
+    expect(outcomes.filter((o) => o.stored)).toHaveLength(ceiling - 1);
+    expect(outcomes.at(-1)).toEqual({ stored: false, reason: "ceiling" });
+    expect(await db.select().from(siteVisits)).toHaveLength(ceiling);
+    expect(await visit(store, { path: "/" }, new Date("2026-10-02T00:00:01Z"))).toEqual({ stored: true });
+  });
+
+  it("asks before each new visitor code, not before every page view, and drops it when refused", async () => {
+    const store = new DbVisitStore(asDb());
+    const now = new Date("2026-10-01T12:00:00Z");
+    const asked: string[] = [];
+    let allow = true;
+    const allowNewVisitor = async (ip: string) => {
+      asked.push(ip);
+      return allow;
+    };
+    expect(await visit(store, { path: "/" }, now, beaconHeaders(), { allowNewVisitor })).toEqual({ stored: true });
+    expect(await visit(store, { path: "/pricing" }, now, beaconHeaders(), { allowNewVisitor })).toEqual({ stored: true });
+    expect(asked).toEqual([IP]);
+    allow = false;
+    const rotated = beaconHeaders({ "user-agent": `${USER_AGENT} r=1` });
+    expect(await visit(store, { path: "/" }, now, rotated, { allowNewVisitor })).toEqual({
+      stored: false,
+      reason: "new_visitor_limit",
+    });
+    // A visitor already counted today keeps counting.
+    expect(await visit(store, { path: "/help" }, now, beaconHeaders(), { allowNewVisitor })).toEqual({ stored: true });
+    expect(asked).toEqual([IP, IP]);
+    expect(await db.select().from(siteVisits)).toHaveLength(3);
+  });
+
+  it("stores nothing and makes no salt without VISITS_HASH_KEY", async () => {
+    const store = new DbVisitStore(asDb());
+    const now = new Date("2026-10-01T12:00:00Z");
+    expect(await visit(store, { path: "/" }, now, beaconHeaders(), { hashKey: null })).toEqual({ stored: false, reason: "no_key" });
+    expect(await db.select().from(siteVisits)).toHaveLength(0);
+    expect(await db.select().from(siteVisitSalts)).toHaveLength(0);
+  });
+
+  it("leaves out the operator pages", async () => {
+    const store = new DbVisitStore(asDb());
+    const now = new Date("2026-10-01T12:00:00Z");
+    expect(await visit(store, { path: "/app/ops/visitors" }, now)).toEqual({ stored: false, reason: "excluded" });
+    expect(await visit(store, { path: "/app/ops" }, now)).toEqual({ stored: false, reason: "excluded" });
+    expect(await db.select().from(siteVisits)).toHaveLength(0);
+    expect(await db.select().from(siteVisitSalts)).toHaveLength(0);
   });
 });
 

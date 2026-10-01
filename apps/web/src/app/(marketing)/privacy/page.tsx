@@ -66,9 +66,13 @@ export default function PrivacyPage() {
             your device. When a page opens, your browser tells our server which page it was, any
             campaign tags in its link and, for the first page of a visit, which site sent you there.
             Our server mixes your IP address and browser details with a random code that changes every
-            day and keeps only the scrambled result. We never store your IP address or browser details,
-            and we delete each daily code within two days, so the count cannot identify you or follow
-            you from one day to the next.
+            day and a secret key that is kept apart from our database. We keep only the scrambled
+            result and whether the page was opened on a phone, tablet or computer. We never store your
+            IP address or your full browser details. Each daily code is deleted once two days have
+            passed, and copies in our database backups expire on the backup schedule. Without the daily
+            code, the scrambled result cannot be traced back to an IP address or matched with a visit
+            on another day. We use the count only to see how many people visit, never to identify
+            anyone.
           </p>
         </section>
         <section>

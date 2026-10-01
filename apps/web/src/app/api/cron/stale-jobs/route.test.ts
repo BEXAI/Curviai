@@ -10,6 +10,8 @@ vi.mock("@/lib/services/db", () => ({ getDb: () => fakeDb }));
 vi.mock("@/lib/services/reconcile", () => ({ sweepStaleJobs: sweep }));
 const recordRun = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/cron-health", () => ({ recordCronSuccess: recordRun }));
+const deleteSalts = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/visits/store", () => ({ deleteExpiredVisitSalts: deleteSalts }));
 
 import { checkCronAuth } from "@/lib/cron-auth";
 import { POST } from "./route";
@@ -28,6 +30,7 @@ function request(headers: Record<string, string> = {}): NextRequest {
 beforeEach(() => {
   sweep.mockReset();
   recordRun.mockReset();
+  deleteSalts.mockReset();
   for (const name of ["CRON_SECRET", ...Object.keys(DB_ENV)]) {
     vi.stubEnv(name, "");
   }
@@ -87,6 +90,33 @@ describe("POST /api/cron/stale-jobs", () => {
     expect(sweep).toHaveBeenCalledWith(fakeDb);
     // The health endpoint reads this to warn when the sweep stops running.
     expect(recordRun).toHaveBeenCalledWith(fakeDb, "stale-jobs");
+    // The visitor count's old salts go on the same schedule.
+    expect(deleteSalts).toHaveBeenCalledWith(fakeDb, expect.any(Date));
+  });
+
+  it("still sweeps and answers 200 when the visitor salt cleanup fails", async () => {
+    vi.stubEnv("CRON_SECRET", SECRET);
+    for (const [name, value] of Object.entries(DB_ENV)) vi.stubEnv(name, value);
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    deleteSalts.mockRejectedValueOnce(new Error("salt table locked"));
+    sweep.mockResolvedValueOnce({ reconciled: [], releaseFailures: [] });
+
+    const res = await POST(request({ "x-cron-secret": SECRET }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, mode: "db", reconciled: 0, jobIds: [], releaseFailures: [] });
+    expect(sweep).toHaveBeenCalledWith(fakeDb);
+    expect(recordRun).toHaveBeenCalledWith(fakeDb, "stale-jobs");
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it("does not touch visitor salts in demo mode or without the secret", async () => {
+    await POST(request({ authorization: "Bearer anything" }));
+    vi.stubEnv("CRON_SECRET", SECRET);
+    await POST(request());
+    await POST(request({ authorization: `Bearer ${SECRET}` }));
+    expect(deleteSalts).not.toHaveBeenCalled();
   });
 
   it("answers 500 when a release failed or the database is down, so the scheduler flags the run", async () => {

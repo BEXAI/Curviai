@@ -2,8 +2,11 @@
  * POST /api/cron/stale-jobs
  * The scheduled stale job sweep: fails every job that has not moved within
  * the stale window, across all workspaces, and releases the credits it still
- * holds (lib/services/reconcile.ts). Protected by CRON_SECRET (lib/cron-auth);
- * run it every 10 minutes or so. In demo mode there is nothing to sweep.
+ * holds (lib/services/reconcile.ts). It also deletes the visitor count's
+ * salts older than yesterday (lib/visits/store.ts), so they go on time even
+ * on a day with no visits; that cleanup only logs a failure and never
+ * changes the answer. Protected by CRON_SECRET (lib/cron-auth); run it every
+ * 10 minutes or so. In demo mode there is nothing to sweep.
  */
 
 import { NextResponse, type NextRequest } from "next/server";
@@ -12,10 +15,19 @@ import { recordCronSuccess } from "@/lib/cron-health";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
 import { sweepStaleJobs } from "@/lib/services/reconcile";
+import { deleteExpiredVisitSalts } from "@/lib/visits/store";
 
 export const dynamic = "force-dynamic";
 
 const NO_STORE = { "cache-control": "no-store" };
+
+async function deleteOldVisitSalts(db: ReturnType<typeof getDb>): Promise<void> {
+  try {
+    await deleteExpiredVisitSalts(db, new Date());
+  } catch (err) {
+    console.error("[cron] visitor salt cleanup failed", err);
+  }
+}
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const auth = checkCronAuth(request.headers);
@@ -30,6 +42,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
   try {
     const db = getDb();
+    await deleteOldVisitSalts(db);
     const result = await sweepStaleJobs(db);
     if (result.releaseFailures.length === 0) {
       // Health warns when this goes stale (lib/cron-health.ts).

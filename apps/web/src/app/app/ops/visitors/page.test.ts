@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VisitorStats } from "@/lib/visits/stats";
 
-// /app/ops/visitors is for the emails in OPS_EMAILS only. Everyone else gets
+// /app/ops/visitors is for the emails in OPS_EMAILS (or OPS_EMAIL) only. Everyone else gets
 // notFound(), so the page answers 404 and does not show that it exists.
 
 beforeAll(() => {
@@ -21,6 +21,8 @@ const state = vi.hoisted(() => ({
 vi.mock("@/lib/supabase/server", () => ({ getSessionUser: async () => state.user }));
 vi.mock("@/lib/services", () => ({ isDbMode: () => state.dbMode }));
 vi.mock("@/lib/services/db", () => ({ getDb: () => ({}) }));
+const deleteSalts = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("@/lib/visits/store", () => ({ deleteExpiredVisitSalts: deleteSalts }));
 
 function sampleStats(): VisitorStats {
   const daily = Array.from({ length: 30 }, (_, i) => ({
@@ -71,8 +73,13 @@ function visibleText(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 }
 
+const KEY = "page-test-key-0123456789abcdef0123456789";
+
 beforeEach(() => {
   vi.stubEnv("OPS_EMAILS", " Founder@Curvi.ai , ops@example.com ");
+  vi.stubEnv("OPS_EMAIL", "");
+  vi.stubEnv("VISITS_HASH_KEY", KEY);
+  deleteSalts.mockClear();
   state.user = null;
   state.dbMode = true;
   state.statsError = false;
@@ -97,10 +104,26 @@ describe("ops visitors page gate", () => {
     await expect(VisitorsPage()).rejects.toMatchObject(NOT_FOUND);
   });
 
-  it("is not found for anyone when OPS_EMAILS is not set", async () => {
+  it("is not found for anyone when neither OPS_EMAILS nor OPS_EMAIL is set", async () => {
     vi.stubEnv("OPS_EMAILS", "");
     state.user = { email: "founder@curvi.ai", email_confirmed_at: "2026-09-30T00:00:00Z" };
     await expect(VisitorsPage()).rejects.toMatchObject(NOT_FOUND);
+    expect(deleteSalts).not.toHaveBeenCalled();
+  });
+
+  it("reads OPS_EMAIL when OPS_EMAILS is not set", async () => {
+    vi.stubEnv("OPS_EMAILS", "");
+    vi.stubEnv("OPS_EMAIL", " Founder@Curvi.ai ");
+    state.user = { email: "founder@curvi.ai", email_confirmed_at: "2026-09-30T00:00:00Z" };
+    expect(await render()).toContain('data-testid="visitors-dashboard"');
+  });
+
+  it("lets OPS_EMAILS win when both are set", async () => {
+    vi.stubEnv("OPS_EMAIL", "someone@else.example");
+    state.user = { email: "someone@else.example", email_confirmed_at: "2026-09-30T00:00:00Z" };
+    await expect(VisitorsPage()).rejects.toMatchObject(NOT_FOUND);
+    state.user = { email: "ops@example.com", email_confirmed_at: "2026-09-30T00:00:00Z" };
+    expect(await render()).toContain('data-testid="visitors-dashboard"');
   });
 
   it("shows the counts to an operator, matching the email without regard to case", async () => {
@@ -116,7 +139,26 @@ describe("ops visitors page gate", () => {
     expect(html).toContain("launch");
     expect(html).toContain('data-testid="visitors-daily-chart"');
     expect(html).toContain("Oct 1: 12 visitors, 40 page views");
+    expect(html).toContain("Last 30 days, daily visitors added up, from the first page of each visit.");
     expect(visibleText(html)).not.toMatch(FORBIDDEN_COPY);
+    // Opening the page also deletes salts older than yesterday.
+    expect(deleteSalts).toHaveBeenCalledWith({}, expect.any(Date));
+  });
+
+  it("tells an operator that counting is off without VISITS_HASH_KEY", async () => {
+    vi.stubEnv("VISITS_HASH_KEY", "");
+    state.user = { email: "ops@example.com", email_confirmed_at: "2026-09-30T00:00:00Z" };
+    const html = await render();
+    expect(html).toContain("Counting is off until VISITS_HASH_KEY is set");
+    expect(html).not.toContain('data-testid="visitors-dashboard"');
+    expect(visibleText(html)).not.toMatch(FORBIDDEN_COPY);
+  });
+
+  it("still shows the counts when the salt cleanup fails", async () => {
+    state.user = { email: "ops@example.com", email_confirmed_at: "2026-09-30T00:00:00Z" };
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    deleteSalts.mockRejectedValueOnce(new Error("db busy"));
+    expect(await render()).toContain('data-testid="visitors-dashboard"');
   });
 
   it("tells an operator that counts need the database when there is none", async () => {

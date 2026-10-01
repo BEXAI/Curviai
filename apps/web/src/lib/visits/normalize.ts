@@ -47,6 +47,19 @@ export function normalizePath(raw: unknown): string | null {
   return normalized.slice(0, MAX_PATH_LENGTH);
 }
 
+/** Operator pages: the operator's own looks at the count are not visits. */
+const EXCLUDED_PREFIXES = ["/app/ops"] as const;
+
+/**
+ * True for a path the count leaves out (/app/ops and anything under it).
+ * Takes a raw or normalized path; the beacon checks it too, so it sends
+ * nothing from these pages.
+ */
+export function isExcludedPath(path: string): boolean {
+  const clean = `/${path.split(/[?#]/, 1)[0].split("/").filter(Boolean).join("/")}`.toLowerCase();
+  return EXCLUDED_PREFIXES.some((prefix) => clean === prefix || clean.startsWith(`${prefix}/`));
+}
+
 /** The host without a leading www., lower case. */
 function bareHost(host: string): string {
   return host.toLowerCase().replace(/^www\./, "");
