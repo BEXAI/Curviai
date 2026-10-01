@@ -41,7 +41,7 @@ import { APLUS_COPY_SHORT_REASON, NO_ENDORSEMENT_REASON } from "@curvi/pipeline/
 import { isAplusModuleType } from "@curvi/pipeline/schemas";
 import { createHash } from "node:crypto";
 import { creditCosts, CUTOUT_TASK, sceneCountOptions } from "@curvi/pipeline/seed";
-import type { Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
+import type { LlmRequest, LlmResult, Provider, ProviderRequest, ProviderResponse } from "@curvi/ai";
 import { isMarketplaceSpec } from "@curvi/specs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -98,7 +98,6 @@ import {
   type GeneratePackInput,
   type LlmPlanCheck,
   type LlmPlanRules,
-  type LlmTaskInput,
   type PackFileHandoff,
   type PipelineDeps,
   type SerializableShotOutcome,
@@ -152,6 +151,24 @@ const intakeFixture = {
 };
 
 const passVerdict = { pass: true, fidelity: 0.97, issues: [], repairHint: "" };
+
+/** An adapter's neutral result carrying json, as a live LLM provider returns. */
+function llmResult(json: unknown, text = ""): LlmResult {
+  return {
+    json,
+    text,
+    finish: "complete",
+    usage: { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, reasoningTokens: 0 },
+    raw: null,
+  };
+}
+
+/** The text block of the first message a provider was sent. */
+function promptText(provider: MockProvider, call = 0): string {
+  const content = (provider.calls[call].input as LlmRequest).messages[0].content;
+  const block = content.find((b) => b.type === "text");
+  return block?.type === "text" ? block.text : "";
+}
 
 interface AiOverrides {
   intake?: MockProvider;
@@ -805,7 +822,7 @@ describe("intake screenshot flag (PHASE_12 A5)", () => {
     expect(summary.chargedCredits).toBeGreaterThan(0);
     // Intake saw both photos; analysis only the camera photo.
     const blocks = (provider: MockProvider) =>
-      ((provider.calls[0].input as LlmTaskInput).messages[0].content as Array<{ type: string; text?: string }>);
+      ((provider.calls[0].input as LlmRequest).messages[0].content as Array<{ type: string; text?: string }>);
     expect(blocks(intake).filter((b) => b.type === "image")).toHaveLength(2);
     const analyzeBlocks = blocks(analyze);
     expect(analyzeBlocks.filter((b) => b.type === "image")).toHaveLength(2);
@@ -1013,18 +1030,14 @@ describe("allSettledWithLimit", () => {
 });
 
 describe("structured LLM output", () => {
-  const toolOf = (provider: MockProvider) =>
-    ((provider.calls[0].input as LlmTaskInput).tools ?? [])[0] as {
-      strict?: boolean;
-      input_schema: Record<string, unknown>;
-    };
+  const outputOf = (provider: MockProvider) => (provider.calls[0].input as LlmRequest).output;
 
-  it("sends the intake schema as a strict tool Anthropic accepts", async () => {
+  it("asks for the intake schema as a strict output Anthropic accepts", async () => {
     const intake = new MockProvider({ name: "mock-intake", tasks: [intakeKey], output: intakeFixture });
     await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
-    const tool = toolOf(intake);
-    expect(tool.strict).toBe(true);
-    const sent = JSON.stringify(tool.input_schema);
+    const output = outputOf(intake);
+    expect(output?.strict).toBe(true);
+    const sent = JSON.stringify(output?.schema);
     for (const keyword of ["$schema", "minimum", "maximum", "exclusiveMinimum", "maxLength", "pattern", "maxItems"]) {
       expect(sent).not.toContain(`"${keyword}"`);
     }
@@ -1041,8 +1054,7 @@ describe("structured LLM output", () => {
     const deps = makeDeps({ ai: makeAi({ intake }) });
     const summary = await runGeneratePack(baseInput, deps);
     expect(intake.calls).toHaveLength(2);
-    const second = ((intake.calls[1].input as LlmTaskInput).tools ?? [])[0] as { strict?: boolean };
-    expect(second.strict).toBeUndefined();
+    expect((intake.calls[1].input as LlmRequest).output?.strict).toBe(false);
     expect(summary.error ?? "").not.toContain("schema validation");
   });
 
@@ -1050,7 +1062,7 @@ describe("structured LLM output", () => {
     const intake = new MockProvider({
       name: "mock-intake",
       tasks: [intakeKey],
-      output: { toolUse: { name: "emit_result", input: { images: JSON.stringify(intakeFixture.images) } }, text: null },
+      output: llmResult({ images: JSON.stringify(intakeFixture.images) }),
     });
     const summary = await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
     expect(summary.error ?? "").not.toContain("Intake response failed schema validation");
@@ -1928,7 +1940,7 @@ describe("LLM plan validation against what can ship (1.7, 2.10, 2.12)", () => {
     expect(summary.plannerSource).toBe("llm");
     expect(summary.plannedShots).toBe(1);
     expect(summary.skipped).toContainEqual({ type: "video_hero_6s", reason: "provider not enabled" });
-    const sent = JSON.parse((plan.calls[0].input as LlmTaskInput).messages[0].content as string) as {
+    const sent = JSON.parse(promptText(plan)) as {
       options: { undeliverableMethods?: string[] };
     };
     expect(sent.options.undeliverableMethods).toEqual(["video_generate", "avatar"]);
@@ -2467,7 +2479,7 @@ describe("intake judges every photo it lists (reviewer item 5)", () => {
   }
 
   const blocks = (provider: MockProvider) =>
-    (provider.calls[0].input as LlmTaskInput).messages[0].content as Array<{ type: string; text?: string }>;
+    (provider.calls[0].input as LlmRequest).messages[0].content as Array<{ type: string; text?: string }>;
   const listed = (provider: MockProvider): string[] =>
     (JSON.parse(blocks(provider).find((b) => b.type === "text")?.text ?? "{}") as { images: Array<{ mediaId: string }> })
       .images.map((image) => image.mediaId);
@@ -2778,7 +2790,7 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     }
     // The judge gets the target and the exclude list as data.
     // The judge now sees the image blocks first, then the JSON as text.
-    const blocks = (qc.calls[0].input as LlmTaskInput).messages[0].content as Array<{ type: string; text?: string }>;
+    const blocks = (qc.calls[0].input as LlmRequest).messages[0].content as Array<{ type: string; text?: string }>;
     expect(blocks[0].type).toBe("image");
     const payload = JSON.parse(blocks.find((b) => b.type === "text")!.text!) as {
       sellerIntent?: unknown;
@@ -3061,19 +3073,19 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
 
         // What the picker was shown: the numbered sheet, the photo, and the
         // facts per number with the note as wrapped data.
-        const request = picker.calls[0].input as LlmTaskInput;
-        const content = request.messages[0].content as Array<{ type: string; text?: string; source?: { media_type: string } }>;
-        expect(content.filter((b) => b.type === "image").map((b) => b.source?.media_type)).toEqual(["image/jpeg", "image/jpeg"]);
-        const payload = JSON.parse(content[content.length - 1].text!) as Record<string, unknown>;
+        const request = picker.calls[0].input as LlmRequest;
+        const content = request.messages[0].content;
+        expect(content.flatMap((b) => (b.type === "image" ? [b.mediaType] : []))).toEqual(["image/jpeg", "image/jpeg"]);
+        const last = content[content.length - 1];
+        const payload = JSON.parse(last.type === "text" ? last.text : "") as Record<string, unknown>;
         expect(payload.userDescription).toBe(wrapUserDescription(productionNote));
         expect(payload.items).toEqual([
           { number: 1, color: "red", shape: "tall", label: "red bottle" },
           { number: 2, color: "blue", shape: "tall", label: "blue bottle" },
         ]);
         expect(payload.sellerIntent).toEqual({ featureOnly: "blue bottle", exclude: ["red bottle"] });
-        const tool = (request.tools ?? [])[0] as { strict?: boolean; input_schema: { required: string[] } };
-        expect(tool.strict).toBe(true);
-        expect(tool.input_schema.required).toEqual(expect.arrayContaining(["choice", "confidence", "reason"]));
+        expect(request.output?.strict).toBe(true);
+        expect((request.output?.schema as { required: string[] }).required).toEqual(expect.arrayContaining(["choice", "confidence", "reason"]));
 
         const photo = deps.store.inventories.get(baseInput.jobId)!.photos[0];
         expect(photo.rule).toBe("vision");
@@ -3213,11 +3225,12 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
   it("sends intake a tool schema that requires products, screenshot and sellerIntent", async () => {
     const intake = intakeWith(intakeFixture);
     await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
-    const tool = ((intake.calls[0].input as LlmTaskInput).tools ?? [])[0] as {
-      input_schema: { required: string[]; properties: { images: { items: { required: string[] } } } };
+    const schema = (intake.calls[0].input as LlmRequest).output?.schema as {
+      required: string[];
+      properties: { images: { items: { required: string[] } } };
     };
-    expect(tool.input_schema.required).toContain("sellerIntent");
-    expect(tool.input_schema.properties.images.items.required).toEqual(
+    expect(schema.required).toContain("sellerIntent");
+    expect(schema.properties.images.items.required).toEqual(
       expect.arrayContaining(["products", "screenshot"]),
     );
   });
@@ -3342,7 +3355,7 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
 
   /** The message the plan recipe was sent, parsed. */
   const planPayload = (plan: MockProvider) =>
-    JSON.parse((plan.calls[0].input as LlmTaskInput).messages[0].content as string) as Record<string, unknown> & {
+    JSON.parse(promptText(plan)) as Record<string, unknown> & {
       options: Record<string, unknown>;
     };
 
@@ -4137,17 +4150,15 @@ describe("ads formats in a pack (PHASE_16 workstream 3)", () => {
 });
 
 describe("audit trigger fixes: LLM calls", () => {
-  it("asks for emit_result with tool_choice auto, which every seeded model accepts", async () => {
+  it("asks for the emit_result structured output (the adapter keeps tool_choice auto)", async () => {
     const intake = new MockProvider({ name: "mock-intake", tasks: [intakeKey], output: intakeFixture });
     await runGeneratePack(baseInput, makeDeps({ ai: makeAi({ intake }) }));
-    const sent = intake.calls[0].input as LlmTaskInput;
-    expect(sent.toolChoice).toEqual({ type: "auto" });
-    const tool = (sent.tools ?? [])[0] as { name: string; description: string };
-    expect(tool.name).toBe("emit_result");
-    expect(tool.description).toMatch(/Always call this tool/);
+    const sent = intake.calls[0].input as LlmRequest;
+    expect(sent.output?.name).toBe("emit_result");
+    expect(sent.output?.strict).toBe(true);
   });
 
-  it("asks once more when the model answers in text without the tool call", async () => {
+  it("asks once more when the model answers without the structured output", async () => {
     class OnceWithoutTool extends MockProvider {
       private answered = 0;
       override async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
@@ -4155,8 +4166,8 @@ describe("audit trigger fixes: LLM calls", () => {
         this.answered += 1;
         const output =
           this.answered === 1
-            ? { toolUse: null, text: "Here is my view of the photos.", stopReason: "end_turn" }
-            : { toolUse: { name: "emit_result", input: intakeFixture }, text: null, stopReason: "tool_use" };
+            ? llmResult(null, "Here is my view of the photos.")
+            : llmResult(intakeFixture);
         return { ...res, output: output as TOut };
       }
     }
@@ -4271,7 +4282,7 @@ describe("audit trigger fixes: QC judge and outages", () => {
   it("shows the judge the shipped image", async () => {
     const qc = new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict });
     await runShot(mainShot, ctx, makeDeps({ ai: makeAi({ qc }) }));
-    const content = (qc.calls[0].input as LlmTaskInput).messages[0].content as Array<{ type: string }>;
+    const content = (qc.calls[0].input as LlmRequest).messages[0].content as Array<{ type: string }>;
     expect(Array.isArray(content)).toBe(true);
     expect(content[0].type).toBe("image");
     expect(content.at(-1)?.type).toBe("text");

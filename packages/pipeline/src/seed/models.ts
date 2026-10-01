@@ -20,6 +20,22 @@ export const llmModelPrices: Record<string, LlmPriceTable> = {
   "claude-opus-5-5": { inputMicrosPerMTok: 4_000_000, outputMicrosPerMTok: 20_000_000 },
 };
 
+/** The LLM provider families an adapter exists for. */
+export type LlmProviderFamily = "anthropic" | "openai";
+
+/**
+ * The provider that serves each LLM model id (docs/phases/PHASE_17.md
+ * workstream 1). The live runtime registers each model under
+ * "<provider>:<model>", and recipes name models only, so a recipe can move
+ * between providers by seed data alone. Every model in llmModelPrices has an
+ * entry here; a model with none is never routed (fail closed).
+ */
+export const llmModelProviders: Record<string, LlmProviderFamily> = {
+  "claude-haiku-4-5-20251001": "anthropic",
+  "claude-sonnet-5": "anthropic",
+  "claude-opus-5-5": "anthropic",
+};
+
 /** Task name the composite pipeline uses for background plate generation. */
 export const SCENE_PLATE_TASK = "scene_plate";
 

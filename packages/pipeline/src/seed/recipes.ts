@@ -14,18 +14,18 @@ import { z } from "zod";
 import type { Shot } from "../schemas";
 
 /**
- * Thinking and effort for one model, sent as the Messages API thinking
- * {type} and output_config.effort (checked 2026-09-29, docs/verification.md).
- * Claude Sonnet 5 thinks adaptively when thinking is left out, and thinking
- * tokens count toward max_tokens, so an extraction recipe sets these rather
- * than leave the budget to the default. Claude Opus 5.5 rejects thinking
- * disabled and Claude Haiku 4.5 rejects effort, so each model gets its own
- * entry and a model without one gets neither field.
+ * Reasoning effort for one model, provider neutral (docs/phases/PHASE_17.md
+ * workstream 1). Each LLM adapter maps it to its own API: Anthropic sends
+ * output_config.effort, or thinking disabled for "none" (checked 2026-09-29,
+ * docs/verification.md). Thinking tokens count toward the output budget, so
+ * an extraction recipe sets an effort rather than leave the budget to the
+ * model default. Valid values differ by model (Claude Opus 5.5 rejects
+ * thinking disabled, Claude Haiku 4.5 rejects effort), so each model gets its
+ * own entry and a model without one runs at its default.
  */
 export const RecipeModelOptions = z
   .object({
-    thinking: z.enum(["adaptive", "disabled"]).optional(),
-    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+    effort: z.enum(["none", "low", "medium", "high", "xhigh", "max"]).optional(),
   })
   .strict();
 export type RecipeModelOptions = z.infer<typeof RecipeModelOptions>;
@@ -45,7 +45,7 @@ export const RecipeRow = z.object({
       escalation: z.array(z.string().min(1)).optional(),
       examples: z.array(z.unknown()).optional(),
       maxTokens: z.number().int().positive().optional(),
-      /** Thinking and effort per model id, sent only to that model (valid
+      /** Reasoning effort per model id, sent only to that model (valid
        * values differ by model; see RecipeModelOptions). */
       modelOptions: z.record(z.string().min(1), RecipeModelOptions).optional(),
       /** Per attempt provider timeout, sized to the output budget. The
