@@ -95,7 +95,7 @@ describe("buildConfigReport without a database", () => {
       // One warning that names each uncovered stage and both keys, never
       // only Anthropic.
       expect(llm[0].message).toBe(
-        "No model key is set for the intake, copy, qc, pick, brand, question, analyze and plan stages. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to run them live.",
+        "No model key is set for the intake, analyze, plan, copy, qc, pick, brand and question stages. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to run them live.",
       );
     }
     expect(JSON.stringify(report)).not.toContain("secret-");

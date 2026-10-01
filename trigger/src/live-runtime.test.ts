@@ -126,12 +126,15 @@ describe("wireLiveProviders", () => {
         expect(registered?.supports(recipe.key)).toBe(true);
       }
     }
-    // The serving versions are Claude only, so the default chain is exactly
-    // theirs: the canary versions add no Claude model they lack.
+    // The serving OpenAI versions end on Sonnet 5 (Claude last), and their
+    // Claude rollback versions add Opus 5.5 after it. Haiku 4.5 is in no
+    // chain since 2026-10-01.
     for (const recipe of recipeSeedRows.filter(servesTraffic)) {
-      expect(routing[recipe.key]).toEqual(
-        [recipe.model, ...(recipe.fallbackModels ?? [])].map(llmModelProviderName),
-      );
+      expect(recipe.fallbackModels?.at(-1)).toBe("claude-sonnet-5");
+      expect(routing[recipe.key], recipe.key).toEqual(["anthropic:claude-sonnet-5", "anthropic:claude-opus-5-5"]);
+    }
+    for (const chain of Object.values(routing)) {
+      expect(chain).not.toContain("anthropic:claude-haiku-4-5-20251001");
     }
   });
 
@@ -162,23 +165,23 @@ describe("wireLiveProviders", () => {
     }
   });
 
-  it("puts the serving chain first and the canary's other models after it when both keys are set", () => {
+  it("puts the serving chain first and the rollback version's other models after it when both keys are set", () => {
     const { registry, routing } = freshBase();
     wireLiveProviders(registry, routing, (name) =>
       name === "OPENAI_API_KEY" || name === "ANTHROPIC_API_KEY" ? "key" : undefined,
     );
     expect(registry.list().filter((provider) => provider.kind === "llm")).toHaveLength(Object.keys(llmModelPrices).length);
     expect(routing.intake_normalizer).toEqual([
-      "anthropic:claude-haiku-4-5-20251001",
-      "anthropic:claude-sonnet-5",
       "openai:gpt-6-luna",
       "openai:gpt-5.6-terra",
+      "anthropic:claude-sonnet-5",
+      "anthropic:claude-opus-5-5",
     ]);
     expect(routing.brand_palette_namer).toEqual([
-      "anthropic:claude-haiku-4-5-20251001",
-      "anthropic:claude-sonnet-5",
       "openai:gpt-6-luna",
       "openai:gpt-6.1-sol",
+      "anthropic:claude-sonnet-5",
+      "anthropic:claude-opus-5-5",
     ]);
   });
 

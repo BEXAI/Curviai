@@ -1900,7 +1900,7 @@ const reportedStandbys = new Set<string>();
 /**
  * The recipe a call runs on: the job's own, unless none of its models has a
  * live provider while an active standby version of the same key does (only
- * OPENAI_API_KEY set and the job on a Claude serving version, or the
+ * OPENAI_API_KEY set and the job on the Claude rollback version, or the
  * reverse). The standby then runs with its own prompt, output budget, effort
  * per model and image detail, never the body written for the other
  * provider's models. Unchanged in demo mode, where no version is live.

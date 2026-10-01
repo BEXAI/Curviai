@@ -47,19 +47,25 @@ const image: LlmContentBlock = { type: "image", mediaType: "image/png", base64: 
 const ctx = { jobId: "job-standby", workspaceId: "ws-standby", stepId: "pick" };
 
 describe("only one LLM key set", () => {
-  it("runs target_picker on the OpenAI version's body when only OPENAI_API_KEY is set", async () => {
+  it("runs a job on the Claude rollback version of target_picker on the OpenAI version's body when only OPENAI_API_KEY is set", async () => {
     const { ai, bodies } = wired(["OPENAI_API_KEY"]);
-    const serving = seedRecipe("pick");
+    // The OpenAI version serves (2026-10-01); a job assigned the Claude
+    // rollback version (a rollback, or a recorded variant) has no live model.
+    const assigned = standbySeedRecipes(seedRecipe("pick")).find((recipe) =>
+      recipe.models.every((model) => model.startsWith("claude-")),
+    );
+    expect(assigned, "an active Claude target_picker version").toBeDefined();
+    if (!assigned) return;
     const standby = recipeSeedRows.find(
-      (row) => row.key === serving.key && row.active && row.version !== serving.version && row.model.startsWith("gpt-"),
+      (row) => row.key === assigned.key && row.active && row.version !== assigned.version && row.model.startsWith("gpt-"),
     );
     expect(standby, "an active OpenAI target_picker version").toBeDefined();
     if (!standby) return;
     const effort = standby.body.modelOptions?.[standby.model]?.effort;
     expect(effort).toBeDefined();
-    expect(standby.body.maxTokens).toBeGreaterThan(serving.maxTokens ?? 0);
+    expect(standby.body.system).not.toBe(assigned.system);
 
-    const call = await llmJson(ai, serving, TargetPickAnswer, { n: 1 }, ctx, [image], TargetPick);
+    const call = await llmJson(ai, assigned, TargetPickAnswer, { n: 1 }, ctx, [image], TargetPick);
 
     expect(call.value).toEqual({ choice: 1, confidence: "high", reason: "one mug" });
     expect(bodies).toHaveLength(1);
@@ -79,13 +85,15 @@ describe("only one LLM key set", () => {
     expect(runnableRecipe(ai, serving)).toBe(serving);
   });
 
-  it("runs the Claude serving version when only ANTHROPIC_API_KEY is set", async () => {
+  it("runs the serving version on its Claude fallback, Sonnet 5, when only ANTHROPIC_API_KEY is set", async () => {
     const { ai, bodies } = wired(["ANTHROPIC_API_KEY"]);
     const serving = seedRecipe("pick");
     expect(runnableRecipe(ai, serving)).toBe(serving);
     await llmJson(ai, serving, TargetPickAnswer, { n: 1 }, ctx, [image], TargetPick);
     expect(bodies[0].url).toMatch(/\/v1\/messages$/);
+    expect(bodies[0].body.model).toBe("claude-sonnet-5");
     expect(bodies[0].body.max_tokens).toBe(serving.maxTokens);
+    expect(bodies[0].body.output_config).toEqual({ effort: "low" });
   });
 
   it("leaves the recipe alone in demo mode, where no version is live", () => {

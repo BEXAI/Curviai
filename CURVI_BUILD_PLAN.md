@@ -304,7 +304,7 @@ Phase 17 (docs/phases/PHASE_17.md) moves every LLM call to OpenAI through the Re
 | `gpt-5.6-sol` | $4.00 / $0.40 / $20.00 (promotional, at least through 2026-11-21) | Second OpenAI model on the hard steps, a different family |
 | `gpt-5.6-terra` | $2.00 / $0.20 / $12.00 | Second OpenAI model on intake |
 | `gpt-6-astra` | $10.00 / $1.00 / $50.00 | Last step of the QC judge escalation only |
-| `claude-haiku-4-5-20251001`, `claude-sonnet-5`, `claude-opus-5-5` | $1 / $5, $2 / $10, $4 / $20 (in / out) | Last fallback while the credits last |
+| `claude-sonnet-5`, `claude-opus-5-5` | $2 / $10, $4 / $20 (in / out), checked 2026-10-01 | Sonnet 5 is the last fallback of every chain while the credits last; the Claude rollback versions run Sonnet 5, then Opus 5.5. Haiku 4.5 ($1 / $5) left every active chain on 2026-10-01 (its retirement commitment runs only to 2026-10-15) |
 
 | Stage (recipe) | Chain, in failover order | Effort | Image detail | Max output tokens |
 |---|---|---|---|---|
@@ -312,13 +312,13 @@ Phase 17 (docs/phases/PHASE_17.md) moves every LLM call to OpenAI through the Re
 | Product analyzer (product_analyzer v4) | gpt-6.1-sol, gpt-5.6-sol, claude-sonnet-5 | medium | high | 32,000 |
 | Shot planner (shot_planner v3) | gpt-6.1-sol, gpt-5.6-sol, claude-sonnet-5 | medium | no images | 32,000 |
 | Prompt compiler | Code templates, no LLM call | | | |
-| Copy generator (copy_generator v4) | gpt-6-luna, gpt-6.1-sol, claude-haiku-4-5 | low (Haiku takes no effort field) | no images | 8,000 |
+| Copy generator (copy_generator v4) | gpt-6-luna, gpt-6.1-sol, claude-sonnet-5 | low | no images | 8,000 |
 | QC judge (qc_judge v2) | gpt-6-luna, gpt-6.1-sol, claude-sonnet-5; escalation gpt-6-luna, gpt-6.1-sol, gpt-6-astra | low (medium on Sonnet) | high | 8,000 |
-| Target picker (target_picker v2) | gpt-6-luna, gpt-6.1-sol, claude-haiku-4-5 | low | high | 4,000 |
-| Brand palette namer (brand_palette_namer v2) | gpt-6-luna, gpt-6.1-sol, claude-haiku-4-5 | none on luna, low on sol | low | 2,000 |
-| Question planner (question_planner v2) | gpt-6-luna, gpt-6.1-sol, claude-haiku-4-5 | low | high | 4,000 |
+| Target picker (target_picker v2) | gpt-6-luna, gpt-6.1-sol, claude-sonnet-5 | low | high | 4,000 |
+| Brand palette namer (brand_palette_namer v2) | gpt-6-luna, gpt-6.1-sol, claude-sonnet-5 | none on luna, low on sol and Sonnet | low | 2,000 |
+| Question planner (question_planner v2) | gpt-6-luna, gpt-6.1-sol, claude-sonnet-5 | low | high | 4,000 |
 
-Every new version is seeded at trafficPct 0 beside the Claude version that serves today, and goes live per recipe through the canary in PHASE_17.md workstream 5. Until then the Claude primary chains of the previous versions serve all traffic (intake v6, analyzer v3, planner v2, copy v3, qc v1, picker v1, brand v1, questions v1). Output budgets start high because reasoning tokens count toward them, and are trimmed from measured reasoning tokens after a week at 100%. Not used: `claude-fable-5-1` ($10 / $50), overkill for this workload. Prompt caching stays automatic on OpenAI (keep long system prompts first and stable); the Batch API is not used for LLM calls (not eligible for Zero Data Retention, and it adds latency).
+Every version above serves 100% of traffic since 2026-10-01, when production was switched by SQL, and the seed carries the same weights. The previous Claude versions stay active at trafficPct 0 as the one-row rollback (intake v6, analyzer v3, planner v2, copy v3, qc v1, picker v1, brand v1, questions v1), each on claude-sonnet-5, then claude-opus-5-5. Output budgets start high because reasoning tokens count toward them, and are trimmed from measured reasoning tokens after a week at 100%. Not used: `claude-fable-5-1` ($10 / $50), overkill for this workload. Prompt caching stays automatic on OpenAI (keep long system prompts first and stable); the Batch API is not used for LLM calls (not eligible for Zero Data Retention, and it adds latency).
 
 ### 5.2 Zod schemas (source of truth; JSON Schema is generated with `z.toJSONSchema()` and sent as the tool or response schema)
 

@@ -20,12 +20,18 @@ export interface LlmPriceTable {
 }
 
 /**
- * LLM list prices per million tokens. Claude rows are plan section 5.1.
+ * LLM list prices per million tokens. Claude rows are plan section 5.1,
+ * checked again on platform.claude.com/docs/en/about-claude/pricing on
+ * 2026-10-01: Sonnet 5 $2 in and $10 out (its launch price is now the
+ * standard price), Opus 5.5 $4 and $20, Haiku 4.5 $1 and $5.
  * OpenAI rows are the Standard tier, short context prices from
  * developers.openai.com/api/docs/pricing, fetched 2026-10-01
  * (docs/phases/PHASE_17.md workstream 3, docs/verification.md).
  */
 export const llmModelPrices: Record<string, LlmPriceTable> = {
+  // No active recipe names Haiku 4.5 since 2026-10-01 (its retirement
+  // commitment runs only to 2026-10-15). Kept priced for the retired recipe
+  // rows and past meter entries; remove it once Anthropic retires it.
   "claude-haiku-4-5-20251001": { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 5_000_000 },
   "claude-sonnet-5": { inputMicrosPerMTok: 2_000_000, outputMicrosPerMTok: 10_000_000 },
   "claude-opus-5-5": { inputMicrosPerMTok: 4_000_000, outputMicrosPerMTok: 20_000_000 },
