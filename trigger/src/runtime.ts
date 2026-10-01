@@ -381,6 +381,16 @@ export function reportAiInternalError(err: unknown, context: string): void {
 export const DEMO_MODE_NOTICE =
   "Running in demo mode with in memory providers. Set provider API keys and database env to run against real services.";
 
+/** The env vars that each turn the recipes live: OpenAI or Anthropic
+ * (docs/phases/PHASE_17.md workstream 3). */
+export const LLM_KEY_ENVS = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"] as const;
+
+/** The pack's demo notice: set only when no LLM key is set, since either
+ * provider runs every recipe. */
+export function demoModeNotice(readEnv: (name: string) => string | undefined = optionalEnv): string | undefined {
+  return LLM_KEY_ENVS.some((name) => readEnv(name) !== undefined) ? undefined : DEMO_MODE_NOTICE;
+}
+
 export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   const registry = new ProviderRegistry();
   registry.register(new DemoLlmProvider());

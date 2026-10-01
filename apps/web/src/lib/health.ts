@@ -44,6 +44,9 @@ export interface HealthReport {
 }
 
 export const DEFAULT_PROVIDER_ENTRIES: HealthProviderEntry[] = [
+  // Every recipe runs on OpenAI first with Claude last (PHASE_17), so either
+  // key makes the text stages live.
+  { name: "openai-llm", kind: "llm", envVar: OPENAI_API_KEY_ENV },
   { name: "anthropic", kind: "llm", envVar: ANTHROPIC_API_KEY_ENV },
   { name: "gemini-image", kind: "image", envVar: GEMINI_API_KEY_ENV },
   { name: "bfl-flux", kind: "image", envVar: BFL_API_KEY_ENV },

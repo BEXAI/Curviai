@@ -1,7 +1,7 @@
 /**
  * Live provider wiring. Reads provider API keys from env and upgrades the
- * demo registry and routing in place: Anthropic models per recipe task
- * (models and prices from the pipeline seed), the image scene plate chain
+ * demo registry and routing in place: OpenAI and Anthropic models per
+ * recipe task (models, providers and prices from the pipeline seed), the image scene plate chain
  * (Nano Banana 2, FLUX.2 pro, GPT Image 2 in failover order), fal BiRefNet
  * cutouts (FAL_KEY), and a LiveShotGenerator that runs the fidelity lock composite
  * flow against real providers. With no keys set nothing here activates and
@@ -12,6 +12,7 @@ import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
   AnthropicLLMProvider,
   ASYNC_JOB_TIMEOUT_MARGIN_MS,
+  OpenaiLLMProvider,
   BflFluxProvider,
   callWithFailover,
   CircuitBreaker,
@@ -89,7 +90,9 @@ import {
   HARMONIZE_TASK,
   SCENE_PLATE_TASK,
   imageModelSeedRows,
+  llmImageTokenMultipliers,
   llmModelPrices,
+  llmModelProviders,
   canvasDefaults,
   cutoutModelSeedRows,
   presets,
@@ -98,6 +101,7 @@ import {
   stillStyle,
   templates,
   type ImageModelSeedRow,
+  type LlmProviderFamily,
   type PresetKey,
 } from "@curvi/pipeline/seed";
 import { keptMaxUpscale, logoOn, templateCardColors } from "@curvi/pipeline/output-options";
@@ -456,31 +460,50 @@ export function wireLiveProviders(
 ): LiveWiring {
   const wiring: LiveWiring = { llmLive: false, imageProviders: [], cutoutProviders: [], cutoutLive: false };
 
-  const anthropicKey = readEnv("ANTHROPIC_API_KEY");
-  if (anthropicKey) {
-    // One provider per priced model, serving every recipe task, so a recipe
-    // row can list any of them in failover order and the runner hands that
-    // order to the router per call (trigger/src/recipes.ts). The routing
-    // table keeps the seed order as the default chain.
-    const recipeTasks = [...new Set(recipeSeedRows.map((recipe) => recipe.key))];
-    for (const [model, priceTable] of Object.entries(llmModelPrices)) {
+  // One LLM provider per priced model whose provider key is set, serving
+  // every recipe task, so a recipe row can list any of them in failover order
+  // and the runner hands that order to the router per call
+  // (trigger/src/recipes.ts). OpenAI models need OPENAI_API_KEY and Claude
+  // models ANTHROPIC_API_KEY (docs/phases/PHASE_17.md workstream 3); a model
+  // whose key is unset is not registered, so every chain skips it.
+  const llmKeys: Record<LlmProviderFamily, string | undefined> = {
+    anthropic: readEnv("ANTHROPIC_API_KEY"),
+    openai: readEnv("OPENAI_API_KEY"),
+  };
+  const recipeTasks = [...new Set(recipeSeedRows.map((recipe) => recipe.key))];
+  const registeredLlm = new Set<string>();
+  for (const [model, priceTable] of Object.entries(llmModelPrices)) {
+    const family = Object.hasOwn(llmModelProviders, model) ? llmModelProviders[model] : undefined;
+    const apiKey = family ? llmKeys[family] : undefined;
+    if (!family || !apiKey) continue;
+    const name = llmModelProviderName(model);
+    if (family === "openai") {
+      const imageTokenMultiplier = llmImageTokenMultipliers[model];
+      // An OpenAI model without a seeded multiplier cannot estimate its
+      // image input for the caps, so it is never registered (fail closed).
+      if (imageTokenMultiplier === undefined) continue;
       registry.register(
-        new AnthropicLLMProvider({
-          name: llmModelProviderName(model),
-          tasks: recipeTasks,
-          apiKey: anthropicKey,
-          model,
-          priceTable,
-        }),
+        new OpenaiLLMProvider({ name, tasks: recipeTasks, apiKey, model, priceTable, imageTokenMultiplier }),
       );
+    } else {
+      registry.register(new AnthropicLLMProvider({ name, tasks: recipeTasks, apiKey, model, priceTable }));
     }
-    for (const recipe of recipeSeedRows) {
-      if (!recipe.active) continue;
-      const chain = seedRecipe(recipe.stage)
-        .models.filter((model) => llmModelPrices[model] !== undefined)
-        .map(llmModelProviderName);
+    registeredLlm.add(name);
+  }
+  if (registeredLlm.size > 0) {
+    // The routing table keeps the seed order as the default chain, filtered
+    // to the registered providers: the serving version's models first, then
+    // those of any other active version (a canary), so a job whose own
+    // chain has no key set still runs on the models that do.
+    for (const key of recipeTasks) {
+      const rows = recipeSeedRows.filter((recipe) => recipe.key === key && recipe.active);
+      if (rows.length === 0) continue;
+      const serving = seedRecipe(rows[0].stage);
+      const others = rows.filter((row) => row.version !== serving.version).sort((a, b) => b.version - a.version);
+      const models = [...serving.models, ...others.flatMap((row) => [row.model, ...(row.fallbackModels ?? [])])];
+      const chain = [...new Set(models.map(llmModelProviderName))].filter((name) => registeredLlm.has(name));
       if (chain.length > 0) {
-        routing[recipe.key] = chain;
+        routing[key] = chain;
       }
     }
     wiring.llmLive = true;

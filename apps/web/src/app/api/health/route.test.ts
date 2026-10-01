@@ -165,7 +165,10 @@ describe("GET /api/health detailed report", () => {
     expect(body.details.recipes.drift.length).toBeGreaterThan(0);
     expect(body.details.providerKeys.find((s: { stage: string }) => s.stage === "analyze")).toMatchObject({
       ready: true,
-      keys: [{ envVar: "ANTHROPIC_API_KEY", present: true }],
+      keys: [
+        { envVar: "ANTHROPIC_API_KEY", present: true },
+        { envVar: "OPENAI_API_KEY", present: false },
+      ],
     });
     expect(body.details.runtime.shotConcurrency).toEqual({ configured: "3", effective: 3 });
     expect(typeof body.details.runtime.memory.rssBytes).toBe("number");

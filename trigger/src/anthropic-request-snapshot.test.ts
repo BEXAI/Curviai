@@ -34,7 +34,7 @@ import {
   solidCanvas,
   TargetPick,
 } from "@curvi/pipeline";
-import { llmModelPrices, recipeSeedRows } from "@curvi/pipeline/seed";
+import { llmModelPrices, llmModelProviders, recipeSeedRows } from "@curvi/pipeline/seed";
 import type { z } from "zod";
 import { llmJson, visionBlocks, type AiDeps } from "./pipeline-runner";
 import { llmModelProviderName, recipeFromRow, type RecipeStage, type ResolvedRecipe } from "./recipes";
@@ -138,6 +138,9 @@ describe("Anthropic request bodies (phase 17 workstream 1)", () => {
   it("are byte for byte unchanged for every recipe, model and strict mode", async () => {
     const hashes: Record<string, string> = {};
     for (const row of recipeSeedRows) {
+      // The proof covers the Claude versions that existed before Phase 17;
+      // the OpenAI versions (workstream 3) are new requests, not changes.
+      if (llmModelProviders[row.model] !== "anthropic") continue;
       const recipe = recipeFromRow({
         id: `${row.key}-v${row.version}`,
         key: row.key,

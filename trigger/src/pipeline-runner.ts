@@ -170,7 +170,7 @@ import {
   CUTOUT_TASK,
   qcJudgePolicy,
   questionSet,
-  recipeSeedRows,
+  servingRecipeSeedRow,
   SCENE_PLATE_TASK,
   sceneCountOptions,
   type RecipeRow,
@@ -258,7 +258,7 @@ const PACK_CAP_REACHED =
  * table through PipelineDeps.recipes; this is the seed the demo wiring and
  * the fallback use. */
 export function activeRecipe(stage: RecipeRow["stage"]): RecipeRow {
-  const recipe = recipeSeedRows.find((r) => r.stage === stage && r.active);
+  const recipe = servingRecipeSeedRow(stage);
   if (!recipe) {
     throw new Error(`No active recipe seeded for stage "${stage}"`);
   }

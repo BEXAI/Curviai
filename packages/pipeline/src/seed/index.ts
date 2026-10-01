@@ -1,4 +1,14 @@
-export { RecipeModelOptions, RecipeRow, adCopyRecipe, addedOverlaysIntake, aplusCopyRecipe, qcJudgePolicy, recipeSeedRows } from "./recipes";
+export {
+  RecipeModelOptions,
+  RecipeRow,
+  adCopyRecipe,
+  addedOverlaysIntake,
+  aplusCopyRecipe,
+  qcJudgePolicy,
+  recipeSeedRows,
+  servesTraffic,
+  servingRecipeSeedRow,
+} from "./recipes";
 export {
   QUESTION_KINDS,
   channelChoices,
@@ -14,6 +24,8 @@ export {
   SCENE_PLATE_TASK,
   costCaps,
   imageModelSeedRows,
+  llmImageTokenMultipliers,
+  llmModelEfforts,
   llmModelPrices,
   llmModelProviders,
   cutoutModelSeedRows,
@@ -22,6 +34,7 @@ export type {
   CutoutModelSeedRow,
   ImageModelSeedRow,
   ImageProviderFamily,
+  LlmEffortLevel,
   LlmPriceTable,
   LlmProviderFamily,
 } from "./models";
