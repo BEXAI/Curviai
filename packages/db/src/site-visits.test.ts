@@ -75,6 +75,17 @@ describe("site_visits and site_visit_salts (0027)", () => {
     }
   });
 
+  it("keep only the UTC day, no time of day, so rows cannot be lined up by time with other records", async () => {
+    const result = await client.query<{ table_name: string; column_name: string; data_type: string }>(
+      `select table_name, column_name, data_type from information_schema.columns
+       where table_schema = 'public' and table_name in ('site_visits', 'site_visit_salts')
+       order by table_name, ordinal_position`,
+    );
+    const timed = result.rows.filter((r) => /time|interval/.test(r.data_type) || /_at$/.test(r.column_name));
+    expect(timed).toEqual([]);
+    expect(result.rows.filter((r) => r.column_name === "day").map((r) => r.data_type)).toEqual(["date", "date"]);
+  });
+
   for (const [name, become] of CLIENT_ROLES) {
     it(`are invisible and unwritable to ${name}`, async () => {
       await become();

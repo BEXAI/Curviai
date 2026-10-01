@@ -6,14 +6,25 @@ The discovery sweep of 2026-09-28 found 205 open items (docs/phases/PHASE_10.md)
 
 ## Site visitor count founder steps (cookieless, first party)
 
-Added 2026-10-01. The code is on `site-visitors`. Render's dashboard reports no visitors and PostHog only counts people who accept cookies, so the site now counts page views itself without cookies (apps/web/src/lib/visits) and shows them at `/app/ops/visitors` to the people listed in `OPS_EMAILS`. The details are in docs/LAUNCH_CHECKLIST.md, "Site visitor count". Do these in order.
+Added 2026-10-01. The code is on `site-visitors`. Render's dashboard reports no visitors and PostHog only counts people who accept cookies, so the site now counts page views itself without cookies (apps/web/src/lib/visits) and shows them at `/app/ops/visitors` to the people listed in `OPS_EMAILS` (or `OPS_EMAIL`). The details are in docs/LAUNCH_CHECKLIST.md, "Site visitor count". Do these in order.
 
 1. **Apply migration 0027 in production** with pnpm db:migrate, staging first. It adds the `site_visits` and `site_visit_salts` tables (RLS on, no client privileges) and the `site_visits_daily` view. It is additive: the code before it keeps working, and the new code stores nothing until the tables exist (the beacon route always answers 204 and logs the failure).
-2. **Set `OPS_EMAILS` on Render** (Environment, Save only): your sign in email, or several separated by commas. Server only; never a `NEXT_PUBLIC_` name. Unset means nobody can open the page.
-3. **Add `OPS_EMAILS=` to .env.example by hand,** with the comment `# Operator emails (comma separated) that may open /app/ops/visitors. Server only. Unset: nobody.` (env files are blocked for the agents).
-4. **Deploy the web app,** then open https://curvi.ai/app/ops/visitors signed in with that email. Anyone else gets a 404. The counts start from the deploy; there is no history before it.
-5. **Optional:** in the Supabase SQL editor, `select * from site_visits_daily order by day desc;` gives the same daily numbers.
-6. **Later:** check which client IP header Render passes (docs/verification.md, "Site visitor count"), since a script that forges that header on every request can inflate the unique count.
+2. **Set `OPS_EMAILS` on Render** (Environment, Save only): your sign in email, or several separated by commas. Server only; never a `NEXT_PUBLIC_` name. If you already set `OPS_EMAIL` (singular), that works too: it is read whenever `OPS_EMAILS` is unset or empty, and `OPS_EMAILS` wins when both are set. With neither, nobody can open the page.
+3. **Set `VISITS_HASH_KEY` on Render** (Environment, Save only): run `openssl rand -hex 32` and paste the output. Server only, never in the repo, never a `NEXT_PUBLIC_` name. Without it nothing is counted, and `/app/ops/visitors` says counting is off.
+4. **Add these lines to .env.example by hand** (env files are blocked for the agents):
+
+   ```
+   # Operator emails (comma separated) that may open /app/ops/visitors. Server only. Unset: nobody.
+   # OPS_EMAIL (singular) is read the same way when OPS_EMAILS is unset.
+   OPS_EMAILS=
+   # Secret key for the cookieless visitor count, for example openssl rand -hex 32. Server only. Unset: nothing is counted.
+   VISITS_HASH_KEY=
+   ```
+
+5. **Schedule `/api/cron/stale-jobs`** every 10 to 15 minutes if it is not scheduled yet (docs/LAUNCH_CHECKLIST.md, "Batch 2 platform", item 3). It now also deletes visitor salts older than yesterday, so they go on time even on a quiet day.
+6. **Deploy the web app,** then open https://curvi.ai/app/ops/visitors signed in with that email. Anyone else gets a 404. The counts start from the deploy; there is no history before it. Your own visits to `/app/ops` are not counted.
+7. **Optional:** in the Supabase SQL editor, `select * from site_visits_daily order by day desc;` gives the same daily numbers.
+8. **Later:** check which client IP header Render passes (docs/verification.md, "Site visitor count") and make `clientIp()` trust only edge set headers. Until then a script that forges that header gets past the per IP limits, and only the 3 in flight and 100,000 a day bounds hold.
 
 ## Phase 17 founder steps (every LLM call moves to OpenAI, Claude last)
 

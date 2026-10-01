@@ -914,20 +914,22 @@ export const siteVisitSalts = pgTable(
   {
     day: date("day", { mode: "string" }).primaryKey(),
     salt: text("salt").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check("site_visit_salts_salt_check", sql`${t.salt} ~ '^[0-9a-f]{64}$'`)],
 );
 
 /**
  * One page view of the public site (migration 0027, apps/web/src/lib/visits).
- * visitor_hash is the first 16 bytes (hex) of sha256(daily salt, site host,
- * client IP, user agent), so it is the same for one browser all day and
- * means nothing once the day's salt is deleted. Neither the IP nor the user
+ * visitor_hash is the first 16 bytes (hex) of HMAC-SHA256 under the
+ * server's VISITS_HASH_KEY over (daily salt, site host, client IP, user
+ * agent), so it is the same for one browser all day and means nothing once
+ * the day's salt is deleted. Neither the IP nor the user
  * agent is stored anywhere. path is normalized (no query string, ids as
  * :id), referrer_host is a host name only and is set only on the first page
- * view after a full page load. Platform table: RLS on with no policies and
- * no client privileges; only the owner connection reads or writes it.
+ * view after a full page load. No time of day is kept, only the UTC day, so
+ * rows cannot be lined up by time with other records. Platform table: RLS on
+ * with no policies and no client privileges; only the owner connection
+ * reads or writes it.
  */
 export const siteVisits = pgTable(
   "site_visits",
@@ -941,7 +943,6 @@ export const siteVisits = pgTable(
     utmMedium: text("utm_medium"),
     utmCampaign: text("utm_campaign"),
     device: text("device").$type<VisitDevice>().notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     check("site_visits_visitor_hash_check", sql`${t.visitorHash} ~ '^[0-9a-f]{32}$'`),
@@ -951,7 +952,6 @@ export const siteVisits = pgTable(
       sql`char_length(${t.path}) <= 300 and char_length(coalesce(${t.referrerHost}, '')) <= 255 and char_length(coalesce(${t.utmSource}, '')) <= 100 and char_length(coalesce(${t.utmMedium}, '')) <= 100 and char_length(coalesce(${t.utmCampaign}, '')) <= 100`,
     ),
     index("site_visits_day_visitor_hash_idx").on(t.day, t.visitorHash),
-    index("site_visits_day_path_idx").on(t.day, t.path),
   ],
 );
 

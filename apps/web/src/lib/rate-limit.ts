@@ -68,6 +68,15 @@ export const RATE_LIMIT_POLICIES = {
   // a cache miss, so one IP cannot loop on them. A page shows a handful and
   // the gallery a few dozen, far below this.
   "shares.image": { user: { limit: 600, windowSeconds: HOUR }, ip: { limit: 600, windowSeconds: HOUR } },
+  // The cookieless visitor count's beacon (/api/visits), IP only since there
+  // is no sign in (the user rules are unused). visits.record: every page view
+  // from one address; a person opens a few pages a minute at most and a
+  // shared office still fits. visits.newVisitor: the new visitor codes one
+  // address can make, so a script that sends a new user agent on every
+  // request adds at most 30 visitors an hour instead of one per request.
+  // Over either limit the page view is not counted; the beacon still gets 204.
+  "visits.record": { user: { limit: 300, windowSeconds: HOUR }, ip: { limit: 300, windowSeconds: HOUR } },
+  "visits.newVisitor": { user: { limit: 30, windowSeconds: HOUR }, ip: { limit: 30, windowSeconds: HOUR } },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitPolicyName = keyof typeof RATE_LIMIT_POLICIES;

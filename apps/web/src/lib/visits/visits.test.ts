@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isPrefetch, visitSkipReason } from "./bots";
 import { daysBefore, newSalt, utcDay, visitorHash } from "./hash";
-import { cleanUtm, deviceClass, normalizePath, referrerHost } from "./normalize";
+import { cleanUtm, deviceClass, isExcludedPath, normalizePath, referrerHost } from "./normalize";
 import { buildVisitPayload } from "./payload";
 
 const CHROME_DESKTOP =
@@ -15,12 +15,22 @@ const ANDROID_TABLET =
 const IPAD = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 describe("visitorHash", () => {
-  const base = { salt: "ab".repeat(32), host: "curvi.ai", ip: "203.0.113.7", userAgent: CHROME_DESKTOP };
+  const KEY = "visits-test-key-0123456789abcdef0123456789";
+  const base = { key: KEY, salt: "ab".repeat(32), host: "curvi.ai", ip: "203.0.113.7", userAgent: CHROME_DESKTOP };
 
-  it("is the first 16 bytes of a sha256, as 32 hex characters, and stable for the same input", () => {
+  it("is the first 16 bytes of an HMAC-SHA256 under the key, as 32 hex characters, and stable", () => {
+    // Worked out apart from this code:
+    // printf '%s\n%s\n%s\n%s' "$SALT" curvi.ai 203.0.113.7 "$UA" | openssl dgst -sha256 -hmac "$KEY" | cut -c1-32
     const hash = visitorHash(base);
-    expect(hash).toMatch(/^[0-9a-f]{32}$/);
+    expect(hash).toBe("31ec027cc071ad62df43ace78adbff69");
     expect(visitorHash({ ...base })).toBe(hash);
+  });
+
+  it("cannot be recomputed without the key, from the salt, IP and user agent alone", () => {
+    // The same parts through a plain sha256, as anyone holding only the
+    // database could compute them (the same openssl line without -hmac).
+    expect(visitorHash(base)).not.toBe("8a181295524b263a5b41eb369f72ff1f");
+    expect(visitorHash({ ...base, key: `${KEY}x` })).not.toBe(visitorHash(base));
   });
 
   it("changes with the salt, the IP, the user agent and the site host", () => {
@@ -31,10 +41,10 @@ describe("visitorHash", () => {
     expect(visitorHash({ ...base, host: "staging.curvi.ai" })).not.toBe(hash);
   });
 
-  it("never contains the IP or any part of the user agent", () => {
-    const hash = visitorHash(base);
-    expect(hash).not.toContain("203");
-    expect(hash).not.toContain("Mozilla");
+  it("ignores case in the host and anything past 512 characters of user agent", () => {
+    expect(visitorHash({ ...base, host: "Curvi.AI" })).toBe(visitorHash(base));
+    const long = "a".repeat(512);
+    expect(visitorHash({ ...base, userAgent: `${long}tail` })).toBe(visitorHash({ ...base, userAgent: long }));
   });
 
   it("keeps the parts apart, so shifting text between IP and user agent gives another code", () => {
@@ -94,6 +104,23 @@ describe("normalizePath", () => {
     expect(normalizePath("")).toBeNull();
     expect(normalizePath(42)).toBeNull();
     expect(normalizePath(undefined)).toBeNull();
+  });
+});
+
+describe("isExcludedPath", () => {
+  it("leaves out the operator pages, however the path is written", () => {
+    expect(isExcludedPath("/app/ops")).toBe(true);
+    expect(isExcludedPath("/app/ops/visitors")).toBe(true);
+    expect(isExcludedPath("/app/ops/visitors/?x=1")).toBe(true);
+    expect(isExcludedPath("//app//OPS/visitors")).toBe(true);
+  });
+
+  it("counts every other page, the rest of the app included", () => {
+    expect(isExcludedPath("/")).toBe(false);
+    expect(isExcludedPath("/app")).toBe(false);
+    expect(isExcludedPath("/app/jobs/:id")).toBe(false);
+    expect(isExcludedPath("/app/opsx")).toBe(false);
+    expect(isExcludedPath("/ops")).toBe(false);
   });
 });
 

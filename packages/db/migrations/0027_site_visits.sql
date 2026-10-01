@@ -10,10 +10,12 @@
 --   than yesterday, so a day's visitor_hash can never be recomputed, or
 --   linked to the same person on another day, once its salt is gone.
 -- site_visits: one row per page view. visitor_hash is the first 16 bytes of
---   sha256(salt, site host, client IP, user agent), as hex. path is normalized
---   (no query string, ids as :id), referrer_host is a host name only.
---   (day, visitor_hash) backs the unique count and the per visitor daily cap;
---   (day, path) backs the top pages.
+--   HMAC-SHA256 under the server's VISITS_HASH_KEY over (salt, site host,
+--   client IP, user agent), as hex; the key is never in the database, so
+--   its contents alone cannot recompute a code. path is normalized (no query
+--   string, ids as :id), referrer_host is a host name only. Only the UTC day
+--   is kept, no time of day, in either table. (day, visitor_hash) backs the
+--   unique count, the per visitor daily cap and every 30 day range.
 -- site_visits_daily: unique visitors and page views per day, for the
 --   Supabase SQL editor. security_invoker, so it reads site_visits with the
 --   rights of whoever queries it and never widens access.
@@ -25,7 +27,6 @@
 CREATE TABLE "site_visit_salts" (
 	"day" date PRIMARY KEY NOT NULL,
 	"salt" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "site_visit_salts_salt_check" CHECK ("site_visit_salts"."salt" ~ '^[0-9a-f]{64}$')
 );
 --> statement-breakpoint
@@ -39,14 +40,12 @@ CREATE TABLE "site_visits" (
 	"utm_medium" text,
 	"utm_campaign" text,
 	"device" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "site_visits_visitor_hash_check" CHECK ("site_visits"."visitor_hash" ~ '^[0-9a-f]{32}$'),
 	CONSTRAINT "site_visits_device_check" CHECK ("site_visits"."device" in ('mobile', 'tablet', 'desktop')),
 	CONSTRAINT "site_visits_lengths_check" CHECK (char_length("site_visits"."path") <= 300 and char_length(coalesce("site_visits"."referrer_host", '')) <= 255 and char_length(coalesce("site_visits"."utm_source", '')) <= 100 and char_length(coalesce("site_visits"."utm_medium", '')) <= 100 and char_length(coalesce("site_visits"."utm_campaign", '')) <= 100)
 );
 --> statement-breakpoint
 CREATE INDEX "site_visits_day_visitor_hash_idx" ON "site_visits" USING btree ("day","visitor_hash");--> statement-breakpoint
-CREATE INDEX "site_visits_day_path_idx" ON "site_visits" USING btree ("day","path");--> statement-breakpoint
 
 ALTER TABLE "site_visit_salts" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "site_visits" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint

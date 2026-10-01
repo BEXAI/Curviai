@@ -19,7 +19,7 @@ function isBeacon(request: Request): boolean {
   return request.method() === "POST" && new URL(request.url()).pathname === "/api/visits";
 }
 
-test("loading the home page sends one beacon to the visits route", async ({ page }) => {
+test("loading the home page sends one beacon with the referrer to the visits route", async ({ page }) => {
   await asPerson(page);
   const beacons: Request[] = [];
   page.on("request", (request) => {
@@ -28,10 +28,14 @@ test("loading the home page sends one beacon to the visits route", async ({ page
     }
   });
   const first = page.waitForRequest(isBeacon);
-  await page.goto("/?utm_source=Newsletter&utm_campaign=launch&email=a%40b.com");
+  await page.goto("/?utm_source=Newsletter&utm_campaign=launch&email=a%40b.com", {
+    referer: "https://news.ycombinator.com/",
+  });
   const request = await first;
   const body = JSON.parse(request.postData() ?? "{}") as Record<string, unknown>;
   expect(body).toMatchObject({ path: "/", utm_source: "Newsletter", utm_campaign: "launch" });
+  // The first page of a visit carries the site that sent it.
+  expect(String(body.referrer)).toContain("news.ycombinator.com");
   expect(JSON.stringify(body)).not.toContain("a@b.com");
   const response = await request.response();
   expect(response?.status()).toBe(204);
