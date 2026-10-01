@@ -1,9 +1,12 @@
 /**
  * Anthropic Messages API adapter (POST {baseUrl}/v1/messages with the
- * anthropic-version header). Supports plain text output and structured
- * output through tools plus tool_choice. Cost is computed from usage tokens
- * times the injected price table; the model ID and prices are constructor
- * parameters, never literals here.
+ * anthropic-version header). It takes the provider neutral LlmRequest
+ * (../llm.ts) and returns an LlmResult, translating both ways here and
+ * nowhere else: image blocks become base64 sources, the requested output
+ * becomes the emit_result tool with tool_choice auto, and the recipe's
+ * effort becomes output_config.effort (or thinking disabled for "none").
+ * Cost is computed from usage tokens times the injected price table; the
+ * model ID and prices are constructor parameters, never literals here.
  *
  * A reply with stop_reason "refusal" (the safety system declined) or with
  * no text or tool_use block is a non retryable ProviderError that carries
@@ -21,6 +24,14 @@ import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
+import {
+  jsonFromText,
+  llmEffortFor,
+  type LlmContentBlock,
+  type LlmMessage,
+  type LlmRequest,
+  type LlmResult,
+} from "../llm";
 import {
   base64Bytes,
   imageDimensions,
@@ -114,45 +125,49 @@ export interface AnthropicLLMConfig extends AdapterCommonConfig {
   imageTokenLimits?: AnthropicImageTokenLimits;
 }
 
-export interface AnthropicLLMInput {
-  system?: string;
-  messages: Array<{ role: "user" | "assistant"; content: unknown }>;
-  /** Recipe selected model id. Overrides the adapter default; must have a
-   * price entry in priceTables or match the default model. */
-  model?: string;
-  /** Tool definitions; pair with toolChoice for structured output. */
-  tools?: unknown[];
-  toolChoice?: unknown;
-  maxTokens?: number;
-  temperature?: number;
-  /** Per model thinking and effort settings from the recipe row, keyed by
-   * model id. Each provider in a failover chain applies only the entry for
-   * the model it runs, since the valid values differ by model (Sonnet 5
-   * accepts thinking disabled, Opus 5.5 rejects it, Haiku 4.5 rejects
-   * effort). No entry sends neither field, so the model default applies. */
-  modelOptions?: Record<string, AnthropicModelOptions>;
+/** Instruction on the emit_result tool. Claude Opus 5.5 answers 400 to a
+ * forced tool_choice ("tool" or "any"; define tools docs, forcing tool use,
+ * checked 2026-09-29), so the choice stays "auto" and the description tells
+ * the model to call it. */
+const EMIT_RESULT_DESCRIPTION =
+  "Always call this tool exactly once to return the task result, as structured data matching the schema exactly. Do not answer in plain text.";
+
+/** Messages API content for one message: a lone text block is sent as a
+ * plain string, as the runner always sent a text only prompt. */
+function anthropicContent(content: readonly LlmContentBlock[]): unknown {
+  if (content.length === 1 && content[0].type === "text") {
+    return content[0].text;
+  }
+  return content.map((block) =>
+    block.type === "text"
+      ? { type: "text", text: block.text }
+      : { type: "image", source: { type: "base64", media_type: block.mediaType, data: block.base64 } },
+  );
 }
 
-/** Thinking and effort for one model (Messages API, checked 2026-09-29,
- * docs/verification.md): sent as thinking {type} and output_config.effort. */
-export interface AnthropicModelOptions {
-  thinking?: "adaptive" | "disabled";
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+function anthropicMessages(messages: readonly LlmMessage[]): Array<{ role: string; content: unknown }> {
+  return messages.map((message) => ({ role: message.role, content: anthropicContent(message.content) }));
 }
 
-export interface AnthropicLLMOutput {
-  text: string | null;
-  /** First tool_use block when tools were used, for structured output. */
-  toolUse: { name: string; input: unknown } | null;
-  stopReason: string | null;
-  usage: { inputTokens: number; outputTokens: number };
-  raw: unknown;
+/** The emit_result tool for a requested structured output. */
+function anthropicTools(request: LlmRequest): unknown[] | undefined {
+  if (!request.output) {
+    return undefined;
+  }
+  return [
+    {
+      name: request.output.name,
+      description: EMIT_RESULT_DESCRIPTION,
+      input_schema: request.output.schema,
+      ...(request.output.strict ? { strict: true } : {}),
+    },
+  ];
 }
 
 interface MessagesResponse {
   content?: Array<{ type: string; text?: string; name?: string; input?: unknown }>;
   stop_reason?: string;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number };
 }
 
 export class AnthropicLLMProvider implements CostAwareProvider {
@@ -207,7 +222,7 @@ export class AnthropicLLMProvider implements CostAwareProvider {
   /** The model a request runs on and its prices. A recipe selected model
    * without a price entry fails closed: silent misprice is worse than a
    * refused call. */
-  private resolveModel(input: AnthropicLLMInput, task: string): { model: string; prices: AnthropicPriceTable } {
+  private resolveModel(input: LlmRequest, task: string): { model: string; prices: AnthropicPriceTable } {
     const model = input.model ?? this.model;
     if (model === this.model) {
       return { model, prices: this.priceTable };
@@ -232,16 +247,16 @@ export class AnthropicLLMProvider implements CostAwareProvider {
    * results) are left out of that character count, since their base64 data
    * is not tokenized as text, and priced as visual tokens from their pixel
    * size instead (see anthropicImageTokens). Output tokens are taken at the
-   * full max_tokens budget of the request (input.maxTokens or the adapter
+   * full max_tokens budget of the request (maxOutputTokens or the adapter
    * default), the hard ceiling the API enforces. Both sides are priced with
    * the injected per million token rates, matching how invoke computes the
    * actual cost.
    */
   estimateCostMicros(req: ProviderRequest): number {
-    const input = req.input as unknown as AnthropicLLMInput;
+    const input = req.input as unknown as LlmRequest;
     const { prices } = this.resolveModel(input, req.task);
     const inputTokens = this.estimateInputTokens(input);
-    const outputTokens = input.maxTokens ?? this.defaultMaxTokens;
+    const outputTokens = input.maxOutputTokens ?? this.defaultMaxTokens;
     return Math.ceil(
       (inputTokens * prices.inputMicrosPerMTok + outputTokens * prices.outputMicrosPerMTok) / 1_000_000,
     );
@@ -249,13 +264,13 @@ export class AnthropicLLMProvider implements CostAwareProvider {
 
   /** Upper bound on the request's input tokens: text at one token per three
    * characters plus visual tokens for every image block. */
-  estimateInputTokens(input: AnthropicLLMInput): number {
+  estimateInputTokens(input: LlmRequest): number {
     let imageTokens = 0;
     const promptChars = JSON.stringify(
       {
         system: input.system ?? "",
-        messages: input.messages ?? [],
-        tools: input.tools ?? [],
+        messages: anthropicMessages(input.messages ?? []),
+        tools: anthropicTools(input) ?? [],
       },
       (_key, value: unknown) => {
         if (isImageBlock(value)) {
@@ -269,20 +284,28 @@ export class AnthropicLLMProvider implements CostAwareProvider {
   }
 
   async invoke<TIn = unknown, TOut = unknown>(req: ProviderRequest<TIn>): Promise<ProviderResponse<TOut>> {
-    const input = req.input as unknown as AnthropicLLMInput;
+    const input = req.input as unknown as LlmRequest;
     const { model, prices } = this.resolveModel(input, req.task);
+    const tools = anthropicTools(input);
     const body: Record<string, unknown> = {
       model,
-      max_tokens: input.maxTokens ?? this.defaultMaxTokens,
-      messages: input.messages,
+      max_tokens: input.maxOutputTokens ?? this.defaultMaxTokens,
+      messages: anthropicMessages(input.messages),
     };
     if (input.system !== undefined) body.system = input.system;
-    if (input.tools !== undefined) body.tools = input.tools;
-    if (input.toolChoice !== undefined) body.tool_choice = input.toolChoice;
-    if (input.temperature !== undefined) body.temperature = input.temperature;
-    const options = input.modelOptions?.[model];
-    if (options?.thinking !== undefined) body.thinking = { type: options.thinking };
-    if (options?.effort !== undefined) body.output_config = { effort: options.effort };
+    if (tools !== undefined) {
+      body.tools = tools;
+      body.tool_choice = { type: "auto" };
+    }
+    // Effort per model (Messages API, checked 2026-09-29,
+    // docs/verification.md): "none" turns thinking off, any other value is
+    // sent as output_config.effort and the model thinks adaptively, its
+    // default. No effort sends neither field, so the model default applies.
+    // Valid values differ by model (Opus 5.5 rejects thinking disabled,
+    // Haiku 4.5 rejects effort), which is why recipes key them by model.
+    const effort = llmEffortFor(input, model);
+    if (effort === "none") body.thinking = { type: "disabled" };
+    else if (effort !== undefined) body.output_config = { effort };
 
     const data = await requestJson<MessagesResponse>(this.fetchFn, this.name, req.task, `${this.baseUrl}/v1/messages`, {
       method: "POST",
@@ -317,7 +340,7 @@ export class AnthropicLLMProvider implements CostAwareProvider {
     // why; say so here instead. Not retried on this provider (the same
     // budget cuts the same answer short) and not a sign the provider is
     // unhealthy, so the chain fails over without touching the breaker.
-    if (data.stop_reason === "max_tokens" && (input.tools !== undefined || (!textBlock && !toolBlock))) {
+    if (data.stop_reason === "max_tokens" && (tools !== undefined || (!textBlock && !toolBlock))) {
       throw new ProviderError(
         `Anthropic response stopped at max_tokens (${String(body.max_tokens)}) before the answer was complete`,
         this.name,
@@ -338,11 +361,21 @@ export class AnthropicLLMProvider implements CostAwareProvider {
       );
     }
 
-    const output: AnthropicLLMOutput = {
-      text: textBlock?.text ?? null,
-      toolUse: toolBlock ? { name: toolBlock.name ?? "", input: toolBlock.input } : null,
-      stopReason: data.stop_reason ?? null,
-      usage: { inputTokens, outputTokens },
+    const text = textBlock?.text ?? "";
+    // The answer is the emit_result tool input. With tool_choice auto the
+    // model can, rarely, answer in text instead: then the JSON the text
+    // holds, else null, which tells the caller the tool call was missed.
+    const json = toolBlock && toolBlock.input !== undefined ? toolBlock.input : jsonFromText(text);
+    const output: LlmResult = {
+      json,
+      text,
+      finish: data.stop_reason === "max_tokens" ? "truncated" : "complete",
+      usage: {
+        inputTokens,
+        cachedInputTokens: data.usage?.cache_read_input_tokens ?? 0,
+        outputTokens,
+        reasoningTokens: 0,
+      },
       raw: data,
     };
     return { output: output as TOut, costMicros };

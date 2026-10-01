@@ -11,4 +11,5 @@ export * from "./meter";
 export * from "./router";
 export * from "./caps";
 export * from "./probe";
+export * from "./llm";
 export * from "./adapters";

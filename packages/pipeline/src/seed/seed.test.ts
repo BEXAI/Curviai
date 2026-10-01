@@ -7,7 +7,7 @@ import {
   ShotList,
   jsonSchemaFor,
 } from "../schemas";
-import { llmModelPrices } from "./models";
+import { llmModelPrices, llmModelProviders } from "./models";
 import { getSpec } from "@curvi/specs";
 import { MAX_BRAND_COLORS } from "./brand";
 import { RecipeRow, adCopyRecipe, aplusCopyRecipe, qcJudgePolicy, recipeSeedRows } from "./recipes";
@@ -194,18 +194,17 @@ describe("recipe seed rows", () => {
       // an explicit budget above the 4096 adapter default, and a timeout.
       expect(body.maxTokens ?? 0).toBeGreaterThanOrEqual(8000);
       expect(body.timeoutMs ?? 0).toBeGreaterThanOrEqual(120_000);
-      // Sonnet 5 and Opus 5.5 run at a stated effort, never with thinking
-      // disabled (Opus 5.5 rejects it); Haiku 4.5 gets no entry (it rejects
-      // effort).
+      // Sonnet 5 and Opus 5.5 run at a stated effort, never "none" (thinking
+      // disabled, which Opus 5.5 rejects); Haiku 4.5 gets no entry (it
+      // rejects effort).
       const options = body.modelOptions ?? {};
       expect(options["claude-sonnet-5"]?.effort).toBe("medium");
       expect(options["claude-opus-5-5"]?.effort).toBe("medium");
-      expect(options["claude-opus-5-5"]?.thinking).toBeUndefined();
       expect(options["claude-haiku-4-5-20251001"]).toBeUndefined();
     }
   });
 
-  it("rejects unknown thinking or effort values in a recipe body", () => {
+  it("rejects unknown effort values and provider specific fields in a recipe body", () => {
     const base = recipeSeedRows.find((r) => r.key === "product_analyzer" && r.active);
     expect(
       RecipeRow.safeParse({ ...base, body: { ...base?.body, modelOptions: { "claude-sonnet-5": { effort: "extreme" } } } })
@@ -214,6 +213,16 @@ describe("recipe seed rows", () => {
     expect(
       RecipeRow.safeParse({ ...base, body: { ...base?.body, modelOptions: { "claude-sonnet-5": { budget: 1 } } } }).success,
     ).toBe(false);
+    expect(
+      RecipeRow.safeParse({
+        ...base,
+        body: { ...base?.body, modelOptions: { "claude-sonnet-5": { thinking: "adaptive" } } },
+      }).success,
+    ).toBe(false);
+    expect(
+      RecipeRow.safeParse({ ...base, body: { ...base?.body, modelOptions: { "claude-sonnet-5": { effort: "none" } } } })
+        .success,
+    ).toBe(true);
   });
 
   it("seeds the target picker with the note as untrusted data and a null answer when unsure", () => {
@@ -243,6 +252,13 @@ describe("recipe seed rows", () => {
         expect(llmModelPrices[model]).toBeDefined();
       }
       expect(row.fallbackModels).not.toContain(row.model);
+    }
+  });
+
+  it("maps every priced LLM model to the provider that serves it", () => {
+    expect(Object.keys(llmModelProviders).sort()).toEqual(Object.keys(llmModelPrices).sort());
+    for (const provider of Object.values(llmModelProviders)) {
+      expect(["anthropic", "openai"]).toContain(provider);
     }
   });
 

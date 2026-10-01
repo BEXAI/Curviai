@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
-import { InMemoryBreakerStore, InMemoryCostMeter, ProviderError, ProviderRegistry } from "@curvi/ai";
+import { InMemoryBreakerStore, InMemoryCostMeter, ProviderError, ProviderRegistry, type LlmRequest } from "@curvi/ai";
 import { MockProvider } from "@curvi/ai/testing";
 import { loadRecipes, type Db } from "@curvi/db";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
-import { recipeSeedRows } from "@curvi/pipeline/seed";
+import { llmModelPrices, llmModelProviders, recipeSeedRows } from "@curvi/pipeline/seed";
 import {
   activeRecipe,
   assignRecipes,
@@ -13,7 +13,6 @@ import {
   systemClock,
   type AiDeps,
   type GeneratePackInput,
-  type LlmTaskInput,
 } from "./pipeline-runner";
 import {
   dbRecipeLoader,
@@ -93,8 +92,8 @@ describe("recipeFromRow", () => {
     expect(recipe?.models).toEqual(["model-a", "model-b"]);
   });
 
-  it("carries the body's thinking and effort per model and its timeout", () => {
-    const modelOptions = { "model-a": { effort: "low" as const }, "model-b": { thinking: "disabled" as const } };
+  it("carries the body's effort per model and its timeout", () => {
+    const modelOptions = { "model-a": { effort: "low" as const }, "model-b": { effort: "none" as const } };
     const recipe = recipeFromRow({ ...row, body: { system: "plan the pack", modelOptions, timeoutMs: 90_000 } });
     expect(recipe?.modelOptions).toEqual(modelOptions);
     expect(recipe?.timeoutMs).toBe(90_000);
@@ -104,10 +103,42 @@ describe("recipeFromRow", () => {
 
   it("drops rows that cannot run", () => {
     expect(recipeFromRow({ ...row, body: { system: "x".repeat(10), modelOptions: { "model-a": { effort: "huge" } } } })).toBeNull();
+    // The provider specific thinking field is gone from the neutral options.
+    expect(
+      recipeFromRow({ ...row, body: { system: "x".repeat(10), modelOptions: { "model-a": { thinking: "disabled" } } } }),
+    ).toBeNull();
     expect(recipeFromRow({ ...row, body: { system: "x".repeat(10), timeoutMs: 5 } })).toBeNull();
     expect(recipeFromRow({ ...row, body: { system: "" } })).toBeNull();
     expect(recipeFromRow({ ...row, stage: "render" })).toBeNull();
     expect(recipeFromRow({ ...row, model: "" })).toBeNull();
+  });
+});
+
+describe("llmModelProviderName", () => {
+  it("names each model by its seeded provider", () => {
+    for (const [model, provider] of Object.entries(llmModelProviders)) {
+      expect(llmModelProviderName(model)).toBe(`${provider}:${model}`);
+    }
+    expect(llmModelProviderName("claude-sonnet-5")).toBe("anthropic:claude-sonnet-5");
+  });
+
+  it("maps every priced model and every seeded recipe model to a provider", () => {
+    for (const model of Object.keys(llmModelPrices)) {
+      expect(llmModelProviders[model], model).toBeDefined();
+    }
+    for (const row of recipeSeedRows) {
+      for (const model of [row.model, ...(row.fallbackModels ?? [])]) {
+        expect(llmModelProviders[model], `${row.key} v${row.version} ${model}`).toBeDefined();
+      }
+    }
+  });
+
+  it("fails closed for a model with no provider: no live provider is ever registered under its name", () => {
+    const name = llmModelProviderName("unknown-model");
+    for (const provider of new Set(Object.values(llmModelProviders))) {
+      expect(name.startsWith(`${provider}:`)).toBe(false);
+    }
+    expect(llmModelProviderName("toString")).not.toMatch(/^(anthropic|openai):/);
   });
 });
 
@@ -327,13 +358,13 @@ describe("runGeneratePack with runtime recipes", () => {
     expect(backup.invocations).toBe(1);
     // The routing table entry is bypassed while a recipe model is live.
     expect(intake.invocations).toBe(0);
-    const sent = backup.calls[0].input as LlmTaskInput & { model?: string };
+    const sent = backup.calls[0].input as LlmRequest & { model?: string };
     expect(sent.system).toBe("intake variant prompt");
     expect(sent.model).toBeUndefined();
     // No recipe model is registered for QC, so the routing table serves it
     // with the variant's prompt.
     expect(qc.invocations).toBeGreaterThan(0);
-    expect((qc.calls[0].input as LlmTaskInput).system).toBe("qc variant prompt");
+    expect((qc.calls[0].input as LlmRequest).system).toBe("qc variant prompt");
     expect(store.recipeVariants.get(baseInput.jobId)).toMatchObject({
       [intakeKey]: { recipeId: "intake-v4", version: 4, source: "db" },
       [activeRecipe("qc").key]: { recipeId: "qc-v2", version: 2, source: "db" },
@@ -353,8 +384,8 @@ describe("runGeneratePack with runtime recipes", () => {
     expect(seeded.modelOptions).toBeDefined();
     expect(analyze.calls.length).toBeGreaterThan(0);
     const req = analyze.calls[0];
-    expect((req.input as LlmTaskInput).modelOptions).toEqual(seeded.modelOptions);
-    expect((req.input as LlmTaskInput).maxTokens).toBe(seeded.maxTokens);
+    expect((req.input as LlmRequest).modelOptions).toEqual(seeded.modelOptions);
+    expect((req.input as LlmRequest).maxOutputTokens).toBe(seeded.maxTokens);
     expect(req.timeoutMs).toBe(seeded.timeoutMs);
   });
 

@@ -15,9 +15,16 @@ export {
   costCaps,
   imageModelSeedRows,
   llmModelPrices,
+  llmModelProviders,
   cutoutModelSeedRows,
 } from "./models";
-export type { CutoutModelSeedRow, ImageModelSeedRow, ImageProviderFamily, LlmPriceTable } from "./models";
+export type {
+  CutoutModelSeedRow,
+  ImageModelSeedRow,
+  ImageProviderFamily,
+  LlmPriceTable,
+  LlmProviderFamily,
+} from "./models";
 export {
   adsFormats,
   aplusCopy,

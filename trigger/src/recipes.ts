@@ -23,7 +23,7 @@
 
 import { createHash } from "node:crypto";
 import { eq, recipes, type Db, type JobRecipeVariant } from "@curvi/db";
-import { RecipeRow, recipeSeedRows, type RecipeModelOptions } from "@curvi/pipeline/seed";
+import { llmModelProviders, RecipeRow, recipeSeedRows, type RecipeModelOptions } from "@curvi/pipeline/seed";
 
 export type RecipeStage = RecipeRow["stage"];
 
@@ -40,7 +40,7 @@ export interface ResolvedRecipe {
   system: string;
   /** Output token budget from the recipe body, when it sets one. */
   maxTokens?: number;
-  /** Thinking and effort per model id, from the recipe body. */
+  /** Reasoning effort per model id, from the recipe body. */
   modelOptions?: Record<string, RecipeModelOptions>;
   /** Per attempt provider timeout from the recipe body. */
   timeoutMs?: number;
@@ -60,10 +60,15 @@ export interface RecipeResolver {
   forVariants?(jobId: string, variants: Record<string, JobRecipeVariant>): Promise<JobRecipes>;
 }
 
-/** Registry name of the LLM provider that runs one model. The live wiring
- * registers one per priced model; recipes name models, never providers. */
+/** Registry name of the LLM provider that runs one model,
+ * "<provider>:<model>" with the provider from the llmModelProviders seed. The
+ * live wiring registers one per priced model; recipes name models, never
+ * providers. A model with no provider in the seed fails closed: it gets a
+ * name no provider is registered under, so a chain skips it, as it skips an
+ * unpriced model. */
 export function llmModelProviderName(model: string): string {
-  return `anthropic:${model}`;
+  const provider = Object.hasOwn(llmModelProviders, model) ? llmModelProviders[model] : undefined;
+  return provider ? `${provider}:${model}` : `unmapped:${model}`;
 }
 
 function uniqueModels(models: readonly string[]): string[] {
