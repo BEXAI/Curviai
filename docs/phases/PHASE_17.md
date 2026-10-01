@@ -251,6 +251,40 @@ New `packages/ai/src/adapters/openaiLLM.ts`, built on shared.ts and modeled on o
 - No code outside the two LLM adapters builds a provider-shaped request or reads a provider-shaped response.
 - docs/verification.md has dated rows for every OpenAI fact used and the measured image multipliers.
 
+## Implementation status
+
+Recorded 2026-10-01 on the integration branch `p17/integration` (head af572b3 before this docs commit). Nothing from this phase is live in production: the deploy, the re-seed, the image multiplier measurement, the live eval and every canary step are founder steps (docs/PENDING.md, "Phase 17 founder steps"). No migration is needed. The four founder decisions below are reflected in the seed and the docs.
+
+### What shipped, per workstream
+
+| # | Workstream | Status | Where |
+| --- | --- | --- | --- |
+| 1 | Provider neutral LLM contract | Built (merge a3ce152) | `packages/ai/src/llm.ts` (`LlmContentBlock`, `LlmRequest`, `LlmResult`, `llmEffortFor`); the Anthropic adapter takes `LlmRequest` and keeps its wire format, proven by a byte for byte snapshot of every recipe's request body (4fa1bda); `llmModelProviders` in the seed and `llmModelProviderName`, which fails closed (`unmapped:<model>`) for an unknown model. |
+| 2 | OpenAI LLM adapter | Built (merge d302ed3, reconciled in af572b3) | `packages/ai/src/adapters/openaiLLM.ts` (`OpenaiLLMProvider`, one provider per model, `POST /v1/responses` with `store: false`, no sampling parameters, explicit `detail`); billing codes in shared.ts open the breaker and are never retried; Retry-After honored up to the router cap; client safe schema helpers at `@curvi/ai/openai-schema`; `openaiStrictSchema` in packages/pipeline schemas.ts. |
+| 3 | Seed, recipes and wiring | Built (merge 0bcb4b8) | Five OpenAI models priced (cached input included), mapped, with accepted efforts (`llmModelEfforts`) and image multipliers (`llmImageTokenMultipliers`). New versions intake v7, analyzer v4, planner v3, copy v4, qc v2, picker v2, brand v2, questions v2, each active at `trafficPct: 0` beside the serving Claude version. `wireLiveProviders` and the probes register an OpenAI model only with `OPENAI_API_KEY`, a cached price and a seeded multiplier; the demo notice shows only when neither key is set; health has `openai-llm`, config-health lists uncovered stages, job copy hides OpenAI names. |
+| 4 | Quality, safety and eval | Built (merge ff8ce70) | `pnpm eval --live --provider openai or anthropic`, with `--record` and `--replay` so the scoring is tested without keys; the pass bar is scored against a stored Claude baseline; the prompt injection fixtures run in the same mode. Item 4 (moderation) is dropped by founder decision 3. |
+| 5 | Rollout | Ready, not started | No code beyond the seed rows: `RecipeCatalog` already splits traffic by `traffic_pct`. The deploy, re-seed and canary are founder steps. |
+| 6 | Cost and monitoring | In progress on `p17/monitor`, not merged when this was written | Cached input is already metered apart by the adapter. Reasoning token logging, the founder alerts (OpenAI `provider_quota`, Claude fallback above 5% in an hour, credit expiry on 2026-12-01 and 2026-12-24) and LLM spend per provider on the dashboard belong to that branch. |
+| 7 | Docs and cleanup | Items 1 and 2 done (this commit); item 3 waits for the founder to retire Claude | Dated rows for every OpenAI fact in docs/verification.md ("PHASE_17 workstream 7"), CURVI_BUILD_PLAN.md section 5.1, this section and the founder steps in docs/PENDING.md. |
+
+### Deviations from this plan
+
+- qc_judge v2 has `claude-sonnet-5` as a third fallback model. The Model choice table listed only gpt-6-luna and gpt-6.1-sol, but founder decision 1 puts Claude last in every chain. The escalation stays all OpenAI (gpt-6-luna, gpt-6.1-sol, gpt-6-astra).
+- Neither adapter returns `finish: "refused"` or `"filtered"`. Refusals and content filter stops throw `content_blocked`, and truncation throws `output_truncated`, so the router's failover and metering treat both providers alike. The finish values stay in the contract.
+- `llmJson` sends `strictToolSchema` to every provider, and the OpenAI adapter converts it to the strict OpenAI shape itself. `openaiStrictSchema` in packages/pipeline is the checked form the limit tests run on.
+- The live eval runs one provider per run and scores it against a stored Claude baseline (`--provider anthropic --record-baseline`), not both providers in one run.
+- An OpenAI model is wired only when it has both a cached input price and a seeded image multiplier, so a row missing either is skipped rather than metered at zero.
+
+### Known gaps
+
+- **Image multipliers for gpt-6-luna and gpt-6.1-sol are not yet measured.** Both are seeded at 1.72. The images and vision guide (checked 2026-10-01) lists 1.72 for o4-mini, and also 2.46 for the deprecated gpt-4.1-nano, so 1.72 is not "the most conservative documented multiplier" as the open item above says. It is above every model that is not deprecated (1.62 at most) and every new family is 1.2, so it still over reserves. Measure and seed the real values (founder step 4).
+- **Cache writes are metered low.** On 5.6 and later models a cache write bills at 1.25 times the input rate, reported as `input_tokens_details.cache_write_tokens`. `costOf` bills those tokens at the plain input rate. Prompt caching is on by default, so this is a small, steady under count until workstream 6 adds a cache write price.
+- **gpt-6-astra sizing.** At `detail: high` astra has no 2048 pixel box, only the 2,500 patch budget, so the estimate is low for very wide or very tall images on astra. Astra is only the last escalation step of the judge.
+- **Schema string limits.** `openaiSchemaLimitProblems` checks properties, nesting and enum values, not the 120,000 character total or the 15,000 character enum limit. Today's schemas are far below both.
+- **Haiku 4.5 retirement (2026-10-15).** Haiku is the primary model of the serving Claude versions of intake, copy, picker, brand and questions, and the third fallback of copy v4, picker v2, brand v2 and questions v2. Its retirement commitment runs only to 2026-10-15, so those canaries should reach 100% before then, or Haiku should be swapped for Sonnet 5 in those chains.
+- **A re-seed resets the canary.** `loadRecipes` upserts `traffic_pct` and `active` from the seed, so a canary weight set by hand in the SQL editor is undone by the next `pnpm db:seed`. Keep the seed's `trafficPct` in step with production (docs/PENDING.md, founder step 6).
+- The rule 6 gate for the whole phase runs on the integration branch after workstream 6 merges; this commit changes docs only.
+
 ## Founder decisions
 
 Decided 2026-10-01.
