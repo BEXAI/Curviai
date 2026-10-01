@@ -293,19 +293,32 @@ These exclude AI COGS; verify vendor plan prices at build. The gross margin targ
 
 ## 5. The invisible LLM wrapper layer
 
-### 5.1 Model choice per stage (Anthropic list prices per million tokens, September 2026; verify at docs.claude.com)
+### 5.1 Model choice per stage (updated 2026-10-01 for Phase 17: OpenAI primary, Claude last fallback)
 
-| Stage | Model | Price in / out | Reason |
-|---|---|---|---|
-| Intake normalizer | `claude-haiku-4-5-20251001` | $1 / $5 | Fast classification |
-| Product analyzer | `claude-sonnet-5` | $2 / $10 | Strong vision and structured output |
-| Shot planner | `claude-sonnet-5` | $2 / $10 | Reasoning over specs |
-| Prompt compiler | Code templates plus Haiku for scene text | $1 / $5 | Mostly deterministic |
-| Copy generator | `claude-haiku-4-5-20251001` | $1 / $5 | Short text |
-| QC judge | Haiku first pass, then Sonnet 5 on borderline, then `claude-opus-5-5` ($4 / $20, released September 22, 2026) on disputes | | Escalation keeps cost low |
-| Not used | `claude-fable-5-1` ($10 / $50) | | Overkill for this workload |
+Phase 17 (docs/phases/PHASE_17.md) moves every LLM call to OpenAI through the Responses API, because OpenAI granted Curvi credits that expire on December 31, 2026. Each chain is two OpenAI models, then one Claude model as the last fallback (founder decision 1). The model ids, prices, efforts and chains below live in the seed (packages/pipeline/src/seed/models.ts and recipes.ts, rule 2); this table only mirrors them. Prices are Standard tier, short context, per million tokens (input / cached input / output), checked 2026-10-01 at developers.openai.com/api/docs/pricing (docs/verification.md).
 
-Alternatives: Gemini 3.1 Pro lists at $2 / $12, and OpenAI GPT 5.6 Terra at $2 / $12 (per BenchLM, September 2026). Keep them in the registry as fallback analyzers. Claude 4.7 and later models use a tokenizer that produces about 30% more tokens for the same text, so budget on measured tokens. Use prompt caching for system prompts and Batch (50% off) for Fresh Creative Drops.
+| Model | Price | Use |
+|---|---|---|
+| `gpt-6-luna` | $0.10 / $0.01 / $0.50 | High volume vision and JSON steps |
+| `gpt-6.1-sol` | $2.00 / $0.10 / $10.00 | Analysis and planning; second model on the light steps |
+| `gpt-5.6-sol` | $4.00 / $0.40 / $20.00 (promotional, at least through 2026-11-21) | Second OpenAI model on the hard steps, a different family |
+| `gpt-5.6-terra` | $2.00 / $0.20 / $12.00 | Second OpenAI model on intake |
+| `gpt-6-astra` | $10.00 / $1.00 / $50.00 | Last step of the QC judge escalation only |
+| `claude-haiku-4-5-20251001`, `claude-sonnet-5`, `claude-opus-5-5` | $1 / $5, $2 / $10, $4 / $20 (in / out) | Last fallback while the credits last |
+
+| Stage (recipe) | Chain, in failover order | Effort | Image detail | Max output tokens |
+|---|---|---|---|---|
+| Intake normalizer (intake_normalizer v7) | gpt-6-luna, gpt-5.6-terra, claude-sonnet-5 | low (medium on Sonnet) | high | 16,000 |
+| Product analyzer (product_analyzer v4) | gpt-6.1-sol, gpt-5.6-sol, claude-sonnet-5 | medium | high | 32,000 |
+| Shot planner (shot_planner v3) | gpt-6.1-sol, gpt-5.6-sol, claude-sonnet-5 | medium | no images | 32,000 |
+| Prompt compiler | Code templates, no LLM call | | | |
+| Copy generator (copy_generator v4) | gpt-6-luna, gpt-6.1-sol, claude-haiku-4-5 | low (Haiku takes no effort field) | no images | 8,000 |
+| QC judge (qc_judge v2) | gpt-6-luna, gpt-6.1-sol, claude-sonnet-5; escalation gpt-6-luna, gpt-6.1-sol, gpt-6-astra | low (medium on Sonnet) | high | 8,000 |
+| Target picker (target_picker v2) | gpt-6-luna, gpt-6.1-sol, claude-haiku-4-5 | low | high | 4,000 |
+| Brand palette namer (brand_palette_namer v2) | gpt-6-luna, gpt-6.1-sol, claude-haiku-4-5 | none on luna, low on sol | low | 2,000 |
+| Question planner (question_planner v2) | gpt-6-luna, gpt-6.1-sol, claude-haiku-4-5 | low | high | 4,000 |
+
+Every new version is seeded at trafficPct 0 beside the Claude version that serves today, and goes live per recipe through the canary in PHASE_17.md workstream 5. Until then the Claude primary chains of the previous versions serve all traffic (intake v6, analyzer v3, planner v2, copy v3, qc v1, picker v1, brand v1, questions v1). Output budgets start high because reasoning tokens count toward them, and are trimmed from measured reasoning tokens after a week at 100%. Not used: `claude-fable-5-1` ($10 / $50), overkill for this workload. Prompt caching stays automatic on OpenAI (keep long system prompts first and stable); the Batch API is not used for LLM calls (not eligible for Zero Data Retention, and it adds latency).
 
 ### 5.2 Zod schemas (source of truth; JSON Schema is generated with `z.toJSONSchema()` and sent as the tool or response schema)
 
