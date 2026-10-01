@@ -45,6 +45,12 @@
  *   closed). An allowed global_day reservation at or past the alert line
  *   calls opts.onCapAlert.
  *
+ * Metering: every attempt's entry names the chain's first provider
+ * (primaryProvider), and an LLM attempt's entry carries its token usage
+ * (LlmResult.usage on success, ProviderError.usage on a billed failure), so
+ * cached input, output and reasoning tokens are metered apart
+ * (docs/phases/PHASE_17.md workstream 6).
+ *
  * Once a provider call succeeds, bookkeeping (meter, breaker, reconcile)
  * can no longer trigger a retry or a second release: its errors go to
  * opts.onInternalError.
@@ -56,6 +62,7 @@
  */
 
 import { CircuitBreaker } from "./breaker";
+import { isLlmResult } from "./llm";
 import type { CapReservation, SpendCaps } from "./caps";
 import type { ProviderRegistry, RoutingTable } from "./registry";
 import {
@@ -329,7 +336,12 @@ function withReportedBilling(err: ProviderError, reportedMicros: number, timeout
     err.task,
     false,
     err,
-    { code: err.code, billedCostMicros: reportedMicros, transient: err.transient },
+    {
+      code: err.code,
+      billedCostMicros: reportedMicros,
+      transient: err.transient,
+      ...(err.usage ? { usage: err.usage } : {}),
+    },
   );
 }
 
@@ -610,6 +622,8 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
               stepId: req.stepId,
               attempt: attempts,
               at: new Date(),
+              ...(providerError.usage ? { usage: providerError.usage } : {}),
+              primaryProvider: chain[0],
             }),
           );
           if (quota) {
@@ -643,6 +657,7 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
         // are reported, never rethrown.
         settled = true;
         const latencyMs = now() - attemptStart;
+        const usage = isLlmResult(res.output) ? res.output.usage : undefined;
         await safely("meter.record success", () =>
           meter.record({
             provider: providerName,
@@ -655,6 +670,8 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
             stepId: req.stepId,
             attempt: attempts,
             at: new Date(),
+            ...(usage ? { usage } : {}),
+            primaryProvider: chain[0],
           }),
         );
         await safely("breaker.recordSuccess", () => breaker.recordSuccess(providerName));

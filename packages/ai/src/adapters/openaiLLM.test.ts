@@ -339,6 +339,13 @@ describe("OpenaiLLMProvider reply", () => {
     const err = await provider(fetchFn).invoke(request).catch((e: unknown) => e);
     expect(err).toMatchObject({ code: "output_truncated", retryable: false, transient: false, billedCostMicros: 162000 });
     expect((err as Error).message).toContain("max_output_tokens (16000)");
+    // Workstream 6: the reasoning tokens a truncated reply burned reach the meter.
+    expect((err as ProviderError).usage).toEqual({
+      inputTokens: 1000,
+      cachedInputTokens: 0,
+      outputTokens: 16000,
+      reasoningTokens: 16000,
+    });
   });
 
   it("turns an incomplete reply from the content filter into content_blocked", async () => {

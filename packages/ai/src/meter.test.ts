@@ -52,3 +52,52 @@ describe("InMemoryCostMeter", () => {
     expect(meter.totalsFor("w1").costMicros).toBe(40);
   });
 });
+
+describe("InMemoryCostMeter LLM usage (PHASE_17 workstream 6)", () => {
+  const usage = (input: number, cached: number, output: number, reasoning: number) => ({
+    inputTokens: input,
+    cachedInputTokens: cached,
+    outputTokens: output,
+    reasoningTokens: reasoning,
+  });
+
+  it("keeps cached input, output and reasoning tokens apart per provider and per recipe", () => {
+    const meter = new InMemoryCostMeter();
+    meter.record(
+      entry({ provider: "openai:gpt-6-luna", task: "intake_normalizer", costMicros: 30, usage: usage(1_000, 800, 400, 300) }),
+    );
+    meter.record(
+      entry({ provider: "openai:gpt-6-luna", task: "copy_generator", costMicros: 20, usage: usage(500, 0, 200, 50) }),
+    );
+    meter.record(
+      entry({
+        provider: "anthropic:claude-sonnet-5",
+        task: "intake_normalizer",
+        costMicros: 900,
+        ok: false,
+        usage: usage(2_000, 0, 16_000, 0),
+      }),
+    );
+    // An image call carries no usage and stays out of the LLM totals.
+    meter.record(entry({ provider: "nano-banana-2", task: "scene_plate", costMicros: 39_000 }));
+
+    expect(meter.llmUsageForProvider("openai:gpt-6-luna")).toEqual({
+      calls: 2,
+      costMicros: 50,
+      inputTokens: 1_500,
+      cachedInputTokens: 800,
+      outputTokens: 600,
+      reasoningTokens: 350,
+    });
+    expect(meter.llmUsageForTask("intake_normalizer")).toEqual({
+      calls: 2,
+      costMicros: 930,
+      inputTokens: 3_000,
+      cachedInputTokens: 800,
+      outputTokens: 16_400,
+      reasoningTokens: 300,
+    });
+    expect(meter.llmUsageForTask("scene_plate").calls).toBe(0);
+    expect(meter.llmUsageForProvider("nano-banana-2").calls).toBe(0);
+  });
+});

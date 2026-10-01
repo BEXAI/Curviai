@@ -8,7 +8,8 @@
  * runnable end to end without credentials.
  */
 
-import { InMemoryCapStore, InMemoryCostMeter, processBreakerStore, ProviderRegistry, SpendCaps } from "@curvi/ai";
+import { InMemoryCapStore, processBreakerStore, ProviderRegistry, SpendCaps } from "@curvi/ai";
+import type { ProviderQuotaInfo } from "@curvi/ai";
 import type { CapStore, CostAwareProvider, ProviderRequest, ProviderResponse, RoutingTable } from "@curvi/ai";
 import {
   buildProductReferenceFromEncoded,
@@ -33,6 +34,7 @@ import { LiveShotGenerator, makeR2MediaLoader, wireLiveProviders } from "./live-
 import { canvasSizeFor, encodeForSpec, stillQcErosion } from "./shot-outputs";
 import { parseShotConcurrency } from "./shot-concurrency";
 import type { DropWorkspace } from "./drops";
+import { LlmMonitorMeter, processLlmMonitor, type LlmMonitor } from "./llm-monitor";
 import { SpendAlertNotifier } from "./spend-alerts";
 import { processQuotaNotifier, type QuotaEventWriter } from "./provider-quota";
 import {
@@ -349,6 +351,11 @@ export interface RuntimeDepsOptions {
   /** Where provider_quota_exhausted events rows go (the db runtime); logs
    * only without one. */
   quotaEventDb?: QuotaEventWriter;
+  /** LLM usage counters and the OpenAI founder alerts (docs/phases/
+   * PHASE_17.md workstream 6). The db runtime passes one on the shared
+   * counters table; without it a process wide monitor keeps in memory
+   * counters and alerts by log line. */
+  llmMonitor?: LlmMonitor;
 }
 
 const runtimeScope = globalThis as typeof globalThis & { __curviRuntimeSpendAlerts?: SpendAlertNotifier };
@@ -403,10 +410,14 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   });
   const routing = demoRoutingTable();
   const onSpendAlert = opts.onSpendAlert ?? defaultSpendAlert();
+  const llmMonitor = opts.llmMonitor ?? processLlmMonitor();
+  const quotaNotifier = processQuotaNotifier(opts.quotaEventDb);
   const ai: PipelineDeps["ai"] = {
     registry,
     routing,
-    meter: new InMemoryCostMeter(),
+    // Every attempt is metered in memory as before; LLM attempts also feed
+    // the usage counters, the per call log line and the founder alerts.
+    meter: new LlmMonitorMeter(llmMonitor),
     // Shared by every pack run in this process, so a provider that is
     // failing or out of quota is skipped by the next pack too, and the web
     // health endpoint and new pack preflight read the same state.
@@ -414,7 +425,10 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     caps,
     onCapAlert: onSpendAlert,
     onInternalError: reportAiInternalError,
-    onProviderQuota: processQuotaNotifier(opts.quotaEventDb).onProviderQuota,
+    onProviderQuota: async (info: ProviderQuotaInfo) => {
+      await quotaNotifier.onProviderQuota(info);
+      await llmMonitor.onProviderQuota(info);
+    },
   };
   const wiring = wireLiveProviders(registry, routing);
   // Cutouts are cached in R2 per workspace and exact input bytes, so the pack

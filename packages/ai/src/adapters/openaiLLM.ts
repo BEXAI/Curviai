@@ -347,7 +347,7 @@ export class OpenaiLLMProvider implements CostAwareProvider {
     };
     const costMicros = this.costOf(usage);
     const fail = (message: string, code: "content_blocked" | "output_truncated" | "empty_output") =>
-      new ProviderError(message, this.name, req.task, false, undefined, { code, billedCostMicros: costMicros });
+      new ProviderError(message, this.name, req.task, false, undefined, { code, billedCostMicros: costMicros, usage });
 
     const parts = (data.output ?? [])
       .filter((item) => item.type === "message")
@@ -379,7 +379,7 @@ export class OpenaiLLMProvider implements CostAwareProvider {
         req.task,
         costMicros === 0,
         undefined,
-        { billedCostMicros: costMicros, transient: true },
+        { billedCostMicros: costMicros, transient: true, usage },
       );
     }
 

@@ -209,35 +209,8 @@ export class SpendAlertNotifier {
     return result;
   }
 
-  private async sendEmail(email: SpendAlertEmail): Promise<{ ok: boolean; notice?: string }> {
-    const apiKey = this.readEnv("RESEND_API_KEY");
-    const to = this.readEnv("FOUNDER_ALERT_EMAIL");
-    if (!apiKey || !to) {
-      return {
-        ok: false,
-        notice: "Set RESEND_API_KEY and FOUNDER_ALERT_EMAIL to email spend alerts to the founder.",
-      };
-    }
-    try {
-      const fetchImpl = this.opts.fetchImpl ?? fetch;
-      const res = await fetchImpl(RESEND_EMAILS_URL, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: this.readEnv("FOUNDER_ALERT_FROM") ?? DEFAULT_ALERT_FROM,
-          to: [to],
-          subject: email.subject,
-          text: email.text,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        return { ok: false, notice: `Resend returned status ${res.status}. ${body}`.trim() };
-      }
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, notice: `Resend could not be reached. ${errorText(err)}` };
-    }
+  private sendEmail(email: SpendAlertEmail): Promise<{ ok: boolean; notice?: string }> {
+    return sendFounderEmail(email, { readEnv: this.readEnv, fetchImpl: this.opts.fetchImpl });
   }
 
   private track(promise: Promise<unknown>): void {
@@ -250,6 +223,47 @@ export class SpendAlertNotifier {
 
   private logJson(event: string, fields: Record<string, unknown>): void {
     this.log.error(JSON.stringify({ level: "error", event, ...fields }));
+  }
+}
+
+/**
+ * Emails the founder through the Resend REST API when RESEND_API_KEY and
+ * FOUNDER_ALERT_EMAIL are set (FOUNDER_ALERT_FROM overrides the sender).
+ * Never throws: a missing setting or a failed send comes back as a notice,
+ * so the caller logs the alert instead.
+ */
+export async function sendFounderEmail(
+  email: SpendAlertEmail,
+  opts: { readEnv?: ReadEnv; fetchImpl?: FetchLike } = {},
+): Promise<{ ok: boolean; notice?: string }> {
+  const readEnv = opts.readEnv ?? readEnvDefault;
+  const apiKey = readEnv("RESEND_API_KEY");
+  const to = readEnv("FOUNDER_ALERT_EMAIL");
+  if (!apiKey || !to) {
+    return {
+      ok: false,
+      notice: "Set RESEND_API_KEY and FOUNDER_ALERT_EMAIL to email spend alerts to the founder.",
+    };
+  }
+  try {
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const res = await fetchImpl(RESEND_EMAILS_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: readEnv("FOUNDER_ALERT_FROM") ?? DEFAULT_ALERT_FROM,
+        to: [to],
+        subject: email.subject,
+        text: email.text,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { ok: false, notice: `Resend returned status ${res.status}. ${body}`.trim() };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, notice: `Resend could not be reached. ${errorText(err)}` };
   }
 }
 

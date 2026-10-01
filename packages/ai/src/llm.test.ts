@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLlmResult, jsonFromText, llmEffortFor, type LlmResult } from "./llm";
+import { isLlmResult, jsonFromText, llmEffortFor, llmProviderFamilyOf, type LlmResult } from "./llm";
 
 const result: LlmResult = {
   json: { a: 1 },
@@ -34,5 +34,12 @@ describe("neutral LLM contract helpers", () => {
     expect(llmEffortFor(request, "m3")).toBe("low");
     expect(llmEffortFor({ modelOptions: { m1: { effort: "none" } } }, "m2")).toBeUndefined();
     expect(llmEffortFor({ modelOptions: { m1: { effort: "none" } } }, "m1")).toBe("none");
+  });
+
+  it("reads the provider family from a registered LLM provider name", () => {
+    expect(llmProviderFamilyOf("openai:gpt-6-luna")).toBe("openai");
+    expect(llmProviderFamilyOf("anthropic:claude-sonnet-5")).toBe("anthropic");
+    expect(llmProviderFamilyOf("mock-llm")).toBeNull();
+    expect(llmProviderFamilyOf(":odd")).toBeNull();
   });
 });

@@ -326,12 +326,19 @@ export class AnthropicLLMProvider implements CostAwareProvider {
     const costMicros = Math.ceil(
       (inputTokens * prices.inputMicrosPerMTok + outputTokens * prices.outputMicrosPerMTok) / 1_000_000,
     );
+    const usage = {
+      inputTokens,
+      cachedInputTokens: data.usage?.cache_read_input_tokens ?? 0,
+      outputTokens,
+      reasoningTokens: 0,
+    };
     // Both failures below were billed for their tokens, and retrying the
     // same prompt on the same provider would only pay for the same answer.
     if (data.stop_reason === "refusal") {
       throw new ProviderError("Anthropic declined the request (stop_reason refusal)", this.name, req.task, false, undefined, {
         code: "content_blocked",
         billedCostMicros: costMicros,
+        usage,
       });
     }
     // A reply cut off at max_tokens: thinking tokens count toward the same
@@ -347,7 +354,7 @@ export class AnthropicLLMProvider implements CostAwareProvider {
         req.task,
         false,
         undefined,
-        { code: "output_truncated", billedCostMicros: costMicros },
+        { code: "output_truncated", billedCostMicros: costMicros, usage },
       );
     }
     if (!textBlock && !toolBlock) {
@@ -357,7 +364,7 @@ export class AnthropicLLMProvider implements CostAwareProvider {
         req.task,
         false,
         undefined,
-        { code: "empty_output", billedCostMicros: costMicros },
+        { code: "empty_output", billedCostMicros: costMicros, usage },
       );
     }
 
@@ -370,12 +377,7 @@ export class AnthropicLLMProvider implements CostAwareProvider {
       json,
       text,
       finish: data.stop_reason === "max_tokens" ? "truncated" : "complete",
-      usage: {
-        inputTokens,
-        cachedInputTokens: data.usage?.cache_read_input_tokens ?? 0,
-        outputTokens,
-        reasoningTokens: 0,
-      },
+      usage,
       raw: data,
     };
     return { output: output as TOut, costMicros };

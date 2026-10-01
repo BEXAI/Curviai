@@ -56,6 +56,8 @@ export {
   templates,
 } from "./templates";
 export { variationOptions } from "./variations";
+export { llmCreditWindows, llmFallbackAlertPolicy, llmQuotaAlertFamilies } from "./monitoring";
+export type { LlmCreditWindow, LlmFallbackAlertPolicy } from "./monitoring";
 export type {
   CarouselBeat,
   AplusModuleKey,

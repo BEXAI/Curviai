@@ -11,6 +11,8 @@ import {
   type ConfigReportDeps,
 } from "./config-health";
 import { recordCronSuccess } from "./cron-health";
+import { PgCapStore } from "@curvi/trigger/cap-store";
+import { LlmMonitor } from "@curvi/trigger/llm-monitor";
 
 const NOW = new Date("2026-09-28T12:00:00Z");
 const ALL_KEYS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "FAL_KEY"];
@@ -175,6 +177,72 @@ describe("buildConfigReport with the database", () => {
     expect(failing.warnings.map((w) => w.code)).toEqual(["recipe_check_failed", "cron_check_failed"]);
     expect(JSON.stringify(failing)).not.toContain("relation does not exist");
     expect(warn).toHaveBeenCalledTimes(2);
+
+    // The LLM spend read only runs for the detailed report, and a failure
+    // there is logged and reported as null, never as a warning.
+    const detailedWarn = vi.fn();
+    const detailed = await buildConfigReport(
+      baseDeps({
+        mode: "db",
+        databaseOk: true,
+        db: () => ({ execute: () => Promise.reject(new Error("relation does not exist")) }),
+        logger: { warn: detailedWarn },
+        includeLlmSpend: true,
+      }),
+    );
+    expect(detailed.warnings.map((w) => w.code)).toEqual(["recipe_check_failed", "cron_check_failed"]);
+    expect(detailed.llmSpend).toBeNull();
+    expect(detailedWarn).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports LLM spend per provider for the last 7 days from the monitor's counters (PHASE_17 workstream 6)", async () => {
+    const store = new PgCapStore(db as unknown as Db);
+    const monitor = new LlmMonitor({
+      store,
+      log: { info: () => {}, error: () => {} },
+      now: () => NOW,
+    });
+    const usage = { inputTokens: 1_000, cachedInputTokens: 600, outputTokens: 400, reasoningTokens: 250 };
+    const at = new Date(NOW.getTime() - 2 * 24 * 60 * 60_000);
+    const entry = { task: "copy_generator", latencyMs: 1, ok: true, attempt: 1, at, jobId: "job-1", usage };
+    await monitor.observe({ ...entry, provider: "openai:gpt-6-luna", costMicros: 300, primaryProvider: "openai:gpt-6-luna" });
+    await monitor.observe({ ...entry, provider: "anthropic:claude-haiku-4-5-20251001", costMicros: 3_000, primaryProvider: "openai:gpt-6-luna" });
+    // Eight days back is outside the report.
+    await monitor.observe({ ...entry, at: new Date(NOW.getTime() - 8 * 24 * 60 * 60_000), provider: "openai:gpt-6-luna", costMicros: 999 });
+
+    const publicReport = await buildConfigReport(baseDeps({ mode: "db", databaseOk: true, db: () => db }));
+    expect(publicReport.llmSpend).toBeNull();
+
+    const report = await buildConfigReport(baseDeps({ mode: "db", databaseOk: true, db: () => db, includeLlmSpend: true }));
+    expect(report.llmSpend?.days).toHaveLength(7);
+    expect(report.llmSpend?.byFamily.openai).toMatchObject({ calls: 1, costMicros: 300, cachedInputTokens: 600, reasoningTokens: 250 });
+    expect(report.llmSpend?.byFamily.anthropic).toMatchObject({ calls: 1, costMicros: 3_000 });
+    expect(report.llmSpend?.totalMicros).toBe(3_300);
+  });
+});
+
+describe("OpenAI credit expiry warning (founder decision 4)", () => {
+  const at = (iso: string) => baseDeps({ now: () => new Date(iso) });
+
+  it("stays quiet before the first seeded reminder", async () => {
+    expect((await buildConfigReport(at("2026-11-30T23:59:00Z"))).warnings).toEqual([]);
+  });
+
+  it("warns from 2026-12-01 until the credits expire, then says they expired", async () => {
+    const first = await buildConfigReport(at("2026-12-01T08:00:00Z"));
+    expect(first.warnings).toEqual([
+      {
+        code: "llm_credits_expiring:openai",
+        message:
+          "The OpenAI credits expire on 2026-12-31, in 30 days. Decide whether to keep OpenAI on paid usage or make Claude the primary model again.",
+      },
+    ]);
+    expect((await buildConfigReport(at("2026-12-31T08:00:00Z"))).warnings[0].message).toContain("2026-12-31, today.");
+    const after = await buildConfigReport(at("2027-01-01T08:00:00Z"));
+    expect(after.warnings.map((w) => w.code)).toEqual(["llm_credits_expired:openai"]);
+    for (const w of [...first.warnings, ...after.warnings]) {
+      expect(w.message).not.toMatch(/ - | – | — |->|→/);
+    }
   });
 });
 
