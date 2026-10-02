@@ -53,7 +53,7 @@ export async function storeProviderProbe(db: ProbeDb, provider: string, result: 
   // A skipped check must never overwrite a real failure or declare recovery.
   if (result.skipped) return;
   await db.execute(sql`insert into platform_settings (key, value, updated_at)
-    values (${`probe:${provider}`}, ${JSON.stringify(value)}::jsonb, ${at})
+    values (${`probe:${provider}`}, ${JSON.stringify(value)}::jsonb, ${at.toISOString()}::timestamptz)
     on conflict (key) do update set value = platform_settings.value || excluded.value, updated_at = excluded.updated_at
     where coalesce((platform_settings.value->>'at')::numeric, 0) <= ${at.getTime()}`);
   recordProbeReports([{ name: provider, ...result }], at.getTime());
@@ -63,7 +63,7 @@ export async function storeProviderProbe(db: ProbeDb, provider: string, result: 
 export async function resetProviderProbe(db: ProbeDb, provider: string, now: Date = new Date(), breakerStore: BreakerStore = processBreakerStore()): Promise<void> {
   if (!liveProviderTargets(() => undefined).some((target) => target.name === provider) && provider !== "r2") throw new Error("Unknown provider.");
   await db.execute(sql`insert into platform_settings (key, value, updated_at)
-    values (${`probe:${provider}`}, ${JSON.stringify({ name: provider, resetAt: now.getTime() })}::jsonb, ${now})
+    values (${`probe:${provider}`}, ${JSON.stringify({ name: provider, resetAt: now.getTime() })}::jsonb, ${now.toISOString()}::timestamptz)
     on conflict (key) do update set value = platform_settings.value || excluded.value, updated_at = excluded.updated_at`);
   await new CircuitBreaker(breakerStore).reset(provider);
 }
@@ -252,7 +252,7 @@ export async function notifyStagePaused(db: ProbeDb, verdict: string, alerts: Fo
     await db.execute(sql`delete from platform_settings where key = ${key}`);
     return;
   }
-  await db.execute(sql`insert into platform_settings (key, value, updated_at) values (${key}, ${JSON.stringify({ since: now.getTime() })}::jsonb, ${now}) on conflict (key) do nothing`);
+  await db.execute(sql`insert into platform_settings (key, value, updated_at) values (${key}, ${JSON.stringify({ since: now.getTime() })}::jsonb, ${now.toISOString()}::timestamptz) on conflict (key) do nothing`);
   const [row] = rowsOf<{ value: { since?: number } }>(await db.execute(sql`select value from platform_settings where key = ${key}`));
   const since = safeTime(row?.value?.since);
   if (since === null || now.getTime() - since < providerAlertPolicy.stagePausedMinutes * 60_000) return;
