@@ -134,7 +134,7 @@ export class ProviderQuotaNotifier {
     if (this.opts.db?.execute) {
       try {
         await this.opts.db.execute(sql`insert into platform_settings (key, value, updated_at)
-          values (${`provider_quota:last:${info.provider}`}, ${JSON.stringify({ at: now })}::jsonb, ${new Date(now)})
+          values (${`provider_quota:last:${info.provider}`}, ${JSON.stringify({ at: now })}::jsonb, ${new Date(now).toISOString()}::timestamptz)
           on conflict (key) do update set value = excluded.value, updated_at = excluded.updated_at
           where coalesce((platform_settings.value->>'at')::numeric, 0) <= ${now}`);
       } catch {

@@ -43,12 +43,12 @@ export async function recoverOrphanJobs(db: Db, opts: {
   const now = opts.now ?? new Date();
   const owner = opts.owner ?? runnerId();
   const cutoff = new Date(now.getTime() - orphan.staleHeartbeatMinutes * 60_000);
-  const stale = sql`coalesce(${generationJobs.heartbeatAt}, ${generationJobs.updatedAt}) < ${cutoff}`;
+  const stale = sql`coalesce(${generationJobs.heartbeatAt}, ${generationJobs.updatedAt}) < ${cutoff.toISOString()}::timestamptz`;
   const otherOwner = sql`(${generationJobs.runnerId} is null or ${generationJobs.runnerId} <> ${owner})`;
   const candidates = rowsOf<Candidate>(await db.execute(sql`
     select id, workspace_id, run_key, status, started_at, created_at, restart_payload from generation_jobs
     where status not in ('done', 'failed', 'canceled')
-      and coalesce(heartbeat_at, updated_at) < ${cutoff}
+      and coalesce(heartbeat_at, updated_at) < ${cutoff.toISOString()}::timestamptz
       and (runner_id is null or runner_id <> ${owner})
     order by created_at, id limit 200`));
   const result = { claimed: 0, settled: 0, failures: 0 };
