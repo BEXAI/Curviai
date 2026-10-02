@@ -150,6 +150,8 @@ export * from "./operations";
 export * from "./data-retention";
 export * from "./disposable-domains";
 export * from "./economics";
+export { creditPlanningPolicy } from "./credit-planning";
+export { packCasesPolicy } from "./cases";
 // PHASE_20 Lane 4 Observe (P20-13, P20-15): monitoring.ts is exported by
 // name above, so its Phase 20 limits are listed here.
 export { errorReportRetentionDays, errorReporting, healthLimits } from "./monitoring";

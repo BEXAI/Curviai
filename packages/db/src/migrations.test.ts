@@ -64,6 +64,14 @@ const EXPECTED_TABLES = [
   "billing_consents",
   "ops_alerts",
   "disposable_email_domains",
+  "pack_cases",
+  "pack_case_events",
+  "pack_case_notes",
+  "workspace_credit_budgets",
+  "workspace_credit_budget_audit",
+  "webhook_endpoints",
+  "pack_completion_events",
+  "webhook_deliveries",
 ];
 
 const USER_A = "00000000-0000-4000-8000-00000000000a";
