@@ -79,7 +79,12 @@ import {
   channelLimitViolations,
   channelOf,
   decodeToRgba,
+  DEFAULT_MAX_DELTA_E_LIMIT,
   fidelityReport,
+  passthroughFidelity,
+  PROOF_CHECK_NAMES,
+  QC_THRESHOLDS,
+  storedFidelityOf,
   HarmonizeAspectError,
   pixelChecks,
   planRetry,
@@ -108,6 +113,9 @@ import {
   type FidelityReport,
   type NormalizedBox,
   type PackAsset,
+  type PackFileReport,
+  type StoredFidelity,
+  type StoredOutputProof,
   type SellerIntent,
   analyzeInventory,
   chooseInventoryTarget,
@@ -142,6 +150,7 @@ import {
   type JobInventory,
   type PackInventoryPhoto,
   type PhotoInventory,
+  type CheckItem,
   type PixelCheckReport,
   type PlanOptions,
   type QcKind,
@@ -189,7 +198,7 @@ import {
 } from "@curvi/specs";
 import { z } from "zod";
 import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
-import { isWorkspaceObjectKey } from "./object-keys";
+import { isWorkspaceObjectKey, isWorkspaceTmpKey } from "./object-keys";
 import {
   llmModelProviderName,
   recipeFor,
@@ -210,7 +219,13 @@ import {
 } from "./shot-outputs";
 import { isTerminal, JobLedgerPlan, transition, type JobState, type LedgerAction } from "./state";
 import { DEFAULT_SHOT_CONCURRENCY, withShotClassSlot } from "./shot-concurrency";
-import { reusablePreflightIntake, trustedIntakeAnswer, type PreflightIntake } from "./preflight-intake";
+import {
+  intakeAsksRestrictedGoods,
+  restrictedCategoriesOf,
+  reusablePreflightIntake,
+  trustedIntakeAnswer,
+  type PreflightIntake,
+} from "./preflight-intake";
 
 export type { JobState } from "./state";
 export { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
@@ -268,6 +283,7 @@ export function activeRecipe(stage: RecipeRow["stage"]): RecipeRow {
 
 /** Everything callWithFailover needs, injected as one bundle. */
 export interface AiDeps {
+  workspaceExpectedDailyMicros?: (workspaceId: string) => Promise<number>;
   registry: ProviderRegistry;
   routing: RoutingTable;
   meter: CostMeter;
@@ -309,6 +325,7 @@ function llmCapsHooks(ai: AiDeps): CapsHook[] | undefined {
   return [
     { spendCaps: ai.caps, capKind: "pack" },
     { spendCaps: ai.caps, capKind: "global_day" },
+    ...(ai.workspaceExpectedDailyMicros ? [{ spendCaps: ai.caps, capKind: "workspace_day" as const, planExpectedDailyMicros: ai.workspaceExpectedDailyMicros }] : []),
   ];
 }
 
@@ -344,6 +361,17 @@ export interface StoredAsset {
   costMicros: number;
   verdict: QCVerdict;
   measured: MeasuredCompliance;
+  /** The fidelity numbers of the representative output (P18-08), saved as
+   * qc.fidelity; null when no product reference was measured. */
+  fidelity?: StoredFidelity | null;
+  /** Every passed channel output's fidelity record and proof check rows,
+   * saved as qc.outputs for the pack page, share pages and the pack
+   * fidelity summary (P18-08, P18-16). */
+  outputs?: StoredOutputProof[];
+  /** The IPTC digital source kind the shot's files carry, saved as
+   * qc.digitalSource so a public share page can say a scene was made with
+   * AI after the share image dropped the tag (P18-16). */
+  digitalSource?: DigitalSourceKind;
   /** Final encoded image for passed shots, so stores can persist the pixels. */
   encoded?: { buffer: Buffer; format: string };
   /** The planned shot itself, so a shot that needs review can be run again
@@ -386,6 +414,7 @@ export interface StoredVariationFiles {
     ref: string;
     width: number | null;
     height: number | null;
+    report?: PackFileReport;
   }>;
 }
 
@@ -458,7 +487,7 @@ export interface StoredFollowUpFiles {
   runKey: string;
   outDir: string;
   /** Channel family, file name, spec and shot id of each file to deliver. */
-  files: Array<{ channel: string; file: string; specId: string; ref: string; width: number | null; height: number | null }>;
+  files: Array<{ channel: string; file: string; specId: string; ref: string; width: number | null; height: number | null; report?: PackFileReport }>;
 }
 
 /** A passing shot the packager did not deliver, and why (plain copy). */
@@ -800,6 +829,13 @@ export interface ShotOutputSummary {
   pixelPass: boolean;
   fidelityPass: boolean | null;
   measured: MeasuredCompliance;
+  /** The measured fidelity numbers (P18-08), rounded; null when nothing was
+   * measured against a product reference. Optional so outcomes serialized
+   * before Phase 18 still read. */
+  fidelity?: StoredFidelity | null;
+  /** The size, background and fill check rows of a checked output, for the
+   * public proof panel (P18-16). */
+  proofChecks?: CheckItem[];
 }
 
 /**
@@ -820,6 +856,8 @@ export interface ShotOutcomeBase {
   verdict: QCVerdict;
   pixelPass: boolean;
   fidelityPass: boolean | null;
+  /** The representative output's fidelity numbers (P18-08). */
+  fidelity?: StoredFidelity | null;
   digitalSource: DigitalSourceKind;
   measured: MeasuredCompliance;
   outputs: ShotOutputSummary[];
@@ -870,6 +908,8 @@ export interface SerializedPackFile {
    * checked again when the file is rebuilt so the unchanged promise holds
    * across the boundary. */
   passthroughSha256?: string;
+  /** The fidelity numbers QC measured on this file (P18-08). */
+  fidelity?: StoredFidelity;
 }
 
 /** JSON safe form of a shot outcome for the Trigger.dev subtask boundary. */
@@ -906,7 +946,7 @@ export function handoffFileKey(
 ): string {
   const ext = format && /^[a-z0-9]{1,8}$/.test(format) ? format : "bin";
   const safe = (part: string) => part.replace(/[^A-Za-z0-9._-]/g, "_");
-  return `ws/${workspaceId}/jobs/${jobId}/handoff/${safe(runKey ?? "run")}/${safe(shotId)}/${safe(specId)}.${ext}`;
+  return `tmp/ws/${workspaceId}/jobs/${jobId}/handoff/${safe(runKey ?? "run")}/${safe(shotId)}/${safe(specId)}.${ext}`;
 }
 
 const HANDOFF_CONTENT_TYPES: Record<string, string> = { jpg: "image/jpeg", png: "image/png", webp: "image/webp" };
@@ -953,6 +993,7 @@ export async function serializeShotOutcome(
       ...(asset.edgeMarginPx !== undefined ? { edgeMarginPx: asset.edgeMarginPx } : {}),
       ...(asset.treatment ? { treatment: asset.treatment } : {}),
       ...(asset.passthroughSha256 ? { passthroughSha256: asset.passthroughSha256 } : {}),
+      ...(asset.fidelity ? { fidelity: asset.fidelity } : {}),
     });
   }
   return { ...base, files };
@@ -1022,6 +1063,7 @@ export async function deserializeShotOutcome(
       digitalSource: base.digitalSource,
       ...(treatment?.success ? { treatment: treatment.data } : {}),
       ...(file.passthroughSha256 !== undefined ? { passthroughSha256: file.passthroughSha256 } : {}),
+      ...(file.fidelity ? { fidelity: file.fidelity } : {}),
     });
   }
   outcome.packAssets = assets;
@@ -1037,7 +1079,7 @@ async function filePayload(
   if (file.encodedBase64 !== undefined) {
     return Buffer.from(file.encodedBase64, "base64");
   }
-  if (!file.objectKey || !handoff || !isWorkspaceObjectKey(ctx.workspaceId, file.objectKey)) {
+  if (!file.objectKey || !handoff || !(isWorkspaceObjectKey(ctx.workspaceId, file.objectKey) || isWorkspaceTmpKey(ctx.workspaceId, file.objectKey))) {
     return null;
   }
   return handoff.get(file.objectKey).catch(() => null);
@@ -1161,6 +1203,8 @@ export async function allSettledWithLimit<T, R>(
 }
 
 export interface GeneratePackInput {
+  /** Seeded expectation captured for this pack; live caps resolve its workspace tier. */
+  workspaceExpectedDailyMicros?: number;
   jobId: string;
   workspaceId: string;
   tier: TierKey;
@@ -1235,6 +1279,10 @@ export interface GeneratePackInput {
    * reason to fail the pack. They outweigh the note in the product choice,
    * the seller intent and the scenes. */
   sellerAnswers?: SellerAnswers;
+  /** "assistant" for a pack started through /api/mcp (PHASE_19 P19-29):
+   * intake's prohibited goods category then stops it. Absent for the web
+   * and the REST API, which keep today's behavior. */
+  audience?: "assistant";
 }
 
 /** Job error when the payload's output options fail the shared schema or
@@ -2193,8 +2241,8 @@ async function reserveGenerationSpend(
   const layers = [
     () =>
       isVideo
-        ? caps.checkAndReserveVideoAsset(shot.id, costMicros)
-        : caps.checkAndReserveImageAsset(shot.id, costMicros),
+        ? caps.checkAndReserveVideoAsset(`${ctx.jobId}:${shot.id}`, costMicros)
+        : caps.checkAndReserveImageAsset(`${ctx.jobId}:${shot.id}`, costMicros),
     () => caps.checkAndReservePack(ctx.jobId, costMicros),
     () => caps.checkAndReserveGlobalDay(costMicros),
   ];
@@ -2256,6 +2304,7 @@ function needsReviewSummary(
     pixelPass: false,
     fidelityPass: null,
     measured: { fillPct: null, background: null },
+    fidelity: null,
   };
 }
 
@@ -2288,6 +2337,29 @@ function fidelityPassOf(checked: CheckedGeneration): boolean | null {
     return checked.sameFile;
   }
   return checked.fidelityInputsMissing ? false : checked.fidelity ? checked.fidelity.pass : null;
+}
+
+/**
+ * The fidelity numbers a summary keeps (P18-08), copied from the report
+ * already in memory and rounded. A kept photo shipped as the stored upload
+ * keeps the byte for byte record its sha256 proves. Null when nothing was
+ * measured against a product reference.
+ */
+function fidelityOf(checked: CheckedGeneration): StoredFidelity | null {
+  if (checked.sameFile !== undefined) {
+    return checked.sameFile
+      ? passthroughFidelity(checked.pixel.width * checked.pixel.height, {
+          threshold: QC_THRESHOLDS.main.maxMeanDeltaE,
+          maxDeltaELimit: DEFAULT_MAX_DELTA_E_LIMIT,
+        })
+      : null;
+  }
+  return checked.fidelityInputsMissing ? null : storedFidelityOf(checked.fidelity);
+}
+
+/** The size, background and fill rows a public proof shows (P18-16). */
+function proofChecksOf(checked: CheckedGeneration): CheckItem[] {
+  return checked.pixel.checks.filter((check) => PROOF_CHECK_NAMES.includes(check.name));
 }
 
 /** True when the file was placed on a chosen color or given added space,
@@ -2580,6 +2652,7 @@ async function runOutput(
           pixelPass: pixel.pass,
           fidelityPass: fidelityPassOf(checked),
           measured,
+          fidelity: fidelityOf(checked),
         },
         stopShot: false,
       };
@@ -2653,6 +2726,8 @@ async function runOutput(
       pixelPass: pixel.pass,
       fidelityPass: fidelityPassOf(checked),
       measured,
+      fidelity: fidelityOf(checked),
+      proofChecks: proofChecksOf(checked),
     });
 
     // A judge exempt output is decided by its deterministic checks once.
@@ -2677,7 +2752,7 @@ async function runOutput(
     if (decision.action === "accept") {
       return {
         summary: summary("passed"),
-        packAsset: await packAssetFor(shot, specId, ctx, generation),
+        packAsset: await packAssetFor(shot, specId, ctx, generation, fidelityOf(checked)),
         generation: { ...generation, image: checked.shipped },
         stopShot: false,
       };
@@ -2790,6 +2865,7 @@ async function packAssetFor(
   specId: string,
   ctx: ShotContext,
   generation: ShotGeneration,
+  fidelity: StoredFidelity | null,
 ): Promise<ShotPackAsset> {
   const qcMask = generation.qcMask !== undefined ? generation.qcMask : generation.mask;
   const maskPng = qcMask ? await encodeMaskPng(qcMask) : undefined;
@@ -2808,6 +2884,8 @@ async function packAssetFor(
     ...(treatment ? { treatment } : {}),
     ...(packGroupFor(shot) ? { group: packGroupFor(shot) } : {}),
     ...(generation.passthrough ? { passthroughSha256: generation.passthrough.sha256 } : {}),
+    // The numbers QC measured on these exact bytes, for the report (P18-08).
+    ...(fidelity ? { fidelity } : {}),
   };
 }
 
@@ -2886,9 +2964,11 @@ async function deriveOutput(
     pixelPass: pixel.pass,
     fidelityPass: fidelityPassOf(checked),
     measured,
+    fidelity: fidelityOf(checked),
+    proofChecks: proofChecksOf(checked),
   };
   return pass
-    ? { summary, packAsset: await packAssetFor(shot, specId, ctx, generation), stopShot: false }
+    ? { summary, packAsset: await packAssetFor(shot, specId, ctx, generation, fidelityOf(checked)), stopShot: false }
     : { summary, stopShot: false };
 }
 
@@ -2971,6 +3051,7 @@ export async function runShot(
     verdict: representative.verdict,
     pixelPass: representative.pixelPass,
     fidelityPass: representative.fidelityPass,
+    fidelity: representative.fidelity ?? null,
     digitalSource: digitalSourceFor(shot.method, ctx.mode),
     measured: representative.measured,
     outputs: runs.map((r) => r.summary),
@@ -3049,6 +3130,11 @@ function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext, shot: Shot): Stor
     costMicros: outcome.costMicros,
     verdict: outcome.verdict,
     measured: outcome.measured,
+    fidelity: outcome.fidelity ?? null,
+    outputs: outcome.outputs
+      .filter((output) => output.status === "passed")
+      .map((output) => ({ specId: output.specId, fidelity: output.fidelity ?? null, checks: output.proofChecks ?? [] })),
+    digitalSource: outcome.digitalSource,
     encoded: file ? { buffer: file.buffer, format: file.format ?? "png" } : undefined,
     shot,
   };
@@ -3102,6 +3188,25 @@ export const MODERATION_BLOCKED_PREFIX = "Moderation stopped this pack, nothing 
 
 export function moderationBlockedMessage(reasons: readonly string[]): string {
   return `${MODERATION_BLOCKED_PREFIX} ${reasons.join(", ")}`;
+}
+
+/** Stored job error when the assistant screening (PHASE_19 P19-29) stops a
+ * pack an assistant started: the seeded category keys follow. The web app
+ * (apps/web job-copy.ts) matches the prefix: an assistant reads
+ * MCP_COPY.restrictedProduct, the page a line of its own. */
+export const RESTRICTED_PRODUCT_PREFIX =
+  "Assistant screening stopped this pack, nothing was charged. The product is in a category assistants may not make images of:";
+
+/** A missing approved screening recipe is an availability issue, not a product verdict. */
+export const SCREENING_UNAVAILABLE_MESSAGE =
+  "Assistant screening is temporarily unavailable. No images were made and nothing was charged. Try again later.";
+
+function approvedScreeningRecipe(recipe: ResolvedRecipe): boolean {
+  return intakeAsksRestrictedGoods(recipe) && recipe.source === "db" && Boolean(recipe.recipeId?.trim());
+}
+
+export function restrictedProductMessage(categories: readonly string[]): string {
+  return `${RESTRICTED_PRODUCT_PREFIX} ${categories.join(", ")}`;
 }
 
 /** Stored job error when intake finds no product for sale. The labels
@@ -4066,6 +4171,19 @@ export async function runGeneratePack(
   const recipes = await assignRecipes(input.jobId, deps);
 
   try {
+    const assignedIntake = recipeFor(recipes, "intake");
+    // A compiled fallback is not evidence that screening was activated in
+    // the database. Check the assignment before resolving a standby, so an
+    // older assignment cannot silently upgrade; check the actual prompt too,
+    // so a supported assignment cannot silently fall back to an older one.
+    // This stays inside the normal failure path to release the existing hold,
+    // and before media loading or any provider work.
+    let intakeRecipe = assignedIntake;
+    if (input.audience === "assistant") {
+      if (!approvedScreeningRecipe(assignedIntake)) throw new Error(SCREENING_UNAVAILABLE_MESSAGE);
+      intakeRecipe = runnableRecipe(deps.ai, assignedIntake);
+      if (!approvedScreeningRecipe(intakeRecipe)) throw new Error(SCREENING_UNAVAILABLE_MESSAGE);
+    }
     // The seller's output options, parsed with the shared schema before any
     // provider call or charge (PHASE_15 item 11). Anything the schema
     // refuses fails the job closed, and the failure path releases the hold.
@@ -4090,7 +4208,6 @@ export async function runGeneratePack(
     // The preflight at upload already asked intake about these photos with
     // this note and this recipe version: its answer is reused, so the
     // seller's photo is never judged (or paid for) twice.
-    const intakeRecipe = recipeFor(recipes, "intake");
     const preflightIntake = reusablePreflightIntake(judgedImages, input.userDescription, intakeRecipe, clock.now());
     if (preflightIntake) {
       console.info(`[runner] job ${input.jobId} reused the preflight intake answer`);
@@ -4113,6 +4230,17 @@ export async function runGeneratePack(
     for (const img of intake.value?.images ?? []) img.screenshot = false;
     if (!intake.value) {
       throw new Error("Intake response failed schema validation");
+    }
+    // OpenAI's prohibited goods (PHASE_19 P19-29, founder decision 16): a
+    // pack an assistant started through /api/mcp stops here when intake put
+    // the product in a seeded category, before any spend past the intake
+    // call; the failure path releases the hold. Read only from a recipe that
+    // asks (trustedIntakeAnswer). Web packs never stop on it.
+    if (input.audience === "assistant") {
+      const restricted = restrictedCategoriesOf(trustedIntakeAnswer(intake.value, intakeRecipe));
+      if (restricted.length > 0) {
+        throw new Error(restrictedProductMessage(restricted));
+      }
     }
     // The seller's note as structured intent (intake version 3), with the
     // question step's answers over it (PHASE_16 workstream 4), kept on the
@@ -4695,6 +4823,7 @@ export async function runGeneratePack(
                 ref: f.ref,
                 width: f.measured?.width ?? null,
                 height: f.measured?.height ?? null,
+                report: f,
               },
             ],
       );

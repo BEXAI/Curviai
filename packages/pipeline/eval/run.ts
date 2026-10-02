@@ -435,7 +435,7 @@ function printTable(rows: EvalRow[]): void {
   }
 }
 
-type Stage = "main" | "stills" | "aplus" | "questions";
+type Stage = "main" | "stills" | "aplus" | "questions" | "benchmark";
 
 function parseStage(argv: string[]): Stage {
   for (let i = 0; i < argv.length; i++) {
@@ -450,20 +450,36 @@ function parseStage(argv: string[]): Stage {
 }
 
 function assertStage(value: string): Stage {
-  if (value !== "main" && value !== "stills" && value !== "aplus" && value !== "questions") {
-    console.error(`Unknown stage "${value}". Use --stage main, --stage stills, --stage aplus or --stage questions.`);
+  if (value !== "main" && value !== "stills" && value !== "aplus" && value !== "questions" && value !== "benchmark") {
+    console.error(`Unknown stage "${value}". Use --stage main, --stage stills, --stage aplus, --stage questions or --stage benchmark.`);
     process.exit(2);
   }
   return value;
 }
 
 async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (args.includes("--live") && args.some((value, index) => value === "--stage=benchmark" || (value === "--stage" && args[index + 1] === "benchmark"))) {
+    throw new Error("The benchmark stage is offline only. Supply existing artifacts without --live.");
+  }
   if (process.argv.includes("--live")) {
     const { liveMain } = await import("./live/cli");
     process.exit(await liveMain(process.argv.slice(2)));
   }
   const stage = parseStage(process.argv.slice(2));
   console.log(`Curvi pipeline eval, stage: ${stage}`);
+  if (stage === "benchmark") {
+    const photoFlag = args.findIndex((value) => value === "--photos");
+    const photos = photoFlag >= 0 ? args[photoFlag + 1] : args.find((value) => value.startsWith("--photos="))?.slice(9);
+    if (!photos || photos.startsWith("--")) throw new Error("Offline benchmark requires --photos <directory> containing manifest.json and supplied output artifacts. No provider is called.");
+    const { prepareBenchmarkEvidence } = await import("./benchmark");
+    const destination = path.join(OUTPUT_DIR, "benchmark");
+    const report = await prepareBenchmarkEvidence(path.resolve(photos), destination);
+    console.log(`Measured ${report.rows.length} supplied outputs. Review artifacts: ${destination}`);
+    for (const gap of report.publication.evidenceGaps) console.log(`Open evidence: ${gap}`);
+    console.log("Nothing published. Real pipeline acquisition and publication review remain separate steps.");
+    return;
+  }
   if (stage === "questions") {
     await questionsMain();
     return;

@@ -1,0 +1,325 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`lifecycle templates > render as drafted > feedback_ask 1`] = `
+{
+  "subject": "Would you use these files?",
+  "text": "One tap tells me if your pack is usable as it is: https://curvi.ai/feedback/signed-token?utm_source=curvi_email&utm_medium=email&utm_campaign=feedback_ask
+
+If something is off, reply and tell me what. I read every answer.
+
+Sam
+
+This is a marketing email from Curvi. You get this because you signed up at curvi.ai.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > first_pack_nudge_1 1`] = `
+{
+  "subject": "Your free pack is waiting",
+  "text": "One photo is all it takes. A phone photo on any plain surface works: https://curvi.ai/app/new?utm_source=curvi_email&utm_medium=email&utm_campaign=first_pack_nudge_1
+
+Sam
+
+This is a marketing email from Curvi. You get this because you signed up at curvi.ai.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > first_pack_nudge_2 1`] = `
+{
+  "subject": "Want me to make your first pack?",
+  "text": "If you have not had time, reply with one photo of your best selling product and tell me where you sell. I will make the pack and send you the link. It will not use your free credits.
+
+Or make it yourself in a few minutes: https://curvi.ai/app/new?utm_source=curvi_email&utm_medium=email&utm_campaign=first_pack_nudge_2
+
+Sam
+
+This is a marketing email from Curvi. You get this because you signed up at curvi.ai.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > lead_offer 1`] = `
+{
+  "subject": "Make your first pack free",
+  "text": "15 free credits, no card. Upload one photo and get your main image, lifestyle scenes and channel sizes. Your product is never redrawn: https://curvi.ai/signup?source=email&utm_source=curvi_email&utm_medium=email&utm_campaign=lead_offer
+
+Sam
+
+This is a marketing email from Curvi. You get this because you left your email on curvi.ai and asked to hear from Curvi.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > lead_results main-image-checker 1`] = `
+{
+  "subject": "Your Curvi main image checker link",
+  "text": "Thanks for trying the free main image checker. Here is the link, so you can use it again on your next photo: https://curvi.ai/tools/main-image-checker?utm_source=curvi_email&utm_medium=email&utm_campaign=lead_results
+
+Questions about your results? Reply to this email.
+
+Sam
+
+This is a marketing email from Curvi. You get this because you left your email on curvi.ai and asked to hear from Curvi.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > lead_results marketplace-resizer 1`] = `
+{
+  "subject": "Your Curvi marketplace resizer link",
+  "text": "Thanks for trying the free marketplace resizer. Here is the link, so you can use it again on your next photo: https://curvi.ai/tools/marketplace-resizer?utm_source=curvi_email&utm_medium=email&utm_campaign=lead_results
+
+Questions about your results? Reply to this email.
+
+Sam
+
+This is a marketing email from Curvi. You get this because you left your email on curvi.ai and asked to hear from Curvi.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > lead_results store-audit 1`] = `
+{
+  "subject": "Your Curvi store image audit link",
+  "text": "Thanks for trying the free store image audit. Here is the link, so you can use it again on your next photo: https://curvi.ai/tools/store-image-audit?utm_source=curvi_email&utm_medium=email&utm_campaign=lead_results
+
+Questions about your results? Reply to this email.
+
+Sam
+
+This is a marketing email from Curvi. You get this because you left your email on curvi.ai and asked to hear from Curvi.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > lead_results white-background-fixer 1`] = `
+{
+  "subject": "Your Curvi white background fixer link",
+  "text": "Thanks for trying the free white background fixer. Here is the link, so you can use it again on your next photo: https://curvi.ai/tools/white-background-fixer?utm_source=curvi_email&utm_medium=email&utm_campaign=lead_results
+
+Questions about your results? Reply to this email.
+
+Sam
+
+This is a marketing email from Curvi. You get this because you left your email on curvi.ai and asked to hear from Curvi.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > lead_tip 1`] = `
+{
+  "subject": "One photo, every channel",
+  "text": "Curvi turns one product photo into the files each marketplace and social channel asks for, each checked against that channel's rules, and your product is never redrawn.
+
+See packs made from one photo: https://curvi.ai/gallery?utm_source=curvi_email&utm_medium=email&utm_campaign=lead_tip
+
+Sam
+
+This is a marketing email from Curvi. You get this because you left your email on curvi.ai and asked to hear from Curvi.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > out_of_credits free 1`] = `
+{
+  "subject": "You have used your free credits",
+  "text": "Starter is $29 a month for 200 credits, about 25 packs. Top ups start at $15. Credits you do not use stay in your balance from one month to the next, for as long as your account is open.
+
+See plans and top ups: https://curvi.ai/pricing?utm_source=curvi_email&utm_medium=email&utm_campaign=out_of_credits
+
+Sam
+
+This is a marketing email from Curvi. You get this because you signed up at curvi.ai.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > out_of_credits free with some left 1`] = `
+{
+  "subject": "You have 3.5 credits left",
+  "text": "Starter is $29 a month for 200 credits, about 25 packs. Top ups start at $15. Credits you do not use stay in your balance from one month to the next, for as long as your account is open.
+
+See plans and top ups: https://curvi.ai/pricing?utm_source=curvi_email&utm_medium=email&utm_campaign=out_of_credits
+
+Sam
+
+This is a marketing email from Curvi. You get this because you signed up at curvi.ai.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > out_of_credits starter 1`] = `
+{
+  "subject": "You have 6 credits left",
+  "text": "You have 6 credits left, about 0 typical packs. Credits you do not use stay in your balance from one month to the next, for as long as your account is open. Top ups start at $15.
+
+See plans and top ups: https://curvi.ai/pricing?utm_source=curvi_email&utm_medium=email&utm_campaign=out_of_credits
+
+Sam
+
+This is a marketing email from Curvi. You get this because you signed up at curvi.ai.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > pack_ready 1`] = `
+{
+  "subject": "Your Amber Candle pack is ready",
+  "text": "6 files passed their channel checks. 1 file is marked for review and not charged. Inside your product, the average color difference was 0.84 at most, within every file's limit, because the product was never redrawn.
+
+Download them here: https://curvi.ai/app/jobs/job-1?utm_source=curvi_email&utm_medium=email&utm_campaign=pack_ready
+
+Want to show someone? Share the before and after from the same page: https://curvi.ai/app/jobs/job-1?utm_source=curvi_email&utm_medium=email&utm_campaign=pack_ready
+
+Sam
+
+You get this email because you have a Curvi account.
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > pack_ready without numbers 1`] = `
+{
+  "subject": "Your Curvi pack is ready",
+  "text": "1 file passed its channel checks.
+
+Download them here: https://curvi.ai/app/jobs/job-2?utm_source=curvi_email&utm_medium=email&utm_campaign=pack_ready
+
+Want to show someone? Share the before and after from the same page: https://curvi.ai/app/jobs/job-2?utm_source=curvi_email&utm_medium=email&utm_campaign=pack_ready
+
+Sam
+
+You get this email because you have a Curvi account.
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > packs_back account 1`] = `
+{
+  "subject": "Curvi packs are back",
+  "text": "Thanks for waiting. Packs are running again: https://curvi.ai/app/new?utm_source=curvi_email&utm_medium=email&utm_campaign=packs_back
+
+Sam
+
+You get this email because you have a Curvi account.
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > packs_back lead 1`] = `
+{
+  "subject": "Curvi packs are back",
+  "text": "Thanks for waiting. Packs are running again: https://curvi.ai/signup?source=email&utm_source=curvi_email&utm_medium=email&utm_campaign=packs_back
+
+Sam
+
+This is a marketing email from Curvi. You get this because you left your email on curvi.ai and asked to hear from Curvi.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > referral_rewarded 1`] = `
+{
+  "subject": "Your referral credits were added",
+  "text": "Your referral qualified and 37 credits were added to your Curvi balance.
+
+See your balance: https://curvi.ai/app/billing?utm_source=curvi_email&utm_medium=email&utm_campaign=referral_rewarded
+
+Sam
+
+You get this email because you have a Curvi account.
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > welcome 1`] = `
+{
+  "subject": "Your Curvi account is ready",
+  "text": "Hi, I am Sam, and I build Curvi myself.
+
+You have 15 free credits, enough for one full pack. Upload one product photo and Curvi makes your Amazon main image, lifestyle scenes and social sizes, without redrawing your product: https://curvi.ai/app/new?utm_source=curvi_email&utm_medium=email&utm_campaign=welcome
+
+Short on time? Reply with a link to your product and I will make your first pack for you.
+
+Sam
+
+You get this email because you have a Curvi account.
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > welcome after a withheld grant 1`] = `
+{
+  "subject": "Your Curvi account is ready",
+  "text": "Hi, I am Sam, and I build Curvi myself.
+
+Upload one product photo and Curvi makes your Amazon main image, lifestyle scenes and social sizes, without redrawing your product: https://curvi.ai/app/new?utm_source=curvi_email&utm_medium=email&utm_campaign=welcome
+
+Short on time? Reply with a link to your product and I will make your first pack for you.
+
+Sam
+
+You get this email because you have a Curvi account.
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > welcome while paused 1`] = `
+{
+  "subject": "Your Curvi account is ready",
+  "text": "Hi, I am Sam, and I build Curvi myself.
+
+You have 15 free credits, enough for one full pack. Upload one product photo and Curvi makes your Amazon main image, lifestyle scenes and social sizes, without redrawing your product: https://curvi.ai/app/new?utm_source=curvi_email&utm_medium=email&utm_campaign=welcome
+
+Packs are paused for a short while right now. We will email you the moment they are back.
+
+Short on time? Reply with a link to your product and I will make your first pack for you.
+
+Sam
+
+You get this email because you have a Curvi account.
+",
+}
+`;
+
+exports[`lifecycle templates > render as drafted > win_back 1`] = `
+{
+  "subject": "New products to list?",
+  "text": "If you have new products for the holidays, one photo each is enough. Your products and settings are saved: https://curvi.ai/app/new?utm_source=curvi_email&utm_medium=email&utm_campaign=win_back
+
+Sam
+
+This is a marketing email from Curvi. You get this because you signed up at curvi.ai.
+Unsubscribe in one click: https://curvi.ai/email/unsubscribe?t=TOKEN
+Curvi, PO Box 100, Springfield, IL 62701
+",
+}
+`;

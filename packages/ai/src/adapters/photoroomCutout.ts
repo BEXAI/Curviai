@@ -17,7 +17,7 @@ import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
-import { httpProviderError, resolveApiKey, signalOf, type AdapterCommonConfig, type FetchLike } from "./shared";
+import { httpProviderError, resolveApiKey, signalOf, sniffMime, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 export const PHOTOROOM_API_KEY_ENV = "PHOTOROOM_API_KEY";
 
@@ -127,12 +127,4 @@ export class PhotoroomCutoutProvider implements CostAwareProvider {
     };
     return { output: output as TOut, costMicros: this.priceTable.perCallMicros };
   }
-}
-
-/** MIME type of the upload from its magic bytes, so the multipart part is
- * typed; PNG when unknown. */
-function sniffMime(bytes: Uint8Array): string {
-  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
-  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 && bytes[9] === 0x45) return "image/webp";
-  return "image/png";
 }

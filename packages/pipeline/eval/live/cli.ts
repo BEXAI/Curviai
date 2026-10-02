@@ -37,6 +37,7 @@ import {
 import { baselineFromReport, formatReport, runLiveEval, type Baseline, type LiveReport } from "./harness";
 import { goldenCases } from "./cases";
 import { injectionFixtures } from "./injection";
+import { screeningFixtures } from "./screening";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../../..");
@@ -239,6 +240,9 @@ export async function liveMain(
     rows: recipeSeedRows,
     cases: args.injection === "only" ? [] : await goldenCases(),
     injection: args.injection === "without" ? [] : await injectionFixtures(),
+    // The prohibited goods negatives (PHASE_19 P19-29) ride with the golden
+    // set; they run only on an intake recipe that asks for the category.
+    screening: args.injection === "only" ? [] : await screeningFixtures(),
     baseline,
     ...(args.only.length > 0 ? { only: args.only } : {}),
     ...(args.model ? { model: args.model } : {}),

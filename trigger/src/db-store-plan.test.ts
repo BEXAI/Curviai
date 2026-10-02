@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { and, eq, type Db } from "@curvi/db";
-import { creditLedger, generationJobs, jobSteps, products, workspaces } from "@curvi/db/schema";
+import { assets, creditLedger, generationJobs, jobSteps, products, workspaces } from "@curvi/db/schema";
 import { endExiftool } from "@curvi/pipeline";
 import type { Shot } from "@curvi/pipeline/schemas";
 import { DbJobStore } from "./db-store";
@@ -89,6 +89,37 @@ describe("DbJobStore.saveAsset step status", () => {
     expect(byShot.get("s01_lifestyle")).toBe("needs_review");
     expect(byShot.get("s02_amazon_main")).toBe("done");
     expect(steps.some((s) => s.status === "failed")).toBe(false);
+  });
+
+  it("drops a late asset from a run that no longer owns the job (P18-23)", async () => {
+    // A deploy stopped run "old"; requeueForRestart moved the job to a
+    // restart key, and the stopped run's last provider call finishes after.
+    const jobId = await newJob();
+    await db.update(generationJobs).set({ runKey: "old" }).where(eq(generationJobs.id, jobId));
+    const asset: StoredAsset = {
+      jobId,
+      workspaceId: ws,
+      shotId: "s01_amazon_main",
+      shotType: "amazon_main",
+      specId: "amazon.main",
+      status: "passed",
+      attempts: 1,
+      credits: 1,
+      costMicros: 0,
+      verdict: { pass: true, fidelity: 1, issues: [], repairHint: "" },
+      measured: { fillPct: 85, background: [255, 255, 255] },
+    };
+    const stale = new DbJobStore(db as unknown as Db).forRun("old");
+    await db.update(generationJobs).set({ runKey: "restart:new" }).where(eq(generationJobs.id, jobId));
+    await stale.saveAsset(asset);
+    expect(await db.select().from(assets).where(eq(assets.jobId, jobId))).toHaveLength(0);
+    expect(await db.select().from(jobSteps).where(eq(jobSteps.jobId, jobId))).toHaveLength(0);
+
+    // The rerun owns the job and saves its asset once.
+    await new DbJobStore(db as unknown as Db).forRun("restart:new").saveAsset(asset);
+    const saved = await db.select().from(assets).where(and(eq(assets.jobId, jobId), eq(assets.approved, true)));
+    expect(saved).toHaveLength(1);
+    expect(await db.select().from(jobSteps).where(eq(jobSteps.jobId, jobId))).toHaveLength(1);
   });
 });
 

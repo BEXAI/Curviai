@@ -26,6 +26,7 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { dimensionBounds, isExactSize, requiresWhiteBackground, type ChannelSpec } from "@curvi/specs";
+import { webpIsLossless } from "../ingest/image";
 import { dilate, type BBox } from "../mask";
 import {
   canvasSizeFor,
@@ -913,26 +914,6 @@ function specFormat(format: string | undefined): string {
     default:
       return format;
   }
-}
-
-/** A WebP whose image chunk is VP8L (lossless). Reads the RIFF chunk list only. */
-function webpIsLossless(bytes: Buffer): boolean {
-  if (bytes.length < 16 || bytes.toString("latin1", 0, 4) !== "RIFF" || bytes.toString("latin1", 8, 12) !== "WEBP") {
-    return false;
-  }
-  let offset = 12;
-  while (offset + 8 <= bytes.length) {
-    const fourcc = bytes.toString("latin1", offset, offset + 4);
-    if (fourcc === "VP8L") {
-      return true;
-    }
-    if (fourcc === "VP8 ") {
-      return false;
-    }
-    const size = bytes.readUInt32LE(offset + 4);
-    offset += 8 + size + (size % 2);
-  }
-  return false;
 }
 
 /**

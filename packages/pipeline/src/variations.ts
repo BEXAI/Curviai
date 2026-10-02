@@ -35,7 +35,9 @@ export function extraVariationCredits(variations: number): number {
   return (count - 1) * creditCosts.generativeStill;
 }
 
-function clampVariations(n: number): number {
+/** A version count within variationOptions: whole, at least min and at
+ * most max, and the default when it is not a number. */
+export function clampVariations(n: number): number {
   if (!Number.isFinite(n)) {
     return DEFAULT_VARIATIONS;
   }

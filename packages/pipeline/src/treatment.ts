@@ -6,9 +6,10 @@
  * through parseTreatmentNote, so no note string is written twice.
  */
 import { z } from "zod";
+import { HEX } from "./color";
 import { stillStyle } from "./seed/templates";
 
-const HexValue = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
+const HexValue = z.string().regex(HEX);
 
 /**
  * How a delivered file was treated:

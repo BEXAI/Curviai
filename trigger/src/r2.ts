@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { PackFileHandoff } from "./pipeline-runner";
-import { optionalEnv } from "./runtime";
+import { optionalEnv, type ReadEnv } from "./env";
 
 /**
  * Socket timeouts for every R2 client in the worker: connecting may take at
@@ -18,6 +18,29 @@ import { optionalEnv } from "./runtime";
  * cut off.
  */
 export const R2_REQUEST_TIMEOUTS = { connectionTimeout: 10_000, requestTimeout: 60_000 } as const;
+
+/**
+ * The worker's R2 client and private bucket, read from env: every R2 client
+ * in the worker is built here, with R2_REQUEST_TIMEOUTS. Null when any R2
+ * credential is unset, so demo and test runs skip storage.
+ */
+export function r2FromEnv(readEnv: ReadEnv = optionalEnv): { client: S3Client; bucket: string } | null {
+  const accountId = readEnv("R2_ACCOUNT_ID");
+  const accessKeyId = readEnv("R2_ACCESS_KEY_ID");
+  const secretAccessKey = readEnv("R2_SECRET_ACCESS_KEY");
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    return null;
+  }
+  const client = new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey },
+    // A stalled socket to R2 fails instead of hanging the shot, and with it
+    // the process wide queue kept photo shots wait in.
+    requestHandler: R2_REQUEST_TIMEOUTS,
+  });
+  return { client, bucket: readEnv("R2_BUCKET_PRIVATE") ?? "curvi-private" };
+}
 
 export interface PackUploader {
   bucket: string;
@@ -44,21 +67,11 @@ export function contentTypeFor(filename: string): string {
 }
 
 export function buildR2Uploader(): PackUploader | null {
-  const accountId = optionalEnv("R2_ACCOUNT_ID");
-  const accessKeyId = optionalEnv("R2_ACCESS_KEY_ID");
-  const secretAccessKey = optionalEnv("R2_SECRET_ACCESS_KEY");
-  if (!accountId || !accessKeyId || !secretAccessKey) {
+  const r2 = r2FromEnv();
+  if (!r2) {
     return null;
   }
-  const bucket = optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
-  const client = new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId, secretAccessKey },
-    // A stalled socket to R2 fails instead of hanging the shot, and with it
-    // the process wide queue kept photo shots wait in.
-    requestHandler: R2_REQUEST_TIMEOUTS,
-  });
+  const { client, bucket } = r2;
   return {
     bucket,
     async upload(localPath: string, key: string): Promise<{ bytes: number }> {
@@ -82,21 +95,11 @@ export function buildR2Uploader(): PackUploader | null {
  * when R2 env is absent; every file then stays inline.
  */
 export function buildR2Handoff(): PackFileHandoff | null {
-  const accountId = optionalEnv("R2_ACCOUNT_ID");
-  const accessKeyId = optionalEnv("R2_ACCESS_KEY_ID");
-  const secretAccessKey = optionalEnv("R2_SECRET_ACCESS_KEY");
-  if (!accountId || !accessKeyId || !secretAccessKey) {
+  const r2 = r2FromEnv();
+  if (!r2) {
     return null;
   }
-  const bucket = optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
-  const client = new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId, secretAccessKey },
-    // A stalled socket to R2 fails instead of hanging the shot, and with it
-    // the process wide queue kept photo shots wait in.
-    requestHandler: R2_REQUEST_TIMEOUTS,
-  });
+  const { client, bucket } = r2;
   return {
     async put(key, bytes, contentType) {
       await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes, ContentType: contentType }));

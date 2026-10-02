@@ -5,6 +5,7 @@
  */
 
 import type { Shot } from "../schemas";
+import { growthPlatformSettingSeedRows } from "./growth";
 
 export const creditCosts = {
   /** White main, cutout, resize or sweep. */
@@ -108,11 +109,35 @@ export interface TierDefinition {
   creditsPerMonth: number;
   /** One time credit grant, used by the free tier. */
   creditsOnce: number;
+  /**
+   * Sold online: pricing shows the card and checkout takes the order
+   * (docs/phases/PHASE_20.md P20-08, founder decision 6). False keeps the
+   * tier for subscriptions the founder sets up by email, with no card on
+   * /pricing or /app/billing, no required Stripe price and a checkout that
+   * answers tier_not_self_serve.
+   */
+  selfServe: boolean;
   includes: string[];
 }
 
 /** Annual billing discount applied to monthly prices. */
 export const annualDiscountPct = 0.2;
+
+/**
+ * The billing reconciler (docs/phases/PHASE_20.md P20-02): every
+ * `everyMinutes` it replays the Stripe events of the last `lookbackHours`
+ * through the webhook handler, at most `maxEventsPerRun` a run, so a
+ * payment whose webhook never landed still grants its credits. Health warns
+ * `stripe_webhook_quiet` when a checkout opened in the last
+ * `quietWebhookDays` days and no webhook has succeeded since (P20-01).
+ * Stripe keeps events for 30 days, so the lookback must stay well inside.
+ */
+export const billingReconcile = {
+  lookbackHours: 72,
+  maxEventsPerRun: 1000,
+  everyMinutes: 30,
+  quietWebhookDays: 7,
+} as const;
 
 const includeLines: Record<TierDefinition["key"], TierIncludeLine[]> = {
   free: [
@@ -148,6 +173,7 @@ export const tiers: TierDefinition[] = [
     annualUsdPerMonth: 0,
     creditsPerMonth: 0,
     creditsOnce: 15,
+    selfServe: true,
     includes: includeLines.free.map((line) => line.label),
   },
   {
@@ -156,6 +182,7 @@ export const tiers: TierDefinition[] = [
     annualUsdPerMonth: 24,
     creditsPerMonth: 200,
     creditsOnce: 0,
+    selfServe: true,
     includes: includeLines.starter.map((line) => line.label),
   },
   {
@@ -164,6 +191,7 @@ export const tiers: TierDefinition[] = [
     annualUsdPerMonth: 66,
     creditsPerMonth: 600,
     creditsOnce: 0,
+    selfServe: true,
     includes: includeLines.growth.map((line) => line.label),
   },
   {
@@ -172,6 +200,7 @@ export const tiers: TierDefinition[] = [
     annualUsdPerMonth: 124,
     creditsPerMonth: 1300,
     creditsOnce: 0,
+    selfServe: true,
     includes: includeLines.pro.map((line) => line.label),
   },
   {
@@ -180,6 +209,8 @@ export const tiers: TierDefinition[] = [
     annualUsdPerMonth: 290,
     creditsPerMonth: 3500,
     creditsOnce: 0,
+    // Off self serve until client workspaces exist (PHASE_21, decision 6).
+    selfServe: false,
     includes: includeLines.agency.map((line) => line.label),
   },
 ];
@@ -335,21 +366,89 @@ export const undeliverableShotMethods: ReadonlyArray<Shot["method"]> = (
 export interface TopUp {
   credits: number;
   usd: number;
-  /** Months before top up credits expire. */
-  expiresMonths: number;
 }
 
+/** One time credit packs. Like every credit, they never expire while the
+ * account is open (creditExpiry). */
 export const topUps: TopUp[] = [
-  { credits: 100, usd: 15, expiresMonths: 12 },
-  { credits: 500, usd: 60, expiresMonths: 12 },
+  { credits: 100, usd: 15 },
+  { credits: 500, usd: 60 },
 ];
 
-/** Unused subscription credits roll over for one cycle, capped at one month's allowance. */
-export const rolloverPolicy = { cycles: 1, capFactorOfMonthlyAllowance: 1 } as const;
+/**
+ * How long credits last (docs/phases/PHASE_20.md founder decision 10,
+ * P20-05): they never expire while the account is open, whether a plan, a
+ * top up, a grant or a referral reward added them. No ledger row stores an
+ * expiry and no copy states one. Choosing expiry instead needs credit lots
+ * (FIFO use and expiry ledger rows), a later phase; until then this stays
+ * "none" and a seed test keeps every other expiry field out.
+ */
+export const creditExpiry = { kind: "none" } as const;
+
+/**
+ * How prices are shown (docs/phases/PHASE_20.md P20-07, founder decision 3):
+ * US prices exclude tax, so with Stripe Tax on, pricing and billing say tax
+ * is added at checkout where it applies.
+ */
+export const taxDisplay = { pricesIncludeTax: false } as const;
+
+/**
+ * Renewal notices and consent records (P20-07, founder decision 4: the
+ * strictest common state rules). Copy that states one of these numbers
+ * renders it from here.
+ * - annualDaysBefore: when the yearly plan reminder goes out, inside
+ *   annualWindow ([earliest, latest] days before the renewal; California and
+ *   New York ask for 15 to 45, Virginia 30 to 60).
+ * - monthlyYearlyNotice: one notice a year to monthly subscribers
+ *   (Minnesota's continuous service notice).
+ * - priceChangeDaysBefore within priceChangeWindow: the notice before a
+ *   price change applies to an existing subscriber (California, 7 to 30).
+ * - consentRecordYears: how long a renewal consent record is kept
+ *   (California: at least 3 years).
+ * The reminders and notices themselves ship with P20-07's P1 part.
+ */
+export const renewalNotices = {
+  annualDaysBefore: 35,
+  annualWindow: [30, 45] as const,
+  monthlyYearlyNotice: true,
+  priceChangeDaysBefore: 21,
+  priceChangeWindow: [7, 30] as const,
+  consentRecordYears: 3,
+  /** California keeps the consent record for the longer of
+   * consentRecordYears from the purchase and this many years after the
+   * plan ends (law and copy review 9). */
+  consentRecordYearsAfterPlanEnds: 1,
+} as const;
 
 /** Launch offer (plan 9.2 and 9.7): Starter locked for life for the first
- * founding members. */
-export const foundingMemberOffer = { monthlyUsd: 19, annualUsd: 190, seats: 50 } as const;
+ * founding members. PHASE_18 P18-21 and founder decision 13: `seats` seats,
+ * open through `endsOn` (a UTC day, inclusive), delivered as Stripe
+ * promotion codes the founder creates. One coupon takes one amount, so
+ * there are two: `code` brings Starter monthly to monthlyUsd and
+ * `annualCode` Starter annual to annualUsd, and the seats are shared
+ * between them (apps/web/src/lib/offer/founding.ts). */
+export const foundingMemberOffer = {
+  monthlyUsd: 19,
+  annualUsd: 190,
+  seats: 50,
+  code: "FOUNDING",
+  annualCode: "FOUNDINGYEAR",
+  endsOn: "2026-11-30",
+} as const;
+
+/** Referral give and get credits (plan 9.6.2; PHASE_18 P18-24 and founder
+ * decision 12): `credits` to each side when the referred workspace makes
+ * its first payment, at most `monthlyCapPerReferrer` rewarded referrals per
+ * referrer per calendar month (UTC), reward credits never expire, like every
+ * other grant (creditExpiry, docs/phases/PHASE_20.md P20-05), and a refund
+ * or dispute of that payment
+ * within `clawbackDays` takes both rewards back. Off until the
+ * referrals_enabled switch (growth.ts) is turned on. */
+export const referralReward = {
+  credits: 50,
+  monthlyCapPerReferrer: 10,
+  clawbackDays: 30,
+} as const;
 
 export function tierByKey(key: TierKey): TierDefinition {
   const tier = tiers.find((t) => t.key === key);
@@ -363,6 +462,9 @@ export function tierByKey(key: TierKey): TierDefinition {
 export interface PlatformSettingSeedRow {
   key: string;
   value: number | string | boolean;
+  /** Written only when the row is missing: a switch the founder flips by
+   * SQL keeps its stored value through every later seed (PHASE_18). */
+  keepStored?: boolean;
 }
 
 /** Settings pnpm db:seed upserts into platform_settings (migration 0012).
@@ -370,7 +472,9 @@ export interface PlatformSettingSeedRow {
  * grant_signup_credits function pays once a user's email is confirmed. */
 export const platformSettingSeedRows: PlatformSettingSeedRow[] = [
   { key: "free_signup_credits", value: tierByKey("free").creditsOnce },
-  // Kill switch for seller output options (PHASE_15). createJob refuses non
-  // default options while it is false, whatever the web flag says.
-  { key: "output_options_enabled", value: true },
+  // Operator switches are never seeded (P20-20): the output options kill
+  // switch is ops:output_options_enabled, read through opsSwitch with its
+  // default in operations.ts, and the loader refuses any ops: row.
+  // Phase 18 switches, one list per lane in growth.ts.
+  ...growthPlatformSettingSeedRows,
 ];

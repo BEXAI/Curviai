@@ -146,7 +146,7 @@ export interface CapsHook {
   /** For "workspace_day"; falls back to req.workspaceId. */
   workspaceId?: string;
   /** For "workspace_day": the plan's expected daily spend in USD micros. Required for that kind. */
-  planExpectedDailyMicros?: number;
+  planExpectedDailyMicros?: number | ((workspaceId: string) => Promise<number>);
   /** For "image_asset" and "video_asset"; falls back to req.stepId. */
   assetId?: string;
   /** For "pack"; falls back to req.jobId. */
@@ -216,6 +216,9 @@ export interface CallWithFailoverOptions extends RouteOptions {
    * error, like a routing table entry.
    */
   chain?: string[];
+  /** Operations canary only: bypass an open breaker for exactly one named
+   * provider. Caps, cost estimates, metering and failure handling still apply. */
+  trialCall?: boolean;
   /** Injectable sleep for backoff, defaults to real setTimeout. */
   sleep?: (ms: number) => Promise<void>;
   /** Injectable jitter source in [0, 1), defaults to Math.random. */
@@ -312,7 +315,8 @@ async function reserveForCaps(caps: CapsHook, req: ProviderRequest, costMicros: 
       if (caps.planExpectedDailyMicros === undefined) {
         throw new Error('caps.capKind "workspace_day" needs caps.planExpectedDailyMicros');
       }
-      return caps.spendCaps.checkAndReserveWorkspaceDay(workspaceId, caps.planExpectedDailyMicros, costMicros);
+      const expected = typeof caps.planExpectedDailyMicros === "function" ? await caps.planExpectedDailyMicros(workspaceId) : caps.planExpectedDailyMicros;
+      return caps.spendCaps.checkAndReserveWorkspaceDay(workspaceId, expected, costMicros);
     }
     case "global_day":
       return caps.spendCaps.checkAndReserveGlobalDay(costMicros);
@@ -396,6 +400,9 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
   const chain = opts.chain && opts.chain.length > 0 ? opts.chain : routing[req.task];
   if (!chain || chain.length === 0) {
     throw new Error(`No providers routed for task "${req.task}"`);
+  }
+  if (opts.trialCall && (!opts.chain || opts.chain.length !== 1)) {
+    throw new Error("A trial call requires an explicit one-provider chain.");
   }
 
   const retry: RetryOptions = { ...DEFAULT_RETRY_OPTIONS, ...opts.retry };
@@ -481,7 +488,7 @@ export async function callWithFailover<TIn = unknown, TOut = unknown>(
       continue;
     }
     const openReason = await breaker.openReason(providerName);
-    if (openReason !== null) {
+    if (openReason !== null && !opts.trialCall) {
       errors.push(new BreakerOpenError(providerName, req.task, openReason));
       continue;
     }

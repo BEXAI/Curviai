@@ -404,6 +404,18 @@ describe("curvi pack get", () => {
     expect(h.out()).toContain("Saved 2 files");
   });
 
+  it("numbers files that share one name as _2 and _3, never _2_3", async () => {
+    const same = (id: string) => ({ ...FILES.files[0], id, url: `https://files.example.com/signed/${id}?sig=abc` });
+    const files: PackFiles = { ...FILES, files: [same("v_1"), same("v_2"), same("v_3")] };
+    const h = await harness((url) => {
+      if (url.startsWith("https://files.example.com/")) return new Response(new Uint8Array([1, 2, 3]));
+      return url.endsWith("/files") ? json(files) : json(pack("done"));
+    });
+    await signIn(h);
+    expect(await run(["pack", "get", ID, "--out", "pack"], h.deps)).toBe(EXIT.ok);
+    expect((await readdir(join(dir, "pack", "amazon"))).sort()).toEqual(["mug_main.jpg", "mug_main_2.jpg", "mug_main_3.jpg"]);
+  });
+
   it("needs one pack id", async () => {
     const h = await harness(() => json({}));
     await signIn(h);

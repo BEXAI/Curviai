@@ -22,6 +22,8 @@ export interface ProbeOptions {
 }
 
 export interface ProbeResult {
+  /** BFL account credits when its metadata probe returns a finite balance. */
+  balanceCredits?: number;
   /** True when the provider accepted the key. */
   ok: boolean;
   /** HTTP status of the probe call; null when no response came back. */
@@ -101,6 +103,107 @@ export async function probeRequest(
     }
     const name = err instanceof Error ? err.name : "Error";
     return { ok: false, status: null, latencyMs, error: `The call did not reach the provider (${name}).` };
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
+ * fal account balance (docs/phases/PHASE_18.md P18-03). fal has no free key
+ * probe for the cutout key itself, but its Platform API reports the account's
+ * credit balance to an Admin API key: GET
+ * https://api.fal.ai/v1/account/billing?expand=credits with
+ * "Authorization: Key <admin key>", answering
+ * { username, credits: { current_balance, currency } } (docs/verification.md,
+ * checked 2026-10-01). A read only metadata call that spends nothing, so it
+ * runs outside callWithFailover like every probe here: one attempt, a hard
+ * timeout, no retry, never throws, and the key never reaches a log or the
+ * result.
+ */
+export const FAL_BILLING_URL = "https://api.fal.ai/v1/account/billing?expand=credits";
+/** Default ceiling on one balance probe; the caller passes the seeded value. */
+export const FAL_BALANCE_PROBE_TIMEOUT_MS = 5_000;
+
+export interface FalBalanceProbeOptions {
+  /** A fal Admin API key (not the inference key). */
+  adminKey: string;
+  timeoutMs?: number;
+  /** Any fetch that takes a URL string; the global fetch by default. */
+  fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
+  signal?: AbortSignal;
+  now?: () => number;
+}
+
+export interface FalBalanceResult {
+  /** True when fal answered 200 with a numeric balance. */
+  ok: boolean;
+  /** HTTP status; null when no response came back. */
+  status: number | null;
+  /** The account's current credit balance; null when it could not be read. */
+  balanceUsd: number | null;
+  /** The balance's currency as fal reports it, e.g. "USD"; null when unread. */
+  currency: string | null;
+  latencyMs: number;
+  /** Short plain reason when ok is false. Never a key or a response body. */
+  error?: string;
+}
+
+/** Reads credits.current_balance and credits.currency from a billing body. */
+export function parseFalBilling(body: unknown): { balanceUsd: number; currency: string | null } | null {
+  const credits = (body as { credits?: unknown } | null)?.credits as
+    | { current_balance?: unknown; currency?: unknown }
+    | undefined;
+  const balance = credits?.current_balance;
+  if (typeof balance !== "number" || !Number.isFinite(balance)) {
+    return null;
+  }
+  const currency = typeof credits?.currency === "string" && credits.currency.length <= 8 ? credits.currency : null;
+  return { balanceUsd: balance, currency };
+}
+
+/** One balance read for one fal account. Never throws. */
+export async function probeFalBalance(options: FalBalanceProbeOptions): Promise<FalBalanceResult> {
+  const timeoutMs = options.timeoutMs ?? FAL_BALANCE_PROBE_TIMEOUT_MS;
+  const now = options.now ?? Date.now;
+  const fetchFn = options.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(options.signal?.reason);
+  if (options.signal?.aborted) {
+    controller.abort(options.signal.reason);
+  } else {
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error("probe timed out"));
+  }, timeoutMs);
+  const started = now();
+  const unread = { balanceUsd: null, currency: null } as const;
+  try {
+    const res = await fetchFn(FAL_BILLING_URL, {
+      method: "GET",
+      headers: { Authorization: `Key ${options.adminKey}`, Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      return { ok: false, status: res.status, ...unread, latencyMs: Math.max(0, now() - started), error: probeStatusReason(res.status) };
+    }
+    const parsed = parseFalBilling(await res.json().catch(() => null));
+    const latencyMs = Math.max(0, now() - started);
+    if (!parsed) {
+      return { ok: false, status: res.status, ...unread, latencyMs, error: "The provider answered without a credit balance." };
+    }
+    return { ok: true, status: res.status, ...parsed, latencyMs };
+  } catch (err) {
+    const latencyMs = Math.max(0, now() - started);
+    if (timedOut) {
+      return { ok: false, status: null, ...unread, latencyMs, error: noAnswer(timeoutMs) };
+    }
+    const name = err instanceof Error ? err.name : "Error";
+    return { ok: false, status: null, ...unread, latencyMs, error: `The call did not reach the provider (${name}).` };
   } finally {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", onAbort);

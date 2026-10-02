@@ -14,6 +14,13 @@
  * left out of the zip, the loose files and report.files, and listed in
  * report.dropped instead, so a runner that charges only the refs present in
  * report.files never charges for them.
+ *
+ * Product fidelity (docs/phases/PHASE_18.md P18-08): a file whose QC
+ * measured the color inside the product carries those numbers into its
+ * report entry (fidelity) and a product_unchanged check row. A file with
+ * the share badge drawn on it was re-encoded after that measurement, so it
+ * carries neither; the badge recheck still proves its product unchanged
+ * against the unbadged file (./badge).
  */
 import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -26,6 +33,7 @@ import { channelFileLimit, filenameFor, getSpec, isMarketplaceSpec, type Channel
 import { writeDigitalSourceType, type DigitalSourceKind } from "../metadata/iptc";
 import { decodeToRgba } from "../raw";
 import { headerChecks, pixelChecks, type CheckItem, type PixelCheckReport } from "../qc/pixelChecks";
+import { productUnchangedCheck, type StoredFidelity } from "../qc/fidelity-record";
 import type { RawImage, RawMask } from "../raw";
 import { treatmentNotes, type PackAssetTreatment } from "../treatment";
 import { applyBadge } from "./badge";
@@ -76,15 +84,24 @@ export interface PackAsset {
    * carousel slide ships as carousel/NN, an ad variant under
    * ads/{placement}/, and the ad copy goes into that zip's ads CSV. */
   group?: PackGroup;
+  /** The fidelity numbers QC measured on these exact bytes (P18-08). */
+  fidelity?: StoredFidelity | null;
 }
+
+/**
+ * Version of compliance-report.json. 2 (Phase 18) adds each file's
+ * fidelity numbers and its product_unchanged check; a report without a
+ * version is 1.
+ */
+export const COMPLIANCE_REPORT_VERSION = 2;
 
 /** Where an ads format file sits in its channel's pack (PHASE_16 workstream 3). */
 export type PackGroup =
   | { kind: "carousel"; carouselId: string; slideIndex: number }
   | { kind: "ad"; variantKey: string; headline: string; cta: string };
 
-/** The CSV of headlines and calls to action each zip with ad variants carries. */
-export const ADS_CSV_NAME = "ads/ads.csv";
+import { ADS_CSV_NAME, adsCsv } from "../csv";
+export { ADS_CSV_NAME, adsCsv, csvField } from "../csv";
 
 /**
  * The pack group of a planned shot: carousel slides and ad variants get
@@ -135,23 +152,6 @@ export function groupedFileName(specId: string, group: PackGroup | undefined, fo
   return `ads/${adPlacementFolder(specId)}/${zipSegment(group.variantKey)}.${ext}`;
 }
 
-/** One CSV field, quoted when it holds a comma, quote or line break. A field
- * a spreadsheet would read as a formula (=, +, -, @ first) gets a leading
- * apostrophe, so opening the CSV never runs anything. */
-function csvField(raw: string): string {
-  const value = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
-  return /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
-}
-
-/** The ads CSV: one row per ad file with its placement, file, headline and call to action. */
-export function adsCsv(rows: ReadonlyArray<{ specId: string; file: string; headline: string; cta: string }>): string {
-  const lines = [["placement", "file", "headline", "call_to_action"].join(",")];
-  for (const row of rows) {
-    lines.push([row.specId, row.file, row.headline, row.cta].map(csvField).join(","));
-  }
-  return `${lines.join("\n")}\n`;
-}
-
 /** Kept photos and already white files ship the seller's own pixels, so the
  * packager never draws the badge on them. */
 function keepsSellerPixels(treatment: PackAssetTreatment | undefined): boolean {
@@ -169,6 +169,8 @@ export interface PackFileReport {
   checks: CheckItem[];
   /** The ads format group, for carousel slides and ad variants. */
   group?: PackGroup;
+  /** What QC measured inside the product on this exact file (P18-08). */
+  fidelity?: StoredFidelity;
   measured: Pick<
     PixelCheckReport,
     "width" | "height" | "longestSide" | "backgroundWhiteShare" | "fillRatio" | "bytes" | "format"
@@ -191,6 +193,7 @@ export interface PackResult {
   zips: Array<{ channel: string; path: string; files: string[] }>;
   reportPath: string;
   report: {
+    version: number;
     generatedAt: string;
     channels: string[];
     files: PackFileReport[];
@@ -421,6 +424,15 @@ export async function buildPack(
       notes.push("raw pixels not supplied; only file level checks ran");
     }
 
+    // The fidelity row holds for the bytes QC measured, so a badged file,
+    // re-encoded since, leaves it out.
+    const fidelity = asset.fidelity && !badge ? asset.fidelity : null;
+    if (fidelity) {
+      const row = productUnchangedCheck(fidelity);
+      checks = [...checks, row];
+      pass = pass && row.pass;
+    }
+
     fileReports.push({
       file: name,
       channel,
@@ -431,6 +443,7 @@ export async function buildPack(
       notes,
       checks,
       ...(asset.group ? { group: asset.group } : {}),
+      ...(fidelity ? { fidelity } : {}),
       measured,
       pass,
     });
@@ -440,6 +453,7 @@ export async function buildPack(
   }
 
   const report = {
+    version: COMPLIANCE_REPORT_VERSION,
     generatedAt: new Date().toISOString(),
     channels: [...byChannel.keys()],
     files: fileReports,
@@ -454,6 +468,7 @@ export async function buildPack(
   for (const [channel, entries] of byChannel) {
     const zipPath = path.join(outDir, `${channel}.zip`);
     const channelReport = {
+      version: COMPLIANCE_REPORT_VERSION,
       generatedAt: report.generatedAt,
       channel,
       files: fileReports.filter((f) => f.channel === channel),

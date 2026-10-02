@@ -323,7 +323,8 @@ describe("planShots lifestyle scenes by category (Update.md 2.16)", () => {
     );
     expect(scenes).toHaveLength(sceneCountOptions.default);
     expect(scenes).toContain("detail macro");
-    expect(scenes).toContain("scale on hand");
+    expect(scenes).toContain("scale next to a familiar object");
+    expect(scenes).not.toContain("scale on hand");
   });
 
   it("keeps a single category addition next to 4 contexts", () => {

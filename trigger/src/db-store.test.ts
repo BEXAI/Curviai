@@ -9,7 +9,7 @@
  */
 
 import { stat } from "node:fs/promises";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, type Db } from "@curvi/db";
@@ -28,6 +28,7 @@ import { DbJobStore } from "./db-store";
 import {
   JobAbandonedError,
   runGeneratePack,
+  SCREENING_UNAVAILABLE_MESSAGE,
   systemClock,
   type GeneratePackInput,
   type UndeliveredShot,
@@ -35,6 +36,7 @@ import {
 import type { JobState } from "./state";
 import { buildRuntimeDeps } from "./runtime";
 import type { PackUploader } from "./r2";
+import { seedRecipe } from "./recipes";
 
 let client: PGlite;
 let db: TestDb;
@@ -192,6 +194,13 @@ describe("DbJobStore settles a pack run end to end", () => {
     expect(variantRows.every((v) => v.r2Key.startsWith(`ws/${ws}/jobs/${jobId}/files/`))).toBe(true);
     expect(variantRows.every((v) => (v.bytes ?? 0) > 0)).toBe(true);
 
+    const savedAssets = await db.select().from(assets).where(eq(assets.jobId, jobId));
+    for (const variant of variantRows) {
+      const qc = savedAssets.find((a) => a.id === variant.assetId)?.qc;
+      expect((qc?.fileReports as Record<string, unknown>)?.[variant.r2Key]).toMatchObject({ file: variant.filename, specId: variant.channelSpecId });
+      expect(qc?.shotId).toBeTypeOf("string");
+    }
+
     const packRows = await db.select().from(packFiles).where(eq(packFiles.jobId, jobId));
     const zips = packRows.filter((f) => f.kind === "zip");
     const reports = packRows.filter((f) => f.kind === "report");
@@ -260,6 +269,48 @@ describe("DbJobStore guards live pack runs", () => {
     creditBudget: 10,
     images: [{ mediaId: "m1" }],
     mode: "listing",
+  });
+
+  it("releases an assistant's existing hold when screening is unavailable, and a replay cannot spend or release twice", async () => {
+    const id = await newJob(10);
+    const before = await balance();
+    const runKey = crypto.randomUUID();
+    await db.update(generationJobs).set({ runKey }).where(eq(generationJobs.id, id));
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true });
+    const runtime = buildRuntimeDeps();
+    const calls = runtime.ai.registry.list().map((provider) => vi.spyOn(provider, "invoke"));
+    const loadMedia = vi.fn(async () => Buffer.from("unused"));
+    const generate = vi.spyOn(runtime.generator, "generate");
+    const deps = {
+      ...runtime, store, loadMedia,
+      recipes: { forJob: async () => ({ intake: {
+        ...seedRecipe("intake"), version: 7, source: "db" as const, recipeId: crypto.randomUUID(),
+      } }) },
+    };
+    const input: GeneratePackInput = {
+      ...packInput(id), runKey, audience: "assistant", images: [{ mediaId: `ws/${ws}/source.jpg` }],
+    };
+    const summary = await runGeneratePack(input, deps);
+    expect(summary).toMatchObject({
+      state: "failed", error: SCREENING_UNAVAILABLE_MESSAGE,
+      chargedCredits: 0, releasedCredits: 10, costMicros: 0, pack: null,
+    });
+    const [job] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+    expect(job).toMatchObject({ status: "failed", error: SCREENING_UNAVAILABLE_MESSAGE, creditsCharged: 0, cogsMicros: 0 });
+    expect(await balance()).toBe(before + 10);
+    const ledger = await db.select().from(creditLedger).where(eq(creditLedger.jobId, id));
+    expect(ledger.filter((row) => row.reason === "charge")).toEqual([]);
+    expect(ledger.filter((row) => row.reason === "release")).toHaveLength(1);
+    expect(ledger.filter((row) => row.reason === "reserve" || row.reason === "release").reduce((sum, row) => sum + row.delta, 0)).toBe(0);
+    expect(await db.select().from(assets).where(eq(assets.jobId, id))).toEqual([]);
+    expect(await db.select().from(packFiles).where(eq(packFiles.jobId, id))).toEqual([]);
+
+    expect((await runGeneratePack(input, deps)).state).toBe("failed");
+    expect(await balance()).toBe(before + 10);
+    expect(await db.select().from(creditLedger).where(eq(creditLedger.jobId, id))).toEqual(ledger);
+    expect(loadMedia).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+    for (const call of calls) expect(call).not.toHaveBeenCalled();
   });
 
   it("refuses to move a terminal job and leaves heartbeats off it", async () => {

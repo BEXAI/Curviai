@@ -7,9 +7,10 @@
  * Idempotent; run it after migrations on every deploy.
  */
 
-import { createDb, loadChannelSpecs, loadRecipes } from "@curvi/db";
-import { recipeSeedRows } from "@curvi/pipeline/seed";
+import { createDb, loadChannelSpecs, loadDisposableEmailDomains, loadRecipes } from "@curvi/db";
+import { disposableDomainSeedPolicy, recipeSeedRows } from "@curvi/pipeline/seed";
 import { grantPendingSignupCredits, loadPlatformSettings } from "./platform-settings";
+import { readDisposableDomainSeed } from "./disposable-domains";
 
 async function main(): Promise<void> {
   const url = process.env.DATABASE_URL;
@@ -18,13 +19,15 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  const domainSeed = readDisposableDomainSeed();
   const db = createDb(url, { max: 1, prepare: false });
   const specs = await loadChannelSpecs(db);
   const recipes = await loadRecipes(db, recipeSeedRows);
   const settings = await loadPlatformSettings(db);
+  const domains = await loadDisposableEmailDomains(db, domainSeed, disposableDomainSeedPolicy);
   const settled = await grantPendingSignupCredits(db);
   console.log(
-    `Seeded ${specs} channel specs, ${recipes} recipe rows and ${settings} platform settings. Settled ${settled} pending signup grants.`,
+    `Seeded ${specs} channel specs, ${recipes} recipe rows, ${settings} platform settings and ${domains} disposable email domains. Settled ${settled} pending signup grants.`,
   );
   process.exit(0);
 }

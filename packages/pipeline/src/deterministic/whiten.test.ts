@@ -4,6 +4,7 @@ import { getSpec, type ChannelSpec } from "@curvi/specs";
 import { decodeMask, decodeToRgba, maskFromAlpha, type RawImage, type RawMask } from "../raw";
 import { boundingBoxOfMask } from "../mask";
 import { fidelityReport } from "../qc/fidelity";
+import { tintInsideMask } from "../qc/testing";
 import { qcKindForSpec } from "../qc/pixelChecks";
 import { rectProduct } from "../testutil";
 import { productSizeFillFor } from "../output-options";
@@ -55,16 +56,6 @@ async function texturedCutout(size = 256): Promise<{ png: Buffer; maskPng: Buffe
   const png = await sharp(data, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer();
   const maskPng = await sharp(maskData, { raw: { width: size, height: size, channels: 1 } }).png().toBuffer();
   return { png, maskPng, rgba, mask };
-}
-
-/** Copy of image with red raised by amount inside mask, like a stray tint. */
-function tintInsideMask(image: RawImage, mask: RawMask, amount: number): RawImage {
-  const data = Buffer.from(image.data);
-  for (let i = 0; i < mask.data.length; i++) {
-    if (mask.data[i] === 0) continue;
-    data[i * 4] = Math.min(255, data[i * 4] + amount);
-  }
-  return { ...image, data };
 }
 
 /** Small spec so most tests stay fast; same rules as amazon.main. */

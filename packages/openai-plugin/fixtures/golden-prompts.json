@@ -1,0 +1,168 @@
+{
+  "about": "The golden prompt set for the manual developer mode runs (docs/phases/PHASE_19.md, P19-26 and the developer mode checklist, step 4): the 5 positive and 3 negative review cases from package/plugin.json, 10 more phrasings, and the prohibited goods negatives (P19-29). For each run, record whether the expected tools were called and whether the result matched. A prompt with an attachment is sent with that photo attached in ChatGPT.",
+  "sample_photo": "https://curvi.ai/review/sample-product.jpg",
+  "prompts": [
+    {
+      "id": "review-positive-1",
+      "kind": "review_positive",
+      "prompt": "Is this photo OK as an Amazon main image?",
+      "attachment": "sample_photo",
+      "tools": ["check_main_image"],
+      "expected": "Curvi reports pass or fail for the longest side, the white background and the product fill, with the measured values. No credits are used."
+    },
+    {
+      "id": "review-positive-2",
+      "kind": "review_positive",
+      "prompt": "Which marketplaces, sizes and backgrounds can Curvi make for me?",
+      "attachment": null,
+      "tools": ["list_channels"],
+      "expected": "Lists channels with sizes, the backgrounds and the scene styles, and which ones this workspace's plan includes."
+    },
+    {
+      "id": "review-positive-3",
+      "kind": "review_positive",
+      "prompt": "How many credits would an Amazon main image and a Shopify product image of this take?",
+      "attachment": "sample_photo",
+      "tools": ["estimate_pack"],
+      "expected": "States the credits needed and the workspace balance. Nothing is started."
+    },
+    {
+      "id": "review-positive-4",
+      "kind": "review_positive",
+      "prompt": "Make an Amazon main image and a Shopify product image of this on white.",
+      "attachment": "sample_photo",
+      "tools": ["estimate_pack", "create_pack", "get_pack"],
+      "expected": "States the credits and asks to confirm, starts the pack and says it takes a few minutes, then, when asked, shows preview and download links and whether each image passes its channel's rules. The product is not redrawn, and stored fidelity measurements describe any color difference."
+    },
+    {
+      "id": "review-positive-5",
+      "kind": "review_positive",
+      "prompt": "Keep this photo's background and size it for Etsy and eBay.",
+      "attachment": "sample_photo",
+      "tools": ["estimate_pack", "create_pack", "get_pack"],
+      "expected": "Same flow with the original background kept, sized for both channels."
+    },
+    {
+      "id": "review-negative-1",
+      "kind": "review_negative",
+      "prompt": "Write a product description for my candle listing.",
+      "attachment": null,
+      "tools": [],
+      "expected": "Curvi makes images and does not write copy, so ChatGPT answers on its own without calling Curvi."
+    },
+    {
+      "id": "review-negative-2",
+      "kind": "review_negative",
+      "prompt": "Draw a cartoon cat wearing a space helmet.",
+      "attachment": null,
+      "tools": [],
+      "expected": "Curvi works only from a real product photo and never draws new images, so no Curvi tool is called and ChatGPT says Curvi needs a product photo."
+    },
+    {
+      "id": "review-negative-3",
+      "kind": "review_negative",
+      "prompt": "Change the price of my product in my Shopify store.",
+      "attachment": null,
+      "tools": [],
+      "expected": "Curvi cannot change store listings or prices, so no Curvi tool is called and ChatGPT says this needs the Shopify admin."
+    },
+    {
+      "id": "phrasing-1",
+      "kind": "phrasing",
+      "prompt": "Can you turn this photo into an Amazon listing image?",
+      "attachment": "sample_photo",
+      "tools": ["estimate_pack", "create_pack"],
+      "expected": "ChatGPT states the credits from estimate_pack, asks to confirm, then starts the pack."
+    },
+    {
+      "id": "phrasing-2",
+      "kind": "phrasing",
+      "prompt": "I sell this on Etsy. Make me listing photos on a plain white background.",
+      "attachment": "sample_photo",
+      "tools": ["estimate_pack", "create_pack"],
+      "expected": "An Etsy pack on the white background, started after the credits are stated and confirmed."
+    },
+    {
+      "id": "phrasing-3",
+      "kind": "phrasing",
+      "prompt": "Put this product on a warm white background for my Shopify store.",
+      "attachment": "sample_photo",
+      "tools": ["estimate_pack", "create_pack"],
+      "expected": "A Shopify pack on the warm white swatch, started after the credits are stated and confirmed."
+    },
+    {
+      "id": "phrasing-4",
+      "kind": "phrasing",
+      "prompt": "What image sizes does Curvi make for Walmart?",
+      "attachment": null,
+      "tools": ["list_channels"],
+      "expected": "Lists the Walmart sizes from list_channels and makes nothing."
+    },
+    {
+      "id": "phrasing-5",
+      "kind": "phrasing",
+      "prompt": "Would this pass Amazon's rules for the first image on a listing?",
+      "attachment": "sample_photo",
+      "tools": ["check_main_image"],
+      "expected": "The main image check runs and its result is reported. No credits are used."
+    },
+    {
+      "id": "phrasing-6",
+      "kind": "phrasing",
+      "prompt": "Which backgrounds and scene styles can I pick for my product photos?",
+      "attachment": null,
+      "tools": ["list_channels"],
+      "expected": "Lists the plain backgrounds and the scene styles with their labels."
+    },
+    {
+      "id": "phrasing-7",
+      "kind": "phrasing",
+      "prompt": "Make an Instagram story image of this product in an outdoor scene.",
+      "attachment": "sample_photo",
+      "tools": ["estimate_pack", "create_pack"],
+      "expected": "Instagram maps to the Meta story size; the outdoor scene style is used; the pack starts after the credits are stated and confirmed."
+    },
+    {
+      "id": "phrasing-8",
+      "kind": "phrasing",
+      "prompt": "Make a Pinterest pin of this in a kitchen scene.",
+      "attachment": "sample_photo",
+      "tools": ["estimate_pack", "create_pack"],
+      "expected": "A Pinterest pin with the kitchen scene style, started after the credits are stated and confirmed."
+    },
+    {
+      "id": "phrasing-9",
+      "kind": "phrasing",
+      "prompt": "Is my pack finished yet? Show me the images and the download links.",
+      "attachment": null,
+      "tools": ["get_pack"],
+      "expected": "Run after a pack was started in the same chat. get_pack reports progress, or the finished images with preview and download links."
+    },
+    {
+      "id": "phrasing-10",
+      "kind": "phrasing",
+      "prompt": "Which Curvi account and workspace is this chat connected to?",
+      "attachment": null,
+      "tools": ["get_profile"],
+      "expected": "Names the connected workspace and the account email, and nothing else."
+    },
+    {
+      "id": "prohibited-vape",
+      "kind": "prohibited",
+      "prompt": "Make Amazon listing images of this nicotine vape pen.",
+      "attachment": "a photo of a nicotine vape pen (bring your own; not in the repository)",
+      "tools": [],
+      "needs": "P19-29",
+      "expected": "No images are made and nothing is charged. ChatGPT may decline on its own; if Curvi is called, the pack stops at intake with: Curvi cannot make images of this product from ChatGPT. Nothing was charged."
+    },
+    {
+      "id": "prohibited-pepper-spray",
+      "kind": "prohibited",
+      "prompt": "Make a Shopify product image of this pepper spray on white.",
+      "attachment": "a photo of a pepper spray can (bring your own; not in the repository)",
+      "tools": [],
+      "needs": "P19-29",
+      "expected": "No images are made and nothing is charged. ChatGPT may decline on its own; if Curvi is called, the pack stops at intake with: Curvi cannot make images of this product from ChatGPT. Nothing was charged."
+    }
+  ]
+}

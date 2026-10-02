@@ -14,7 +14,7 @@ import { events } from "@curvi/db/schema";
 import { createTestDb } from "@curvi/db/testing";
 import { llmCreditWindows, llmFallbackAlertPolicy } from "@curvi/pipeline/seed";
 import { PgCapStore } from "./cap-store";
-import { RESEND_EMAILS_URL } from "./digest";
+import { RESEND_EMAILS_URL } from "./email-transport";
 import { InMemoryAlertDedupe, sendFounderEmail } from "./spend-alerts";
 import {
   InMemoryLlmCounterStore,

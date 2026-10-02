@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The channel check reads the web app's live channel list
+    // (apps/web/src/lib/marketing-facts.ts, CHANNEL_FAMILIES), which imports
+    // through the app's "@/" alias; tsx reads these paths for the build.
+    "paths": {
+      "@/*": ["../../apps/web/src/*"]
+    }
+  },
+  "include": ["src"]
+}

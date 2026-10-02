@@ -364,6 +364,14 @@ export function imageDimensions(bytes: Uint8Array): { width: number; height: num
   return null;
 }
 
+/** MIME type of an upload from its magic bytes (JPEG or WebP); PNG when
+ * unknown. The cutout adapters type their upload with it. */
+export function sniffMime(bytes: Uint8Array): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 && bytes[9] === 0x45) return "image/webp";
+  return "image/png";
+}
+
 /** Decodes base64 image data for header inspection. */
 export function base64Bytes(data: string): Uint8Array {
   return new Uint8Array(Buffer.from(data, "base64"));

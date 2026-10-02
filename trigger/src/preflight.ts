@@ -44,6 +44,7 @@ import {
   renderCutoutPreview,
   renderPieceThumbnails,
   targetQuestionOpen,
+  unionBox,
   uprightSize,
   type IntakeImageResult,
   type InventoryDecision,
@@ -138,16 +139,18 @@ async function recipesFor(deps: PipelineDeps, preflightId: string): Promise<JobR
   }
 }
 
-/** The smallest normalized box holding every box, or null for none. */
-export function unionBox(boxes: readonly NormalizedBox[]): NormalizedBox | null {
-  if (boxes.length === 0) {
+/** The pipeline's unionBox kept inside the photo: its right and bottom edges
+ * capped at 1, and null for no boxes or a union with no area. */
+export function clampedUnionBox(boxes: readonly NormalizedBox[]): NormalizedBox | null {
+  const union = unionBox(boxes);
+  if (!union) {
     return null;
   }
-  const left = Math.min(...boxes.map((b) => b.x));
-  const top = Math.min(...boxes.map((b) => b.y));
-  const right = Math.min(1, Math.max(...boxes.map((b) => b.x + b.width)));
-  const bottom = Math.min(1, Math.max(...boxes.map((b) => b.y + b.height)));
-  return right > left && bottom > top ? { x: left, y: top, width: right - left, height: bottom - top } : null;
+  const right = Math.min(1, union.x + union.width);
+  const bottom = Math.min(1, union.y + union.height);
+  return right > union.x && bottom > union.y
+    ? { x: union.x, y: union.y, width: right - union.x, height: bottom - union.y }
+    : null;
 }
 
 export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflightArgs): Promise<UploadPreflightRun> {
@@ -323,7 +326,7 @@ async function takePreflightInventory(
   const match = matchProducts(inventory.objects, products);
   const order = pickerNumbering(inventory.objects).map((index) => inventory.objects[index]);
   const featuredBoxes = inventory.objects.filter((object) => decision.featured.includes(object.index)).map((o) => o.box);
-  run.productBox = unionBox(featuredBoxes.length > 0 ? featuredBoxes : inventory.objects.map((o) => o.box));
+  run.productBox = clampedUnionBox(featuredBoxes.length > 0 ? featuredBoxes : inventory.objects.map((o) => o.box));
   run.items = order.map((object, i) => ({
     number: i + 1,
     label: itemLabel(object, products, match),

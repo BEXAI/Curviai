@@ -160,12 +160,14 @@ function hueAngleDeg(ap: number, b: number): number {
   return h;
 }
 
+/** A six digit hex color, like #1F2A44. */
+export const HEX = /^#[0-9A-Fa-f]{6}$/;
+
 /** Parse a #RRGGBB hex string into 8 bit channels. */
 export function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  const match = /^#([0-9A-Fa-f]{6})$/.exec(hex);
-  if (!match) {
+  if (!HEX.test(hex)) {
     throw new Error(`Invalid hex color: ${hex}`);
   }
-  const value = parseInt(match[1], 16);
+  const value = parseInt(hex.slice(1), 16);
   return { r: (value >> 16) & 0xff, g: (value >> 8) & 0xff, b: value & 0xff };
 }

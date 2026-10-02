@@ -1,5 +1,6 @@
+import { spendCapPolicy as SPEND_CAPS } from "@curvi/pipeline/seed";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { SpendCaps, SPEND_CAPS } from "@curvi/ai";
+import { SpendCaps } from "@curvi/ai";
 import type { Db } from "@curvi/db";
 import { createTestDb } from "@curvi/db/testing";
 import { PgCapStore } from "./cap-store";
@@ -33,8 +34,8 @@ describe("PgCapStore", () => {
 
   it("shares cap totals across separately built runtimes (every task run builds its own)", async () => {
     // Two Trigger.dev runs of the same pack: fresh SpendCaps objects, one table.
-    const runA = new SpendCaps(store);
-    const runB = new SpendCaps(store);
+    const runA = new SpendCaps(store, () => new Date(), SPEND_CAPS);
+    const runB = new SpendCaps(store, () => new Date(), SPEND_CAPS);
     const firstShot = await runA.checkAndReservePack("job-shared", SPEND_CAPS.perPackMicros - 1_000_000);
     expect(firstShot.allowed).toBe(true);
 
@@ -45,8 +46,8 @@ describe("PgCapStore", () => {
 
   it("holds the global daily hard stop across runs", async () => {
     const day = () => new Date("2026-09-28T12:00:00Z");
-    const runA = new SpendCaps(store, day, { globalDailyHardStopMicros: 100_000 });
-    const runB = new SpendCaps(store, day, { globalDailyHardStopMicros: 100_000 });
+    const runA = new SpendCaps(store, day, { ...SPEND_CAPS, ...{ globalDailyHardStopMicros: 100_000 } });
+    const runB = new SpendCaps(store, day, { ...SPEND_CAPS, ...{ globalDailyHardStopMicros: 100_000 } });
     expect((await runA.checkAndReserveGlobalDay(80_000)).allowed).toBe(true);
     expect((await runB.checkAndReserveGlobalDay(30_000)).allowed).toBe(false);
     expect((await runB.checkAndReserveGlobalDay(20_000)).allowed).toBe(true);

@@ -9,23 +9,44 @@
  */
 
 import { platformSettings, sql, type Db } from "@curvi/db";
-import { platformSettingSeedRows, type PlatformSettingSeedRow } from "@curvi/pipeline/seed";
+import { OPS_SWITCH_PREFIX, platformSettingSeedRows, type PlatformSettingSeedRow } from "@curvi/pipeline/seed";
 
-/** Upserts the seeded platform settings. Idempotent; returns rows written. */
+/** Upserts the seeded platform settings. Idempotent; returns rows written.
+ * A keepStored row (a runtime switch the founder flips by SQL, such as
+ * acquisition_paused) is inserted only when missing, so a later seed never
+ * resets the founder's choice; every other row is overwritten. */
 export async function loadPlatformSettings(
   db: Db,
   rows: PlatformSettingSeedRow[] = platformSettingSeedRows,
 ): Promise<number> {
+  // Operator switches live under ops: keys and only the founder writes them
+  // (docs/phases/PHASE_20.md P20-20): a seeded ops: row would reset the
+  // founder's choice on every release, so the loader refuses before writing.
+  const opsRows = rows.filter((row) => row.key.trim().toLowerCase().startsWith(OPS_SWITCH_PREFIX));
+  if (opsRows.length > 0) {
+    throw new Error(
+      `pnpm db:seed never writes operator switches; remove ${opsRows.map((row) => row.key).join(", ")} from the seed rows.`,
+    );
+  }
   if (rows.length === 0) {
     return 0;
   }
-  await db
-    .insert(platformSettings)
-    .values(rows.map((row) => ({ key: row.key, value: row.value, updatedAt: new Date() })))
-    .onConflictDoUpdate({
-      target: platformSettings.key,
-      set: { value: sql`excluded.value`, updatedAt: sql`excluded.updated_at` },
-    });
+  const values = (list: PlatformSettingSeedRow[]) =>
+    list.map((row) => ({ key: row.key, value: row.value, updatedAt: new Date() }));
+  const overwrite = rows.filter((row) => !row.keepStored);
+  const keep = rows.filter((row) => row.keepStored);
+  if (overwrite.length > 0) {
+    await db
+      .insert(platformSettings)
+      .values(values(overwrite))
+      .onConflictDoUpdate({
+        target: platformSettings.key,
+        set: { value: sql`excluded.value`, updatedAt: sql`excluded.updated_at` },
+      });
+  }
+  if (keep.length > 0) {
+    await db.insert(platformSettings).values(values(keep)).onConflictDoNothing({ target: platformSettings.key });
+  }
   return rows.length;
 }
 

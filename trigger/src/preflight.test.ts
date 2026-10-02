@@ -23,11 +23,13 @@ import {
   type PipelineDeps,
   type ShotGenerator,
 } from "./pipeline-runner";
-import { CUTOUT_PREVIEW_LONG_SIDE, runUploadPreflight, unionBox } from "./preflight";
+import { clampedUnionBox, CUTOUT_PREVIEW_LONG_SIDE, runUploadPreflight } from "./preflight";
 import {
   intakeAsksAddedOverlays,
+  intakeAsksRestrictedGoods,
   noteKey,
   PREFLIGHT_FRESH_MS,
+  restrictedCategoriesOf,
   reusablePreflightIntake,
   trustedIntakeAnswer,
   type PreflightIntake,
@@ -81,6 +83,7 @@ const twoProductsImage: IntakeImageResult = {
     { label: "blue bottle", box: blueBox, matchesIntent: "unclear" },
   ],
   addedOverlays: false,
+  restrictedCategory: null,
   flags,
 };
 
@@ -199,7 +202,7 @@ describe("cutout cache", () => {
   });
 
   it("keys the cache under the workspace prefix", () => {
-    expect(cutoutCacheKey(WS, new Uint8Array([1]))).toMatch(new RegExp(`^ws/${WS}/cache/cutout/[0-9a-f]{64}\\.png$`));
+    expect(cutoutCacheKey(WS, new Uint8Array([1]))).toMatch(new RegExp(`^tmp/ws/${WS}/cache/cutout/[0-9a-f]{64}\\.png$`));
   });
 });
 
@@ -256,6 +259,27 @@ describe("trustedIntakeAnswer", () => {
     expect(trustedIntakeAnswer(answer, { key: "other_recipe", version: 9 }).images[0].addedOverlays).toBe(false);
     expect(answer.images[0].addedOverlays).toBe(true);
   });
+
+  it("keeps restrictedCategory only from version 8 on (PHASE_19 P19-29), and lists each category once", () => {
+    const restricted = {
+      images: [
+        { ...twoProductsImage, restrictedCategory: "self_defense_weapons" as const },
+        { ...twoProductsImage, restrictedCategory: "self_defense_weapons" as const },
+        { ...twoProductsImage, restrictedCategory: "tobacco_nicotine" as const },
+      ],
+    };
+    const v8 = { key: intakeRecipe.key, version: 8 };
+    const v7 = { key: intakeRecipe.key, version: 7 };
+    expect(intakeAsksRestrictedGoods(v8)).toBe(true);
+    expect(intakeAsksRestrictedGoods(v7)).toBe(false);
+    expect(trustedIntakeAnswer(restricted, v8)).toBe(restricted);
+    expect(restrictedCategoriesOf(trustedIntakeAnswer(restricted, v8))).toEqual(["self_defense_weapons", "tobacco_nicotine"]);
+    expect(restrictedCategoriesOf(trustedIntakeAnswer(restricted, v7))).toEqual([]);
+    // Version 7 asked for addedOverlays, so that flag is kept.
+    const both = { images: [{ ...twoProductsImage, addedOverlays: true, restrictedCategory: "firearms" as const }] };
+    expect(trustedIntakeAnswer(both, v7).images[0]).toMatchObject({ addedOverlays: true, restrictedCategory: null });
+    expect(restrictedCategoriesOf({ images: [twoProductsImage] })).toEqual([]);
+  });
 });
 
 describe("a stored target box in the runner", () => {
@@ -290,7 +314,7 @@ describe("a stored target box in the runner", () => {
     expect(chosen.ambiguous).toEqual([]);
     expect(chosen.targets.m1.box).toEqual(blueBox);
     const bare = selectTargets(
-      { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags }] },
+      { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, restrictedCategory: null, flags }] },
       [{ mediaId: "m1", targetBox: blueBox }],
       "job",
     );
@@ -328,7 +352,7 @@ describe("runGeneratePack with a preflight", () => {
     sku: "SKU1",
     seoSlug: "watch",
   };
-  const single: IntakeImageResult = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags };
+  const single: IntakeImageResult = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, restrictedCategory: null, flags };
 
   function deps(ai: AiDeps): PipelineDeps & { store: InMemoryJobStore } {
     return { ai, store: new InMemoryJobStore(), clock: systemClock, generator: new DemoShotGenerator() };
@@ -437,13 +461,13 @@ describe("runUploadPreflight", () => {
     const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
     const run = await runUploadPreflight(deps, { preflightId: "pf-1b", workspaceId: WS, mediaKey: KEY, note: "" });
     expect(run.items.some((i) => i.featured)).toBe(false);
-    const union = unionBox(run.items.map((i) => i.box))!;
+    const union = clampedUnionBox(run.items.map((i) => i.box))!;
     expect(run.productBox).toEqual(union);
     for (const item of run.items) {
       expect(item.box.x).toBeGreaterThanOrEqual(union.x);
       expect(item.box.x + item.box.width).toBeLessThanOrEqual(union.x + union.width + 1e-9);
     }
-    expect(unionBox([])).toBeNull();
+    expect(clampedUnionBox([])).toBeNull();
   });
 
   it("draws the cutout preview of the one product the pack is for (PHASE_15 P1)", async () => {

@@ -19,13 +19,18 @@
  * cap amounts, and the DAILY_SPEND_HARD_STOP_USD override.
  */
 
-import { SPEND_CAPS, type CapReservation, type SpendCaps } from "@curvi/ai";
+import { type CapReservation, type SpendCaps } from "@curvi/ai";
+import { spendCapPolicy as SPEND_CAPS } from "@curvi/pipeline/seed";
+import { resolveGlobalHardStop, resolveHardStopValue } from "./spend-policy";
 import { events, type Db } from "@curvi/db";
-import { RESEND_EMAILS_URL, type FetchLike } from "./digest";
+import { sendAlertReport, type AlertReport } from "./alert-report";
+import { dollars } from "./digest";
+import { RESEND_EMAILS_URL, type FetchLike } from "./email-transport";
+import { optionalEnv, type ReadEnv } from "./env";
 
 export type SpendAlertKind = "spend_alert" | "hard_stop";
 
-export type ReadEnv = (name: string) => string | undefined;
+export type { ReadEnv } from "./env";
 
 /** One time claims per key. */
 export interface AlertDedupe {
@@ -64,6 +69,9 @@ export interface SpendAlertNotifierOptions {
   fetchImpl?: FetchLike;
   now?: () => Date;
   log?: Pick<Console, "error" | "warn">;
+  /** The second channel (PHASE_20 P20-13): the process wide hook the web
+   * app installs (alert-report.ts) unless one is injected. */
+  report?: AlertReport;
 }
 
 export interface SpendAlertResult {
@@ -83,22 +91,10 @@ export const EVENT_NAMES: Record<SpendAlertKind, string> = {
 
 export const DEFAULT_ALERT_FROM = "Curvi Alerts <alerts@curvi.ai>";
 
-function readEnvDefault(name: string): string | undefined {
-  const value = process.env[name];
-  return value && value.length > 0 ? value : undefined;
-}
-
-const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
-
-function dollars(micros: number): string {
-  return usd.format(micros / 1_000_000);
-}
-
 /** The hard stop in force: the founder's DAILY_SPEND_HARD_STOP_USD raise, or
  * the platform default. Mirrors the parse in runtime.ts buildRuntimeDeps. */
-export function hardStopMicros(readEnv: ReadEnv = readEnvDefault): number {
-  const raised = Number(readEnv("DAILY_SPEND_HARD_STOP_USD") ?? "");
-  return Number.isFinite(raised) && raised > 0 ? Math.round(raised * 1_000_000) : SPEND_CAPS.globalDailyHardStopMicros;
+export function hardStopMicros(readEnv: ReadEnv = optionalEnv): number {
+  return resolveHardStopValue(undefined, readEnv("DAILY_SPEND_HARD_STOP_USD"));
 }
 
 export interface SpendAlertEmail {
@@ -142,7 +138,7 @@ export class SpendAlertNotifier {
   private readonly log: Pick<Console, "error" | "warn">;
 
   constructor(private readonly opts: SpendAlertNotifierOptions = {}) {
-    this.readEnv = opts.readEnv ?? readEnvDefault;
+    this.readEnv = opts.readEnv ?? optionalEnv;
     this.dedupe = opts.dedupe ?? new InMemoryAlertDedupe();
     this.log = opts.log ?? console;
   }
@@ -186,7 +182,8 @@ export class SpendAlertNotifier {
     }
     result.deduped = false;
 
-    const email = composeSpendAlert(kind, totalMicros, day, hardStopMicros(this.readEnv));
+    const email = composeSpendAlert(kind, totalMicros, day, this.opts.db ? await resolveGlobalHardStop(this.opts.db, this.readEnv("DAILY_SPEND_HARD_STOP_USD")) : hardStopMicros(this.readEnv));
+    sendAlertReport(this.opts.report, email.subject, { alert: kind, period: day }, kind === "hard_stop" ? "error" : "warning");
     const sent = await this.sendEmail(email);
     result.notice = sent.notice;
     if (sent.ok) {
@@ -249,7 +246,7 @@ export async function sendFounderEmail(
   email: SpendAlertEmail,
   opts: { readEnv?: ReadEnv; fetchImpl?: FetchLike; timeoutMs?: number } = {},
 ): Promise<{ ok: boolean; notice?: string; retryable?: boolean }> {
-  const readEnv = opts.readEnv ?? readEnvDefault;
+  const readEnv = opts.readEnv ?? optionalEnv;
   const apiKey = readEnv("RESEND_API_KEY");
   const to = readEnv("FOUNDER_ALERT_EMAIL");
   if (!apiKey || !to) {
@@ -320,4 +317,63 @@ export function watchGlobalSpend(
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** One transactional email to a customer (PHASE_20 P20-07). */
+export interface ResendEmail {
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  replyTo?: string;
+  /** Resend keeps an Idempotency-Key for 24 hours (max 256 characters). */
+  idempotencyKey?: string;
+}
+
+/**
+ * Sends one email through the same Resend fetch path as sendFounderEmail
+ * (docs/phases/PHASE_20.md P20-07: the plan activation email goes out this
+ * way until PHASE_18's P18-06 sendEmail exists). Needs RESEND_API_KEY.
+ * Never throws; retryable marks a send that may work later.
+ */
+export async function sendResendEmail(
+  email: ResendEmail,
+  opts: { readEnv?: ReadEnv; fetchImpl?: FetchLike; timeoutMs?: number } = {},
+): Promise<{ ok: boolean; id?: string; notice?: string; retryable?: boolean }> {
+  const readEnv = opts.readEnv ?? optionalEnv;
+  const apiKey = readEnv("RESEND_API_KEY");
+  if (!apiKey) {
+    return { ok: false, notice: "Set RESEND_API_KEY to send email." };
+  }
+  const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+  if (email.idempotencyKey) {
+    headers["Idempotency-Key"] = email.idempotencyKey.slice(0, 256);
+  }
+  try {
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const res = await fetchImpl(RESEND_EMAILS_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        from: email.from,
+        to: [email.to],
+        subject: email.subject,
+        text: email.text,
+        ...(email.replyTo ? { reply_to: email.replyTo } : {}),
+      }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? FOUNDER_EMAIL_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return {
+        ok: false,
+        notice: `Resend returned status ${res.status}. ${body}`.trim(),
+        retryable: res.status === 429 || res.status >= 500,
+      };
+    }
+    const parsed = (await res.json().catch(() => null)) as { id?: unknown } | null;
+    return { ok: true, ...(typeof parsed?.id === "string" ? { id: parsed.id } : {}) };
+  } catch (err) {
+    return { ok: false, notice: `Resend could not be reached. ${errorText(err)}`, retryable: true };
+  }
 }

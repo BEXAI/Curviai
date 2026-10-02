@@ -49,12 +49,21 @@ export async function writeDigitalSourceType(file: string, kind: DigitalSourceKi
   await et.write(file, tags, { writeArgs: ["-overwrite_original"] });
 }
 
-/** Read the digital source type back, mapping unknown or missing values to "none". */
-export async function readDigitalSourceType(file: string): Promise<DigitalSourceKind> {
+/**
+ * The DigitalSourceType value exactly as exiftool reads it from the file, or
+ * null when the file carries none. The smoke:iptc check prints it.
+ */
+export async function readDigitalSourceTypeValue(file: string): Promise<string | null> {
   const et = getExiftool();
   const tags = (await et.read(file)) as Record<string, unknown>;
   const value = tags["DigitalSourceType"];
-  if (typeof value !== "string" || value.length === 0) {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** Read the digital source type back, mapping unknown or missing values to "none". */
+export async function readDigitalSourceType(file: string): Promise<DigitalSourceKind> {
+  const value = await readDigitalSourceTypeValue(file);
+  if (value === null) {
     return "none";
   }
   if (value.includes("compositeSynthetic")) {

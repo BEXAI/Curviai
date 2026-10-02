@@ -7,9 +7,11 @@ import { z } from "zod";
 // The pure schema module, not the package root: this file reaches client
 // bundles, which must not pull in the provider adapters.
 import { openaiSchemaLimitProblems, openaiStrictJsonSchema } from "@curvi/ai/openai-schema";
+import { RESTRICTED_GOODS_KEYS } from "./seed/restricted-goods";
+import { HEX } from "./color";
 import { variationOptions } from "./seed/variations";
 
-export const Hex = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
+export const Hex = z.string().regex(HEX);
 
 export const ProductProfile = z.object({
   productCount: z.number().int().min(1),
@@ -193,6 +195,11 @@ export const IntakeImageResult = z.object({
    * logo or label is never an overlay. Defaults to false, so answers from
    * versions 1 to 4, which never asked, read as a clean photo. */
   addedOverlays: z.boolean().default(false),
+  /** The OpenAI prohibited goods category the product belongs to, from the
+   * seeded list (intake version 8, PHASE_19 P19-29), or null. Defaults to
+   * null, so answers from versions 1 to 7, which never asked, read as none.
+   * Only a pack an assistant started stops on it. */
+  restrictedCategory: z.enum(RESTRICTED_GOODS_KEYS).nullable().default(null),
   flags: z.object({
     nudity: z.boolean(),
     weapons: z.boolean(),
@@ -224,6 +231,7 @@ export const IntakeToolResult = z.object({
         screenshot: z.boolean(),
         products: z.array(IntakeProduct).max(12),
         addedOverlays: z.boolean(),
+        restrictedCategory: z.enum(RESTRICTED_GOODS_KEYS).nullable(),
       }),
     )
     .min(1),

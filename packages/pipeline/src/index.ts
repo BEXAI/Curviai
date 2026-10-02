@@ -6,6 +6,7 @@ export * from "./deterministic/whiten";
 export * from "./deterministic/original";
 export * from "./qc/pixelChecks";
 export * from "./qc/fidelity";
+export * from "./qc/fidelity-record";
 export * from "./composite/index";
 export * from "./planner/deterministic";
 export * from "./planner/ads";

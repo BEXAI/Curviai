@@ -30,7 +30,7 @@
 import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
-import { probeRequest, type ProbeOptions, type ProbeResult } from "../probe";
+import { PROBE_TIMEOUT_MS, probeStatusReason, type ProbeOptions, type ProbeResult } from "../probe";
 import {
   ASYNC_JOB_TIMEOUT_MARGIN_MS,
   billedFailure,
@@ -130,8 +130,25 @@ export class BflFluxProvider implements CostAwareProvider {
    * Key probe: GET /v1/credits, which returns the account's credit balance
    * (BFL API reference, checked 2026-09-28). Never creates a job.
    */
-  probe(options?: ProbeOptions): Promise<ProbeResult> {
-    return probeRequest(this.fetchFn, `${this.baseUrl}/v1/credits`, { method: "GET", headers: { "x-key": this.apiKey } }, options);
+  async probe(options: ProbeOptions = {}): Promise<ProbeResult> {
+    const started = this.now();
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? PROBE_TIMEOUT_MS);
+    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+    try {
+      const response = await this.fetchFn(`${this.baseUrl}/v1/credits`, { method: "GET", headers: { "x-key": this.apiKey }, signal });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return { ok: false, status: response.status, latencyMs: this.now() - started, error: probeStatusReason(response.status) };
+      }
+      const body = await response.json() as { credits?: unknown };
+      if (typeof body.credits !== "number" || !Number.isFinite(body.credits)) {
+        return { ok: false, status: response.status, latencyMs: this.now() - started, error: "The provider did not return a credit balance." };
+      }
+      return { ok: body.credits > 0, status: body.credits > 0 ? response.status : 402, latencyMs: this.now() - started, balanceCredits: body.credits,
+        ...(body.credits <= 0 ? { error: "The provider account has no credit left." } : {}) };
+    } catch {
+      return { ok: false, status: null, latencyMs: this.now() - started, error: "The credit balance probe did not complete." };
+    }
   }
 
   supports(task: string): boolean {

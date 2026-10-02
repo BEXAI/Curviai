@@ -9,7 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { IntakeImageResult, SellerIntent, type IntakeResult } from "@curvi/pipeline/schemas";
-import { addedOverlaysIntake } from "@curvi/pipeline/seed";
+import { addedOverlaysIntake, restrictedGoodsIntake, type RestrictedGoodsKey } from "@curvi/pipeline/seed";
 
 /** How long a preflight answer is reused. */
 export const PREFLIGHT_FRESH_MS = 24 * 60 * 60 * 1000;
@@ -33,18 +33,47 @@ export function intakeAsksAddedOverlays(recipe: { key: string; version: number }
   return recipe.key === addedOverlaysIntake.key && recipe.version >= addedOverlaysIntake.minVersion;
 }
 
+/** True when this intake recipe's prompt asks for restrictedCategory
+ * (restrictedGoodsIntake, PHASE_19 P19-29). */
+export function intakeAsksRestrictedGoods(recipe: { key: string; version: number }): boolean {
+  return recipe.key === restrictedGoodsIntake.key && recipe.version >= restrictedGoodsIntake.minVersion;
+}
+
 /**
- * The intake answer with addedOverlays kept only when the recipe asked for
- * it. Strict tool use makes every recipe version answer the field, so under
- * an older prompt the model guesses, and a guessed true would leave a clean
- * kept photo out of eBay and Google. Pure: returns the answer untouched when
- * the recipe asked or nothing is flagged.
+ * The intake answer with addedOverlays and restrictedCategory kept only when
+ * the recipe asked for them. Strict tool use makes every recipe version
+ * answer both fields, so under an older prompt the model guesses: a guessed
+ * true would leave a clean kept photo out of eBay and Google, and a guessed
+ * category would stop an assistant's pack. Pure: returns the answer
+ * untouched when the recipe asked or nothing is set.
  */
 export function trustedIntakeAnswer(intake: IntakeResult, recipe: { key: string; version: number }): IntakeResult {
-  if (intakeAsksAddedOverlays(recipe) || !intake.images.some((image) => image.addedOverlays === true)) {
+  const dropOverlays = !intakeAsksAddedOverlays(recipe) && intake.images.some((image) => image.addedOverlays === true);
+  const dropRestricted =
+    !intakeAsksRestrictedGoods(recipe) && intake.images.some((image) => image.restrictedCategory !== null);
+  if (!dropOverlays && !dropRestricted) {
     return intake;
   }
-  return { ...intake, images: intake.images.map((image) => ({ ...image, addedOverlays: false })) };
+  return {
+    ...intake,
+    images: intake.images.map((image) => ({
+      ...image,
+      ...(dropOverlays ? { addedOverlays: false } : {}),
+      ...(dropRestricted ? { restrictedCategory: null } : {}),
+    })),
+  };
+}
+
+/** The prohibited goods categories intake named in a trusted answer
+ * (trustedIntakeAnswer), each once, in image order. */
+export function restrictedCategoriesOf(intake: IntakeResult): RestrictedGoodsKey[] {
+  const found: RestrictedGoodsKey[] = [];
+  for (const image of intake.images) {
+    if (image.restrictedCategory && !found.includes(image.restrictedCategory)) {
+      found.push(image.restrictedCategory);
+    }
+  }
+  return found;
 }
 
 /** A stable key for the seller's note: a sha256 of the trimmed text, so an

@@ -442,6 +442,26 @@ describe("runPackFollowUp against the ledger", () => {
     expect(held).toBe(0);
   });
 
+  it("delivers a regenerated scene unpicked despite a full channel and saves its own checks", async () => {
+    const shot: Shot = { ...(await reviewShot()), id: "scene.v2", type: "lifestyle", method: "composite_generate", variation: 2, credits: 2, channels: ["amazon.secondary"] };
+    const before = await balance();
+    await startFollowUp(shot.credits);
+    const store = new DbJobStore(db as unknown as Db, { reserveHandledExternally: true, uploader });
+    const input = { ...followUp(shot, { "amazon.secondary": 8 }, "regen2"), reason: "regenerate" as const };
+    const summary = await runPackFollowUp(input, { ...buildRuntimeDeps(), store });
+    expect(summary).toMatchObject({ state: "done", passed: 1, chargedCredits: shot.credits, releasedCredits: 0 });
+    const fresh = (await db.select().from(assetVariants).where(eq(assetVariants.workspaceId, ws)))
+      .filter((v) => v.r2Key.includes("/followup-regen2/"));
+    expect(fresh.length).toBeGreaterThan(0);
+    expect(fresh.every((v) => !v.picked)).toBe(true);
+    const saved = await db.select().from(assets).where(eq(assets.jobId, jobId));
+    for (const file of fresh) {
+      const qc = saved.find((a) => a.id === file.assetId)?.qc;
+      expect((qc?.fileReports as Record<string, unknown>)?.[file.r2Key]).toMatchObject({ file: file.filename, specId: file.channelSpecId, ref: shot.id });
+    }
+    expect(await balance()).toBe(before - shot.credits);
+  });
+
   it("returns the whole hold when the follow up is canceled before it runs", async () => {
     const shot = await reviewShot();
     const before = await balance();

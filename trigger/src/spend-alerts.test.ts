@@ -1,10 +1,11 @@
+import { spendCapPolicy as SPEND_CAPS } from "@curvi/pipeline/seed";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { InMemoryCapStore, SPEND_CAPS, SpendCaps } from "@curvi/ai";
+import { InMemoryCapStore, SpendCaps } from "@curvi/ai";
 import { eq, type Db } from "@curvi/db";
 import { events } from "@curvi/db/schema";
 import { createTestDb } from "@curvi/db/testing";
 import { PgCapStore } from "./cap-store";
-import { RESEND_EMAILS_URL } from "./digest";
+import { RESEND_EMAILS_URL } from "./email-transport";
 import {
   DEFAULT_ALERT_FROM,
   InMemoryAlertDedupe,
@@ -178,7 +179,7 @@ describe("watchGlobalSpend", () => {
   });
 
   it("reports the alert line on allowed reservations and the hard stop on refused ones", async () => {
-    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date("2026-09-28T00:00:00Z"));
+    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date("2026-09-28T00:00:00Z"), SPEND_CAPS);
     const onSpendAlert = vi.fn();
     const onHardStop = vi.fn();
     watchGlobalSpend(caps, { onSpendAlert, onHardStop });
@@ -197,7 +198,7 @@ describe("watchGlobalSpend", () => {
   });
 
   it("keeps the reservation result when a notifier throws", async () => {
-    const caps = new SpendCaps(new InMemoryCapStore());
+    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date(), SPEND_CAPS);
     watchGlobalSpend(caps, {
       onSpendAlert: () => {
         throw new Error("boom");
@@ -211,7 +212,7 @@ describe("watchGlobalSpend", () => {
   });
 
   it("wires a notifier end to end: one founder alert for a day of spend past the line", async () => {
-    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date("2026-09-28T00:00:00Z"));
+    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date("2026-09-28T00:00:00Z"), SPEND_CAPS);
     const { calls, fetchImpl } = fakeFetch();
     const notifier = new SpendAlertNotifier({
       readEnv: env(MAIL_ENV),

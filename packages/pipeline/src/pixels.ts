@@ -6,12 +6,10 @@
  * pixels read as white. Only reads pixels; it never writes an image.
  */
 import sharp from "sharp";
+import { INGEST_PIXEL_CAP } from "./ingest/image";
 
 /** Longest side the pixels are read at; the natural size is still reported. */
 export const CHECK_PIXELS_MAX_SIDE = 1000;
-
-/** The upload pixel cap (80 megapixels), so a hostile file cannot balloon. */
-const LIMIT_INPUT_PIXELS = 80_000_000;
 
 export interface FlatPixels {
   /** RGBA, 4 bytes per pixel, every alpha 255. */
@@ -26,7 +24,7 @@ export interface FlatPixels {
 
 /** Decodes the photo, or throws when sharp cannot read it. */
 export async function flatPixelsOnWhite(bytes: Uint8Array, maxSide = CHECK_PIXELS_MAX_SIDE): Promise<FlatPixels> {
-  const input = sharp(Buffer.from(bytes), { failOn: "none", limitInputPixels: LIMIT_INPUT_PIXELS });
+  const input = sharp(Buffer.from(bytes), { failOn: "none", limitInputPixels: INGEST_PIXEL_CAP });
   const meta = await input.metadata();
   if (!meta.width || !meta.height) {
     throw new Error("unreadable image");

@@ -24,7 +24,7 @@ import type { CostAwareProvider } from "../router";
 import { ProviderError } from "../types";
 import type { ProviderKind, ProviderRequest, ProviderResponse } from "../types";
 import { FalGatewayProvider, type FalGatewayOutput } from "./falGateway";
-import { ASYNC_JOB_TIMEOUT_MARGIN_MS, downloadBytes, type AdapterCommonConfig, type FetchLike } from "./shared";
+import { ASYNC_JOB_TIMEOUT_MARGIN_MS, downloadBytes, sniffMime, type AdapterCommonConfig, type FetchLike } from "./shared";
 
 /** Polling budget for a cutout: every half second for up to 90 seconds. */
 export const FAL_CUTOUT_DEFAULT_POLL = { pollIntervalMs: 500, pollTimeoutMs: 90_000 } as const;
@@ -138,11 +138,4 @@ export class FalCutoutProvider implements CostAwareProvider {
 
 function isPng(bytes: Uint8Array): boolean {
   return bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
-}
-
-/** MIME type of the upload from its magic bytes; PNG when unknown. */
-function sniffMime(bytes: Uint8Array): string {
-  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
-  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 && bytes[9] === 0x45) return "image/webp";
-  return "image/png";
 }

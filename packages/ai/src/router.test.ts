@@ -1,5 +1,6 @@
+import { TEST_SPEND_CAPS as SPEND_CAPS } from "./testing/cap-policy";
 import { describe, expect, it } from "vitest";
-import { InMemoryBreakerStore } from "./breaker";
+import { CircuitBreaker, InMemoryBreakerStore } from "./breaker";
 import { InMemoryCapStore, SpendCaps, type CapStore } from "./caps";
 import { InMemoryCostMeter } from "./meter";
 import { ProviderRegistry } from "./registry";
@@ -45,6 +46,32 @@ function req(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
 }
 
 describe("callWithFailover", () => {
+  it("allows a metered trial on one open provider and refuses an implicit or multi-provider trial", async () => {
+    const primary = new MockProvider({ name: "primary", output: "one", estimateMicros: 10, costMicros: 10 });
+    const backup = new MockProvider({ name: "backup", output: "two", estimateMicros: 10, costMicros: 10 });
+    const h = harness([primary, backup]);
+    await new CircuitBreaker(h.store).tripForQuota("primary");
+    for (const chain of [undefined, ["primary", "backup"]]) {
+      await expect(callWithFailover(h.registry, h.routing, h.meter, h.store, req(), { chain, trialCall: true })).rejects.toThrow("one-provider");
+    }
+    const result = await callWithFailover(h.registry, h.routing, h.meter, h.store, req(), { chain: ["primary"], trialCall: true, maxCostMicros: 10 });
+    expect(result.provider).toBe("primary");
+    expect(backup.invocations).toBe(0);
+    expect(h.meter.entries[0]).toMatchObject({ provider: "primary", costMicros: 10 });
+    expect(await new CircuitBreaker(h.store).openReason("primary")).toBe("quota");
+  });
+
+  it("does not fail a pinned trial over to a healthy backup", async () => {
+    const primary = new MockProvider({ name: "primary", failTimes: Infinity });
+    const backup = new MockProvider({ name: "backup", output: "two" });
+    const h = harness([primary, backup]);
+    await new CircuitBreaker(h.store).tripForQuota("primary");
+    await expect(callWithFailover(h.registry, h.routing, h.meter, h.store, req(), { chain: ["primary"], trialCall: true, retry: { retries: 0 } })).rejects.toThrow();
+    expect(primary.invocations).toBe(1);
+    expect(backup.invocations).toBe(0);
+    expect(await new CircuitBreaker(h.store).openReason("primary")).toBe("quota");
+  });
+
   it("returns the first provider's result when it succeeds", async () => {
     const p1 = new MockProvider({ name: "p1", output: "one", costMicros: 10 });
     const p2 = new MockProvider({ name: "p2", output: "two", costMicros: 20 });
@@ -424,7 +451,7 @@ describe("callWithFailover", () => {
         return backing.add(key, delta);
       },
     };
-    const spendCaps = new SpendCaps(recordingStore);
+    const spendCaps = new SpendCaps(recordingStore, () => new Date(), SPEND_CAPS);
     const p1 = new MockProvider({
       name: "p1",
       estimateMicros: 100,
@@ -447,7 +474,7 @@ describe("callWithFailover", () => {
 
   it("caps hook reconciles the reservation to the actual cost on success", async () => {
     const store = new InMemoryCapStore();
-    const spendCaps = new SpendCaps(store);
+    const spendCaps = new SpendCaps(store, () => new Date(), SPEND_CAPS);
     const p1 = new MockProvider({ name: "p1", estimateMicros: 100, output: "one", costMicros: 60 });
     const h = harness([p1]);
 
@@ -460,7 +487,7 @@ describe("callWithFailover", () => {
   });
 
   it("caps hook blocks the call before invoke when the reservation is over the cap", async () => {
-    const spendCaps = new SpendCaps(new InMemoryCapStore());
+    const spendCaps = new SpendCaps(new InMemoryCapStore(), () => new Date(), SPEND_CAPS);
     // The per pack cap is 8_000_000 micros; a 9_000_000 estimate must block.
     const p1 = new MockProvider({ name: "p1", estimateMicros: 9_000_000, output: "one" });
     const h = harness([p1]);
@@ -476,7 +503,7 @@ describe("callWithFailover", () => {
 
   it("layers several caps hooks: all reserve on success, all reconcile", async () => {
     const store = new InMemoryCapStore();
-    const spendCaps = new SpendCaps(store);
+    const spendCaps = new SpendCaps(store, () => new Date(), SPEND_CAPS);
     const p1 = new MockProvider({ name: "p1", estimateMicros: 100, output: "one", costMicros: 60 });
     const h = harness([p1]);
 
@@ -496,7 +523,7 @@ describe("callWithFailover", () => {
 
   it("a blocked layer releases the layers already reserved", async () => {
     const store = new InMemoryCapStore();
-    const spendCaps = new SpendCaps(store);
+    const spendCaps = new SpendCaps(store, () => new Date(), SPEND_CAPS);
     // Fill the global day counter to the hard stop so the second layer blocks.
     const globalKey = `caps:global:${new Date().toISOString().slice(0, 10)}`;
     await store.add(globalKey, 150_000_000);
@@ -580,7 +607,7 @@ const GLOBAL_KEY = `caps:global:${DAY}`;
 const fixedClock = () => new Date(`${DAY}T12:00:00Z`);
 
 function capsOn(store: CapStore = new InMemoryCapStore()) {
-  return new SpendCaps(store, fixedClock);
+  return new SpendCaps(store, fixedClock, SPEND_CAPS);
 }
 
 function internalErrors() {

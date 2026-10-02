@@ -15,6 +15,7 @@ import type {
   ChannelsResponse,
   CreatePackRequest,
   MainImageCheck,
+  MainImageCheckRequest,
   PackFiles,
   PackResponse,
   PhotoAngle,
@@ -191,7 +192,8 @@ export class CurviClient {
   /** POST /checks/main-image (checkMainImage): the free Amazon main image
    * checker. It stores nothing, so a retry is safe without a key. */
   checkMainImage(photo: PhotoSource): Promise<MainImageCheck> {
-    const { angle: _angle, ...body } = photoInput(photo);
+    const { angle: _angle, ...rest } = photoInput(photo);
+    const body: MainImageCheckRequest = rest;
     return this.send<MainImageCheck>("POST", "/checks/main-image", { retryable: true, json: body });
   }
 
