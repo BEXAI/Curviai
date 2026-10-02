@@ -57,7 +57,7 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyView[] }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 ph-no-capture ph-mask">
       <form onSubmit={create} className="max-w-sm space-y-3" data-testid="api-key-create">
         <div className="space-y-1.5">
           <Label htmlFor="api-key-name">Key name</Label>
