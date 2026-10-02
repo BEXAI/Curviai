@@ -12,16 +12,22 @@ export async function listOperatorJobs(db: Db, input: { filter?: string; workspa
   if (input.workspaceId && !isUuid(input.workspaceId)) throw new Error("Use a valid workspace id.");
   const cutoff = new Date(now.getTime() - orphan.staleHeartbeatMinutes * 60000);
   const filter = input.filter === "failed" ? sql`j.status = 'failed'`
-    : input.filter === "stuck" ? sql`j.status not in ('done','failed','canceled') and coalesce(j.heartbeat_at,j.updated_at) < ${cutoff}`
+    : input.filter === "stuck" ? sql`j.status not in ('done','failed','canceled') and coalesce(j.heartbeat_at,j.updated_at) < ${cutoff.toISOString()}::timestamptz`
     : input.filter === "review" ? sql`exists(select 1 from assets a where a.job_id = j.id and a.workspace_id = j.workspace_id and a.qc->>'status' = 'needs_review')`
     : sql`true`;
-  const before = input.before && Number.isFinite(Date.parse(input.before)) ? new Date(input.before) : null;
-  return rowsOf<{ id: string; workspace_id: string; status: string; created_at: Date; heartbeat_at: Date | null; restart_count: number; title: string | null; cogs_micros: string | number }>(await db.execute(sql`
+  const before = input.before && Number.isFinite(Date.parse(input.before)) ? new Date(input.before).toISOString() : null;
+  const rows = rowsOf<{ id: string; workspace_id: string; status: string; created_at: Date | string; heartbeat_at: Date | string | null; restart_count: number; title: string | null; cogs_micros: string | number }>(await db.execute(sql`
     select j.id,j.workspace_id,j.status,j.created_at,j.heartbeat_at,j.restart_count,j.cogs_micros,p.title
     from generation_jobs j join products p on p.id = j.product_id and p.workspace_id = j.workspace_id
     where ${filter} and (${input.workspaceId ?? null}::uuid is null or j.workspace_id = ${input.workspaceId ?? null}::uuid)
       and (${before}::timestamptz is null or j.created_at < ${before}::timestamptz)
     order by j.created_at desc,j.id desc limit ${opsViews.jobPageSize}`));
+  // Raw postgres-js results retain timestamp strings; unlike a typed
+  // Drizzle select, execute does not apply the column's Date decoder.
+  return rows.map((row) => ({ ...row,
+    created_at: new Date(row.created_at),
+    heartbeat_at: row.heartbeat_at === null ? null : new Date(row.heartbeat_at),
+  }));
 }
 
 export async function operatorJobTimeline(db: Db, jobId: string, sign = presignObjectGet) {
@@ -60,7 +66,7 @@ export async function operateJob(db: Db, input: { jobId: string; action: "settle
     if (!job) throw new Error("Pack not found.");
     if (!input.forced && hasFreshHeartbeat(job.heartbeatAt, now)) throw new Error("This runner still has a fresh heartbeat. Wait, or explicitly choose Force.");
     const cutoff = new Date(now.getTime() - orphan.staleHeartbeatMinutes * 60000);
-    const onlyIf = input.forced ? sql`true` : sql`(heartbeat_at is null or heartbeat_at <= ${cutoff})`;
+    const onlyIf = input.forced ? sql`true` : sql`(heartbeat_at is null or heartbeat_at <= ${cutoff.toISOString()}::timestamptz)`;
     const nested = tx as unknown as Db;
     if (input.action === "settle") {
       await settleJob(nested, { jobId: job.id, workspaceId: job.workspaceId }, { undelivered: "failed", error: "This pack was stopped by support. Reserved credits were released.", onlyIf, now });

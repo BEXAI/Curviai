@@ -33,7 +33,7 @@ export async function loadOpsOverview(db: Db, now = new Date()) {
     db.execute(sql`select status, count(*)::int as count,
       percentile_cont(0.5) within group (order by extract(epoch from (finished_at - started_at))) as p50,
       percentile_cont(0.95) within group (order by extract(epoch from (finished_at - started_at))) as p95
-      from generation_jobs where ${customerWorkspace(excluded, sql`workspace_id`)} and created_at >= ${new Date(now.getTime() - 86400000)} group by status`),
+      from generation_jobs where ${customerWorkspace(excluded, sql`workspace_id`)} and created_at >= ${new Date(now.getTime() - 86400000).toISOString()}::timestamptz group by status`),
     db.execute(sql`select total_micros from spend_cap_counters where key = ${`caps:global:${now.toISOString().slice(0, 10)}`}`),
     db.execute(sql`select relname as name, pg_total_relation_size(relid)::bigint as bytes from pg_catalog.pg_statio_user_tables order by pg_total_relation_size(relid) desc limit ${opsViews.overviewRows}`),
     db.execute(sql`select id, rule, subject, count, opened_at from ops_alerts where resolved_at is null order by opened_at desc limit ${opsViews.overviewRows}`),

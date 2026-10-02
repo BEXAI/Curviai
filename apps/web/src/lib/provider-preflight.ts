@@ -194,7 +194,7 @@ const readRecentQuotaEvents: RecentQuotaReader = async (providers) => {
   const since = new Date(Date.now() - QUOTA_OPEN_SECONDS * 1000);
   const result = await getDb().execute(
     sql`select props->>'provider' as provider, max(at) as at from events
-        where workspace_id is null and name = ${PROVIDER_QUOTA_EVENT_NAME} and at > ${since}
+        where workspace_id is null and name = ${PROVIDER_QUOTA_EVENT_NAME} and at > ${since.toISOString()}::timestamptz
         group by 1`,
   );
   const rows = (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as Array<{
