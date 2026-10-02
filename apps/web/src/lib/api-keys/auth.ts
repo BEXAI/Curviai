@@ -19,9 +19,23 @@ import { checkApiAccess } from "./manage";
  * write a row on every call. */
 export const LAST_USED_WRITE_INTERVAL_MS = 60_000;
 
+/** How a public API or MCP caller signed in: a workspace API key, or an
+ * OAuth connection from ChatGPT or another assistant (PHASE_19). */
+export type ApiCallerKind = "api_key" | "oauth";
+
 export interface ApiCaller {
-  keyId: string;
-  prefix: string;
+  kind: ApiCallerKind;
+  /** The API key's id, or null for an OAuth caller. */
+  keyId: string | null;
+  /** The API key's public prefix, or null for an OAuth caller. */
+  prefix: string | null;
+  /** The mcp_connections row an OAuth caller acts through, or null for a
+   * key (PHASE_19 P19-08). */
+  connectionId: string | null;
+  /** True when the rate limits skip the per IP rule and count this caller
+   * per user and per workspace only (PHASE_19 P19-21): every ChatGPT call
+   * arrives from OpenAI's shared egress addresses. False for API keys. */
+  ipExempt: boolean;
   scopes: readonly string[];
   principal: ApiPrincipal;
   services: Services;
@@ -128,8 +142,11 @@ export async function authenticateApiKey(
   return {
     ok: true,
     caller: {
+      kind: "api_key",
       keyId: record.id,
       prefix: record.prefix,
+      connectionId: null,
+      ipExempt: false,
       scopes: [...record.scopes],
       principal,
       services: backend.servicesFor(principal),

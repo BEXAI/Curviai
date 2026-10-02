@@ -444,6 +444,15 @@ Effort, for one agent: XS under 2 hours, S about half a day, M 1 to 2 days, L 3 
 - Empty `lib/api-v1/chat-views.ts` and `lib/api-v1/mcp-copy.ts` with the exported names the worktrees fill.
 - Seams for the parallel branches: `overLimit` takes the caller (P19-21 fills the body); optional file object fields in `CreatePackRequest` and `MainImageCheckRequest`; empty link and quote fields in the chat views; `resources/*` method stubs in mcp.ts behind the capability flag; a redacting MCP logger; a `get_profile` stub in mcp-tools.ts.
 - Acceptance: no behavior change; every existing test passes.
+- As built on `p19/integration` (wave 0), for the lanes:
+  - `lib/api-v1/mcp-tools.ts` holds the tool definitions, `MCP_INSTRUCTIONS`, `MCP_TOOLS`, `findTool`, `toolList`, `toolResult` and the `GET_PROFILE_TOOL` definition. `lib/mcp-auth/profile.ts` holds the `getProfile` stub and `GET_PROFILE_LISTED` (false): P19-11 fills the one and flips the other there, so it never edits the tool list.
+  - `lib/api-v1/mcp.ts` keeps the transport and the auth branch. `McpResourceProvider` and the `SERVED_RESOURCES` constant (null) are the resources seam: with a provider, the server advertises `resources`, answers the three `resources/*` methods (unknown uri: `-32602`) and checks `Mcp-Name` against `params.uri`; P19-19 sets the constant, and tests pass `deps.resources`.
+  - `lib/api-v1/mcp-log.ts`: `logMcpEvent(event, fields, { level, error })` keeps only `reason`, `method`, `tool`, `status`, `auth` and `protocol`, redacted (`redactLogText`), and counts by event and reason (`mcpLogCounts`).
+  - `lib/api-v1/mcp-copy.ts` holds the whole "Neutral messages" table as `MCP_COPY` (lanes wire the lines they own) and `MCP_BANNED_WORDS`.
+  - `lib/api-v1/chat-views.ts` holds the view schemas from "Outputs" (`PackChat` with nullable `preview_url` and `download_url`, `EstimateChat` with `quote`, `ChannelsChat` with `aliases`, `MainImageCheckChat`, `ProfileChat`) and `CHAT_VIEW_FIELDS` for P19-23. P19-14 writes the builders.
+  - `lib/api-v1/schemas.ts`: `OpenAIFileObject` (as P19-15 specifies), optional `images` on `CreatePackRequest` and `image` on `MainImageCheckRequest`. The REST document and the MCP tool arguments use `CreatePackRequestNoFiles` and `MainImageCheckRequestNoFiles`, and the actions refuse both fields (`chatFileRefused`) until P19-15 wires them.
+  - `ApiCaller` has `kind`, nullable `keyId` and `prefix`, `connectionId` and `ipExempt`; `overLimit(policy, headers, caller, subject = caller.rateSubject)`.
+  - `lib/mcp-signing.ts` (an addition): `parseSigningKeys` reads an `MCP_LINK_KEYS` value (first pair signs, all verify), and `signPayload` and `verifyPayload` take a purpose (`link` or `quote`), so P19-16 and P19-17 share one ring. Each of those lanes reads the env and adds it to .env.example and docs/LAUNCH_CHECKLIST.md.
 
 **P19-03 Seed entitlement `assistantAccess`** (AGENT, S)
 - packages/pipeline/src/seed/credits.ts: new `TierFeature` `assistantAccess`, `featureStatus` live, in every tier's `features` (decision 3).
@@ -638,6 +647,8 @@ Effort, for one agent: XS under 2 hours, S about half a day, M 1 to 2 days, L 3 
 | Total | 29 items | about 37 agent days at the middle of each size. The critical path (wave 0, p19/auth, the spike, P19-12, the full consent page, wave 4) is about 14.5 agent days at the low end of each size and 19 at the middle, so about 3 to 4 weeks of calendar time with the other branches alongside, plus founder steps (identity verification, ES256 migration, Cloudflare, reviewer account, demo video) and OpenAI's review time (unknown; developers report 3 to 6 weeks). The viewer is off this path (decision 6). |
 
 ## Data model summary (one migration, next free number at build time)
+
+- Number: `0028` (`0027_site_visits` comes from the site-visitors branch, merged into `growth/base` under `p19/integration`; PHASE_18 renumbers after 0028).
 
 - New tenant table `mcp_connections` with `workspace_id`, `profile_id`, RLS and a test (rule 5).
 - New function `public.curvi_access_token_hook(jsonb)` with its grants (inside a `pg_roles` check).

@@ -207,8 +207,11 @@ describe("POST /api/v1/packs", () => {
     vi.stubEnv("R2_BUCKET_PRIVATE", "bucket");
     const ctx: ApiContext = {
       caller: {
+        kind: "api_key",
         keyId: DEMO_KEY_ID,
         prefix: "cv_live_000000000000",
+        connectionId: null,
+        ipExempt: false,
         scopes: ["packs:write"],
         principal: { workspaceId: OTHER_WORKSPACE_ID, workspaceName: "W", plan: "growth", role: "owner", userId: "u" },
         services,
@@ -254,8 +257,11 @@ describe("POST /api/v1/packs", () => {
     vi.stubEnv("R2_BUCKET_PRIVATE", "bucket");
     const ctx: ApiContext = {
       caller: {
+        kind: "api_key",
         keyId: DEMO_KEY_ID,
         prefix: "cv_live_000000000000",
+        connectionId: null,
+        ipExempt: false,
         scopes: ["packs:write"],
         principal: { workspaceId: OTHER_WORKSPACE_ID, workspaceName: "W", plan: "growth", role: "owner", userId: "u" },
         services,
@@ -309,8 +315,11 @@ describe("POST /api/v1/packs", () => {
     vi.mocked(services.createJob).mockResolvedValue({ outcome: "conflict" });
     const ctx: ApiContext = {
       caller: {
+        kind: "api_key",
         keyId: DEMO_KEY_ID,
         prefix: "cv_live_000000000000",
+        connectionId: null,
+        ipExempt: false,
         scopes: ["packs:write"],
         principal: { workspaceId: OTHER_WORKSPACE_ID, workspaceName: "W", plan: "growth", role: "owner", userId: "u" },
         services,
@@ -330,8 +339,11 @@ describe("POST /api/v1/packs", () => {
     const services = createFakeServices("client");
     const ctx: ApiContext = {
       caller: {
+        kind: "api_key",
         keyId: DEMO_KEY_ID,
         prefix: "cv_live_000000000000",
+        connectionId: null,
+        ipExempt: false,
         scopes: ["packs:write"],
         principal: { workspaceId: OTHER_WORKSPACE_ID, workspaceName: "W", plan: "growth", role: "client", userId: "u" },
         services,

@@ -43,6 +43,7 @@ describe("tier entitlements (plan 9.1)", () => {
       clientReviewLinks: "agency",
       whiteLabelShare: "agency",
       apiAccess: "growth",
+      assistantAccess: "free",
     };
     for (const [feature, firstTier] of Object.entries(matrix) as Array<[TierFeature, TierKey]>) {
       const first = TIER_ORDER.indexOf(firstTier);
@@ -61,6 +62,14 @@ describe("tier entitlements (plan 9.1)", () => {
         expect(tier.features, `${TIER_ORDER[i]} keeps ${feature}`).toContain(feature);
       }
       expect(tier.brandKits).toBeGreaterThanOrEqual(below.brandKits);
+    }
+  });
+
+  it("lets every tier use Curvi from an assistant while API keys stay Growth and up (PHASE_19 decision 3)", () => {
+    expect(featureStatus.assistantAccess).toBe("live");
+    for (const tier of TIER_ORDER) {
+      expect(canUse(tier, "assistantAccess"), tier).toBe(true);
+      expect(canUse(tier, "apiAccess"), tier).toBe(TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf("growth"));
     }
   });
 
