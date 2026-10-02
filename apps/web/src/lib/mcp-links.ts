@@ -270,6 +270,8 @@ export interface LinkedFile {
   key: string;
   filename: string;
   kind: "image" | "zip" | "report";
+  /** Fresh selected report bytes, read only after link authorization. */
+  reportBody?: string;
 }
 
 /** Reads the link routes need (lib/mcp-links-backend: the database, or the

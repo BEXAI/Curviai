@@ -67,7 +67,7 @@ describe("GET /api/jobs/:id/files/:fileId", () => {
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("https://r2.example/signed?x=1");
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(fake.calls[0]).toEqual(["ws-1", JOB_ID, "v_abc"]);
+    expect(fake.calls[0]).toEqual(["ws-1", JOB_ID, "v_abc", { report: "inline" }]);
   });
 
   it("answers 404 for an unknown file and for a job id that is not a uuid", async () => {

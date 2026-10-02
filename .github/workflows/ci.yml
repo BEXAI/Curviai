@@ -85,7 +85,7 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
       # The billing store's grant and clawback races, through DbBillingStore.
-      - run: pnpm --filter @curvi/web exec vitest run --no-file-parallelism src/lib/billing/ledger-race.pg.test.ts src/lib/ops/cases-race.pg.test.ts
+      - run: pnpm --filter @curvi/web exec vitest run --no-file-parallelism src/lib/billing/ledger-race.pg.test.ts src/lib/ops/cases-race.pg.test.ts src/lib/trust/source-retention-race.pg.test.ts
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
 

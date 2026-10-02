@@ -4,7 +4,7 @@
  * so nothing is recorded and no offer counts as used.
  */
 
-import { cancelFlows, type CancelFlow, type NewCancelFlow } from "@curvi/db";
+import { and, cancelFlows, eq, inArray, sql, type CancelFlow, type NewCancelFlow } from "@curvi/db";
 import { hasStripeApiKey } from "@/lib/env";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
@@ -26,12 +26,29 @@ export async function loadCancelState(workspaceId: string, now: Date = new Date(
     return { usedOffers: new Set(), pending: null };
   }
   try {
-    const rows = await getDb().query.cancelFlows.findMany({
-      where: (t, { eq }) => eq(t.workspaceId, workspaceId),
-      orderBy: (t, { desc }) => [desc(t.createdAt)],
-      limit: 200,
-    });
-    return cancelStateFromRows(rows, now);
+    const db = getDb();
+    const [rows, takenOffers] = await Promise.all([
+      db.query.cancelFlows.findMany({
+        where: (t, { eq }) => eq(t.workspaceId, workspaceId),
+        orderBy: (t, { desc }) => [desc(t.createdAt)],
+        limit: 200,
+      }),
+      // One-time offers belong to the workspace's entire history. Keeping
+      // a plan repeatedly must not hide an older pause or discount behind
+      // the recent-history limit. DISTINCT returns at most three outcomes.
+      db.selectDistinct({ outcome: cancelFlows.outcome }).from(cancelFlows).where(and(
+        eq(cancelFlows.workspaceId, workspaceId),
+        sql`${cancelFlows.error} is null`,
+        inArray(cancelFlows.outcome, ["paused", "discounted", "downgraded"]),
+      )),
+    ]);
+    return {
+      ...cancelStateFromRows(rows, now),
+      usedOffers: new Set(takenOffers.flatMap(({ outcome }) => {
+        const offer = OFFER_FOR_OUTCOME[outcome];
+        return offer ? [offer] : [];
+      })),
+    };
   } catch (error) {
     // A failed read (for example before migration 0018 is applied) must not
     // take the billing page down; Stripe still refuses a second pause or

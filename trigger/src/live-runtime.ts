@@ -1198,6 +1198,7 @@ export class LiveShotGenerator implements ShotGenerator {
     }
     const caps: CapsHooks = ai.caps
       ? [
+          ...(args.shotId ? [{ spendCaps: ai.caps, capKind: "image_asset" as const, assetId: `${args.jobId}:${args.shotId}` }] : []),
           { spendCaps: ai.caps, capKind: "pack", jobId: args.jobId },
           { spendCaps: ai.caps, capKind: "global_day" },
           ...(ai.workspaceExpectedDailyMicros ? [{ spendCaps: ai.caps, capKind: "workspace_day" as const, planExpectedDailyMicros: ai.workspaceExpectedDailyMicros }] : []),

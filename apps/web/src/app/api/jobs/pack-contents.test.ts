@@ -19,7 +19,7 @@ vi.mock("@/lib/services/db", () => ({ servesFiles: () => true, getDb: () => ({ q
 } }) }));
 vi.mock("@/lib/r2", () => ({
   isWorkspaceKey: (id: string, key: string) => key.startsWith(`ws/${id}/`),
-  getObjectBytes: async () => null, objectExists: async () => !fixture.missing, privateBucket: () => "test",
+  getObjectBytes: async () => null, getObjectBytesBounded: async () => null, objectExists: async () => !fixture.missing, privateBucket: () => "test",
   r2Client: () => ({ send: async (command: { input: { Key: string } }) => { fixture.opened.push(command.input.Key); return { Body: Readable.from(["pixels"]) }; } }),
 }));
 vi.mock("@/lib/http/zip-stream", () => ({ zipStream: (entries: Array<{ name: string; source: string }>, open: (key: string) => Promise<Readable | null>) => new ReadableStream({

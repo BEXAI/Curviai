@@ -245,11 +245,6 @@ export function lastProbeReport(name: string): RecordedProbe | null {
   return lastProbes().get(name) ?? null;
 }
 
-/** Forgets every recorded probe; for tests. */
-export function clearProbeReports(): void {
-  lastProbes().clear();
-}
-
 export interface ProbeTarget {
   name: string;
   provider: Provider;

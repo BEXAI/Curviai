@@ -16,7 +16,7 @@ import {
   type ReconcileStripeClient,
 } from "./reconcile";
 import { runBillingReconcile } from "./reconcile-run";
-import { readBillingSignals } from "./signals";
+import { readBillingSignals, reconcileCursorOf, recordReconcileRun, RECONCILE_RUN_KEY, type ReconcileCursor } from "./signals";
 import { STRIPE_API_VERSION } from "./stripe";
 import { HANDLED_STRIPE_EVENTS, processStripeEvent, type StripeLookup } from "./stripe-webhook";
 
@@ -158,12 +158,21 @@ function fakeStripe(all: Stripe.Event[], endpoints: Partial<Stripe.WebhookEndpoi
     events: {
       async list(params: Stripe.EventListParams) {
         eventLists.push(params);
-        const gte = (params.created as { gte: number }).gte;
+        const { gte, lt } = params.created as { gte: number; lt: number };
         const matching = all
-          .filter((event) => params.types?.includes(event.type) && event.created >= gte)
-          .sort((a, b) => b.created - a.created);
-        const start = params.starting_after ? matching.findIndex((event) => event.id === params.starting_after) + 1 : 0;
+          .map((event, index) => ({ event, index }))
+          .filter(({ event }) => (!params.types || params.types.includes(event.type)) && event.created >= gte && event.created < lt)
+          .sort((a, b) => b.event.created - a.event.created || b.index - a.index)
+          .map(({ event }) => event);
         const limit = params.limit ?? 10;
+        if (params.ending_before) {
+          const end = matching.findIndex((event) => event.id === params.ending_before);
+          if (end < 0) throw new Error("Unknown ending_before event");
+          const start = Math.max(0, end - limit);
+          return { object: "list", url: "/v1/events", data: matching.slice(start, end), has_more: start > 0 } as Stripe.ApiList<Stripe.Event>;
+        }
+        const start = params.starting_after ? matching.findIndex((event) => event.id === params.starting_after) + 1 : 0;
+        if (params.starting_after && start === 0) throw new Error("Unknown starting_after event");
         const data = matching.slice(start, start + limit);
         return { object: "list", url: "/v1/events", data, has_more: start + limit < matching.length } as Stripe.ApiList<Stripe.Event>;
       },
@@ -230,6 +239,34 @@ describe("classifyOutcome", () => {
       expect(classifyOutcome({ handled: true, action })).toBe("ignored");
     }
     expect(classifyOutcome({ handled: false, action: "ignored" })).toBe("ignored");
+  });
+});
+
+describe("reconcile cursor signals", () => {
+  const cursor: ReconcileCursor = {
+    version: 1,
+    phase: "replay",
+    since: new Date(NOW.getTime() - 72 * 3600_000).toISOString(),
+    until: NOW.toISOString(),
+    position: "evt_previous",
+    positionAt: new Date((NOW_S - 5000) * 1000).toISOString(),
+    newestEventId: "evt_head",
+    newestEventAt: new Date((NOW_S - 4000) * 1000).toISOString(),
+  };
+
+  it("round trips only valid cursor metadata through the protected signal", async () => {
+    await recordReconcileRun(asDb(), {
+      at: NOW.toISOString(), newestEventAt: cursor.newestEventAt, applied: 0, failed: 0,
+      endpoint: null, reportedFailures: {}, truncated: true, cursor,
+    });
+    const rows = await db.select().from(platformSettings).where(eq(platformSettings.key, RECONCILE_RUN_KEY));
+    expect(rows).toHaveLength(1);
+    expect((await readBillingSignals(asDb())).reconcile?.cursor).toEqual(cursor);
+    expect(reconcileCursorOf({ ...cursor, version: 2 })).toBeNull();
+    expect(reconcileCursorOf({ ...cursor, until: cursor.since })).toBeNull();
+    expect(reconcileCursorOf({ ...cursor, position: null })).toBeNull();
+    expect(reconcileCursorOf({ ...cursor, newestEventId: "not_an_event" })).toBeNull();
+    expect(reconcileCursorOf(undefined)).toBeNull();
   });
 });
 
@@ -395,6 +432,40 @@ describe("runBillingReconcile on a database", () => {
     expect(stored.reconcile?.endpoint).toEqual({ ok: false, problems: ["The endpoint is disabled."] });
     expect(await readCronSuccesses(asDb())).toMatchObject({ "billing-reconcile": NOW.toISOString() });
   });
+
+  it("fails before listing when durable progress cannot be read", async () => {
+    const stripe = fakeStripe([], [GOOD_ENDPOINT]);
+    const read = vi.spyOn(db, "execute").mockRejectedValueOnce(new Error("progress read failed"));
+    try {
+      await expect(run(stripe).report).rejects.toThrow("progress read failed");
+      expect(stripe.eventLists).toEqual([]);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it("does not report success when saving progress fails, and retries applied grants once", async () => {
+    const ws = await newWorkspace();
+    const stripe = fakeStripe([topUpCompleted("cs_progress_failure", ws)], [GOOD_ENDPOINT]);
+    const originalInsert = db.insert.bind(db);
+    const insert = vi.spyOn(db, "insert").mockImplementation(((target: Parameters<typeof db.insert>[0]) => {
+      if (target === platformSettings) {
+        return { values: () => ({ onConflictDoUpdate: async () => { throw new Error("progress write failed"); } }) };
+      }
+      return originalInsert(target);
+    }) as typeof db.insert);
+    try {
+      await expect(run(stripe).report).rejects.toThrow("progress write failed");
+      expect(await balance(ws)).toBe(100);
+      expect(await readCronSuccesses(asDb())).not.toHaveProperty("billing-reconcile");
+    } finally {
+      insert.mockRestore();
+    }
+    const retry = await run(stripe).report;
+    expect(retry.result).toMatchObject({ applied: 0, alreadyApplied: 1, truncated: false });
+    expect(await balance(ws)).toBe(100);
+    expect(await readCronSuccesses(asDb())).toMatchObject({ "billing-reconcile": NOW.toISOString() });
+  });
 });
 
 describe("reconcileStripe listing", () => {
@@ -412,6 +483,7 @@ describe("reconcileStripe listing", () => {
       store: new DbBillingStore(asDb(), "stripe"),
       priceTable: table,
       since,
+      until: NOW,
       maxEvents: 1000,
     });
     expect(done.scanned).toBe(150);
@@ -440,6 +512,7 @@ describe("reconcileStripe listing", () => {
       store: new DbBillingStore(asDb(), "stripe"),
       priceTable: table,
       since: new Date(NOW.getTime() - 72 * 3600_000),
+      until: NOW,
       maxEvents: 120,
       logger: { warn: () => undefined },
     });
@@ -468,14 +541,143 @@ describe("reconcileStripe listing", () => {
 
     const second = run(stripe, { policy, logger: { warn: () => undefined, info: () => undefined } });
     const secondReport = await second.report;
-    // Starts at the last processed event: the newer two get their credits.
-    expect(secondReport.since).toBe(new Date((NOW_S - 5_000 + 200) * 1000).toISOString());
-    expect(secondReport.result).toMatchObject({ scanned: 3, applied: 2, alreadyApplied: 1, truncated: false });
+    // Keeps the window and resumes after the event ID: only the newer two run.
+    expect(secondReport.since).toBe(firstReport.since);
+    expect(secondReport.result).toMatchObject({ scanned: 2, applied: 2, alreadyApplied: 0, truncated: false });
     expect((await readBillingSignals(asDb())).reconcile).toMatchObject({ truncated: false, resumeFrom: null });
     expect(await readCronSuccesses(asDb())).toMatchObject({ "billing-reconcile": NOW.toISOString() });
 
     const third = await run(stripe, { policy, logger: { warn: () => undefined, info: () => undefined } }).report;
     expect(third.since).toBe(new Date(NOW.getTime() - 72 * 3600_000).toISOString());
+  });
+
+  it("persists discovery beyond the listing cap and eventually grants every event oldest first", async () => {
+    const ws = await newWorkspace();
+    const missed = Array.from({ length: 31 }, (_, i) => topUpCompleted(`cs_discovery_${i}`, ws, NOW_S - 5000 + i));
+    const stripe = fakeStripe(missed, [GOOD_ENDPOINT]);
+    const policy = { lookbackHours: 72, maxEventsPerRun: 3 };
+    const first = await run(stripe, { policy }).report;
+    expect(first.result).toMatchObject({ scanned: 0, applied: 0, truncated: true, cursor: { phase: "seek", position: missed[1].id } });
+    expect(await balance(ws)).toBe(0);
+    expect(await readCronSuccesses(asDb())).not.toHaveProperty("billing-reconcile");
+    const seen: string[] = [];
+    let done = first;
+    for (let pass = 0; pass < 12 && done.result.truncated; pass += 1) {
+      done = await run(stripe, { policy, now: new Date(NOW.getTime() + (pass + 1) * 60_000) }).report;
+      expect(done.result.scanned).toBeLessThanOrEqual(policy.maxEventsPerRun);
+      seen.push(...done.result.appliedEvents.map((event) => event.eventId));
+    }
+    expect(done.result.truncated).toBe(false);
+    expect(seen).toEqual(missed.map((event) => event.id));
+    expect(await balance(ws)).toBe(3100);
+    expect(stripe.eventLists[1]).toMatchObject({ starting_after: missed[1].id });
+    expect(stripe.eventLists.every((params) => (params.created as { lt: number }).lt === NOW_S)).toBe(true);
+  });
+
+  it("retries a failed list call from saved discovery progress", async () => {
+    const ws = await newWorkspace();
+    const missed = Array.from({ length: 11 }, (_, i) => topUpCompleted(`cs_list_retry_${i}`, ws, NOW_S - 5000 + i));
+    const stripe = fakeStripe(missed, [GOOD_ENDPOINT]);
+    const policy = { lookbackHours: 72, maxEventsPerRun: 1 };
+    await run(stripe, { policy }).report;
+    const saved = (await readBillingSignals(asDb())).reconcile;
+    const list = vi.spyOn(stripe.events, "list").mockRejectedValueOnce(new Error("temporary list failure"));
+    try {
+      await expect(run(stripe, { policy }).report).rejects.toThrow("temporary list failure");
+      expect((await readBillingSignals(asDb())).reconcile).toEqual(saved);
+      expect(await balance(ws)).toBe(0);
+    } finally {
+      list.mockRestore();
+    }
+    const retry = await run(stripe, { policy }).report;
+    expect(retry.result.appliedEvents.map((event) => event.eventId)).toEqual([missed[0].id]);
+  });
+
+  it("restarts legacy timestamp-only progress from the complete lookback", async () => {
+    const ws = await newWorkspace();
+    const missed = Array.from({ length: 4 }, (_, i) => topUpCompleted(`cs_legacy_${i}`, ws, NOW_S - 5000 + i));
+    await recordReconcileRun(asDb(), {
+      at: NOW.toISOString(), newestEventAt: null, applied: 0, failed: 0, endpoint: null,
+      reportedFailures: {}, truncated: true, resumeFrom: new Date(missed[3].created * 1000).toISOString(),
+    });
+    const done = await run(fakeStripe(missed, [GOOD_ENDPOINT]), { policy: { lookbackHours: 72, maxEventsPerRun: 3 } }).report;
+    expect(done.result.appliedEvents.map((event) => event.eventId)).toEqual(missed.slice(0, 3).map((event) => event.id));
+  });
+
+  it("finishes a same-second boundary while newly arriving events wait for the next window", async () => {
+    const ws = await newWorkspace();
+    const missed = Array.from({ length: 7 }, (_, i) => topUpCompleted(`cs_same_second_${i}`, ws, NOW_S - 5000));
+    const stripe = fakeStripe(missed, [GOOD_ENDPOINT]);
+    const policy = { lookbackHours: 72, maxEventsPerRun: 3 };
+    const first = await run(stripe, { policy }).report;
+    const later = topUpCompleted("cs_arrived_after_discovery", ws, NOW_S);
+    missed.push(later);
+    const second = await run(stripe, { policy, now: new Date(NOW.getTime() + 60_000) }).report;
+    const third = await run(stripe, { policy, now: new Date(NOW.getTime() + 120_000) }).report;
+    expect([first, second, third].flatMap((report) => report.result.appliedEvents.map((event) => event.eventId)))
+      .toEqual(missed.slice(0, 7).map((event) => event.id));
+    expect(third.result).toMatchObject({ scanned: 1, truncated: false, cursor: null });
+    expect(await balance(ws)).toBe(700);
+    expect(stripe.eventLists[1]).toMatchObject({ ending_before: missed[2].id, created: { lt: NOW_S } });
+    let next = await run(stripe, { policy, now: new Date(NOW.getTime() + 180_000) }).report;
+    for (let pass = 0; pass < 3 && next.result.truncated; pass += 1) {
+      next = await run(stripe, { policy, now: new Date(NOW.getTime() + 180_000) }).report;
+    }
+    expect(next.result.truncated).toBe(false);
+    expect(await balance(ws)).toBe(800);
+  });
+
+  it("keeps saved progress unchanged on a dry run", async () => {
+    const ws = await newWorkspace();
+    const stripe = fakeStripe(Array.from({ length: 4 }, (_, i) => topUpCompleted(`cs_cursor_dry_${i}`, ws)), [GOOD_ENDPOINT]);
+    const policy = { lookbackHours: 72, maxEventsPerRun: 3 };
+    await run(stripe, { policy }).report;
+    const before = (await readBillingSignals(asDb())).reconcile;
+    const dry = await run(stripe, { policy, dryRun: true }).report;
+    expect(dry.result).toMatchObject({ applied: 1, truncated: false });
+    expect((await readBillingSignals(asDb())).reconcile).toEqual(before);
+    expect(await balance(ws)).toBe(300);
+    expect((await run(stripe, { policy }).report).result.applied).toBe(1);
+    expect(await balance(ws)).toBe(400);
+  });
+
+  it("retries a failed replay batch without advancing past its grant", async () => {
+    const ws = await newWorkspace();
+    const stripe = fakeStripe(Array.from({ length: 3 }, (_, i) => topUpCompleted(`cs_batch_retry_${i}`, ws, NOW_S - 5000 + i)));
+    const store = new DbBillingStore(asDb(), "stripe");
+    const input = { stripe, store, priceTable: table, since: new Date(NOW.getTime() - 72 * 3600_000), until: NOW, maxEvents: 1 };
+    const first = await reconcileStripe(input);
+    expect(first.cursor?.phase).toBe("replay");
+    const fail = vi.spyOn(store, "recordGrantOnce").mockRejectedValueOnce(new Error("temporary grant failure"));
+    const failed = await reconcileStripe({ ...input, cursor: first.cursor });
+    expect(failed.failed).toHaveLength(1);
+    expect(failed.cursor).toEqual(first.cursor);
+    fail.mockRestore();
+    const retry = await reconcileStripe({ ...input, cursor: failed.cursor });
+    const last = await reconcileStripe({ ...input, cursor: retry.cursor });
+    expect(last.truncated).toBe(false);
+    expect(await balance(ws)).toBe(300);
+  });
+
+  it("discovers the oldest grant before replaying a refund across capped passes", async () => {
+    const ws = await newWorkspace();
+    const grant = topUpCompleted("cs_deep_refund", ws, NOW_S - 5000);
+    const filler = Array.from({ length: 10 }, (_, i) => invoicePaid(`in_between_${i}`, ws, { reason: "manual", created: NOW_S - 4999 + i }));
+    const refund = stripeEvent("evt_deep_refund", "charge.refunded", {
+      id: "ch_deep", object: "charge", amount: 1500, amount_refunded: 1500, payment_intent: "pi_cs_deep_refund",
+    }, NOW_S - 4000);
+    const stripe = fakeStripe([grant, ...filler, refund], [GOOD_ENDPOINT]);
+    const policy = { lookbackHours: 72, maxEventsPerRun: 1 };
+    let done = await run(stripe, { policy }).report;
+    expect(done.result).toMatchObject({ scanned: 0, truncated: true });
+    const actions: string[] = [];
+    for (let pass = 0; pass < 13 && done.result.truncated; pass += 1) {
+      done = await run(stripe, { policy }).report;
+      actions.push(...done.result.appliedEvents.map((event) => event.action));
+    }
+    expect(done.result.truncated).toBe(false);
+    expect(actions).toEqual(["topup_granted", "refund_clawed_back"]);
+    expect(await balance(ws)).toBe(0);
   });
 
   it("never applies an event rendered at another API version, and reports it (security review 9)", async () => {
@@ -486,6 +688,7 @@ describe("reconcileStripe listing", () => {
       store: new DbBillingStore(asDb(), "stripe"),
       priceTable: table,
       since: new Date(NOW.getTime() - 72 * 3600_000),
+      until: NOW,
       maxEvents: 10,
     });
     expect(done.failed).toEqual([
@@ -504,6 +707,7 @@ describe("reconcileStripe listing", () => {
         store: new DbBillingStore(asDb(), "stripe"),
         priceTable: table,
         since: new Date(NOW.getTime() - 72 * 3600_000),
+        until: NOW,
         maxEvents: 10,
         afterEvent: async (event, outcome) => {
           seen.push({ id: event.id, action: outcome.action, duplicate: Boolean(outcome.duplicate) });
@@ -538,6 +742,7 @@ describe("reconcileStripe listing", () => {
       store: new DbBillingStore(asDb(), "stripe"),
       priceTable: table,
       since: new Date(NOW.getTime() - 72 * 3600_000),
+      until: NOW,
       maxEvents: 1000,
     });
     expect(done.appliedEvents.map((event) => event.action)).toEqual(["topup_granted", "refund_clawed_back"]);

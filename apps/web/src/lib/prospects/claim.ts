@@ -1,3 +1,4 @@
+import { assertSourceKeysAvailable, SourceUnavailableError } from "@/lib/trust/source-retention";
 /**
  * Redeeming a prospect claim at signup (docs/phases/PHASE_18.md P18-04,
  * founder decision 11). A new account whose signup link carried
@@ -162,6 +163,8 @@ export async function redeemProspectClaim(
   await deps.storage.put(key, bytes, contentType);
 
   const productId = await deps.db.transaction(async (tx) => {
+    await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+    await assertSourceKeysAvailable(tx, workspaceId, [key]);
     const marked = await tx
       .update(packClaims)
       .set({ claimedByWorkspaceId: workspaceId, claimedAt: now })
@@ -185,7 +188,11 @@ export async function redeemProspectClaim(
       })
       .onConflictDoNothing();
     return product.id;
+  }).catch((err: unknown) => {
+    if (err instanceof SourceUnavailableError) return false as const;
+    throw err;
   });
+  if (productId === false) return { kind: "refused", reason: "missing_files" };
   if (!productId) {
     // Another request redeemed or took it down between the read and the update.
     const again = await productOfClaim(deps.db, workspaceId, claim.id);

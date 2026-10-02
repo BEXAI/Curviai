@@ -337,6 +337,20 @@
       "when": 1790954316167,
       "tag": "0047_pack_completion_webhooks",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1790976836219,
+      "tag": "0048_job_request_fingerprints",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1790977317423,
+      "tag": "0049_source_retirement",
+      "breakpoints": true
     }
   ]
 }

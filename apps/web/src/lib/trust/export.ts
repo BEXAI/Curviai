@@ -13,6 +13,7 @@
 import { type Db } from "@curvi/db";
 import { isWorkspaceKey } from "@/lib/r2";
 import type { JobStatus, Services, WorkspaceSummary } from "@/lib/services/types";
+import { prepareReportSnapshot } from "@/lib/selected-report-download";
 
 export const EXPORT_FORMAT = "curvi-export-v1";
 /** Signed links in the export stay valid this long. */
@@ -198,13 +199,15 @@ export async function buildDbExport(
     if (!servedJobs.has(pack.jobId) || !isWorkspaceKey(workspaceId, pack.r2Key)) {
       continue;
     }
+    const snapshot = pack.kind === "report" && sign
+      ? await prepareReportSnapshot(db, workspaceId, pack.jobId, pack.id) : null;
     push(pack.jobId, {
       name: pack.filename,
       channel: pack.channel,
       specId: null,
       kind: pack.kind === "report" ? "report" : "zip",
-      bytes: pack.bytes,
-      url: await signKey(pack.r2Key),
+      bytes: snapshot?.selected.body.length ?? pack.bytes,
+      url: await signKey(pack.kind === "report" ? snapshot?.key : pack.r2Key),
       appPath: `/api/jobs/${pack.jobId}/files/p_${pack.id}`,
     });
   }

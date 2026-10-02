@@ -640,20 +640,14 @@ describe("0011: tenant write lockdown", () => {
     expect(ok.affectedRows).toBe(1);
   });
 
-  it("limits brand kit writes to owner, admin and editor, and keeps logo keys in the workspace", async () => {
-    await actAs(client, CLIENT_A);
-    await expect(
-      client.query("insert into brand_kits (workspace_id, name) values ($1, 'Client kit')", [wsA]),
-    ).rejects.toThrow(/row-level security/);
-
-    await actAsSuperuser(client);
-    await actAs(client, EDITOR_A);
+  it("keeps brand kit writes server only, tenant reads intact, and logo keys in the workspace", async () => {
+    await actAsServiceRole(client);
     const created = await client.query<{ id: string }>(
-      "insert into brand_kits (workspace_id, name) values ($1, 'Editor kit') returning id",
+      "insert into brand_kits (workspace_id, name) values ($1, 'Server kit') returning id",
       [wsA],
     );
     const kitId = created.rows[0].id;
-    // The foreign logo exploit from Update.md 4.2 fails on the prefix check.
+    // The prefix constraint must still protect even the server write path.
     await expect(
       client.query("update brand_kits set logo_r2_key = $1 where id = $2", [keyB(), kitId]),
     ).rejects.toThrow(/brand_kits_logo_r2_key_workspace_prefix/);
@@ -663,24 +657,26 @@ describe("0011: tenant write lockdown", () => {
     ]);
     expect(ownLogo.affectedRows).toBe(1);
 
-    await actAsSuperuser(client);
-    await actAs(client, CLIENT_A);
-    const clientUpdate = await client.query("update brand_kits set name = 'Hijacked' where id = $1", [kitId]);
-    expect(clientUpdate.affectedRows ?? 0).toBe(0);
-    const clientRead = await client.query<{ name: string }>("select name from brand_kits where id = $1", [
-      kitId,
-    ]);
-    expect(clientRead.rows[0].name).toBe("Editor kit");
-
-    await actAsSuperuser(client);
-    await actAs(client, OWNER_A);
-    const del = await client.query("delete from brand_kits where id = $1", [kitId]);
-    expect(del.affectedRows ?? 0).toBe(0);
+    const expected = [{ name: "Server kit", logo_r2_key: `ws/${wsA}/src/logo.png` }];
+    // 0049 closes direct owner/editor writes as well as client-seat writes.
+    for (const user of [OWNER_A, EDITOR_A, CLIENT_A]) {
+      await actAsAuthenticated(client, user);
+      await expect(
+        client.query("insert into brand_kits (workspace_id, name) values ($1, 'Forged kit')", [wsA]),
+      ).rejects.toThrow(/row-level security/);
+      expect((await client.query("update brand_kits set name = 'Hijacked' where id = $1", [kitId])).affectedRows).toBe(0);
+      expect((await client.query("update brand_kits set logo_r2_key = $1 where id = $2", [keyB(), kitId])).affectedRows).toBe(0);
+      expect((await client.query("delete from brand_kits where id = $1", [kitId])).affectedRows).toBe(0);
+      expect((await client.query("select name, logo_r2_key from brand_kits where id = $1", [kitId])).rows).toEqual(expected);
+    }
 
     await actAsSuperuser(client);
     await actAs(client, OWNER_B);
     const foreign = await client.query("update brand_kits set name = 'Cross tenant' where id = $1", [kitId]);
     expect(foreign.affectedRows ?? 0).toBe(0);
+    expect((await client.query("select id from brand_kits where id = $1", [kitId])).rows).toHaveLength(0);
+    await actAsSuperuser(client);
+    expect((await client.query("select name, logo_r2_key from brand_kits where id = $1", [kitId])).rows).toEqual(expected);
   });
 
   it("stops a client seat deleting products, which would cascade to jobs and assets", async () => {

@@ -32,14 +32,16 @@ import {
   productUnchangedRequiredMean,
 } from "@/lib/proof-copy";
 
-// The stored report, read leniently: fields the view does not use may change
-// without breaking the page.
+// Validate the fields the view consumes, while retaining the rest of the
+// stored JSON unchanged for downloads. In particular, never strip the wire
+// version, intent/inventory, dropped refs, or future check metadata. These
+// fields are carried through as data, never used to authorize or claim QC.
 const StoredCheck = z.object({
   name: z.string(),
   pass: z.boolean(),
   measured: z.union([z.number(), z.string(), z.null()]).optional(),
   limit: z.string().optional(),
-});
+}).passthrough();
 
 const StoredFile = z.object({
   file: z.string(),
@@ -59,13 +61,13 @@ const StoredDropped = z.object({
   channel: z.string(),
   specId: z.string(),
   reason: z.string(),
-});
+}).passthrough();
 
 export const StoredComplianceReport = z.object({
   generatedAt: z.string().optional(),
   files: z.array(StoredFile),
   dropped: z.array(StoredDropped).optional(),
-});
+}).passthrough();
 
 export type StoredComplianceReport = z.infer<typeof StoredComplianceReport>;
 
@@ -312,7 +314,7 @@ function whiteOrClearLabel(specId: string | undefined): string {
 }
 
 /** One stored check as a plain spoken row. The spec id picks labels that depend on the channel. */
-export function describeCheck(check: z.infer<typeof StoredCheck>, specId?: string): ComplianceCheckView {
+export function describeCheck(check: Pick<z.infer<typeof StoredCheck>, "name" | "pass" | "measured" | "limit">, specId?: string): ComplianceCheckView {
   const { name, pass, measured, limit } = check;
   switch (name) {
     case "checksUnavailable":

@@ -69,6 +69,17 @@ describe("POST /api/email/unsubscribe", () => {
     expect(store.rows.has(KEY)).toBe(true);
   });
 
+  it("preserves a case-sensitive multipart boundary when the token is in the body", async () => {
+    const boundary = "CurviMixedCaseBoundary";
+    const response = await POST(new Request(BASE, {
+      method: "POST",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      body: `--${boundary}\r\nContent-Disposition: form-data; name="token"\r\n\r\n${TOKEN}\r\n--${boundary}--\r\n`,
+    }));
+    expect(response.status).toBe(200);
+    expect(store.rows.get(KEY)).toEqual({ scope: "marketing", reason: "unsubscribed" });
+  });
+
   it("refuses a forged, foreign or missing token and stores nothing", async () => {
     const forged = unsubscribeToken("another-secret", KEY);
     for (const request of [

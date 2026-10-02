@@ -9,8 +9,6 @@ import type { FileProofView } from "@/lib/proof-view";
 
 export type ShareKind = "before_after" | "pack";
 
-export const SHARE_KINDS: readonly ShareKind[] = ["before_after", "pack"];
-
 /** What the owner sees about one job's share page. */
 export interface ShareStatus {
   jobId: string;

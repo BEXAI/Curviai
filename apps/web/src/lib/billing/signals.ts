@@ -11,8 +11,8 @@
  * GET /api/health reads them for `stripe_webhook_quiet` and
  * `stripe_webhook_endpoint_mismatch` (lib/billing/billing-health.ts).
  *
- * Writes never throw: a signal is reporting, and the payment or the cron
- * run it describes already happened.
+ * Ordinary health writes never throw. Reconcile progress is durable state,
+ * so its write must succeed before a cron pass can report completion.
  */
 
 import { platformSettings, sql, type Db } from "@curvi/db";
@@ -53,6 +53,19 @@ export interface EndpointCheck {
   skipped?: string;
 }
 
+/** Only cursor metadata is stored, never Stripe event/customer payloads. */
+export interface ReconcileCursor {
+  version: 1;
+  phase: "seek" | "replay";
+  since: string;
+  /** Exclusive upper bound, frozen before discovering the first page. */
+  until: string;
+  position: string | null;
+  positionAt: string | null;
+  newestEventId: string | null;
+  newestEventAt: string | null;
+}
+
 /** What `billing:reconcile:last_run` holds. */
 export interface ReconcileRunSignal {
   /** When the run finished (ISO). */
@@ -66,10 +79,11 @@ export interface ReconcileRunSignal {
   /** Failed event ids already emailed to the founder, with when (ISO), so a
    * failure that stays failed is not emailed on every run. */
   reportedFailures: Record<string, string>;
-  /** The window held more events than one run reads (health warns
-   * stripe_reconcile_behind); the next run starts at resumeFrom. */
+  /** The window still has discovery or replay work (health warns
+   * stripe_reconcile_behind). resumeFrom is display-only, never a cursor. */
   truncated?: boolean;
   resumeFrom?: string | null;
+  cursor?: ReconcileCursor | null;
 }
 
 export interface BillingSignals {
@@ -90,13 +104,13 @@ export async function recordBillingSignal(
   await writeSignal(db, key, { at: at.toISOString() }, at, logger);
 }
 
-/** Records the reconcile run. Never throws. */
+/** Persist progress before marking the cron successful. Throws on failure. */
 export async function recordReconcileRun(
   db: Pick<Db, "insert">,
   run: ReconcileRunSignal,
   logger: Pick<Console, "warn"> = console,
 ): Promise<void> {
-  await writeSignal(db, RECONCILE_RUN_KEY, run, new Date(run.at), logger);
+  await writeSignal(db, RECONCILE_RUN_KEY, run, new Date(run.at), logger, true);
 }
 
 /** Records the last plan email send. Never throws. */
@@ -122,6 +136,7 @@ async function writeSignal(
   value: unknown,
   at: Date,
   logger: Pick<Console, "warn">,
+  required = false,
 ): Promise<void> {
   try {
     await db
@@ -132,6 +147,7 @@ async function writeSignal(
         set: { value: sql`excluded.value`, updatedAt: sql`excluded.updated_at` },
       });
   } catch (err) {
+    if (required) throw err;
     logger.warn(`[billing] could not record ${key}:`, err instanceof Error ? err.message : String(err));
   }
 }
@@ -159,6 +175,22 @@ function isoOrNull(value: unknown): string | null {
 
 function atOf(value: unknown): string | null {
   return isoOrNull((parsed(value) as { at?: unknown } | null)?.at);
+}
+
+export function reconcileCursorOf(value: unknown): ReconcileCursor | null {
+  if (!value || typeof value !== "object") return null;
+  const cursor = value as Partial<ReconcileCursor>;
+  const since = isoOrNull(cursor.since), until = isoOrNull(cursor.until);
+  const positionAt = isoOrNull(cursor.positionAt), newestEventAt = isoOrNull(cursor.newestEventAt);
+  const eventId = (id: unknown): id is string => typeof id === "string" && /^evt_[A-Za-z0-9_]{1,200}$/.test(id);
+  if (cursor.version !== 1 || (cursor.phase !== "seek" && cursor.phase !== "replay") ||
+    !since || !until || Date.parse(since) >= Date.parse(until) ||
+    (cursor.position !== null && !eventId(cursor.position)) ||
+    (cursor.newestEventId !== null && !eventId(cursor.newestEventId)) ||
+    Boolean(cursor.position) !== Boolean(positionAt) || Boolean(cursor.newestEventId) !== Boolean(newestEventAt) ||
+    (cursor.phase === "replay" && (!cursor.position || !cursor.newestEventId))) return null;
+  return { version: 1, phase: cursor.phase, since, until, position: cursor.position ?? null,
+    positionAt, newestEventId: cursor.newestEventId ?? null, newestEventAt };
 }
 
 /** A stored reconcile run, or null when absent or malformed. */
@@ -192,6 +224,7 @@ export function reconcileRunOf(value: unknown): ReconcileRunSignal | null {
     reportedFailures: reported,
     truncated: run.truncated === true,
     resumeFrom: isoOrNull(run.resumeFrom),
+    cursor: reconcileCursorOf(run.cursor),
   };
 }
 

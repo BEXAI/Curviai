@@ -45,7 +45,7 @@ class FakeBackend implements McpLinkBackend {
   live = new Set<string>([`connection:${CONNECTION}:${WS}`, `connection:${OTHER_CONNECTION}:${WS}`]);
   files = new Map<string, LinkedFile>([
     [`${WS}/${JOB}/${VARIANT}`, { key: IMAGE_KEY, filename: "MUG1.MAIN.jpg", kind: "image" }],
-    [`${WS}/${JOB}/${REPORT}`, { key: `ws/${WS}/jobs/${JOB}/pack/compliance-report.json`, filename: "compliance-report.json", kind: "report" }],
+    [`${WS}/${JOB}/${REPORT}`, { key: `ws/${WS}/jobs/${JOB}/pack/compliance-report.json`, filename: "compliance-report.json", kind: "report", reportBody: '{"files":[]}' }],
   ]);
   subjectLive = vi.fn(async (subject: { kind: string; id: string }, workspaceId: string) =>
     this.live.has(`${subject.kind}:${subject.id}:${workspaceId}`),
@@ -121,12 +121,12 @@ describe("GET /api/mcp/files/{token}", () => {
     expect(backend.fileOf).toHaveBeenCalledWith(WS, JOB, VARIANT);
   });
 
-  it("downloads the report too", async () => {
+  it("downloads fresh report JSON directly with its filename", async () => {
     const response = await click("files", token({ fileId: REPORT }));
-    expect(response.status).toBe(302);
-    expect(new URL(response.headers.get("location") ?? "").searchParams.get("response-content-disposition")).toContain(
-      "compliance-report.json",
-    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toContain("compliance-report.json");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ files: [] });
   });
 
   it("answers a tampered, foreign or wrong kind token with 404 and an expired one with 410", async () => {

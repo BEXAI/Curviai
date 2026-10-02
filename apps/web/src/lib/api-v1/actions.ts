@@ -46,6 +46,7 @@ import { RESTARTING_MESSAGE } from "@/lib/services/errors";
 import { OPTIONS_UNAVAILABLE_MESSAGE } from "@/lib/services/output-options";
 import type {
   CreateJobInput,
+  CreateJobLifecycle,
   CreateJobRejection,
   CreateJobResult,
   EstimateJobInput,
@@ -619,6 +620,7 @@ export async function createPack(
     return errorResult(400, "idempotency_key_required", API_COPY.idempotencyMissing);
   }
 
+  const lifecycle: CreateJobLifecycle = { retainUploads: false };
   let result: CreateJobResult;
   try {
     result = await caller.services.createJob(workspaceId, {
@@ -634,18 +636,18 @@ export async function createPack(
       // Every create_pack through /api/mcp: the worker screens it for
       // OpenAI's prohibited goods (PHASE_19 P19-29). The REST API does not.
       ...(assistant ? { audience: "assistant" as const } : {}),
-    });
+    }, lifecycle);
   } catch (err) {
-    await discardStoredPhotos(created, ctx.photos);
+    if (!lifecycle.retainUploads) await discardStoredPhotos(created, ctx.photos);
     if (err instanceof InlineRunnerClosedError) {
       return errorResult(503, "unavailable", RESTARTING_MESSAGE);
     }
     throw err;
   }
-  if (result.outcome !== "created") {
-    // Only a new pack uses the photos this request wrote: a replay or a
-    // conflict answers with the pack the key already made, and a refusal
-    // makes none. Photos that were already stored are never in `created`.
+  if (result.outcome !== "created" && !lifecycle.retainUploads) {
+    // Cleanup owns only uploads that could not have been published. Once
+    // persistence begins, even a refused or interrupted request may have
+    // committed sources that another pack already uses.
     await discardStoredPhotos(created, ctx.photos);
   }
 
@@ -805,16 +807,16 @@ export async function listPackFiles(ctx: ApiContext, id: string): Promise<ApiRes
   const expiresAt = new Date(now.getTime() + DOWNLOAD_URL_TTL_SECONDS * 1000).toISOString();
   const files = await Promise.all(
     view.files.map(async (file) => {
-      const download = file.downloadUrl ? await ctx.caller.services.getJobFileDownload(workspaceId, id, file.id) : null;
+      const download = file.downloadUrl ? await ctx.caller.services.getJobFileDownload(workspaceId, id, file.id, { report: "snapshot" }) : null;
       return {
         id: file.id,
         name: download?.filename ?? file.name,
         channel: file.channel,
         specId: file.specId,
         kind: file.kind,
-        bytes: file.bytes,
+        bytes: download?.bytes ?? file.bytes,
         url: download?.url ?? null,
-        expiresAt: download ? expiresAt : null,
+        expiresAt: download?.url ? expiresAt : null,
       };
     }),
   );

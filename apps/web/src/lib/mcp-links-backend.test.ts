@@ -129,7 +129,7 @@ describe("subjectLive", () => {
 });
 
 describe("fileOf", () => {
-  it("finds an image and the report of the job in the workspace", async () => {
+  it("finds an image but refuses a report without readable stored checks", async () => {
     const w = await workspaceWithMember();
     const job = await deliveredJob(w);
     expect(await backend.fileOf(w.id, job.jobId, job.variant)).toEqual({
@@ -137,7 +137,7 @@ describe("fileOf", () => {
       filename: "MUG1.MAIN.jpg",
       kind: "image",
     });
-    expect(await backend.fileOf(w.id, job.jobId, job.report)).toMatchObject({ filename: "compliance-report.json", kind: "report" });
+    expect(await backend.fileOf(w.id, job.jobId, job.report)).toBeNull();
   });
 
   it("refuses a file of another job or workspace, a deleted file and a pack that serves no files", async () => {

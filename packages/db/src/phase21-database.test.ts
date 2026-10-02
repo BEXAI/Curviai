@@ -182,14 +182,22 @@ describe("Phase21 atomic terminal outbox",()=>{
   });
   it("blocks raw client status/outcome/identity forgery and hides signing/outbox data",async()=>{
     const f=await fixture(); await endpointFor(f);
+    const fields="status,logical_run_outcome,logical_run_id";
+    const before=(await client.query(`select ${fields} from generation_jobs where id=$1`,[f.job])).rows;
     for(const user of [f.owner,f.admin,f.editor]) {
       await actAsAuthenticated(client,user);
-      await expect(client.query("update generation_jobs set status='done' where id=$1",[f.job])).rejects.toThrow("only be changed by the server");
-      await expect(client.query("update generation_jobs set logical_run_outcome='done' where id=$1",[f.job])).rejects.toThrow("only be changed by the server");
-      await expect(client.query("update generation_jobs set logical_run_id=$1 where id=$2",[randomUUID(),f.job])).rejects.toThrow("only be changed by the server");
+      // 0049 denies all member UPDATEs before protected-field triggers run.
+      expect((await client.query("update generation_jobs set status='done' where id=$1",[f.job])).affectedRows).toBe(0);
+      expect((await client.query("update generation_jobs set logical_run_outcome='done' where id=$1",[f.job])).affectedRows).toBe(0);
+      expect((await client.query("update generation_jobs set logical_run_id=$1 where id=$2",[randomUUID(),f.job])).affectedRows).toBe(0);
+      expect((await client.query(`select ${fields} from generation_jobs where id=$1`,[f.job])).rows).toEqual(before);
       for(const table of ["webhook_endpoints","pack_completion_events","webhook_deliveries"]) expect((await client.query(`select id from ${table}`)).rows).toHaveLength(0);
       await expect(client.query("insert into generation_jobs(workspace_id,product_id,status) values($1,$2,'done')",[f.ws,f.product])).rejects.toThrow("only be changed by the server");
     }
+    await actAsSuperuser(client);
+    expect((await client.query(`select ${fields} from generation_jobs where id=$1`,[f.job])).rows).toEqual(before);
+    expect((await client.query("select id from pack_completion_events where job_id=$1",[f.job])).rows).toHaveLength(0);
+    expect((await client.query("select id from webhook_deliveries where workspace_id=$1",[f.ws])).rows).toHaveLength(0);
   });
   it("cancels queued deliveries on disable and enforces delivery/event tenant ancestry",async()=>{
     const f=await fixture(), other=await fixture(), endpoint=await endpointFor(f), otherEndpoint=await endpointFor(other);

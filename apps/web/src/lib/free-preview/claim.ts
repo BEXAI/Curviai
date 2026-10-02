@@ -1,3 +1,4 @@
+import { assertSourceKeysAvailable, SourceUnavailableError } from "@/lib/trust/source-retention";
 /**
  * The claim at signup (docs/phases/PHASE_18.md P18-12): a new account whose
  * signup link carried ?preview=<id> gets that photo as its first product.
@@ -22,6 +23,7 @@ import {
   products,
   recordFunnelEvent,
   sourceMedia,
+  sql,
   type Db,
 } from "@curvi/db";
 import { isUuid } from "@/lib/validation/ids";
@@ -115,6 +117,8 @@ export async function claimFreePreview(deps: ClaimDeps, input: { previewId: stri
   }
 
   const productId = await deps.db.transaction(async (tx) => {
+    await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+    await assertSourceKeysAvailable(tx, workspaceId, [sourceKey]);
     const claimed = await tx
       .update(freePreviews)
       .set({ status: "claimed", claimedWorkspaceId: workspaceId, claimedAt: now })
@@ -138,7 +142,11 @@ export async function claimFreePreview(deps: ClaimDeps, input: { previewId: stri
       })
       .onConflictDoNothing();
     return product.id;
+  }).catch((err: unknown) => {
+    if (err instanceof SourceUnavailableError) return false as const;
+    throw err;
   });
+  if (productId === false) return { kind: "refused", reason: "missing_files" };
   if (!productId) {
     // Another request claimed it between the read and the update.
     const again = await productOfClaim(deps.db, workspaceId, sourceKey);

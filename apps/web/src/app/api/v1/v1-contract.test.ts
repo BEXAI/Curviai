@@ -194,7 +194,7 @@ describe("POST /api/v1/packs", () => {
     vi.unstubAllEnvs();
   });
 
-  it("reads photo links through the safe import, naming stored photos by their hash", async () => {
+  it("reads photo links through the safe import, storing photos under a request-owned hash prefix", async () => {
     const png = await mainImagePng(300, 0.8);
     const fetchPhoto = vi.fn(async () => ({
       ok: true as const,
@@ -226,7 +226,8 @@ describe("POST /api/v1/packs", () => {
     await createPack(ctx, { channels: ["amazon.main"], photos: [{ url: "https://shop.example/p.png", angle: "back" }] }, "k1");
     vi.unstubAllEnvs();
     expect(fetchPhoto).toHaveBeenCalledWith("https://shop.example/p.png");
-    const key = `ws/${OTHER_WORKSPACE_ID}/src/api-${"a".repeat(64)}`;
+    const key = put.mock.calls[0]?.[2];
+    expect(key).toMatch(new RegExp(`^ws/${OTHER_WORKSPACE_ID}/src/api-${"a".repeat(64)}-[0-9a-f-]{36}$`));
     expect(put).toHaveBeenCalledWith(OTHER_WORKSPACE_ID, expect.anything(), key);
     expect(services.createJob).toHaveBeenCalledWith(
       OTHER_WORKSPACE_ID,
@@ -236,6 +237,7 @@ describe("POST /api/v1/packs", () => {
         productId: "new",
         uploads: [{ key, sha256: "a".repeat(64), kind: "image", angle: "back" }],
       }),
+      { retainUploads: false },
     );
     // The key made no new pack (a conflict), so the photo this request
     // wrote is taken back.
@@ -249,9 +251,9 @@ describe("POST /api/v1/packs", () => {
       photo: { body: png, contentType: "image/png" as const, sha256: sha, width: 300, height: 300 },
     });
     const fetchPhoto = vi.fn(async (url: string) => photoOf(url.endsWith("old.png") ? "b".repeat(64) : "c".repeat(64)));
-    // The old photo is already stored (and cleaned by ingest): the
-    // conditional put reports it was there and writes nothing.
-    const put = vi.fn(async (_ws: string, _photo: unknown, key: string) => !key.endsWith("b".repeat(64)));
+    // A conditional PUT can still report an existing object. That key
+    // is never claimed by this request or included in its cleanup.
+    const put = vi.fn(async (_ws: string, photo: { sha256: string }, _key: string) => photo.sha256 !== "b".repeat(64));
     const remove = vi.fn(async (_keys: string[]) => [] as string[]);
     const services = createFakeServices("owner");
     vi.stubEnv("R2_ACCOUNT_ID", "acct");
@@ -280,7 +282,8 @@ describe("POST /api/v1/packs", () => {
       message: "Not enough credits.",
     });
     const refused = await createPack(ctx, body, "k3");
-    const newKey = `ws/${OTHER_WORKSPACE_ID}/src/api-${"c".repeat(64)}`;
+    const newKey = put.mock.calls.find(([, photo]) => photo.sha256 === "c".repeat(64))?.[2];
+    expect(newKey).toMatch(new RegExp(`^ws/${OTHER_WORKSPACE_ID}/src/api-${"c".repeat(64)}-[0-9a-f-]{36}$`));
     expect(refused.status).toBe(402);
     expect(remove).toHaveBeenCalledTimes(1);
     expect(remove).toHaveBeenCalledWith([newKey]);
@@ -334,6 +337,7 @@ describe("POST /api/v1/packs", () => {
     expect(services.createJob).toHaveBeenCalledWith(
       OTHER_WORKSPACE_ID,
       expect.objectContaining({ answers: { mood: "gym" } }),
+      expect.objectContaining({ retainUploads: expect.any(Boolean) }),
     );
   });
 
@@ -424,7 +428,7 @@ describe("GET /api/v1/packs/{id} and /files", () => {
     expect(Date.parse(body.files[0]!.expiresAt!) - Date.now()).toBeLessThanOrEqual(900_000);
     expect(body.files[1]).toMatchObject({ url: null, expiresAt: null });
     expect(services.getJobFileDownload).toHaveBeenCalledTimes(1);
-    expect(services.getJobFileDownload).toHaveBeenCalledWith(DEMO_WORKSPACE_ID, id, "v_1");
+    expect(services.getJobFileDownload).toHaveBeenCalledWith(DEMO_WORKSPACE_ID, id, "v_1", { report: "snapshot" });
   });
 });
 

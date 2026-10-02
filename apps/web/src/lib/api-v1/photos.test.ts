@@ -247,7 +247,7 @@ describe("the actions with chat attachments", () => {
     return { caller, headers: new Headers({ "x-forwarded-for": "203.0.113.5" }), photos };
   }
 
-  it("create_pack stores attached photos by their hash and starts the listing pack", async () => {
+  it("create_pack stores attached photos under a hash prefix owned by the request and starts the listing pack", async () => {
     setRateLimitStoreForTests(new MemoryRateLimitStore());
     vi.stubEnv("R2_ACCOUNT_ID", "acct");
     vi.stubEnv("R2_ACCESS_KEY_ID", "id");
@@ -257,11 +257,14 @@ describe("the actions with chat attachments", () => {
     const put = vi.fn(async () => true);
     const remove = vi.fn(async () => [] as string[]);
     await createPack(contextFor(caller, { fetchPhoto, put, remove }), { channels: ["amazon.main"], images: [attachment("a")] }, "k-chat");
-    const key = `ws/${WS}/src/api-${"a".repeat(64)}`;
+    const key = vi.mocked(caller.services.createJob).mock.calls[0]?.[1].uploads?.[0]?.key;
+    expect(key).toMatch(new RegExp(`^ws/${WS}/src/api-${"a".repeat(64)}-[0-9a-f-]{36}$`));
     expect(fetchPhoto).toHaveBeenCalledWith(attachment("a").download_url);
+    expect(put).toHaveBeenCalledWith(WS, expect.anything(), key);
     expect(caller.services.createJob).toHaveBeenCalledWith(
       WS,
       expect.objectContaining({ mode: "listing", uploads: [{ key, sha256: "a".repeat(64), kind: "image" }] }),
+      { retainUploads: false },
     );
     const input = JSON.stringify(vi.mocked(caller.services.createJob).mock.calls[0]);
     expect(input).not.toContain(FILE_HOST);

@@ -83,13 +83,13 @@ export async function runBillingReconcile(deps: ReconcileRunDeps): Promise<Recon
     lastRun = (await readBillingSignals(deps.db)).reconcile;
   } catch (err) {
     logger.warn("[billing] reconcile could not read its last run:", err instanceof Error ? err.message : String(err));
+    throw err;
   }
-  // A run that hit its cap processed the oldest events of its window; this
-  // one carries on from where it stopped, so a busy window never starves
-  // its newest (or, before, its oldest) events. The full window comes back
-  // once a run gets through it.
-  const resumeFrom = lastRun?.truncated && lastRun.resumeFrom ? new Date(lastRun.resumeFrom) : null;
-  const since = resumeFrom && resumeFrom > windowStart ? resumeFrom : windowStart;
+  // A pending window keeps both time bounds and its event-ID position until
+  // completion. Legacy timestamp-only progress restarts the full lookback;
+  // guessing an event boundary from a second can silently lose payments.
+  const cursor = lastRun?.truncated ? lastRun.cursor ?? null : null;
+  const since = cursor ? new Date(cursor.since) : windowStart;
   const realStore = new DbBillingStore(deps.db, "stripe");
   const dryStore = deps.dryRun ? new DryRunBillingStore(realStore) : null;
 
@@ -98,6 +98,8 @@ export async function runBillingReconcile(deps: ReconcileRunDeps): Promise<Recon
     store: dryStore ?? realStore,
     priceTable: deps.priceTable,
     since,
+    until: now,
+    cursor,
     maxEvents: policy.maxEventsPerRun,
     lookup: deps.lookup,
     activation: deps.dryRun
@@ -177,6 +179,7 @@ export async function runBillingReconcile(deps: ReconcileRunDeps): Promise<Recon
     reportedFailures: keep,
     truncated: result.truncated,
     resumeFrom: result.resumeFrom,
+    cursor: result.cursor,
   });
   // The tick uses this timestamp to decide what is due. Keep failed or
   // incomplete replays due, while the run signal above preserves their

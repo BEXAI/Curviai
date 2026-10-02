@@ -6,13 +6,11 @@
  * database, and canceling that simulated pack. Everything else is read only.
  */
 
-import { createHash } from "node:crypto";
 import {
   backgroundFor,
   canvasSizeFor,
   originalFitFor,
   originalScale,
-  outputOptionsKey,
   rgbToHex,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
@@ -60,6 +58,7 @@ import type {
   BrandKitView,
   CancelJobResult,
   CreateJobInput,
+  CreateJobLifecycle,
   CreateJobRejection,
   CreateJobResult,
   CreateProductInput,
@@ -94,6 +93,7 @@ import type { GalleryFilters } from "@/lib/library";
 import { reuseOutputOptions, type ReusePrefill } from "@/lib/reuse";
 import { shotVersionsOf, VERSION_COPY } from "@/lib/variation-picks";
 import { AMAZON_NOT_CONNECTED, SHOPIFY_NOT_CONNECTED } from "@/lib/integration-copy";
+import { jobRequestFingerprint } from "./job-request";
 
 export const DEMO_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
 export const DEMO_WORKSPACE_NAME = "Demo Workspace";
@@ -216,31 +216,12 @@ export function getDemoStore(): DemoStore {
   return globalScope.__curviDemoStore;
 }
 
-/** The request body a replay must match. The options count by their
- * canonical key, so no options and explicit defaults are the same body, and
- * a concept pack's options always read as the defaults. The uploads' own
- * backgrounds (P1) count too, as in db mode's replay, and only when some
- * upload has one, so a body without them hashes as before. Throws on
- * options the schema refuses. */
+/** The same complete request receipt as db mode. Throws on options the
+ * schema refuses; equivalent defaults still match. */
 export function hashBody(
-  input: Pick<CreateJobInput, "productId" | "channels" | "mode" | "outputOptions" | "uploads">,
+  input: Omit<CreateJobInput, "idempotencyKey">,
 ): string {
-  const options = outputOptionsKey(input.mode === "concept" ? null : (input.outputOptions ?? null));
-  const own = input.mode === "concept" ? {} : photoBackgroundsOf(input.uploads);
-  const backgrounds = Object.entries(own)
-    .filter(([, choice]) => choice !== "pack")
-    .sort(([a], [b]) => a.localeCompare(b));
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        productId: input.productId,
-        channels: [...input.channels].sort(),
-        mode: input.mode,
-        options,
-        ...(backgrounds.length > 0 ? { backgrounds } : {}),
-      }),
-    )
-    .digest("hex");
+  return jobRequestFingerprint(input);
 }
 
 function providerStageFor(method: Shot["method"]): string {
@@ -823,7 +804,7 @@ export class DemoService implements Services {
     return { outcome: "conflict", existingJobId: existingId };
   }
 
-  async createJob(_workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
+  async createJob(_workspaceId: string, input: CreateJobInput, lifecycle?: CreateJobLifecycle): Promise<CreateJobResult> {
     // A replay must match the body as sent: "new" stays "new" in the hash,
     // so a retry of a new product pack replays instead of making another.
     let bodyHash: string;
@@ -866,6 +847,7 @@ export class DemoService implements Services {
     }
 
     // A new product is created only once the pack is accepted, as in db mode.
+    if (lifecycle) lifecycle.retainUploads = true;
     const product =
       existingProduct ??
       (await this.createProduct(DEMO_WORKSPACE_ID, {

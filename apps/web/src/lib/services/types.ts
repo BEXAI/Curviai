@@ -300,8 +300,9 @@ export interface CreateJobInput {
   maxCredits?: number;
   /** Earlier Idempotency-Keys a retry of this same request may have used
    * (PHASE_19 P19-16: an assistant's derived key of the previous 10 minute
-   * window). A replay under one of them answers first; a conflict under one
-   * is ignored, and the request goes on under idempotencyKey. */
+   * window). A matching receipt replays first. A provably different request
+   * is skipped, but a legacy receipt whose input cannot be verified returns
+   * a conflict rather than risking another credit hold. */
   previousIdempotencyKeys?: string[];
   /** "assistant" for a pack started through /api/mcp (PHASE_19 P19-29):
    * the worker then stops it at intake when the product is one of OpenAI's
@@ -366,6 +367,16 @@ export type CreateJobResult =
   /** existingJobId is only present when the caller may see that job. */
   | { outcome: "conflict"; existingJobId?: string }
   | CreateJobRejection;
+
+/** Internal upload ownership receipt, passed separately from request data.
+ * The caller starts false. The service sets true before persistence may
+ * publish a source key, because a commit can succeed while its acknowledgment
+ * fails. Once true, request cleanup must never delete those objects, even on
+ * rejection or an unexpected exception. Normal retention collects any
+ * unreferenced objects left by a rolled-back transaction. */
+export interface CreateJobLifecycle {
+  retainUploads: boolean;
+}
 
 /**
  * What estimateJob reads (PHASE_19 P19-16): a createJob request whose photos
@@ -500,8 +511,16 @@ export interface JobFilesView {
 }
 
 export interface JobFileDownload {
-  url: string;
+  url: string | null;
   filename: string;
+  /** Fresh selected JSON for an explicit browser download. */
+  body?: string;
+  bytes?: number;
+}
+
+export interface JobFileDownloadOptions {
+  /** Defaults to readOnly: never create objects while listing MCP tools. */
+  report?: "inline" | "snapshot" | "readOnly";
 }
 
 export interface SaveResult {
@@ -582,7 +601,7 @@ export interface Services {
   /** Default reads recover stale jobs and advance the demo simulation.
    * reconcile: false returns the current snapshot without either effect. */
   getJob(workspaceId: string, jobId: string, options?: ServiceReadOptions): Promise<JobView | null>;
-  createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult>;
+  createJob(workspaceId: string, input: CreateJobInput, lifecycle?: CreateJobLifecycle): Promise<CreateJobResult>;
   /** What createJob would hold for the same request, the balance and the
    * channels left out, without creating a product, photo, job or hold
    * (PHASE_19 P19-16, estimate_pack). Default balance reads recover stale
@@ -608,7 +627,7 @@ export interface Services {
   listJobFiles(workspaceId: string, jobId: string): Promise<JobFilesView | null>;
   /** A freshly signed download url for one delivered file of a job in this
    * workspace, or null when the file does not exist or is not stored. */
-  getJobFileDownload(workspaceId: string, jobId: string, fileId: string): Promise<JobFileDownload | null>;
+  getJobFileDownload(workspaceId: string, jobId: string, fileId: string, options?: JobFileDownloadOptions): Promise<JobFileDownload | null>;
   /** The readable compliance report of a job in this workspace, or null
    * when the job does not exist there. A job whose report is not ready or
    * not stored answers a view with available false and a notice. */

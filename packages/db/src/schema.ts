@@ -338,6 +338,9 @@ export const generationJobs = pgTable(
     // Unique per workspace (0019): two workspaces sending the same key never
     // collide, so a conflict never reveals another workspace's job.
     idempotencyKey: text("idempotency_key"),
+    // Immutable canonical input receipt. Only server connections may write
+    // it; legacy jobs have no receipt and cannot prove an exact replay.
+    requestFingerprint: text("request_fingerprint"),
     // The requested channels and mode, so idempotency replays can verify the
     // body matches and the progress board can show real channels.
     channels: jsonb("channels").$type<string[]>(),
@@ -409,6 +412,7 @@ export const generationJobs = pgTable(
       .on(t.status, t.heartbeatAt)
       .where(sql`${t.status} IN ('queued', 'analyzing', 'planning', 'generating', 'qc', 'packaging')`),
     uniqueIndex("generation_jobs_workspace_idempotency_key_uq").on(t.workspaceId, t.idempotencyKey),
+    check("generation_jobs_request_fingerprint_format", sql`${t.requestFingerprint} IS NULL OR ${t.requestFingerprint} ~ '^[0-9a-f]{64}$'`),
     check(
       "generation_jobs_output_options_object",
       sql`${t.outputOptions} IS NULL OR jsonb_typeof(${t.outputOptions}) = 'object'`,
@@ -1951,4 +1955,16 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
   check("webhook_deliveries_http_status", sql`${t.lastStatusCode} IS NULL OR ${t.lastStatusCode} BETWEEN 100 AND 599`),
   check("webhook_deliveries_error", sql`${t.lastError} IS NULL OR ${t.lastError} IN ('unsafe_destination','dns_failed','timeout','response_too_large','redirect_refused','network_failed','http_error','key_unavailable','expired','disabled')`),
   check("webhook_deliveries_lease", sql`(${t.status} = 'leased') = (${t.leaseToken} IS NOT NULL AND ${t.leaseExpiresAt} IS NOT NULL)`),
+]);
+
+/** Keys selected for source retention are never reused. Kept until the
+ * workspace is deleted, including after successful R2 deletion, so an
+ * ambiguous/late storage response cannot delete a newly accepted reference. */
+export const retiredSourceObjects = pgTable("retired_source_objects", {
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  r2Key: text("r2_key").notNull(),
+  retiredAt: timestamp("retired_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.workspaceId, t.r2Key] }),
+  check("retired_source_objects_workspace_key", sql`starts_with(${t.r2Key}, 'ws/' || ${t.workspaceId}::text || '/') AND length(${t.r2Key}) > length('ws/' || ${t.workspaceId}::text || '/') AND position('..' in ${t.r2Key}) = 0 AND position(chr(92) in ${t.r2Key}) = 0 AND octet_length(${t.r2Key}) <= 1024`),
 ]);

@@ -7,6 +7,7 @@ import {
   members,
   packClaims,
   products,
+  retiredSourceObjects,
   signupAttributions,
   sourceMedia,
   workspaces,
@@ -220,6 +221,19 @@ describe("claim links", () => {
 });
 
 describe("redeeming a claim at signup", () => {
+  it("refuses a retired claim copy without marking the claim redeemed", async () => {
+    const pack = await prospectPack("Retired copy");
+    await publish(pack.jobId);
+    const link = await issueClaimLink(owner(), { claimId: pack.claimId, staffWorkspaceId: staffWs, now: NOW });
+    if (!link.ok) throw new Error("no link");
+    const user = "00000000-0000-4000-8000-00000000f989";
+    const workspaceId = await workspaceFor(user, "Retired destination");
+    await db.insert(retiredSourceObjects).values({ workspaceId, r2Key: claimedPhotoKey(workspaceId, pack.claimId, "png") });
+    expect(await redeemProspectClaim({ db: owner(), storage, now: () => NOW }, { token: link.token, userId: user })).toEqual({ kind: "refused", reason: "missing_files" });
+    expect(await db.select().from(products).where(eq(products.workspaceId, workspaceId))).toEqual([]);
+    expect((await db.select().from(packClaims).where(eq(packClaims.id, pack.claimId)))[0].claimedAt).toBeNull();
+  });
+
   it("copies the product into the new workspace once, attributes the signup, and adds no credits", async () => {
     const pack = await prospectPack("Fern & Wick");
     await publish(pack.jobId);

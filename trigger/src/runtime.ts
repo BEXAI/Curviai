@@ -30,12 +30,10 @@ import {
 import { backgroundFor, keptMaxUpscale, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 import { originalFit, recipeSeedRows } from "@curvi/pipeline/seed";
 import { getSpec } from "@curvi/specs";
-import type { ChurnSignals } from "./churn";
 import { cacheCutouts, r2CutoutCacheStore } from "./cutout-cache";
 import { LiveShotGenerator, makeR2MediaLoader, wireLiveProviders } from "./live-runtime";
 import { canvasSizeFor, encodeForSpec, stillQcErosion } from "./shot-outputs";
 import { parseShotConcurrency } from "./shot-concurrency";
-import type { DropWorkspace } from "./drops";
 import { LlmMonitorMeter, processLlmMonitor, type LlmMonitor } from "./llm-monitor";
 import { SpendAlertNotifier, type AlertDedupe } from "./spend-alerts";
 import { processQuotaNotifier, type QuotaEventWriter } from "./provider-quota";
@@ -473,83 +471,4 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
 function shotConcurrencyFromEnv(): { shotConcurrency?: number } {
   const shotConcurrency = parseShotConcurrency(optionalEnv("CURVI_SHOT_CONCURRENCY"));
   return shotConcurrency === undefined ? {} : { shotConcurrency };
-}
-
-/** Demo workspaces for the weekly drop cron in envless mode. */
-export function demoDropWorkspaces(): DropWorkspace[] {
-  return [
-    {
-      id: "demo-workspace",
-      tier: "growth",
-      active: true,
-      products: [
-        {
-          id: "demo-mug",
-          name: "Demo ceramic mug",
-          performanceScore: 92,
-          useContexts: ["kitchen counter", "office desk"],
-        },
-        {
-          id: "demo-bottle",
-          name: "Demo water bottle",
-          performanceScore: 81,
-          useContexts: ["gym bag", "hiking trail"],
-        },
-        {
-          id: "demo-board",
-          name: "Demo serving board",
-          performanceScore: 74,
-          useContexts: ["dinner table"],
-        },
-        {
-          id: "demo-coaster",
-          name: "Demo coaster set",
-          performanceScore: 33,
-          useContexts: ["coffee table"],
-        },
-      ],
-    },
-  ];
-}
-
-/** Demo churn signals for the daily churn scoring cron in envless mode. */
-export function demoChurnSignals(): Array<{ workspaceId: string; signals: ChurnSignals }> {
-  return [
-    {
-      workspaceId: "demo-healthy",
-      signals: {
-        daysSinceLastLogin: 1,
-        pastMidCycle: true,
-        creditsUsedShare: 0.6,
-        avgRejectedAssetsPerPack: 0,
-        paymentFailed: false,
-        visitedCancelOrBillingPage: false,
-        hasShopifyConnection: true,
-      },
-    },
-    {
-      workspaceId: "demo-watch",
-      signals: {
-        daysSinceLastLogin: 12,
-        pastMidCycle: true,
-        creditsUsedShare: 0.5,
-        avgRejectedAssetsPerPack: 2,
-        paymentFailed: false,
-        visitedCancelOrBillingPage: false,
-        hasShopifyConnection: true,
-      },
-    },
-    {
-      workspaceId: "demo-at-risk",
-      signals: {
-        daysSinceLastLogin: 15,
-        pastMidCycle: true,
-        creditsUsedShare: 0.1,
-        avgRejectedAssetsPerPack: 3,
-        paymentFailed: true,
-        visitedCancelOrBillingPage: true,
-        hasShopifyConnection: false,
-      },
-    },
-  ];
 }

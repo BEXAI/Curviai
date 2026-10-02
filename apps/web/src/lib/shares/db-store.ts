@@ -1,3 +1,4 @@
+import { assertSourceKeysAvailable, SourceUnavailableError } from "@/lib/trust/source-retention";
 /**
  * Share pages over the owner connection (DATABASE_URL). Like DbService, the
  * owner connection bypasses RLS, so every query here is scoped by hand:
@@ -212,6 +213,24 @@ export class DbShareStore implements ShareStore {
     if (!canPublishShares(workspace.role)) {
       return { ok: false, reason: "forbidden", message: "Only owners and admins can publish a share page." };
     }
+    try {
+      const result = await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from workspaces where id = ${workspace.id}::uuid for update`);
+        return new DbShareStore(tx as unknown as Db).publishLocked(workspace, jobId, input);
+      });
+      clearGalleryCache(this.db);
+      return result;
+    } catch (err) {
+      if (err instanceof SourceUnavailableError) return { ok: false, reason: "not_ready", message: err.message };
+      throw err;
+    }
+  }
+
+  /** Reads the chosen before image only after acquiring the retention lock. */
+  private async publishLocked(workspace: ShareWorkspace, jobId: string, input: PublishShareInput): Promise<ShareActionResult> {
+    if (!canPublishShares(workspace.role)) {
+      return { ok: false, reason: "forbidden", message: "Only owners and admins can publish a share page." };
+    }
     const job = await this.findJob(workspace.id, jobId);
     if (!job) {
       return { ok: false, reason: "not_found", message: "Pack not found." };
@@ -226,6 +245,7 @@ export class DbShareStore implements ShareStore {
     }
     const hero = files[0];
     const before = await this.beforeMedia(job);
+    await assertSourceKeysAvailable(this.db, workspace.id, before ? [before.r2Key] : []);
     const product = await this.db.query.products.findFirst({
       where: (t, { and, eq }) => and(eq(t.id, job.productId), eq(t.workspaceId, workspace.id)),
     });

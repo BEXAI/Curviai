@@ -195,7 +195,7 @@ export const SHORT_LIVED_PACK_LINKS: PackLinkProvider = {
     const entries = await Promise.all(
       files.map(async (file) => {
         const download = file.downloadUrl
-          ? await ctx.caller.services.getJobFileDownload(workspaceId, packId, file.id)
+          ? await ctx.caller.services.getJobFileDownload(workspaceId, packId, file.id, { report: "readOnly" })
           : null;
         return [file.id, { preview_url: null, download_url: download?.url ?? null }] as const;
       }),

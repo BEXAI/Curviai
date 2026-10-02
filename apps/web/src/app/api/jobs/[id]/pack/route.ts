@@ -31,7 +31,8 @@ import { recordFunnel } from "@/lib/funnel";
 import { resolveSignedIn } from "@/lib/http/services";
 import { zipStream } from "@/lib/http/zip-stream";
 import { isPageNavigation, packZipEntries, packZipAdsCsv, zipAssetMetadata, packZipRefusalPath, type PackZipRefusal } from "@/lib/pack-zip";
-import { getObjectBytes, isWorkspaceKey, objectExists, privateBucket, r2Client } from "@/lib/r2";
+import { isWorkspaceKey, objectExists, privateBucket, r2Client } from "@/lib/r2";
+import { readStoredReportBytes } from "@/lib/selected-report-download";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
 import { isDbMode } from "@/lib/services";
 import { getDb, servesFiles } from "@/lib/services/db";
@@ -172,7 +173,7 @@ async function packZip(request: Request, { params }: { params: Promise<{ id: str
   let raw: unknown = null;
   if (report) {
     try {
-      const bytes = await getObjectBytes(report.r2Key);
+      const bytes = await readStoredReportBytes(report.r2Key);
       raw = bytes ? JSON.parse(bytes.toString("utf8")) : null;
     } catch { /* Exact per-file records below may still supply the report. */ }
   }

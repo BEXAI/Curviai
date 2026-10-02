@@ -692,8 +692,6 @@ export function demoConsentBackend(person: DemoConsentPerson = "owner"): MemoryC
   });
 }
 
-const globalScope = globalThis as typeof globalThis & { __curviConsentBackend?: ConsentBackend };
-
 /**
  * The backend for this request. Db mode reads Supabase and the database;
  * anything less is the demo, after getServices() refused it in production
@@ -701,17 +699,9 @@ const globalScope = globalThis as typeof globalThis & { __curviConsentBackend?: 
  * unavailable copy). demoPerson is the demo cookie, ignored in db mode.
  */
 export function getConsentBackend(options: { demoPerson?: string | null } = {}): ConsentBackend {
-  if (globalScope.__curviConsentBackend) {
-    return globalScope.__curviConsentBackend;
-  }
   if (isDbMode()) {
     return new DbConsentBackend(getDb());
   }
   getServices();
   return demoConsentBackend(demoConsentPerson(options.demoPerson));
-}
-
-/** Test hook: swap the backend (null returns to the env default). */
-export function setConsentBackendForTests(backend: ConsentBackend | null): void {
-  globalScope.__curviConsentBackend = backend ?? undefined;
 }

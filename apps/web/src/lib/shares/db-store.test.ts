@@ -5,6 +5,7 @@ import {
   galleryItems,
   generationJobs,
   products,
+  retiredSourceObjects,
   shareLinks,
   sourceMedia,
   workspaces,
@@ -88,6 +89,13 @@ afterAll(async () => {
 });
 
 describe("publishing", () => {
+  it("refuses a before image already retired while its storage deletion is pending", async () => {
+    const f = await makePack();
+    await db.insert(retiredSourceObjects).values({ workspaceId: f.ws.id, r2Key: `ws/${f.ws.id}/src/photo` });
+    expect(await store.publish(f.ws, f.jobId, { kind: "before_after", gallery: false })).toMatchObject({ ok: false, reason: "not_ready" });
+    expect(await db.select().from(shareLinks).where(eq(shareLinks.jobId, f.jobId))).toEqual([]);
+  });
+
   it("publishes a finished pack as a before and after with the lifestyle scene as the hero", async () => {
     const f = await makePack();
     const before = await store.getStatus(f.ws, f.jobId);

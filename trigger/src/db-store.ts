@@ -13,6 +13,7 @@
  * so the runner's invariants hold.
  */
 
+import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -84,9 +85,9 @@ export class DbJobStore implements JobStore {
    * The where clause of every liveness check: the job exists, is not
    * terminal, and still belongs to this store's run. A follow up moves a job
    * from done back to generating, so status alone cannot tell a stale runner
-   * of an earlier run from the live one; the run key can. A null key on the
-   * row or on this store is a run queued before migration 0019 and falls
-   * back to the status check alone, so those jobs still finish.
+   * of an earlier run from the live one; the run key can. A legacy store
+   * without a key may finish only a row whose key is still null. Once a
+   * replacement claims that row, the legacy worker no longer owns it.
    */
   private liveJob(jobId: string) {
     return and(eq(generationJobs.id, jobId), notInArray(generationJobs.status, TERMINAL_JOB_STATES), this.ownsRun());
@@ -96,7 +97,7 @@ export class DbJobStore implements JobStore {
   private ownsRun() {
     const runKey = this.opts.runKey ?? null;
     return runKey === null
-      ? sql`true`
+      ? sql`${generationJobs.runKey} is null`
       : sql`(${generationJobs.runKey} is null or ${generationJobs.runKey} = ${runKey})`;
   }
 
@@ -109,16 +110,12 @@ export class DbJobStore implements JobStore {
    * false, with nothing written, when the run no longer owns the job.
    */
   private async inOwnedRun(jobId: string, workspaceId: string, write: (tx: Db) => Promise<unknown>): Promise<boolean> {
-    if ((this.opts.runKey ?? null) === null) {
-      await write(this.db);
-      return true;
-    }
     return this.db.transaction(async (tx) => {
       await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
       const owned = await tx
         .select({ id: generationJobs.id })
         .from(generationJobs)
-        .where(and(eq(generationJobs.id, jobId), this.ownsRun()));
+        .where(and(eq(generationJobs.id, jobId), eq(generationJobs.workspaceId, workspaceId), this.ownsRun()));
       if (owned.length === 0) {
         return false;
       }
@@ -200,9 +197,9 @@ export class DbJobStore implements JobStore {
     return rows.length > 0;
   }
 
-  /** Records the recipe version each stage of the job runs on (A/B). */
+  /** Records recipe versions only while this run still owns the live job. */
   async saveRecipeVariants(jobId: string, variants: Record<string, JobRecipeVariant>): Promise<void> {
-    await this.db.update(generationJobs).set({ recipeVariants: variants }).where(eq(generationJobs.id, jobId));
+    await this.db.update(generationJobs).set({ recipeVariants: variants }).where(this.liveJob(jobId));
   }
 
   /** Records the seller intent intake parsed from the note, only while the
@@ -283,7 +280,7 @@ export class DbJobStore implements JobStore {
       return;
     }
     try {
-      await this.db.insert(jobSteps).values(rows);
+      if (!(await this.inOwnedRun(plan.jobId, plan.workspaceId, (tx) => tx.insert(jobSteps).values(rows)))) return;
       await this.heartbeat(plan.jobId);
     } catch (err) {
       console.warn(`[db-store] could not record the plan for job ${plan.jobId}`, err);
@@ -334,6 +331,7 @@ export class DbJobStore implements JobStore {
         // The planned shot, so the seller can run a shot that needs review
         // again exactly as planned (pack follow ups).
         ...(asset.shot ? { shot: asset.shot } : {}),
+        ...(asset.sourceSelection ? { sourceSelection: asset.sourceSelection } : {}),
       },
     });
     await db.insert(jobSteps).values({
@@ -360,20 +358,22 @@ export class DbJobStore implements JobStore {
   async markShotUndelivered(update: UndeliveredShot): Promise<void> {
     const reason = update.reason.slice(0, 300);
     const patch = JSON.stringify({ status: "needs_review", pass: false, repairHint: reason, delivered: false });
-    await this.db
-      .update(assets)
-      .set({ approved: false, qc: sql`coalesce(${assets.qc}, '{}'::jsonb) || ${patch}::jsonb` })
-      .where(and(eq(assets.jobId, update.jobId), sql`${assets.qc}->>'shotId' = ${update.shotId}`));
-    await this.db.insert(jobSteps).values({
-      workspaceId: update.workspaceId,
-      jobId: update.jobId,
-      shotId: update.shotId,
-      stage: update.shotType,
-      provider: "worker",
-      status: "needs_review",
-      error: reason,
+    const saved = await this.inOwnedRun(update.jobId, update.workspaceId, async (tx) => {
+      await tx
+        .update(assets)
+        .set({ approved: false, qc: sql`coalesce(${assets.qc}, '{}'::jsonb) || ${patch}::jsonb` })
+        .where(and(eq(assets.jobId, update.jobId), sql`${assets.qc}->>'shotId' = ${update.shotId}`));
+      await tx.insert(jobSteps).values({
+        workspaceId: update.workspaceId,
+        jobId: update.jobId,
+        shotId: update.shotId,
+        stage: update.shotType,
+        provider: "worker",
+        status: "needs_review",
+        error: reason,
+      });
     });
-    await this.heartbeat(update.jobId);
+    if (saved) await this.heartbeat(update.jobId);
   }
 
   /**
@@ -404,6 +404,12 @@ export class DbJobStore implements JobStore {
       throw new JobAbandonedError(pack.jobId);
     }
 
+    // Uploads happen before the transaction that publishes their keys. A
+    // run that loses ownership in flight must leave only unlisted objects,
+    // never overwrite the replacement's delivered files. Legacy payloads
+    // without a run key get their own namespace for this delivery attempt.
+    const runKey = this.opts.runKey ?? `legacy-${randomUUID()}`;
+
     const report = JSON.parse(await readFile(pack.reportPath, "utf8")) as ComplianceReport;
     const assetIdByShot = await this.assetIdsByShot(pack.jobId);
     await this.ensureChannelSpecs();
@@ -415,7 +421,7 @@ export class DbJobStore implements JobStore {
       if (!(await exists(localPath))) {
         continue;
       }
-      const key = assetFileKey(pack.workspaceId, pack.jobId, file.channel, file.file);
+      const key = assetFileKey(pack.workspaceId, pack.jobId, runKey, file.channel, file.file);
       const { bytes } = await uploader.upload(localPath, key);
       const assetId = file.ref ? assetIdByShot.get(file.ref) : undefined;
       if (!assetId) {
@@ -443,7 +449,7 @@ export class DbJobStore implements JobStore {
         if (!assetId || !(await exists(localPath))) {
           continue;
         }
-        const key = variationFileKey(pack.workspaceId, pack.jobId, batch.variation, file.channel, file.file);
+        const key = variationFileKey(pack.workspaceId, pack.jobId, runKey, batch.variation, file.channel, file.file);
         const { bytes } = await uploader.upload(localPath, key);
         if (file.report) fileReports.set(assetId, { ...fileReports.get(assetId), [key]: file.report });
         variants.push({
@@ -466,7 +472,7 @@ export class DbJobStore implements JobStore {
       if (!(await exists(zipPath))) {
         continue;
       }
-      const key = packFileKey(pack.workspaceId, pack.jobId, `${channel}.zip`);
+      const key = packFileKey(pack.workspaceId, pack.jobId, runKey, `${channel}.zip`);
       const { bytes } = await uploader.upload(zipPath, key);
       packRows.push({
         workspaceId: pack.workspaceId,
@@ -479,7 +485,7 @@ export class DbJobStore implements JobStore {
       });
     }
 
-    const reportKey = packFileKey(pack.workspaceId, pack.jobId, "compliance-report.json");
+    const reportKey = packFileKey(pack.workspaceId, pack.jobId, runKey, "compliance-report.json");
     const { bytes } = await uploader.upload(pack.reportPath, reportKey);
     // The report row goes last: it is what marks the pack delivered.
     packRows.push({
