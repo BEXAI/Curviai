@@ -80,6 +80,7 @@ import type {
   RegisterSourceMediaInput,
   SaveResult,
   Services,
+  ServiceReadOptions,
   ShotCompliance,
   ShotOpResult,
   ShotStatus,
@@ -637,12 +638,12 @@ export class DemoService implements Services {
     });
   }
 
-  async getJob(_workspaceId: string, jobId: string): Promise<JobView | null> {
+  async getJob(_workspaceId: string, jobId: string, options: ServiceReadOptions = {}): Promise<JobView | null> {
     const record = this.store.jobs.get(jobId);
     if (!record) {
       return null;
     }
-    if (record.canceledAt === undefined) {
+    if (options.reconcile !== false && record.canceledAt === undefined) {
       record.polls += 1;
     }
     return projectJob(record, this.productTitle(record.productId));

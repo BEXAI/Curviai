@@ -24,10 +24,8 @@ import { POST } from "./route";
 // The pack viewer on /api/mcp (PHASE_19 P19-19; docs/verification.md,
 // "p19/ui: pack viewer"): the resources capability and methods, the resource
 // metadata ChatGPT reads, and results that still carry every link as text,
-// so the plugin works without the viewer. The viewer ships by deploy after
-// the first publication (decision 6), so PACK_VIEWER_LIVE is false and the
-// route serves nothing yet; these tests serve it through deps.resources,
-// which is what turning the switch on does.
+// so a client without UI can still use it. Phase 22 enables the viewer for
+// first submission; the injected provider also verifies the same contract.
 
 const VERSION = "2026-07-28";
 let fixture: DemoApiFixture;
@@ -77,18 +75,16 @@ const META = {
 };
 
 describe("the pack viewer resource", () => {
-  it("waits for the first publication (decision 6): versioned, an MCP App, and not served yet", async () => {
-    expect(PACK_VIEWER_LIVE).toBe(false);
-    expect(PACK_VIEWER_RESOURCES).toBeNull();
-    expect(PACK_VIEWER_TEMPLATE).toBeNull();
-    expect(PACK_VIEWER_URI).toBe("ui://curvi/pack-viewer/v1.html");
+  it("serves the versioned viewer before the Phase 22 submission", async () => {
+    expect(PACK_VIEWER_LIVE).toBe(true);
+    expect(PACK_VIEWER_RESOURCES).not.toBeNull();
+    expect(PACK_VIEWER_TEMPLATE).toBe(PACK_VIEWER_URI);
+    expect(PACK_VIEWER_URI).toBe("ui://curvi/pack-viewer/v2.html");
     expect(MCP_APP_MIME_TYPE).toBe("text/html;profile=mcp-app");
-    // The route advertises no resources and answers no resources method, so
-    // OpenAI's tool scan reports no UI template for the first submission.
-    expect((await json(await POST(rpc("server/discover")))).result.capabilities).toEqual({ tools: {} });
+    expect((await json(await POST(rpc("server/discover")))).result.capabilities).toEqual({ tools: {}, resources: {} });
     const listed = await POST(rpc("resources/list"));
-    expect(listed.status).toBe(404);
-    expect((await json(listed)).error.code).toBe(JSONRPC.methodNotFound);
+    expect(listed.status).toBe(200);
+    expect((await json(listed)).result.resources[0].uri).toBe(PACK_VIEWER_URI);
   });
 
   it("advertises resources beside tools on server/discover and initialize once served", async () => {
@@ -147,15 +143,14 @@ describe("the pack viewer resource", () => {
 });
 
 describe("tools and the viewer", () => {
-  it("names no UI template before publication; create_pack stays model only and get_pack is the one tool the viewer can call", () => {
+  it("renders create_pack and show_pack while only get_pack is callable by the viewer", () => {
     const byName: Record<string, Record<string, any>> = Object.fromEntries(
       toolList().map((tool) => [String(tool.name), tool._meta as Record<string, any>]),
     );
-    // With PACK_VIEWER_LIVE true, create_pack (and only create_pack) gets
-    // resourceUri PACK_VIEWER_URI through PACK_VIEWER_TEMPLATE.
-    expect(byName.create_pack!.ui).toEqual({ visibility: ["model"] });
+    expect(byName.create_pack!.ui).toEqual({ visibility: ["model"], resourceUri: PACK_VIEWER_URI });
+    expect(byName.show_pack!.ui).toEqual({ visibility: ["model"], resourceUri: PACK_VIEWER_URI });
     for (const [name, meta] of Object.entries(byName)) {
-      expect(meta.ui.resourceUri, name).toBeUndefined();
+      if (!["create_pack", "show_pack"].includes(name)) expect(meta.ui.resourceUri, name).toBeUndefined();
       expect(meta, name).not.toHaveProperty(["openai/outputTemplate"]);
     }
     const appTools = Object.entries(byName).filter(([, meta]) => meta.ui.visibility.includes("app"));
@@ -199,7 +194,7 @@ describe("tools and the viewer", () => {
     // And the viewer accepts the links the server signs.
     const state = reduceViewer(
       initialViewerState(),
-      { type: "result", result: { structuredContent: view } },
+      { type: "poll", result: { structuredContent: view } },
       { origin: packViewerOrigin(), now: 0, pollCapMs: 1, maxPollErrors: 3 },
     );
     expect(state.pack!.files!.map((file) => [file.previewUrl, file.downloadUrl])).toEqual([

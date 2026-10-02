@@ -188,6 +188,7 @@ import type {
   RegisterSourceMediaInput,
   SaveResult,
   Services,
+  ServiceReadOptions,
   ShotOpResult,
   VersionPickResult,
   FavoriteResult,
@@ -767,10 +768,12 @@ export class DbService implements Services {
     return isR2Configured() ? ingestUpload(r2TrustStorage(), key, kind) : null;
   }
 
-  private async creditBalance(workspaceId: string): Promise<number> {
+  private async creditBalance(workspaceId: string, options: ServiceReadOptions = {}): Promise<number> {
     // Settle orphaned runs first, so a hold left by a crashed run never makes
     // the balance look lower than it is (Update.md 3.2).
-    await reconcileStaleJobs(this.db, { workspaceId });
+    if (options.reconcile !== false) {
+      await reconcileStaleJobs(this.db, { workspaceId });
+    }
     try {
       const result = (await this.db.execute(sql`select credit_balance(${workspaceId}::uuid) as balance`)) as unknown;
       // postgres-js returns the rows array; other drivers wrap it in { rows }.
@@ -920,7 +923,7 @@ export class DbService implements Services {
     }));
   }
 
-  async getJob(workspaceId: string, jobId: string): Promise<JobView | null> {
+  async getJob(workspaceId: string, jobId: string, options: ServiceReadOptions = {}): Promise<JobView | null> {
     if (!isUuid(jobId)) {
       return null;
     }
@@ -935,7 +938,7 @@ export class DbService implements Services {
     // Reconcile a run orphaned by an instance restart (Update.md 3.1). Only
     // the request that wins the conditional update releases the hold; every
     // request then reads the current row.
-    if (looksStale(job)) {
+    if (options.reconcile !== false && looksStale(job)) {
       await reconcileStaleJobs(this.db, { workspaceId, jobId: job.id });
       job = (await findJob()) ?? job;
     }
@@ -2152,8 +2155,9 @@ export class DbService implements Services {
   }
 
   /** estimate_pack (PHASE_19 P19-16): createJob's gate and hold for the same
-   * request, the balance and the channels left out, writing nothing. */
-  async estimateJob(workspaceId: string, input: EstimateJobInput): Promise<EstimateJobResult> {
+   * request, the balance and the channels left out. Snapshot callers opt
+   * out of the normal balance read's stale job recovery. */
+  async estimateJob(workspaceId: string, input: EstimateJobInput, options: ServiceReadOptions = {}): Promise<EstimateJobResult> {
     const gate = await this.packGate(workspaceId, input);
     if (!gate.ok) {
       return gate.rejection;
@@ -2185,7 +2189,7 @@ export class DbService implements Services {
     return {
       outcome: "estimated",
       creditsNeeded: hold.creditsReserved,
-      creditsAvailable: await this.creditBalance(workspaceId),
+      creditsAvailable: await this.creditBalance(workspaceId, options),
       creditBudget: await readCreditBudget(this.db, workspaceId),
       channels: coverage.made,
       leftOut: [

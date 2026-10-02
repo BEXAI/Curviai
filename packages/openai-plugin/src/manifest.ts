@@ -9,13 +9,14 @@
  * founder (the demo recording, runbook C4) without stopping a local build.
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rule9Problems } from "@curvi/pipeline/copy-lint";
 import { mcpCopyProblems } from "@/lib/api-v1/mcp-copy";
 import { channelListingLines, liveChannelFamilies, notLiveChannelNames, type ChannelFamilyFact } from "./channels";
 import { imageSize } from "./images";
+import { checkToolsFile } from "./submission";
 import {
   ARCHIVE_LIMITS,
   ASSET_LIMITS,
@@ -29,6 +30,7 @@ import {
   MCP_URL,
   NAME_SUFFIX_WORDS,
   PLUGIN_SCHEMA_URL,
+  SCREENSHOT_LIMITS,
   TEST_CASES,
 } from "./limits";
 
@@ -56,6 +58,10 @@ export interface PluginFile {
 }
 
 export interface CheckOptions {
+  /** Submission checks are local package checks, never approval evidence. */
+  mode?: "draft" | "submission";
+  /** Sanitized complete tools/list JSON, outside the package; never bundled. */
+  toolsFile?: string;
   /** The plugin folder (package/ by default). */
   dir?: string;
   /** The channel list (the web app's CHANNEL_FAMILIES by default). */
@@ -390,7 +396,7 @@ function normalizedPrompt(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function checkInterface(problems: Problems, ui: JsonObject, dir: string, families: readonly ChannelFamilyFact[], siteColors: readonly string[], authorUrl: URL | null): void {
+function checkInterface(problems: Problems, ui: JsonObject, dir: string, families: readonly ChannelFamilyFact[], siteColors: readonly string[], authorUrl: URL | null, hasUiTemplate: boolean): void {
   const displayName = text(problems, "interface.displayName", ui.displayName, LIMITS.displayName);
   listingCopy(problems, "interface.displayName", displayName);
   if (displayName && NAME_SUFFIX_WORDS.some((word) => new RegExp(`\\b${word}\\b`, "i").test(displayName))) {
@@ -479,10 +485,53 @@ function checkInterface(problems: Problems, ui: JsonObject, dir: string, familie
   asset(problems, "interface.logoDark", ui.logoDark, dir, { required: false });
   asset(problems, "interface.composerIconDark", ui.composerIconDark, dir, { required: false });
   if (ui.screenshots !== undefined) {
-    // Refused without a UI template in the tool scan (O4) and no longer shown
-    // in the directory (O6); the first ZIP carries none (decision 6).
-    problems.error("interface.screenshots", "must be left out of this ZIP");
+    checkScreenshots(problems, ui.screenshots, dir, prompts?.length ?? 0, hasUiTemplate);
   }
+}
+
+function checkScreenshots(problems: Problems, screenshots: Json, dir: string, promptCount: number, hasUiTemplate: boolean): void {
+  if (!hasUiTemplate) problems.error("interface.screenshots", "needs a supplied MCP snapshot with a UI resource; confirm the current portal scan separately");
+  if (!Array.isArray(screenshots) || screenshots.length === 0 || screenshots.length !== promptCount) {
+    problems.error("interface.screenshots", "must contain one image per starter prompt, or be omitted");
+    return;
+  }
+  const paths = new Set<string>();
+  screenshots.forEach((value, index) => {
+    const field = `interface.screenshots[${index}]`;
+    if (typeof value !== "string" || !value.startsWith("./")) {
+      problems.error(field, "must be a relative path starting with ./");
+      return;
+    }
+    if (value.trim() !== value || value.includes("\\") || value.split("/").includes("..") || /[\u0000-\u001f\u007f]/.test(value)) {
+      problems.error(field, "must use a clean relative path without parent traversal");
+      return;
+    }
+    const path = resolve(dir, value);
+    if (!path.startsWith(dir + sep) || ![".png", ".jpg", ".jpeg"].includes(extname(path).toLowerCase())) {
+      problems.error(field, "must be a PNG or JPEG inside the plugin folder");
+      return;
+    }
+    if (paths.has(path)) problems.error(field, "must be a distinct screenshot for its starter prompt");
+    paths.add(path);
+    try {
+      if (!realpathSync(path).startsWith(realpathSync(dir) + sep)) {
+        problems.error(field, "must resolve inside the plugin folder");
+        return;
+      }
+      if (!statSync(path).isFile() || statSync(path).size > SCREENSHOT_LIMITS.maxBytes) {
+        problems.error(field, "must be an image file no larger than 5 MiB");
+        return;
+      }
+      const bytes = readFileSync(path);
+      const size = imageSize(bytes);
+      const expectedFormat = extname(path).toLowerCase() === ".png" ? "png" : "jpeg";
+      if (!size || size.format !== expectedFormat || size.width !== SCREENSHOT_LIMITS.width || size.height < SCREENSHOT_LIMITS.minHeight || size.height > SCREENSHOT_LIMITS.maxHeight) {
+        problems.error(field, "must have a matching PNG or JPEG header, be 706 px wide and 400 to 860 px tall");
+      }
+    } catch {
+      problems.error(field, "must name an existing readable image");
+    }
+  });
 }
 
 function checkMcp(problems: Problems, dir: string): JsonObject | null {
@@ -559,6 +608,19 @@ export function checkPlugin(options: CheckOptions = {}): CheckResult {
   const siteColors = options.siteColors ?? readSiteColors();
   const publicDir = resolve(options.publicDir ?? WEB_PUBLIC_DIR);
   const problems = new Problems();
+  let hasUiTemplate = false;
+  if (options.toolsFile !== undefined) {
+    const path = resolve(options.toolsFile);
+    if (path === dir || path.startsWith(dir + sep)) {
+      problems.error("MCP snapshot", "must stay outside the package so it cannot be bundled");
+    } else {
+      const checked = checkToolsFile(path);
+      problems.errors.push(...checked.errors);
+      hasUiTemplate = checked.errors.length === 0 && checked.uiTools.length > 0;
+    }
+  } else if (options.mode === "submission") {
+    problems.error("MCP snapshot", "submission mode needs --tools-file with a sanitized complete tools/list result");
+  }
   const files = pluginFiles(dir);
   checkFiles(problems, files);
   const mcp = checkMcp(problems, dir);
@@ -626,7 +688,7 @@ export function checkPlugin(options: CheckOptions = {}): CheckResult {
   if (!ui) {
     problems.error("interface", "is missing");
   } else {
-    checkInterface(problems, ui, dir, families, siteColors, authorUrl);
+    checkInterface(problems, ui, dir, families, siteColors, authorUrl, hasUiTemplate);
   }
 
   const review = isObject(openai.review) ? openai.review : null;
@@ -639,7 +701,11 @@ export function checkPlugin(options: CheckOptions = {}): CheckResult {
     }
     reviewCopy(problems, "review.commerce_description", text(problems, "review.commerce_description", review.commerce_description, 4_000, { required: false, singleLine: false }));
     if (review.demo_recording_url === undefined) {
-      problems.warn("review.demo_recording_url", "is not set yet; MCP review needs it (runbook C4)");
+      if (options.mode === "submission") {
+        problems.error("review.demo_recording_url", "is required in submission mode; supply the real accessible walkthrough");
+      } else {
+        problems.warn("review.demo_recording_url", "is not set yet; MCP review needs it (runbook C4)");
+      }
     } else {
       httpsUrl(problems, "review.demo_recording_url", review.demo_recording_url);
     }

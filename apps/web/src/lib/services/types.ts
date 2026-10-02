@@ -551,6 +551,12 @@ export interface LibraryView {
   truncated: boolean;
 }
 
+/** Internal read policy. Snapshot callers must not recover jobs, settle
+ * credits or advance demo work as a side effect of retrieving a result. */
+export interface ServiceReadOptions {
+  reconcile?: boolean;
+}
+
 export interface Services {
   readonly mode: ServiceMode;
   /** The caller's workspace, or null when nobody is signed in (db mode only). */
@@ -573,14 +579,16 @@ export interface Services {
   listProductLibrary(workspaceId: string): Promise<ProductLibraryEntry[]>;
   getProduct(workspaceId: string, productId: string): Promise<ProductSummary | null>;
   listRecentJobs(workspaceId: string, limit?: number): Promise<JobSummary[]>;
-  /** Reading a job advances the demo simulation by one tick. */
-  getJob(workspaceId: string, jobId: string): Promise<JobView | null>;
+  /** Default reads recover stale jobs and advance the demo simulation.
+   * reconcile: false returns the current snapshot without either effect. */
+  getJob(workspaceId: string, jobId: string, options?: ServiceReadOptions): Promise<JobView | null>;
   createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult>;
   /** What createJob would hold for the same request, the balance and the
-   * channels left out, computed the same way and writing nothing: no
-   * product, no photo, no job, no hold (PHASE_19 P19-16, estimate_pack).
+   * channels left out, without creating a product, photo, job or hold
+   * (PHASE_19 P19-16, estimate_pack). Default balance reads recover stale
+   * jobs; reconcile: false leaves jobs and credits unchanged.
    * Refuses exactly as createJob refuses before its hold. */
-  estimateJob(workspaceId: string, input: EstimateJobInput): Promise<EstimateJobResult>;
+  estimateJob(workspaceId: string, input: EstimateJobInput, options?: ServiceReadOptions): Promise<EstimateJobResult>;
   /** The workspace's credit balance, or null when the caller is not a
    * member of it (PHASE_19 P19-16). Never the "current" workspace: an
    * assistant names the workspace its connection is bound to. */

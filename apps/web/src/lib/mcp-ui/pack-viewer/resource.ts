@@ -1,7 +1,7 @@
 /**
  * The pack viewer as an MCP Apps UI resource (docs/phases/PHASE_19.md,
  * P19-19, decision 6): served by resources/list and resources/read
- * (lib/api-v1/mcp.ts) and named by create_pack's `_meta.ui.resourceUri`
+ * (lib/api-v1/mcp.ts) and named by create_pack and show_pack's `_meta.ui.resourceUri`
  * (lib/api-v1/mcp-tools.ts). Every fact below was checked on 2026-10-01
  * (docs/verification.md, "p19/ui: pack viewer"):
  *
@@ -18,25 +18,20 @@
  *   window.openai.openExternal open the site's links without ChatGPT's
  *   redirect page; `_meta.ui.csp` has no such field (O2).
  *
- * PACK_VIEWER_LIVE is the one switch: the plan ships the viewer by deploy
- * after the first publication (decision 6), so a branch that must merge
- * before then can set it to false, which takes the resources capability and
- * the resourceUri away together and leaves the endpoint as it was. Every
- * tool result still carries its links as text, so nothing depends on the
- * viewer.
+ * Phase 22 enables this viewer before first submission. The source switch
+ * removes the resource and descriptor references together for rollback.
+ * Text results still carry all links for clients without UI support.
  */
 
 import type { McpResourceProvider } from "@/lib/api-v1/mcp";
 import { siteUrl } from "@/lib/env";
 import { packViewerHtml } from "./html";
 
-/** Serve the viewer and name it on create_pack. Off until the first
- * publication (decision 6): the first submission's tool scan then reports no
- * UI template, so the ZIP carries no screenshots (O4). Flip it to true by
- * deploy after publishing (runbook E8), then Rescan. */
-export const PACK_VIEWER_LIVE: boolean = false;
+/** Phase 22 explicitly includes the viewer in the first submission.
+ * create_pack and show_pack use it; get_pack remains the data-only poll. */
+export const PACK_VIEWER_LIVE: boolean = true;
 
-export const PACK_VIEWER_URI = "ui://curvi/pack-viewer/v1.html";
+export const PACK_VIEWER_URI = "ui://curvi/pack-viewer/v2.html";
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
 /** The MCP server's fixed origin (decision 9), used only when the site URL
@@ -104,5 +99,5 @@ export function packViewerResources(originOf: () => string = () => packViewerOri
 /** What /api/mcp serves: the viewer while it is live, else nothing. */
 export const PACK_VIEWER_RESOURCES: McpResourceProvider | null = PACK_VIEWER_LIVE ? packViewerResources() : null;
 
-/** create_pack's `_meta.ui.resourceUri` while the viewer is live. */
+/** The render tools' `_meta.ui.resourceUri` while the viewer is live. */
 export const PACK_VIEWER_TEMPLATE: string | null = PACK_VIEWER_LIVE ? PACK_VIEWER_URI : null;

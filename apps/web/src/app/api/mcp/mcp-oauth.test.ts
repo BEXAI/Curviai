@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setApiKeyBackendForTests } from "@/lib/api-keys/backend";
-import { ProfileChat } from "@/lib/api-v1/chat-views";
+import { PackChat, ProfileChat } from "@/lib/api-v1/chat-views";
 import { JSONRPC, PROTOCOL_VERSION_META, handleMcpPost, type McpDeps } from "@/lib/api-v1/mcp";
 import { MCP_COPY } from "@/lib/api-v1/mcp-copy";
 import { setMcpLogSinkForTests, type McpLogEntry } from "@/lib/api-v1/mcp-log";
@@ -12,6 +12,7 @@ import { checkAssistantAccess } from "@/lib/entitlements";
 import { TEST_CLIENT_ID, TEST_CONFIG, TEST_USER_ID, oauthClaims, testKeys, type TestKeys } from "@/lib/mcp-auth/test-tokens";
 import { MemoryRateLimitStore, setRateLimitStoreForTests } from "@/lib/rate-limit";
 import { DEMO_WORKSPACE_ID } from "@/lib/services/demo";
+import type { JobFileView, JobView } from "@/lib/services/types";
 import { POST } from "./route";
 
 // /api/mcp with MCP_OAUTH_ENABLED on (docs/phases/PHASE_19.md, P19-06,
@@ -136,6 +137,19 @@ describe("without a credential (decision 2)", () => {
     expect((await send(rpc("server/discover"))).response.status).toBe(200);
     expect((await send(rpc("ping"))).response.status).toBe(200);
   });
+
+  it("requires a credential before show_pack reads any pack or files", async () => {
+    const read = vi.spyOn(fixture.service, "getJob");
+    const files = vi.spyOn(fixture.service, "listJobFiles");
+    const { response, body } = await send(rpc("tools/call", {
+      name: "show_pack",
+      arguments: { pack_id: "33333333-3333-4333-8333-333333333333" },
+    }));
+    expect(response.status).toBe(401);
+    expect(body.error?.data?.reason).toBe("no_credential");
+    expect(read).not.toHaveBeenCalled();
+    expect(files).not.toHaveBeenCalled();
+  });
 });
 
 describe("a token that fails", () => {
@@ -210,6 +224,86 @@ describe("an OAuth caller", () => {
     // Refusals are text only (P19-13), in the neutral copy.
     expect(body.result).toMatchObject({ isError: true, content: [{ type: "text", text: MCP_COPY.clientSeat }] });
     expect(body.result?.structuredContent).toBeUndefined();
+  });
+
+  it("lets a client seat show delivered files repeatedly without starting or charging another pack", async () => {
+    seats[0] = seat(DEMO_WORKSPACE_ID, "client");
+    const job: JobView = {
+      id: "33333333-3333-4333-8333-333333333333",
+      productId: "44444444-4444-4444-8444-444444444444",
+      productTitle: "Desk lamp",
+      status: "done",
+      mode: "listing",
+      channels: ["amazon.main"],
+      creditsReserved: 4,
+      creditsCharged: 4,
+      createdAt: "2026-10-02T10:00:00.000Z",
+      shots: [],
+    };
+    const files: JobFileView[] = (["image", "zip", "report"] as const).map((kind) => ({
+      id: kind,
+      kind,
+      name: kind === "image" ? "lamp.jpg" : kind === "zip" ? "pack.zip" : "report.json",
+      channel: null,
+      specId: null,
+      bytes: 100,
+      url: null,
+      downloadUrl: `https://curvi.ai/fixture/${kind}`,
+    }));
+    const read = vi.spyOn(fixture.service, "getJob").mockResolvedValue(job);
+    const listFiles = vi.spyOn(fixture.service, "listJobFiles").mockResolvedValue({ jobId: job.id, status: job.status, files });
+    vi.spyOn(fixture.service, "getJobFileDownload").mockImplementation(async (_workspace, _job, fileId) => ({
+      url: `https://curvi.ai/fixture/${fileId}`,
+      filename: files.find((file) => file.id === fileId)!.name,
+    }));
+    const create = vi.spyOn(fixture.service, "createJob");
+    const balanceBefore = await fixture.service.workspaceBalance(DEMO_WORKSPACE_ID);
+    const jobsBefore = await fixture.service.listRecentJobs(DEMO_WORKSPACE_ID);
+    const bearer = await token();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const { body } = await send(rpc("tools/call", { name: "show_pack", arguments: { pack_id: job.id } }, { bearer }));
+      expect(body.result?.isError).toBe(false);
+      const shown = PackChat.parse(body.result?.structuredContent);
+      expect(shown).toMatchObject({ pack_id: job.id, credits: { held: 4, charged: 4 }, finished: true });
+      expect(shown.images?.map((file) => file.name)).toEqual(["lamp.jpg", "pack.zip", "report.json"]);
+      expect(body.result?.content?.[0]?.text).toBe(JSON.stringify(shown));
+    }
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledWith(DEMO_WORKSPACE_ID, job.id, { reconcile: false });
+    expect(listFiles).toHaveBeenCalledWith(DEMO_WORKSPACE_ID, job.id);
+    expect(create).not.toHaveBeenCalled();
+    expect(await fixture.service.workspaceBalance(DEMO_WORKSPACE_ID)).toBe(balanceBefore);
+    expect(await fixture.service.listRecentJobs(DEMO_WORKSPACE_ID)).toEqual(jobsBefore);
+
+    // Removing a client seat invalidates this viewer read just like every
+    // other OAuth tool. Adding the member back requires explicit reconnect.
+    seats.splice(0);
+    const removed = await send(rpc("tools/call", { name: "show_pack", arguments: { pack_id: job.id } }, { bearer }));
+    expect(removed.body.result?.content?.[0]?.text).toBe(MCP_COPY.reconnect);
+    expect(removed.body.result?.structuredContent).toBeUndefined();
+    seats.push(seat(DEMO_WORKSPACE_ID, "client"));
+    const returned = await send(rpc("tools/call", { name: "show_pack", arguments: { pack_id: job.id } }, { bearer }));
+    expect(returned.body.result?.content?.[0]?.text).toBe(MCP_COPY.reconnect);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(listFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reveal another workspace's pack or accept a workspace override when showing a pack", async () => {
+    const foreignPack = "55555555-5555-4555-8555-555555555555";
+    const read = vi.spyOn(fixture.service, "getJob").mockResolvedValue(null);
+    const files = vi.spyOn(fixture.service, "listJobFiles");
+    const bearer = await token();
+    const foreign = await send(rpc("tools/call", { name: "show_pack", arguments: { pack_id: foreignPack } }, { bearer }));
+    expect(foreign.body.result).toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "This pack does not exist in your workspace." }],
+    });
+    expect(foreign.body.result?.structuredContent).toBeUndefined();
+    expect(read).toHaveBeenCalledWith(DEMO_WORKSPACE_ID, foreignPack, { reconcile: false });
+    expect(files).not.toHaveBeenCalled();
+    const override = await send(rpc("tools/call", { name: "show_pack", arguments: { pack_id: foreignPack, workspace_id: WS_OTHER } }, { bearer }));
+    expect(override.body.result?.isError).toBe(true);
+    expect(read).toHaveBeenCalledTimes(1);
   });
 
   it("gets the tool level challenge without a usable connection, in O1's shape, and no row comes back", async () => {
@@ -289,7 +383,7 @@ describe("get_profile (P19-11)", () => {
   it("is neither listed nor callable for an API key, with the OAuth path on or off", async () => {
     for (const oauthEnabled of [true, false]) {
       const list = await send(rpc("tools/list", {}, { bearer: fixture.key }), { oauthEnabled });
-      expect(list.body.result?.tools?.map((tool) => tool.name)).toEqual(["list_channels", "estimate_pack", "create_pack", "get_pack", "check_main_image"]);
+      expect(list.body.result?.tools?.map((tool) => tool.name)).toEqual(["list_channels", "estimate_pack", "create_pack", "get_pack", "show_pack", "check_main_image"]);
       const called = await send(rpc("tools/call", { name: "get_profile", arguments: {} }, { bearer: fixture.key }), { oauthEnabled });
       expect(called.body.error?.code).toBe(JSONRPC.invalidParams);
     }

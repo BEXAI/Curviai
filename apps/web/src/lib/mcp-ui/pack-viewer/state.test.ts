@@ -35,6 +35,55 @@ function view(state: ViewerState, ui: Partial<ViewerUi> = {}) {
 }
 
 describe("pack viewer states", () => {
+  it("does not reset the age of old conversation links before authenticated revalidation", () => {
+    const reopened = run([{ type: "result", result: toolOk(finishedPack(1)) }], START + 48 * HOUR);
+    expect(reopened).toMatchObject({ refreshing: true, polling: true, linksAt: null });
+    expect(view(reopened).items).toEqual([]);
+    expect(reopened.pack!.files!.every((file) => file.previewUrl === null && file.downloadUrl === null)).toBe(true);
+    const fresh = run([{ type: "poll", result: toolOk(finishedPack(1)) }], START + 48 * HOUR + 5000, reopened);
+    expect(fresh.linksAt).toBe(START + 48 * HOUR + 5000);
+    const stale = run([{ type: "tick" }], START + 73 * HOUR, fresh);
+    expect(view(stale)).toMatchObject({ items: [], showRefresh: true });
+    const refresh = run([{ type: "refresh" }], START + 73 * HOUR, stale);
+    expect(refresh).toMatchObject({ refreshing: true, polling: true, linksAt: null, pollErrors: 0 });
+  });
+
+  it("keeps delivered partial files beside a failed or canceled pack explanation", () => {
+    for (const status of ["failed", "canceled"] as const) {
+      const current = run([{ type: "poll", result: toolOk(finishedPack(1, { status, error: "The pack stopped with one delivered image." })) }]);
+      expect(view(current)).toMatchObject({ heading: PACK_VIEWER_COPY.partial, status: "The pack stopped with one delivered image.", tone: "error" });
+      expect(view(current).items.map((item) => item.kind)).toEqual(["image", "zip", "report"]);
+      expect(run([{ type: "tick" }], START + 24 * HOUR, current).phase).toBe("expired");
+    }
+  });
+
+  it("restores only a valid handle and refuses a response for a different pack", () => {
+    expect(run([{ type: "restore", packId: "../../another" }]).pack).toBeNull();
+    const restored = run([{ type: "restore", packId: PACK_ID }]);
+    expect(restored).toMatchObject({ refreshing: true, linksAt: null, pack: { id: PACK_ID, files: null } });
+    const wrong = run([{ type: "poll", result: toolOk(finishedPack(1, { pack_id: "10000000-0000-4000-8000-000000000001" })) }], START, restored);
+    expect(wrong.pack?.id).toBe(PACK_ID);
+    expect(wrong.pack?.files).toBeNull();
+    expect(wrong.pollErrors).toBe(1);
+  });
+
+  it("gives a different pack a new polling lifecycle after an earlier pack stopped", () => {
+    const running = run([{ type: "result", result: toolOk(pack()) }]);
+    for (const old of [run([{ type: "tick" }], START + 30 * 60_000, running), run([{ type: "no_bridge" }], START, running), run([{ type: "poll_failed" }, { type: "poll_failed" }, { type: "poll_failed" }], START, running)]) {
+      const next = run([{ type: "result", result: toolOk(finishedPack(1, { pack_id: "10000000-0000-4000-8000-000000000001" })) }], START + HOUR, old);
+      expect(next).toMatchObject({ refreshing: true, polling: true, stopped: null, stoppedText: null, pollErrors: 0, pollStartedAt: START + HOUR });
+    }
+  });
+
+  it("labels file checks and measured fidelity without inventing a measurement", () => {
+    const measured = { meanDeltaE: 1.23, maxDeltaE: 2, exactByteShare: 0.4, maskArea: 100, threshold: 3, maxDeltaELimit: 10, kind: "main" as const, exact: false };
+    const result = finishedPack(0, { images: [image(1, { fidelity: measured }), image(2, { passes_channel_rules: null }), image(3, { passes_channel_rules: false })] });
+    const items = view(run([{ type: "poll", result: toolOk(result) }])).items;
+    expect(items.map((item) => item.check)).toEqual([PACK_VIEWER_COPY.checkPassed, PACK_VIEWER_COPY.checkUnknown, PACK_VIEWER_COPY.checkFailed]);
+    expect(items[0]!.fidelity).toContain("1.23");
+    expect(items[1]!.fidelity).toBe(PACK_VIEWER_COPY.fidelityUnavailable);
+  });
+
   it("waits for the seller's go ahead until the tool input arrives", () => {
     const state = initialViewerState();
     expect(state.phase).toBe("awaiting_approval");
@@ -71,7 +120,7 @@ describe("pack viewer states", () => {
   });
 
   it("shows a failed pack's neutral line, a refusal's text, and the general line when there is none", () => {
-    const failed = run([{ type: "result", result: toolOk(pack({ status: "failed", finished: true, error: "The pack stopped." })) }]);
+    const failed = run([{ type: "poll", result: toolOk(pack({ status: "failed", finished: true, error: "The pack stopped." })) }]);
     expect(failed).toMatchObject({ phase: "failed", polling: false, failure: "The pack stopped." });
     expect(view(failed)).toMatchObject({ status: "The pack stopped.", tone: "error" });
 
@@ -96,7 +145,7 @@ describe("pack viewer states", () => {
   });
 
   it("marks the links expired after the hours the result gave, or when a preview fails to load", () => {
-    const finished = run([{ type: "result", result: toolOk(finishedPack(1)) }]);
+    const finished = run([{ type: "poll", result: toolOk(finishedPack(1)) }]);
     expect(run([{ type: "tick" }], START + 23 * HOUR, finished).phase).toBe("finished");
     const late = run([{ type: "tick" }], START + 24 * HOUR, finished);
     expect(late.phase).toBe("expired");
@@ -132,7 +181,7 @@ describe("pack viewer states", () => {
   it("polls once more for the files when create_pack replays a finished pack", () => {
     const replay = run([{ type: "result", result: toolOk(pack({ status: "done", finished: true, replayed: true })) }]);
     expect(replay).toMatchObject({ phase: "finished", polling: true });
-    expect(view(replay)).toMatchObject({ heading: "Ready", layout: "none" });
+    expect(view(replay)).toMatchObject({ status: PACK_VIEWER_COPY.refreshing, layout: "none" });
     expect(run([{ type: "poll", result: toolOk(finishedPack(1)) }], START, replay).polling).toBe(false);
   });
 });
@@ -148,7 +197,7 @@ describe("untrusted results", () => {
         image(5),
       ],
     });
-    const files = run([{ type: "result", result: toolOk(hostile) }]).pack!.files!;
+    const files = run([{ type: "poll", result: toolOk(hostile) }]).pack!.files!;
     expect(files.map((file) => [file.previewUrl, file.downloadUrl])).toEqual([
       [null, null],
       [null, null],
@@ -175,7 +224,7 @@ describe("untrusted results", () => {
   it("drops files of unknown kinds and never gives a zip or the report a preview", () => {
     const files = run([
       {
-        type: "result",
+        type: "poll",
         result: toolOk(
           finishedPack(1, {
             images: [image(1), { ...image(2), kind: "video" as never }, { ...image(3), kind: "zip", preview_url: `${ORIGIN}/api/mcp/preview/z` }],
@@ -192,15 +241,15 @@ describe("untrusted results", () => {
 
 describe("layouts", () => {
   function finishedView(n: number, ui: Partial<ViewerUi> = {}) {
-    return view(run([{ type: "result", result: toolOk(finishedPack(n)) }]), ui);
+    return view(run([{ type: "poll", result: toolOk(finishedPack(n)) }]), ui);
   }
 
-  it("shows one or two images as an inline card, with See all for the zip and the report", () => {
+  it("shows one or two images with ZIP and report actions directly in the card", () => {
     for (const n of [1, 2]) {
       const shown = finishedView(n);
       expect(shown.layout, String(n)).toBe("card");
-      expect(shown.items).toHaveLength(n);
-      expect(shown.seeAll).toBe(`See all ${n + 2} files`);
+      expect(shown.items).toHaveLength(n + 2);
+      expect(shown.seeAll).toBeNull();
       expect(shown.items[0]).toMatchObject({ title: "amazon.main", meta: "amazon-main-1.jpg", downloadUrl: `${ORIGIN}/api/mcp/files/tok-f1` });
     }
   });
@@ -209,12 +258,12 @@ describe("layouts", () => {
     for (const n of [3, 5, 8]) {
       const shown = finishedView(n);
       expect(shown.layout, String(n)).toBe("carousel");
-      expect(shown.items).toHaveLength(n);
-      expect(shown.items.every((item) => item.kind === "image")).toBe(true);
+      expect(shown.items).toHaveLength(n + 2);
+      expect(shown.items.filter((item) => item.kind === "image")).toHaveLength(n);
     }
     const many = finishedView(12);
     expect(many.layout).toBe("carousel");
-    expect(many.items).toHaveLength(8);
+    expect(many.items).toHaveLength(10);
     expect(many.seeAll).toBe("See all 14 files");
   });
 
@@ -232,13 +281,13 @@ describe("layouts", () => {
   });
 
   it("says when some images did not pass their checks", () => {
-    const state = run([{ type: "result", result: toolOk(finishedPack(0, { images: [image(1), image(2, { passes_channel_rules: false })] })) }]);
+    const state = run([{ type: "poll", result: toolOk(finishedPack(0, { images: [image(1), image(2, { passes_channel_rules: false })] })) }]);
     expect(view(state).note).toBe("Some images did not pass their checks and were not charged.");
   });
 
   it("shows no media when the links are missing", () => {
     const state = run([
-      { type: "result", result: toolOk(finishedPack(0, { images: [image(1, { preview_url: null, download_url: null })] })) },
+      { type: "poll", result: toolOk(finishedPack(0, { images: [image(1, { preview_url: null, download_url: null })] })) },
     ]);
     expect(view(state)).toMatchObject({ layout: "none", items: [], seeAll: null });
   });

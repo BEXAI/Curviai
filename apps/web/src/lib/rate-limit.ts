@@ -155,6 +155,7 @@ export function rateLimitRule(policy: RateLimitPolicyName, scope: RateLimitScope
  */
 export const MCP_TOOL_RATE_POLICIES: Readonly<Record<string, RateLimitPolicyName>> = {
   get_pack: "mcp.read",
+  show_pack: "mcp.read",
   list_channels: "mcp.read",
   get_profile: "mcp.read",
   estimate_pack: "imports.photo",

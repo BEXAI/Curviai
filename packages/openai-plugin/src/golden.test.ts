@@ -38,7 +38,7 @@ const plugin = JSON.parse(readFileSync(join(PLUGIN_DIR, "plugin.json"), "utf8"))
 const cases = plugin.extensions["com.openai"].review.test_cases;
 
 /** The tools the MCP server offers an OAuth caller (PHASE_19 "Tools"). */
-const TOOLS = ["list_channels", "estimate_pack", "create_pack", "get_pack", "check_main_image", "get_profile"];
+const TOOLS = ["list_channels", "estimate_pack", "create_pack", "get_pack", "show_pack", "check_main_image", "get_profile"];
 
 describe("golden prompts", () => {
   it("hold every review case word for word, with its tools and expected behavior", () => {

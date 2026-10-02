@@ -15,7 +15,10 @@ import {
   toolList,
 } from "@/lib/api-v1/mcp-tools";
 import { demoApiFixture, mainImagePng, type DemoApiFixture } from "@/lib/api-v1/test-fixtures";
+import { PACK_VIEWER_TEMPLATE } from "@/lib/mcp-ui/pack-viewer/resource";
 import { MemoryRateLimitStore, setRateLimitStoreForTests } from "@/lib/rate-limit";
+import { DEMO_WORKSPACE_ID } from "@/lib/services/demo";
+import { checkToolSnapshot } from "../../../../../../packages/openai-plugin/src/submission";
 
 // The tool descriptors and results OpenAI's plugin review reads (PHASE_19
 // P19-13; docs/verification.md, "PHASE_19: ChatGPT and Codex plugin", O1,
@@ -50,6 +53,7 @@ const EXPECTED: Record<string, { hints: [boolean, boolean, boolean, boolean]; st
   estimate_pack: { hints: [true, false, true, true], status: ["Counting credits", "Credits counted"], visibility: ["model"] },
   create_pack: { hints: [false, true, true, false], status: ["Starting your pack", "Pack started"], visibility: ["model"] },
   get_pack: { hints: [true, false, false, true], status: ["Checking your pack", "Pack checked"], visibility: ["model", "app"] },
+  show_pack: { hints: [true, false, false, true], status: ["Opening your pack", "Pack opened"], visibility: ["model"] },
   check_main_image: { hints: [true, false, true, true], status: ["Checking the main image", "Main image checked"], visibility: ["model"] },
   get_profile: { hints: [true, false, false, true], status: null, visibility: ["model"] },
 };
@@ -82,12 +86,17 @@ describe("tool descriptors", () => {
   // P19-11 lists get_profile (mcp.ts still offers it to OAuth callers only).
   const descriptors = toolList() as Array<Record<string, any>>;
 
+  it("passes the submission checker with the actual OAuth tool descriptors", () => {
+    expect(checkToolSnapshot({ tools: toolList() })).toEqual({ errors: [], uiTools: ["create_pack", "show_pack"] });
+  });
+
   it("lists the tools in a fixed order, get_profile once P19-11 lists it", () => {
     expect(toolList().map((tool) => tool.name)).toEqual([
       "list_channels",
       "estimate_pack",
       "create_pack",
       "get_pack",
+      "show_pack",
       "check_main_image",
       "get_profile",
     ]);
@@ -136,12 +145,23 @@ describe("tool descriptors", () => {
     }
   });
 
-  it("keeps create_pack and every tool but get_pack away from the pack viewer", () => {
+  it("allows the pack viewer to call only get_pack", () => {
     for (const descriptor of descriptors) {
       expect(descriptor._meta.ui.visibility, descriptor.name).toEqual(EXPECTED[descriptor.name]!.visibility);
     }
     expect(toolDescriptor(GET_PROFILE_TOOL)._meta).toMatchObject({ "openai/profile": true });
     expect(descriptors.filter((descriptor) => descriptor._meta["openai/profile"]).map((d) => d.name)).toEqual(["get_profile"]);
+  });
+
+  it("opens existing packs through show_pack while get_pack stays a data-only read", () => {
+    const show = descriptors.find((descriptor) => descriptor.name === "show_pack")!;
+    const get = descriptors.find((descriptor) => descriptor.name === "get_pack")!;
+    expect(show.inputSchema.required).toEqual(["pack_id"]);
+    expect(Object.keys(show.inputSchema.properties)).toEqual(["pack_id"]);
+    expect(show._meta.ui.resourceUri).toBe(PACK_VIEWER_TEMPLATE ?? undefined);
+    expect(show._meta.ui.visibility).toEqual(["model"]);
+    expect(get._meta.ui.resourceUri).toBeUndefined();
+    expect(show.outputSchema).toEqual(get.outputSchema);
   });
 
   it("uses the plan's descriptions, and every text passes the copy lint and never says free", () => {
@@ -197,10 +217,10 @@ describe("tool descriptors", () => {
 describe("server instructions", () => {
   it("hold the whole flow in the first 512 characters and never ask for a get_pack loop", () => {
     expect(MCP_INSTRUCTIONS).toBe(
-      "Curvi turns a real product photo into marketplace and ad images. It never redraws the product; it changes only the background, size and surroundings. It does not draw new images or write listing text. To make images, pick channels and a background (list_channels), call estimate_pack with the photo and tell the user the credits, then call create_pack with its quote and max_credits. A pack takes a few minutes; call get_pack when the user asks. check_main_image checks main images and uses no credits.",
+      "Curvi turns real product photos into marketplace and ad images without redrawing the product. It changes the background, size and surroundings. It does not draw new images or write listing text. Pick channels with list_channels, call estimate_pack and tell the user the credits, then create_pack with its quote and max_credits. Packs take a few minutes. Use get_pack for status when asked, or show_pack to open existing previews and files. check_main_image checks main images without credits.",
     );
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(512);
-    for (const tool of ["list_channels", "estimate_pack", "create_pack", "get_pack", "check_main_image"]) {
+    for (const tool of ["list_channels", "estimate_pack", "create_pack", "get_pack", "show_pack", "check_main_image"]) {
       expect(MCP_INSTRUCTIONS).toContain(tool);
     }
     expect(MCP_INSTRUCTIONS).not.toMatch(/until|poll|repeatedly|keep calling|finished is true/i);
@@ -258,6 +278,7 @@ describe("tool results", () => {
       ["create_pack", { channels: ["etsy"], photos: [{ data: png }] }],
       ["get_pack", { pack_id: packId }],
       ["get_pack", { pack_id: packId, include_files: true }],
+      ["show_pack", { pack_id: packId }],
       ["check_main_image", { data: png }],
     ];
     // Walk the pack to its files, so a finished pack's view is checked too.
@@ -267,6 +288,10 @@ describe("tool results", () => {
     const descriptors = Object.fromEntries(toolList().map((descriptor) => [descriptor.name, descriptor])) as Record<string, Record<string, any>>;
     let sawImages = false;
     for (const [name, args] of calls) {
+      if (name === "get_pack") {
+        // The simulated worker advances outside the read-only tool.
+        await fixture.service.getJob(DEMO_WORKSPACE_ID, packId);
+      }
       const answer = await json(await handleMcpPost(rpc("tools/call", { name, arguments: args })));
       const result = answer.result as { isError: boolean; structuredContent: unknown; content: Array<{ type: string; text: string }> };
       expect(result.isError, `${name}: ${result.content[0]?.text}`).toBe(false);

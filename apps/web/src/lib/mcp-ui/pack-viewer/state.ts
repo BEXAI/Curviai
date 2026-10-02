@@ -27,6 +27,7 @@ export interface ViewerFile {
   kind: "image" | "zip" | "report";
   /** passes_channel_rules: false when the image did not pass its checks. */
   passes: boolean | null;
+  fidelity: { meanDeltaE: number; exact: boolean } | null;
   /** A curvi.ai preview link, or null. */
   previewUrl: string | null;
   /** A curvi.ai download link, or null. */
@@ -65,6 +66,8 @@ export interface ViewerState {
   stopped: "cap" | "errors" | "no_bridge" | null;
   /** The refusal text of the last failed get_pack call, if it gave one. */
   stoppedText: string | null;
+  /** True while links are deliberately hidden pending an authenticated read. */
+  refreshing: boolean;
 }
 
 export type ViewerEvent =
@@ -76,6 +79,9 @@ export type ViewerEvent =
   | { type: "poll"; result: unknown }
   /** The viewer's get_pack call got no result (a bridge error or timeout). */
   | { type: "poll_failed"; text?: unknown }
+  | { type: "refresh" }
+  /** Only a handle is restored, never saved URLs, status or credit claims. */
+  | { type: "restore"; packId: unknown }
   /** ui/notifications/tool-cancelled. */
   | { type: "cancelled" }
   /** A preview did not load (an expired or revoked link). */
@@ -108,6 +114,7 @@ export function initialViewerState(): ViewerState {
     pollErrors: 0,
     stopped: null,
     stoppedText: null,
+    refreshing: false,
   };
 }
 
@@ -159,11 +166,14 @@ export function reduceViewer(state: ViewerState, event: ViewerEvent, env: Viewer
     if (!isObject(raw) || (raw.kind !== "image" && raw.kind !== "zip" && raw.kind !== "report")) {
       return null;
     }
+    const fidelity = isObject(raw.fidelity) ? raw.fidelity : null;
+    const measured = fidelity && typeof fidelity.meanDeltaE === "number" && Number.isFinite(fidelity.meanDeltaE) && fidelity.meanDeltaE >= 0 && fidelity.meanDeltaE <= 100;
     return {
       name: cleanText(raw.name, 200) ?? "",
       channel: cleanText(raw.channel, 100),
       kind: raw.kind,
       passes: typeof raw.passes_channel_rules === "boolean" ? raw.passes_channel_rules : null,
+      fidelity: measured ? { meanDeltaE: Math.round(fidelity.meanDeltaE as number * 100) / 100, exact: fidelity.exact === true } : null,
       previewUrl: raw.kind === "image" ? linkOf(raw.preview_url, "/api/mcp/preview/") : null,
       downloadUrl: linkOf(raw.download_url, "/api/mcp/files/"),
     };
@@ -201,10 +211,12 @@ export function reduceViewer(state: ViewerState, event: ViewerEvent, env: Viewer
   const pollFailed = (current: ViewerState, text: string | null): ViewerState => {
     const errors = current.pollErrors + 1;
     return errors >= env.maxPollErrors
-      ? { ...current, pollErrors: errors, polling: false, stopped: "errors", stoppedText: text }
+      ? { ...current, pollErrors: errors, polling: false, refreshing: false, stopped: "errors", stoppedText: text }
       : { ...current, pollErrors: errors };
   };
   const withPack = (current: ViewerState, pack: ViewerPack, fromPoll: boolean): ViewerState => {
+    const changedPack = current.pack !== null && current.pack.id !== pack.id;
+    const lifecycle = changedPack ? { stopped: null, stoppedText: null, pollStartedAt: null, pollErrors: 0 } : current;
     const phase: ViewerPhase = pack.finished
       ? pack.status === "done"
         ? "finished"
@@ -213,20 +225,25 @@ export function reduceViewer(state: ViewerState, event: ViewerEvent, env: Viewer
         ? "queued"
         : "running";
     const hasLinks = pack.files !== null && pack.files.some((file) => file.previewUrl !== null || file.downloadUrl !== null);
-    // A finished pack from create_pack (a replay) lists no files: one more
-    // get_pack call fetches them with their links.
-    const wantsMore = !pack.finished || (pack.status === "done" && pack.files === null);
-    const polling = wantsMore && current.stopped === null;
+    // Host notifications can be replayed from an old conversation. Only a
+    // get_pack response requested by this mounted viewer starts link age.
+    // Every terminal result is rechecked once, including partial failures.
+    const revalidate = pack.finished && !fromPoll;
+    const wantsMore = !pack.finished || revalidate;
+    const polling = wantsMore && lifecycle.stopped === null;
     return {
       ...current,
       phase,
-      pack,
+      pack: revalidate ? { ...pack, files: pack.files?.map((file) => ({ ...file, previewUrl: null, downloadUrl: null })) ?? null } : pack,
       failure: phase === "failed" ? pack.error ?? (pack.message || null) : null,
       cancelled: false,
-      linksAt: hasLinks ? env.now : null,
+      linksAt: hasLinks && fromPoll ? env.now : null,
+      refreshing: revalidate && polling,
       polling,
-      pollStartedAt: polling ? (current.pollStartedAt ?? env.now) : current.pollStartedAt,
-      pollErrors: fromPoll ? 0 : current.pollErrors,
+      stopped: lifecycle.stopped,
+      stoppedText: lifecycle.stoppedText,
+      pollStartedAt: polling ? (lifecycle.pollStartedAt ?? env.now) : lifecycle.pollStartedAt,
+      pollErrors: fromPoll ? 0 : lifecycle.pollErrors,
     };
   };
 
@@ -246,23 +263,40 @@ export function reduceViewer(state: ViewerState, event: ViewerEvent, env: Viewer
       const fromPoll = event.type === "poll";
       const result = event.result;
       const pack = isObject(result) && result.isError !== true ? parsePack(result.structuredContent) : null;
-      if (pack) {
+      if (pack && (!fromPoll || state.pack === null || state.pack.id === pack.id)) {
         next = withPack(state, pack, fromPoll);
         break;
       }
       // A refusal carries its neutral line as text (mcp-tools.ts toolResult).
       const text = isObject(result) && result.isError === true ? textOf(result) : null;
-      next = fromPoll ? pollFailed(state, text) : { ...state, phase: "failed", failure: text, polling: false };
+      next = fromPoll ? pollFailed(state, text) : {
+        ...state, phase: "failed", failure: text, polling: false, refreshing: false, linksAt: null,
+        pack: state.pack ? { ...state.pack, files: null } : null,
+      };
       break;
     }
+    case "restore": {
+      if (state.pack !== null || typeof event.packId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(event.packId)) break;
+      next = {
+        ...state, phase: "queued", refreshing: true, polling: true, pollStartedAt: env.now,
+        pack: { id: event.packId, status: "queued", finished: false, product: "", progress: { done: 0, total: 0 }, files: null, linksValidHours: null, message: "", error: null },
+      };
+      break;
+    }
+    case "refresh":
+      if (state.pack !== null) next = {
+        ...state, refreshing: true, polling: true, pollStartedAt: env.now, pollErrors: 0, stopped: null, stoppedText: null, linksAt: null,
+        pack: { ...state.pack, files: state.pack.files?.map((file) => ({ ...file, previewUrl: null, downloadUrl: null })) ?? null },
+      };
+      break;
     case "poll_failed":
       next = pollFailed(state, cleanText(event.text, 400));
       break;
     case "link_failed":
-      next = state.phase === "finished" ? { ...state, phase: "expired", polling: false } : state;
+      next = state.pack?.finished ? { ...state, phase: "expired", polling: false, refreshing: false } : state;
       break;
     case "no_bridge":
-      next = state.polling ? { ...state, polling: false, stopped: "no_bridge" } : state;
+      next = state.polling ? { ...state, polling: false, refreshing: false, stopped: "no_bridge" } : state;
       break;
     case "tick":
       break;
@@ -270,16 +304,16 @@ export function reduceViewer(state: ViewerState, event: ViewerEvent, env: Viewer
   // On every event: links run out after the hours the result gave, and
   // polling stops at the cap.
   if (
-    next.phase === "finished" &&
+    next.pack?.finished &&
     next.linksAt !== null &&
     next.pack !== null &&
     next.pack.linksValidHours !== null &&
     env.now - next.linksAt >= next.pack.linksValidHours * 3_600_000
   ) {
-    next = { ...next, phase: "expired", polling: false };
+    next = { ...next, phase: "expired", polling: false, refreshing: false };
   }
   if (next.polling && next.pollStartedAt !== null && env.now - next.pollStartedAt >= env.pollCapMs) {
-    next = { ...next, polling: false, stopped: "cap" };
+    next = { ...next, polling: false, refreshing: false, stopped: "cap" };
   }
   return next;
 }
@@ -291,6 +325,9 @@ export interface ViewerItem {
   kind: "image" | "zip" | "report";
   previewUrl: string | null;
   downloadUrl: string | null;
+  check: string | null;
+  fidelity: string | null;
+  downloadLabel: string;
 }
 
 export type ViewerLayout = "none" | "card" | "carousel" | "grid";
@@ -301,6 +338,7 @@ export interface ViewerView {
   product: string | null;
   status: string | null;
   progress: { done: number; total: number } | null;
+  progressLabel: string;
   note: string | null;
   tone: "normal" | "error";
   layout: ViewerLayout;
@@ -315,6 +353,9 @@ export interface ViewerView {
   downloadLabel: string;
   openLabel: string;
   imagesLabel: string;
+  refreshLabel: string;
+  showRefresh: boolean;
+  refreshing: boolean;
 }
 
 export interface ViewerUi {
@@ -339,6 +380,7 @@ export function viewerViewOf(state: ViewerState, copy: PackViewerCopy, ui: Viewe
     product: pack && pack.product ? pack.product : null,
     status: null,
     progress: null,
+    progressLabel: copy.progressLabel,
     note: null,
     tone: "normal",
     layout: "none",
@@ -349,6 +391,46 @@ export function viewerViewOf(state: ViewerState, copy: PackViewerCopy, ui: Viewe
     downloadLabel: copy.download,
     openLabel: copy.openInCurvi,
     imagesLabel: copy.images,
+    refreshLabel: state.refreshing ? copy.refreshing : copy.refresh,
+    showRefresh: pack !== null,
+    refreshing: state.refreshing,
+  };
+  if (state.refreshing) {
+    return { ...base, status: copy.refreshing };
+  }
+  const deliveredView = (terminalFailure: boolean): ViewerView => {
+    const files = pack?.files ?? [];
+    const items: ViewerItem[] = files
+      .filter((file) => file.previewUrl !== null || file.downloadUrl !== null)
+      .map((file) => ({
+        title: file.kind === "image" && file.channel ? file.channel : file.name,
+        meta: file.kind === "image" && file.channel ? file.name || null : null,
+        kind: file.kind,
+        previewUrl: file.previewUrl,
+        downloadUrl: file.downloadUrl,
+        check: file.kind === "image" ? file.passes === true ? copy.checkPassed : file.passes === false ? copy.checkFailed : copy.checkUnknown : null,
+        fidelity: file.kind !== "image" ? null : file.fidelity === null ? copy.fidelityUnavailable : file.fidelity.exact ? copy.fidelityExact : copy.fidelityMeasured.replace("{value}", String(file.fidelity.meanDeltaE)),
+        downloadLabel: file.kind === "zip" ? copy.downloadZip : file.kind === "report" ? copy.downloadReport : copy.download,
+      }));
+    const finished: ViewerView = {
+      ...base,
+      heading: terminalFailure ? items.length > 0 ? copy.partial : null : copy.ready,
+      status: terminalFailure ? state.failure ?? (state.cancelled ? copy.notStarted : copy.unavailable) : pack?.message || null,
+      note: files.some((file) => file.kind === "image" && file.passes === false) ? copy.someFailed : stopNote,
+      tone: terminalFailure ? "error" : "normal",
+    };
+    if (ui.fullscreen) {
+      return { ...finished, layout: items.length > 0 ? "grid" : "none", items, showOpenButton: openInCurvi !== null && !ui.hostOpensInApp };
+    }
+    // Keep ZIP/report actions directly reachable on narrow screens too.
+    const previews = items.filter((item) => item.kind === "image" && item.previewUrl !== null).slice(0, Math.max(1, ui.maxCarousel));
+    const shown = [...previews, ...items.filter((item) => item.kind !== "image")];
+    return {
+      ...finished,
+      layout: shown.length === 0 ? "none" : previews.length <= 2 ? "card" : "carousel",
+      items: shown,
+      seeAll: items.length > shown.length ? fill(copy.seeAll, { n: items.length }) : null,
+    };
   };
   switch (state.phase) {
     case "awaiting_approval":
@@ -367,48 +449,10 @@ export function viewerViewOf(state: ViewerState, copy: PackViewerCopy, ui: Viewe
       };
     }
     case "failed":
-      return {
-        ...base,
-        status: state.failure ?? (state.cancelled ? copy.notStarted : copy.unavailable),
-        tone: "error",
-      };
+      return deliveredView(true);
     case "expired":
       return { ...base, status: copy.linkExpired, tone: "error" };
-    case "finished": {
-      const files = pack && pack.files ? pack.files : [];
-      const items: ViewerItem[] = files
-        .filter((file) => file.previewUrl !== null || file.downloadUrl !== null)
-        .map((file) => ({
-          title: file.kind === "image" && file.channel ? file.channel : file.name,
-          meta: file.kind === "image" && file.channel ? file.name || null : null,
-          kind: file.kind,
-          previewUrl: file.previewUrl,
-          downloadUrl: file.downloadUrl,
-        }));
-      const someFailed = files.some((file) => file.kind === "image" && file.passes === false);
-      const finished = {
-        ...base,
-        heading: copy.ready,
-        status: pack ? pack.message || null : null,
-        note: someFailed ? copy.someFailed : stopNote,
-      };
-      if (ui.fullscreen) {
-        return {
-          ...finished,
-          layout: items.length > 0 ? "grid" : "none",
-          items,
-          showOpenButton: openInCurvi !== null && !ui.hostOpensInApp,
-        };
-      }
-      // Inline: a card for one or two images, a carousel for three to eight
-      // (O11), and "See all" for the rest, the zips and the report.
-      const shown = items.filter((item) => item.kind === "image" && item.previewUrl !== null).slice(0, Math.max(1, ui.maxCarousel));
-      return {
-        ...finished,
-        layout: shown.length === 0 ? "none" : shown.length <= 2 ? "card" : "carousel",
-        items: shown,
-        seeAll: items.length > shown.length ? fill(copy.seeAll, { n: items.length }) : null,
-      };
-    }
+    case "finished":
+      return deliveredView(false);
   }
 }

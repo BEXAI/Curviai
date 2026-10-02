@@ -10,6 +10,9 @@
  *                            with the verified developer name, in place of
  *                            the placeholder in package/plugin.json.
  *   --out <dir>              writes somewhere other than dist/.
+ *   --submission             enforces local final-package checks, including
+ *                            a recording URL and complete descriptor snapshot.
+ *   --tools-file <json>       sanitized tools/list JSON outside the package.
  */
 
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -18,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { ARCHIVE_LIMITS } from "./limits";
 import { checkPlugin, type CheckOptions } from "./manifest";
 import { readZipListing, writeZip, type ZipEntry } from "./zip";
+import { EXTERNAL_SUBMISSION_CHECKS } from "./submission";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -27,7 +31,7 @@ export interface BuildOptions extends CheckOptions {
 }
 
 export type BuildResult =
-  | { ok: true; zipPath: string; folder: string; entries: string[]; zipBytes: number; warnings: string[] }
+  | { ok: true; zipPath: string; folder: string; entries: string[]; zipBytes: number; warnings: string[]; mode: "draft" | "submission"; externalChecks: readonly string[] }
   | { ok: false; errors: string[]; warnings: string[] };
 
 export async function buildPlugin(options: BuildOptions = {}): Promise<BuildResult> {
@@ -81,26 +85,52 @@ export async function buildPlugin(options: BuildOptions = {}): Promise<BuildResu
   if (errors.length > 0) {
     return { ok: false, errors, warnings: checked.warnings };
   }
-  return { ok: true, zipPath, folder, entries: listing.names, zipBytes, warnings: checked.warnings };
+  return { ok: true, zipPath, folder, entries: listing.names, zipBytes, warnings: checked.warnings, mode: options.mode ?? "draft", externalChecks: EXTERNAL_SUBMISSION_CHECKS };
 }
 
-function argValue(args: readonly string[], flag: string): string | undefined {
-  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
-  if (inline) {
-    return inline.slice(flag.length + 1);
+/** Reject typos instead of silently building a draft when submission was intended. */
+export function parseBuildArgs(args: readonly string[]): { options: BuildOptions; errors: string[] } {
+  const options: BuildOptions = {};
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  const fields = { "--developer-name": "developerName", "--out": "out", "--tools-file": "toolsFile" } as const;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    // pnpm may preserve the conventional argument delimiter.
+    if (arg === "--" && index === 0) continue;
+    if (arg === "--submission") {
+      if (seen.has(arg)) errors.push("CLI: --submission was supplied more than once");
+      seen.add(arg);
+      options.mode = "submission";
+      continue;
+    }
+    const equals = arg.indexOf("=");
+    const flag = equals === -1 ? arg : arg.slice(0, equals);
+    if (!Object.hasOwn(fields, flag)) {
+      errors.push("CLI: unsupported argument; use --submission, --tools-file, --developer-name or --out");
+      continue;
+    }
+    if (seen.has(flag)) errors.push(`CLI: ${flag} was supplied more than once`);
+    seen.add(flag);
+    const value = equals === -1 ? args[index + 1] : arg.slice(equals + 1);
+    if (!value?.trim() || value.startsWith("--")) {
+      errors.push(`CLI: ${flag} needs a value`);
+      continue;
+    }
+    if (equals === -1) index += 1;
+    options[fields[flag as keyof typeof fields]] = value;
   }
-  const index = args.indexOf(flag);
-  return index >= 0 ? args[index + 1] : undefined;
+  return { options, errors };
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const developerName = argValue(args, "--developer-name");
-  const out = argValue(args, "--out");
-  const result = await buildPlugin({
-    ...(developerName !== undefined ? { developerName } : {}),
-    ...(out !== undefined ? { out } : {}),
-  });
+  const parsed = parseBuildArgs(process.argv.slice(2));
+  if (parsed.errors.length) {
+    for (const error of parsed.errors) console.error(error);
+    process.exitCode = 1;
+    return;
+  }
+  const result = await buildPlugin(parsed.options);
   for (const warning of result.warnings) {
     console.warn(`warning  ${warning}`);
   }
@@ -114,6 +144,8 @@ async function main(): Promise<void> {
   }
   console.log(`Built ${result.zipPath} (${result.zipBytes} bytes, ${result.entries.length} files: ${result.entries.join(", ")}).`);
   console.log(`The plugin folder for a local marketplace install is ${result.folder}.`);
+  console.log(`Local ${result.mode} package checks passed. This does not verify identity, live behavior, submission, approval or publication.`);
+  for (const check of result.externalChecks) console.log(`External check: ${check}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -50,6 +50,7 @@ import type {
   CreateJobResult,
   EstimateJobInput,
   JobView,
+  ServiceReadOptions,
 } from "@/lib/services/types";
 import { RETRY_AFTER_SECONDS } from "@/lib/services/workspace-response";
 import { checkRows, flattenOnWhite, measurePixels, summaryLine } from "@/lib/tools/main-image-analysis";
@@ -743,13 +744,17 @@ export async function estimatePack(ctx: ApiContext, rawBody: unknown): Promise<A
   if (!measured.ok) {
     return measured.result;
   }
-  const estimate = await caller.services.estimateJob(workspaceId, {
-    productId: request.productId ?? "new",
-    channels,
-    mode: "listing",
-    ...(measured.uploads.length > 0 ? { uploads: measured.uploads } : {}),
-    ...jobFieldsOf(request),
-  });
+  const estimate = await caller.services.estimateJob(
+    workspaceId,
+    {
+      productId: request.productId ?? "new",
+      channels,
+      mode: "listing",
+      ...(measured.uploads.length > 0 ? { uploads: measured.uploads } : {}),
+      ...jobFieldsOf(request),
+    },
+    { reconcile: false },
+  );
   if (estimate.outcome === "rejected") {
     return rejectedResult(estimate, channels, caller);
   }
@@ -772,11 +777,13 @@ export async function estimatePack(ctx: ApiContext, rawBody: unknown): Promise<A
 }
 
 /** GET /api/v1/packs/{id} and the get_pack tool. */
-export async function getPack(ctx: ApiContext, id: string): Promise<ApiResult> {
+export async function getPack(ctx: ApiContext, id: string, options?: ServiceReadOptions): Promise<ApiResult> {
   if (!isUuid(id)) {
     return errorResult(404, "not_found", API_COPY.packNotFound);
   }
-  const job = await ctx.caller.services.getJob(ctx.caller.principal.workspaceId, id);
+  const job = options
+    ? await ctx.caller.services.getJob(ctx.caller.principal.workspaceId, id, options)
+    : await ctx.caller.services.getJob(ctx.caller.principal.workspaceId, id);
   if (!job) {
     return errorResult(404, "not_found", API_COPY.packNotFound);
   }

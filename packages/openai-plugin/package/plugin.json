@@ -65,14 +65,14 @@
             {
               "description": "Make a listing pack",
               "prompt": "Make an Amazon main image and a Shopify product image of this on white.",
-              "tools_triggered": "estimate_pack, create_pack, get_pack",
-              "expected_behavior": "States the credits and asks to confirm, starts the pack and says it takes a few minutes, then, when asked, shows preview and download links and whether each image passes its channel's rules. The product is not redrawn, and stored fidelity measurements describe any color difference.",
+              "tools_triggered": "estimate_pack, create_pack, get_pack, show_pack",
+              "expected_behavior": "States the credits and asks to confirm, starts the pack and says it takes a few minutes, then shows its delivered images in the pack viewer with image, ZIP and report download links and each image's channel check. The product is not redrawn, and stored fidelity measurements describe any color difference.",
               "file_attachment_urls": ["https://curvi.ai/review/sample-product.jpg"]
             },
             {
               "description": "Keep the photo's background",
               "prompt": "Keep this photo's background and size it for Etsy and eBay.",
-              "tools_triggered": "estimate_pack, create_pack, get_pack",
+              "tools_triggered": "estimate_pack, create_pack, get_pack, show_pack",
               "expected_behavior": "Same flow with the original background kept, sized for both channels.",
               "file_attachment_urls": ["https://curvi.ai/review/sample-product.jpg"]
             }

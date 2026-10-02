@@ -59,6 +59,8 @@ export interface OpenAiGlobals {
   openExternal?: (options: { href: string; redirectUrl: false }) => unknown;
   requestDisplayMode?: (options: { mode: string }) => unknown;
   setOpenInAppUrl?: (options: { href: string }) => unknown;
+  widgetState?: unknown;
+  setWidgetState?: (state: unknown) => unknown;
 }
 
 /** What the runtime needs from the window: the real window in the browser, a
@@ -106,6 +108,11 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
   let openInAppSet: string | null = null;
   let drawnKey = "";
   let resizeObserver: { disconnect(): void } | null = null;
+  let lastRefreshAt = -Infinity;
+  let lastHostResult = "";
+  let savedState = "";
+  const legacyTimers = new Set<unknown>();
+  let packEpoch = 0;
 
   const openai = (): OpenAiGlobals | null => (isObject(win.openai) ? win.openai : null);
   const send = (message: Json): void => {
@@ -142,6 +149,15 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
   };
 
   const actions: ViewerActions = {
+    refresh() {
+      if (!ready || stopped || inFlight || !state.pack || Date.now() - lastRefreshAt < config.pollMs) return;
+      lastRefreshAt = Date.now();
+      dispatch({ type: "refresh" });
+      if (!canCallTools()) return;
+      if (pollTimer !== null) win.clearTimeout(pollTimer);
+      pollTimer = null;
+      poll();
+    },
     open(url) {
       if (!onSite(url)) {
         return;
@@ -227,6 +243,16 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
         // The host keeps its own target.
       }
     }
+    if (state.pack !== null && helpers?.setWidgetState) {
+      // Persist only a handle and presentation choice. Restoring never
+      // reuses signed URLs, status, file checks or credit claims.
+      const snapshot = { privateContent: { packId: state.pack.id, expanded: fullscreen() } };
+      const key = JSON.stringify(snapshot);
+      if (key !== savedState) {
+        savedState = key;
+        try { helpers.setWidgetState(snapshot); } catch { /* Optional host feature. */ }
+      }
+    }
     reportSize();
   }
 
@@ -238,9 +264,10 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
   function poll(): void {
     pollTimer = null;
     const pack = state.pack;
-    if (stopped || !pack || !state.polling) {
+    if (stopped || inFlight || !pack || !state.polling) {
       return;
     }
+    const epoch = packEpoch;
     inFlight = true;
     const args = { pack_id: pack.id };
     let call: Promise<unknown>;
@@ -248,17 +275,27 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
       call = request("tools/call", { name: config.tool, arguments: args });
     } else {
       try {
-        call = Promise.resolve(openai()!.callTool!(config.tool, args));
+        const invoked = openai()!.callTool!(config.tool, args);
+        call = new Promise((resolve, reject) => {
+          const timer = win.setTimeout(() => { legacyTimers.delete(timer); reject(new Error("timeout")); }, config.requestTimeoutMs);
+          legacyTimers.add(timer);
+          Promise.resolve(invoked).then(
+            (value) => { win.clearTimeout(timer); legacyTimers.delete(timer); resolve(value); },
+            (error) => { win.clearTimeout(timer); legacyTimers.delete(timer); reject(error); },
+          );
+        });
       } catch (error) {
         call = Promise.reject(error);
       }
     }
     call.then(
       (result) => {
+        if (stopped || epoch !== packEpoch) return;
         inFlight = false;
         dispatch({ type: "poll", result });
       },
       () => {
+        if (stopped || epoch !== packEpoch) return;
         inFlight = false;
         dispatch({ type: "poll_failed" });
       },
@@ -329,8 +366,19 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
       dispatch({ type: "input" });
     }
     if (isObject(helpers.toolOutput)) {
-      dispatch({ type: "result", result: { structuredContent: helpers.toolOutput } });
+      acceptHostResult({ structuredContent: helpers.toolOutput });
     }
+  }
+
+  function acceptHostResult(result: Json): void {
+    const key = JSON.stringify(result);
+    if (key === lastHostResult) return;
+    lastHostResult = key;
+    packEpoch += 1;
+    inFlight = false;
+    if (pollTimer !== null) win.clearTimeout(pollTimer);
+    pollTimer = null;
+    dispatch({ type: "result", result });
   }
 
   const onMessage: Listener = (event) => {
@@ -358,7 +406,7 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
         dispatch({ type: "input" });
         break;
       case "ui/notifications/tool-result":
-        dispatch({ type: "result", result: params });
+        acceptHostResult(params);
         break;
       case "ui/notifications/tool-cancelled":
         dispatch({ type: "cancelled" });
@@ -394,6 +442,7 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
       return;
     }
     stopped = true;
+    packEpoch += 1;
     if (pollTimer !== null) {
       win.clearTimeout(pollTimer);
       pollTimer = null;
@@ -403,6 +452,8 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
       win.clearTimeout(entry.timer);
     }
     pending.clear();
+    for (const timer of legacyTimers) win.clearTimeout(timer);
+    legacyTimers.clear();
     win.removeEventListener("message", onMessage);
     win.removeEventListener("openai:set_globals", onGlobals);
     if (resizeObserver) {
@@ -414,7 +465,14 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
   win.addEventListener("openai:set_globals", onGlobals);
   draw();
   legacyGlobals();
+  const stored = openai()?.widgetState;
+  const privateState = isObject(stored) && isObject(stored.privateContent) ? stored.privateContent : null;
+  if (state.pack === null && privateState) {
+    expanded = privateState.expanded === true;
+    dispatch({ type: "restore", packId: privateState.packId });
+  }
   const begin = (): void => {
+    if (stopped) return;
     ready = true;
     if (typeof win.ResizeObserver === "function" && doc.body) {
       const observer = new win.ResizeObserver(reportSize);
@@ -430,6 +488,7 @@ export function startPackViewer(win: ViewerWindow, lib: ViewerLib, copy: PackVie
     protocolVersion: config.protocolVersion,
   }).then(
     (result) => {
+      if (stopped) return;
       const answer = isObject(result) ? result : {};
       hostCaps = isObject(answer.hostCapabilities) ? answer.hostCapabilities : {};
       if (isObject(answer.hostContext)) {
