@@ -143,7 +143,7 @@ export class DbJobStore implements JobStore {
     const rows = await this.db
       .update(generationJobs)
       .set({ status: state, updatedAt: now, ...(error !== undefined ? { error } : {}),
-        ...(terminal ? { finishedAt: now, runnerId: null, heartbeatAt: null, ...(state !== "failed" ? { restartPayload: null } : {}) } : {}),
+        ...(terminal ? { logicalRunOutcome: meta?.runOutcome === "failed" || meta?.runOutcome === "canceled" ? meta.runOutcome : state as "done" | "failed" | "canceled", finishedAt: now, runnerId: null, heartbeatAt: null, ...(state !== "failed" ? { restartPayload: null } : {}) } : {}),
       })
       .where(this.liveJob(jobId))
       .returning({ id: generationJobs.id, workspaceId: generationJobs.workspaceId, credits: generationJobs.creditsCharged });

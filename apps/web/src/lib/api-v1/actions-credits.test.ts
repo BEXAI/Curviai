@@ -6,6 +6,7 @@ import { TEST_WORKSPACE_ID, createFakeServices } from "@/lib/testing/fake-servic
 import type { ImportedPhoto } from "@/lib/url-import/image";
 import { createPack, estimatePack, type ApiContext } from "./actions";
 import { MCP_COPY } from "./mcp-copy";
+import { creditBudgetRejection, CREDIT_BUDGET_MESSAGE } from "@/lib/billing/credit-budget";
 import { mainImagePng } from "./test-fixtures";
 
 // create_pack holds nothing and keeps no photo when an assistant's quote or
@@ -51,6 +52,19 @@ afterEach(() => {
 });
 
 describe("assistant packs that are refused keep no photo", () => {
+  it("returns the same actionable budget refusal and removes photos when reservation loses its headroom", async () => {
+    vi.mocked(services.createJob).mockResolvedValue(creditBudgetRejection(7));
+    const result = await createPack(ctx("api_key"), BODY(), null, { maxCredits: 7, quoteRequired: false });
+    expect(result).toMatchObject({ status: 409, body: { reason: "credit_budget_exceeded", error: CREDIT_BUDGET_MESSAGE } });
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows owner budget headroom in assistant estimates even with an ample credit balance", async () => {
+    vi.mocked(services.estimateJob).mockResolvedValue({ outcome: "estimated", creditsNeeded: 7, creditsAvailable: 50, channels: ["amazon.main"], leftOut: [],
+      creditBudget: { monthlyLimit: 10, remaining: 2, consumed: 3, held: 5, periodStart: "2026-10-01T00:00:00Z", periodEnd: "2026-11-01T00:00:00Z" } });
+    expect(await estimatePack(ctx(), BODY())).toMatchObject({ status: 200, body: { enough: false, credit_budget: { remaining: 2, monthly_limit: 10 }, message: CREDIT_BUDGET_MESSAGE } });
+    expect(put).not.toHaveBeenCalled();
+  });
   it("estimate_pack measures the photos and stores none", async () => {
     vi.mocked(services.estimateJob).mockResolvedValue({
       outcome: "estimated",

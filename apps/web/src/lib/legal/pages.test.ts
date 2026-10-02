@@ -230,7 +230,9 @@ describe("Last updated dates move with the text", () => {
     // assistant sections and PHASE_18's email, signup source and free
     // preview text joined PHASE_20's structure, dated the ship day.
     terms: { lastUpdated: "2026-10-02", sha256: "d7a7e44aa423a6e3a0f7b21845981e759b4baa1d13d4b068757c81cc93aa0a1f" },
-    privacy: { lastUpdated: "2026-10-02", sha256: "1ee9da94b337c27805d2d4c9ab0b49789ed8b22a63310dc23b254d96ffb9da43" },
+    // Phase 21 adds seeded retention windows and assistant budget disclosure
+    // on the same release day as the Phase 18–20 privacy revision.
+    privacy: { lastUpdated: "2026-10-02", sha256: "a91db2733c43c38af87c17cb6aa25da7833de49e962f523e76fcd9c09c610d8c" },
     subprocessors: {
       lastUpdated: "2026-10-02",
       sha256: "11e13d7a68cec76568f3567ac1f58dd8f43630beaadc6920be25bcbddc6d459c",

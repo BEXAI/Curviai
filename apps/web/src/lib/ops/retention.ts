@@ -1,6 +1,6 @@
 /** Bounded retention of operational history. Funnel claims and consents are never eligible. */
 import { sql, type Db } from "@curvi/db";
-import { dataRetention, renewalNotices } from "@curvi/pipeline/seed";
+import { creditPlanningPolicy, dataRetention, packCasesPolicy, renewalNotices, webhookPolicy } from "@curvi/pipeline/seed";
 
 const DAY_MS = 86_400_000;
 const rowsOf = <T>(result: unknown): T[] => (Array.isArray(result) ? result : (result as { rows?: T[] })?.rows ?? []) as T[];
@@ -33,6 +33,14 @@ export function retentionRules(now: Date): RetentionRule[] {
     { name: "site_visits", table: "site_visits", where: sql`day < ${before(dataRetention.siteVisitsDays).slice(0, 10)}::date` },
     { name: "upload_preflights", table: "upload_preflights", where: sql`updated_at < ${before(dataRetention.uploadPreflightsDays)}::timestamptz` },
     { name: "ops_alerts", table: "ops_alerts", where: sql`status = 'resolved' and resolved_at < ${before(dataRetention.resolvedAlertsDays)}::timestamptz` },
+    // Cascades remove public events and private operator notes together. Open
+    // reports and their media's existing independent expiry are unaffected.
+    { name: "pack_cases", table: "pack_cases", where: sql`status = 'resolved' and resolved_at < ${before(packCasesPolicy.resolvedRetentionDays)}::timestamptz` },
+    { name: "workspace_credit_budget_audit", table: "workspace_credit_budget_audit", where: sql`created_at < ${before(creditPlanningPolicy.auditRetentionDays)}::timestamptz` },
+    // The event is the retention parent; deleting it cascades delivery metadata.
+    // Endpoint preferences and signing material stay until explicit removal or
+    // workspace deletion. Delivery expiration is handled by the bounded worker.
+    { name: "pack_completion_events", table: "pack_completion_events", where: sql`occurred_at < ${before(webhookPolicy.retentionDays)}::timestamptz` },
     // Only billing notice history has a specified email window. Other sends
     // keep their dedupe rows; retention must never cause a marketing resend.
     { name: "billing_email_sends", table: "email_sends", where: sql`(template = 'billing_notice' or dedupe_key like 'billing:%')

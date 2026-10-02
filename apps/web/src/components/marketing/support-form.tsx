@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Button, Input, Label, Textarea } from "@curvi/ui";
 import { Turnstile, turnstileEnabled } from "./turnstile";
 
@@ -8,6 +9,7 @@ export function SupportForm({ signedIn = false, failureMessage }: { signedIn?: b
   const [job, setJob] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [casePath, setCasePath] = useState("");
   const [error, setError] = useState("");
   const [token, setToken] = useState("");
   const [reset, setReset] = useState(0);
@@ -19,12 +21,12 @@ export function SupportForm({ signedIn = false, failureMessage }: { signedIn?: b
   }, []);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
-    setBusy(true); setError(""); setNotice("");
+    setBusy(true); setError(""); setNotice(""); setCasePath("");
     try {
       const response = await fetch("/api/support", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ topic, message: form.get("message"), ...(signedIn ? {} : { email: form.get("email") }), ...(job ? { job } : {}), website: form.get("website"), requestId, captchaToken: token }) });
       const result = await response.json();
       if (!response.ok) setError(result.error ?? failureMessage);
-      else { setNotice(result.notice); setRequestId(crypto.randomUUID()); }
+      else { setNotice(result.notice); if (typeof result.casePath === "string" && /^\/app\/jobs\/[0-9a-f-]{36}\/cases#case-[0-9a-f-]{36}$/i.test(result.casePath)) setCasePath(result.casePath); setRequestId(crypto.randomUUID()); }
     } catch { setError(failureMessage); }
     finally { setBusy(false); setToken(""); setReset((n) => n + 1); }
   }
@@ -38,5 +40,6 @@ export function SupportForm({ signedIn = false, failureMessage }: { signedIn?: b
     {!signedIn ? <Turnstile action="support" onToken={setToken} resetKey={reset} /> : null}
     <Button type="submit" disabled={busy || !requestId || (!signedIn && turnstileEnabled && !token)}>{busy ? "Sending" : "Send"}</Button>
     {notice ? <p role="status" className="text-sm text-ink-700">{notice}</p> : null}{error ? <p role="alert" className="text-sm text-red-600">{error}</p> : null}
+    {casePath ? <Link href={casePath} className="block text-sm underline">View your pack case</Link> : null}
   </form>;
 }

@@ -83,6 +83,12 @@ export async function runScheduledJob(name:string,ctx:CronJobContext):Promise<vo
       if(report.failed)throw new Error("Temporary objects could not all be removed.");
       return;
     }
+    case "completion-webhooks": {
+      const { runWebhookBatch } = await import("@/lib/webhooks/worker");
+      const report = await runWebhookBatch(ctx.db, { deadline: ctx.deadline });
+      if (!report.configured) throw new CronJobSkipped("Webhook signing is not configured.");
+      return;
+    }
     default:await existingRoute(name);
   }
 }

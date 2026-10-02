@@ -16,6 +16,7 @@ import type { GalleryFilters, GalleryItem } from "@/lib/library";
 import type { ReusePrefill } from "@/lib/reuse";
 import type { PreflightBox, PreflightOutcome } from "@/lib/preflight/types";
 import type { SellerAnswer, SellerProfile } from "@/lib/seller-profile";
+import type { CreditBudgetView } from "@/lib/billing/credit-planning";
 
 export type {
   ComplianceCheckView,
@@ -320,6 +321,7 @@ export type CreateJobRejectionReason =
   | "empty_plan"
   | "unknown_product"
   | "insufficient_credits"
+  | "credit_budget_exceeded"
   | "role_forbidden"
   | "needs_photo"
   | "no_media"
@@ -399,6 +401,8 @@ export type EstimateJobResult =
       creditsNeeded: number;
       /** The workspace's balance now. */
       creditsAvailable: number;
+      /** Current owner budget headroom; reservation rechecks it under the workspace lock. */
+      creditBudget?: CreditBudgetView;
       /** The requested specs the pack would make files for. */
       channels: string[];
       leftOut: EstimateLeftOut[];
@@ -418,6 +422,7 @@ export type ShotOpRejection =
   | "channel_full"
   | "conflict"
   | "insufficient_credits"
+  | "credit_budget_exceeded"
   | "unavailable"
   | "invalid_upload"
   | "demo";

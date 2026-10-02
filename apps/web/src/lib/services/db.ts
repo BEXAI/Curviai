@@ -74,6 +74,8 @@ import { isR2Configured, optionalEnv } from "@/lib/env";
 import { CONCEPT_MODE_AVAILABLE, opsSwitch, outputOptionsAvailable } from "@/lib/features";
 import { resolveGlobalHardStop } from "@curvi/trigger/db-runtime";
 import { getPackMaintenance } from "@/lib/pack-maintenance";
+import { readCreditBudget } from "@/lib/billing/credit-planning";
+import { creditBudgetRejection, isCreditBudgetExceeded } from "@/lib/billing/credit-budget";
 import { runnerId } from "@/lib/jobs/runner-owner";
 import { fidelityForVariant } from "./file-fidelity";
 import { queueView } from "@/lib/jobs/queue-view";
@@ -1626,6 +1628,7 @@ export class DbService implements Services {
           message: `Not enough credits to run this again. It needs ${credits} ${credits === 1 ? "credit" : "credits"}.`,
         };
       }
+      if (err instanceof ReservationError && isCreditBudgetExceeded(err.original)) return creditBudgetRejection(credits);
       console.error(
         `[jobs] could not start a ${reason} follow up on job ${job.id}`,
         err instanceof ReservationError ? err.original : err,
@@ -1864,7 +1867,7 @@ export class DbService implements Services {
         await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
         const moved = await tx
           .update(generationJobs)
-          .set({ status: "done", runKey: sql`gen_random_uuid()::text`, restartPayload: null, runnerId: null, heartbeatAt: null, finishedAt: new Date(), updatedAt: new Date() })
+          .set({ status: "done", logicalRunOutcome: "failed", runKey: sql`gen_random_uuid()::text`, restartPayload: null, runnerId: null, heartbeatAt: null, finishedAt: new Date(), updatedAt: new Date() })
           .where(
             and(
               eq(generationJobs.id, jobId),
@@ -2183,6 +2186,7 @@ export class DbService implements Services {
       outcome: "estimated",
       creditsNeeded: hold.creditsReserved,
       creditsAvailable: await this.creditBalance(workspaceId),
+      creditBudget: await readCreditBudget(this.db, workspaceId),
       channels: coverage.made,
       leftOut: [
         ...coverage.comingSoon.map((specId) => ({ specId, reason: "coming_soon" as const })),
@@ -2520,6 +2524,7 @@ export class DbService implements Services {
           creditsAvailable: await this.creditBalance(workspaceId),
         };
       }
+      if (err instanceof ReservationError && isCreditBudgetExceeded(err.original)) return creditBudgetRejection(creditsReserved);
       if (isUniqueViolation(err)) {
         // A concurrent request with the same Idempotency-Key committed first.
         const winner = await this.replayFor(workspaceId, input);

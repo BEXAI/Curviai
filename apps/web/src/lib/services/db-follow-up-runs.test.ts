@@ -25,6 +25,7 @@ import {
   generationJobs,
   jobSteps,
   members,
+  packCompletionEvents,
   packFiles,
   products,
   signupGrants,
@@ -37,6 +38,8 @@ import type { Shot } from "@curvi/pipeline/schemas";
 import { creditCosts, socialBadgeByTier } from "@curvi/pipeline/seed";
 import { brandStyleFor } from "@/lib/jobs/payload";
 import { DbService } from "./db";
+import { setCreditBudget, readCreditBudget } from "@/lib/billing/credit-planning";
+import { CREDIT_BUDGET_MESSAGE } from "@/lib/billing/credit-budget";
 
 const followUps = vi.hoisted(() => ({
   fn: vi.fn<(payload: PackFollowUpInput) => Promise<"inline">>(async () => "inline"),
@@ -72,6 +75,10 @@ async function balance(ws: string): Promise<number> {
 async function jobRow(jobId: string) {
   const [row] = await db.select().from(generationJobs).where(eq(generationJobs.id, jobId));
   return row;
+}
+
+async function completionEvents(jobId: string) {
+  return db.select().from(packCompletionEvents).where(eq(packCompletionEvents.jobId, jobId));
 }
 
 async function ledger(jobId: string) {
@@ -185,12 +192,16 @@ describe("a canceled follow up's runner after a new follow up started (reviewer 
     const jobId = await deliveredPack(ws, productId);
     const before = await balance(ws);
     const chargedBefore = (await jobRow(jobId)).creditsCharged;
+    const initialRun = (await jobRow(jobId)).logicalRunId;
+    expect(await completionEvents(jobId)).toMatchObject([{ logicalRunId: initialRun, outcome: "done", packStatus: "done" }]);
 
     // Retry the shot: the job row and the payload carry the same fresh key.
     expect(await service().retryShot(ws, jobId, SHOT_ID)).toMatchObject({ outcome: "started" });
     const stale = followUps.fn.mock.calls[0][0];
     expect(stale.runKey).not.toBe("first-run");
     expect((await jobRow(jobId)).runKey).toBe(stale.runKey);
+    const canceledRun = (await jobRow(jobId)).logicalRunId;
+    expect(canceledRun).not.toBe(initialRun);
 
     // Cancel it before its runner gets to work: the hold comes back and the
     // key changes.
@@ -198,6 +209,8 @@ describe("a canceled follow up's runner after a new follow up started (reviewer 
     const canceled = await jobRow(jobId);
     expect(canceled.status).toBe("done");
     expect(canceled.runKey).not.toBe(stale.runKey);
+    expect(canceled.logicalRunId).toBe(canceledRun);
+    expect((await completionEvents(jobId)).find((event) => event.logicalRunId === canceledRun)).toMatchObject({ outcome: "canceled", packStatus: "done" });
     expect(await balance(ws)).toBe(before);
 
     // Retry again: a new hold under a new key, the job generating again.
@@ -205,6 +218,8 @@ describe("a canceled follow up's runner after a new follow up started (reviewer 
     const fresh = followUps.fn.mock.calls[1][0];
     expect(fresh.runKey).not.toBe(stale.runKey);
     expect(await jobRow(jobId)).toMatchObject({ status: "generating", runKey: fresh.runKey });
+    const freshRun = (await jobRow(jobId)).logicalRunId;
+    expect(freshRun).not.toBe(canceledRun);
     expect(await balance(ws)).toBe(before - CREDITS);
     const variantsBefore = (await db.select().from(assetVariants).where(eq(assetVariants.workspaceId, ws))).length;
 
@@ -217,6 +232,7 @@ describe("a canceled follow up's runner after a new follow up started (reviewer 
     expect(await ledger(jobId)).toEqual({ held: CREDITS, charges: 0 });
     expect(await balance(ws)).toBe(before - CREDITS);
     expect(await db.select().from(assetVariants).where(eq(assetVariants.workspaceId, ws))).toHaveLength(variantsBefore);
+    expect(await completionEvents(jobId)).toHaveLength(2);
 
     // The new follow up runs to the end and is charged exactly once.
     const freshSummary = await runPackFollowUp(fresh, { ...buildRuntimeDeps(), store: runnerStore() });
@@ -229,6 +245,10 @@ describe("a canceled follow up's runner after a new follow up started (reviewer 
     const delivered = await db.select().from(assetVariants).where(eq(assetVariants.workspaceId, ws));
     expect(delivered.filter((v) => v.r2Key.includes(`/followup-${fresh.runKey}/`)).length).toBeGreaterThan(0);
     expect(delivered.some((v) => v.r2Key.includes(`/followup-${stale.runKey}/`))).toBe(false);
+    const events = await completionEvents(jobId);
+    expect(events).toHaveLength(3);
+    expect(events.find((event) => event.logicalRunId === freshRun)).toMatchObject({ outcome: "done", packStatus: "done" });
+    expect(new Set(events.map((event) => event.id)).size).toBe(3);
   });
 });
 
@@ -287,7 +307,32 @@ describe("the follow up payload (reviewer items 3 and 4)", () => {
     expect(await balance(ws)).toBe(before);
     expect((await ledger(jobId)).held).toBe(0);
     expect((await jobRow(jobId)).status).toBe("done");
+    const abandoned = await jobRow(jobId);
+    const abandonedEvents = await completionEvents(jobId);
+    expect(abandonedEvents).toHaveLength(2);
+    expect(abandonedEvents.find((event) => event.logicalRunId === abandoned.logicalRunId)).toMatchObject({ outcome: "failed", packStatus: "done" });
     const reruns = await db.select().from(jobSteps).where(eq(jobSteps.jobId, jobId));
     expect(reruns.filter((s) => s.status !== "done" && s.status !== "needs_review")).toHaveLength(0);
+  });
+});
+
+describe("owner credit budget on follow ups", () => {
+  it("refuses before changing the delivered pack, and cancellation restores headroom once", async () => {
+    const { ws, productId } = await workspaceWith(20);
+    const jobId = await deliveredPack(ws, productId);
+    const before = await jobRow(jobId);
+    await setCreditBudget(db as unknown as Db, ws, OWNER, CREDITS);
+    expect(await service().retryShot(ws, jobId, SHOT_ID)).toMatchObject({ outcome: "rejected", reason: "credit_budget_exceeded", message: CREDIT_BUDGET_MESSAGE });
+    expect(followUps.fn).not.toHaveBeenCalled();
+    expect(await jobRow(jobId)).toMatchObject({ status: "done", runKey: before.runKey, logicalRunId: before.logicalRunId });
+    expect((await ledger(jobId)).held).toBe(0);
+    await setCreditBudget(db as unknown as Db, ws, OWNER, CREDITS * 2);
+    expect(await service().retryShot(ws, jobId, SHOT_ID)).toMatchObject({ outcome: "started" });
+    expect(await readCreditBudget(db as unknown as Db, ws)).toMatchObject({ consumed: CREDITS, held: CREDITS, remaining: 0 });
+    await service().cancelJob(ws, jobId);
+    await service().cancelJob(ws, jobId);
+    expect(await readCreditBudget(db as unknown as Db, ws)).toMatchObject({ consumed: CREDITS, held: 0, remaining: CREDITS });
+    expect(await service().retryShot(ws, jobId, SHOT_ID)).toMatchObject({ outcome: "started" });
+    expect(await readCreditBudget(db as unknown as Db, ws)).toMatchObject({ consumed: CREDITS, held: CREDITS, remaining: 0 });
   });
 });

@@ -35,7 +35,7 @@ export function BillingHistory({ canViewInvoices }: { canViewInvoices: boolean }
   }, [canViewInvoices]);
   const csvHref = `/api/billing/history?format=csv${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
   return <>
-    <section aria-labelledby="credit-history-title" className="space-y-3">
+    <section id="credit-history" aria-labelledby="credit-history-title" className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 id="credit-history-title" className="text-lg font-semibold text-ink-950">Credit history</h2>
         <a href={csvHref} className="text-sm text-accent-700 underline">Download this page as CSV</a>

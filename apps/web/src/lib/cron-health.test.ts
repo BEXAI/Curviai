@@ -91,6 +91,7 @@ describe("the CRON_JOBS registry (P20-38 contract)", () => {
       "upstash-keepalive",
       "provider-canary",
       "backup",
+      "completion-webhooks",
     ]);
     expect(cronFreshness({}, NOW).filter((job) => ["funnel-digest", "provider-balance", "lifecycle"].includes(job.name))).toEqual([
       { name: "funnel-digest", intervalMinutes: 10080, lastSuccess: null, ageMinutes: null, state: "never" },

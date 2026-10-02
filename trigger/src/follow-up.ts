@@ -226,8 +226,8 @@ export async function runPackFollowUp(
   };
   // Back to done: the pack was delivered by its first run. A job a cancel or
   // a settle already finished is left as it is (setJobState refuses).
-  const backToDone = async (): Promise<void> => {
-    await store.setJobState(input.jobId, "done", { costMicros: input.baseCostMicros + costMicros, baseCostMicros: input.baseCostMicros });
+  const backToDone = async (runOutcome: "done" | "failed" = "done"): Promise<void> => {
+    await store.setJobState(input.jobId, "done", { costMicros: input.baseCostMicros + costMicros, baseCostMicros: input.baseCostMicros, runOutcome });
   };
   const summarize = (state: PackFollowUpSummary["state"], error?: string): PackFollowUpSummary => ({
     jobId: input.jobId,
@@ -403,7 +403,7 @@ export async function runPackFollowUp(
       console.error(`[follow-up] release sweep failed for job ${input.jobId}`, sweepErr);
     }
     try {
-      await backToDone();
+      await backToDone("failed");
     } catch (stateErr) {
       console.error(`[follow-up] could not mark job ${input.jobId} done again`, stateErr);
     }

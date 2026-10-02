@@ -18,6 +18,7 @@
 import { z } from "zod";
 import { backgroundSwatches } from "@curvi/pipeline/seed";
 import { jobErrorLineFor } from "@/lib/job-copy";
+import { CREDIT_BUDGET_MESSAGE } from "@/lib/billing/credit-budget";
 import { CHANNEL_ALIASES } from "@/lib/marketing-facts";
 import { sceneStyleOptions } from "@/lib/output-options-form";
 import type { EstimateLeftOut, JobFileView } from "@/lib/services/types";
@@ -75,6 +76,10 @@ export const EstimateChat = z.object({
   credits_needed: z.number(),
   credits_available: z.number(),
   enough: z.boolean(),
+  credit_budget: z.object({
+    monthly_limit: z.number().nullable(), remaining: z.number().nullable(),
+    held: z.number(), consumed: z.number(), period_start: z.string(), period_end: z.string(),
+  }).optional(),
   /** The channel spec ids the pack would make. */
   channels: z.array(z.string()),
   /** Requested channels the pack would leave out, and why, in plain words. */
@@ -291,16 +296,23 @@ export function packChatOf(pack: Pack, options: PackChatOptions = {}): PackChat 
 export function estimateChatOf(args: {
   creditsNeeded: number;
   creditsAvailable: number;
+  creditBudget?: import("@/lib/billing/credit-planning").CreditBudgetView;
   channels: readonly string[];
   leftOut: readonly EstimateLeftOut[];
   quote: string;
   quoteValidMinutes: number;
 }): EstimateChat {
-  const enough = args.creditsAvailable >= args.creditsNeeded;
+  const budgetEnough = args.creditBudget?.remaining === null || args.creditBudget?.remaining === undefined || args.creditBudget.remaining >= args.creditsNeeded;
+  const enough = args.creditsAvailable >= args.creditsNeeded && budgetEnough;
   return {
     credits_needed: args.creditsNeeded,
     credits_available: args.creditsAvailable,
     enough,
+    ...(args.creditBudget ? { credit_budget: {
+      monthly_limit: args.creditBudget.monthlyLimit, remaining: args.creditBudget.remaining,
+      held: args.creditBudget.held, consumed: args.creditBudget.consumed,
+      period_start: args.creditBudget.periodStart, period_end: args.creditBudget.periodEnd,
+    } } : {}),
     channels: [...args.channels],
     left_out: args.leftOut.map((entry) => ({
       channel: entry.specId,
@@ -308,7 +320,7 @@ export function estimateChatOf(args: {
     })),
     quote: args.quote,
     quote_valid_minutes: args.quoteValidMinutes,
-    message: enough
+    message: !budgetEnough ? CREDIT_BUDGET_MESSAGE : enough
       ? MCP_COPY.estimateReady(args.creditsNeeded, args.creditsAvailable)
       : MCP_COPY.estimateShort(args.creditsNeeded, args.creditsAvailable),
   };

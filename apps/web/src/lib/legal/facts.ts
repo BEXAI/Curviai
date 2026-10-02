@@ -23,7 +23,7 @@
  * client.
  */
 
-import { backup, errorReportRetentionDays, freePreview, renewalNotices, tmpObjectDays } from "@curvi/pipeline/seed";
+import { backup, creditPlanningPolicy, errorReportRetentionDays, freePreview, packCasesPolicy, renewalNotices, tmpObjectDays, webhookPolicy } from "@curvi/pipeline/seed";
 import { CREDIT_TERMS_SENTENCE } from "@/lib/marketing-facts";
 import { SOURCE_RETENTION_DAYS } from "@/lib/trust/purge";
 import { TERMS_VERSION } from "@/lib/trust/terms";
@@ -66,6 +66,12 @@ export interface LegalRetention {
    * (app/(marketing)/privacy/privacy-copy.ts). Null when no such statement
    * is made. */
   logDays: number | null;
+  /** Phase 21 resolved public case history and related operator notes. */
+  resolvedCaseDays: number | null;
+  /** Owner budget change history; current settings stay with the workspace. */
+  creditBudgetAuditDays: number | null;
+  /** Completion event and delivery metadata, without response bodies. */
+  completionWebhookDays: number | null;
 }
 
 export interface LegalFacts {
@@ -113,6 +119,9 @@ export const LEGAL_FACTS: LegalFacts = {
     // P20-13 and PHASE_19: error reports go to Sentry (the Developer plan's
     // lookback) and request logs stay on Render for up to the same 30 days.
     logDays: errorReportRetentionDays,
+    resolvedCaseDays: packCasesPolicy.resolvedRetentionDays,
+    creditBudgetAuditDays: creditPlanningPolicy.auditRetentionDays,
+    completionWebhookDays: webhookPolicy.retentionDays,
   },
   // P20-07: the yearly plan reminder window the renewal terms state.
   annualRenewalReminderDays: renewalNotices.annualWindow,

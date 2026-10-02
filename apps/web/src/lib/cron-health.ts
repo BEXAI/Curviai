@@ -107,6 +107,8 @@ export const CRON_JOBS = [
   // P20-10: the curvi-backup Render cron (09:15 UTC) reports through
   // POST /api/cron/backup-report; stale after the seeded maxAgeHours.
   { name: "backup", intervalMinutes: 24 * 60, maxAgeMinutes: backupPolicy.maxAgeHours * 60 },
+  // Optional bounded tail: critical generation, billing and retention run first.
+  { name: "completion-webhooks", intervalMinutes: tick.everyMinutes, every: tick.everyMinutes, run: scheduledRun("completion-webhooks"), monitor: () => Boolean(optionalEnv("MCP_LINK_KEYS")) },
 ] as const;
 
 // Every entry must fit the registry type (a type error here otherwise).

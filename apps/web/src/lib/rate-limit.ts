@@ -19,7 +19,7 @@
  */
 
 import { Redis } from "@upstash/redis";
-import { freePreview, customerSupport, errorReporting } from "@curvi/pipeline/seed";
+import { freePreview, customerSupport, errorReporting, webhookPolicy } from "@curvi/pipeline/seed";
 import { NextResponse } from "next/server";
 import { storeAudit } from "@curvi/pipeline/seed";
 import { optionalEnv } from "@/lib/env";
@@ -55,6 +55,7 @@ const DAY = 24 * HOUR;
  * team, an agency office or a mobile carrier can share one address.
  */
 export const RATE_LIMIT_POLICIES = {
+  "webhooks.manage": { user: { limit: webhookPolicy.managementPerHour, windowSeconds: HOUR }, ip: { limit: webhookPolicy.managementPerHour, windowSeconds: HOUR }, workspace: { limit: webhookPolicy.managementPerHour, windowSeconds: HOUR } },
   "telemetry.error": { user: { limit: errorReporting.maxEventsPerHour, windowSeconds: HOUR }, ip: { limit: errorReporting.maxEventsPerHour, windowSeconds: HOUR } },
   "support.contact": { user: { limit: customerSupport.perUserPerHour, windowSeconds: HOUR }, ip: { limit: customerSupport.perIpPerHour, windowSeconds: HOUR } },
   "uploads.sign": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   assetVariants,
@@ -5,10 +6,19 @@ import {
   brandKits,
   creditLedger,
   generationJobs,
+  members,
+  packCases,
+  packCaseEvents,
+  packCaseNotes,
+  packCompletionEvents,
   packFiles,
   products,
   sourceMedia,
   workspaces,
+  webhookDeliveries,
+  webhookEndpoints,
+  workspaceCreditBudgets,
+  workspaceCreditBudgetAudit,
 } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { loadChannelSpecs, type Db } from "@curvi/db";
@@ -30,6 +40,52 @@ afterAll(async () => {
 });
 
 describe("buildDbExport", () => {
+  it.each(["editor", "client"] as const)("refuses an %s before reading workspace data", async (role) => {
+    await expect(buildDbExport({} as Db, { id: randomUUID(), name: "Private", plan: "free", creditBalance: 0, role }, null, null))
+      .rejects.toThrow("Only owners and admins");
+  });
+
+  it("exports public case history, owner budgets and safe delivery metadata without private notes or signing material", async () => {
+    const [workspace, other] = await db.insert(workspaces).values([{ name: "Private export" }, { name: "Other private export" }]).returning();
+    const reporter = randomUUID();
+    const operator = randomUUID();
+    const privateNote = "INTERNAL NOTE never returned to the seller";
+    const ciphertext = "CIPHERTEXT never returned to the seller";
+    const signingKeyId = "PRIVATE_SIGNING_KEY_ID";
+    await db.insert(members).values([{ workspaceId: workspace.id, userId: reporter, role: "owner" }, { workspaceId: other.id, userId: reporter, role: "owner" }]);
+    const caseIds: string[] = [];
+    for (const tenant of [workspace, other]) {
+      const [product] = await db.insert(products).values({ workspaceId: tenant.id, title: "Mug", mode: "listing" }).returning();
+      const [job] = await db.insert(generationJobs).values({ workspaceId: tenant.id, productId: product.id, status: "generating" }).returning();
+      const [packCase] = await db.insert(packCases).values({ workspaceId: tenant.id, jobId: job.id, reporterUserId: reporter,
+        category: "fidelity", description: `Public report for ${tenant.name}`, requestId: randomUUID() }).returning();
+      caseIds.push(packCase.id);
+      await db.insert(packCaseEvents).values({ workspaceId: tenant.id, caseId: packCase.id, actorUserId: operator,
+        actorKind: "operator", status: "reviewing", message: "We are reviewing the product label.", requestId: randomUUID() });
+      await db.insert(packCaseNotes).values({ workspaceId: tenant.id, caseId: packCase.id, actorUserId: operator, message: privateNote });
+      await db.insert(workspaceCreditBudgets).values({ workspaceId: tenant.id, monthlyLimit: 45.5, updatedBy: reporter });
+      await db.insert(workspaceCreditBudgetAudit).values({ workspaceId: tenant.id, actorUserId: reporter, priorLimit: null, newLimit: 45.5 });
+      const [endpoint] = await db.insert(webhookEndpoints).values({ workspaceId: tenant.id, createdBy: reporter, name: `Receiver ${tenant.name}`,
+        // Legacy or manually stored URLs must still be safely projected.
+        url: "https://credential:password@receiver.example/private-path?token=PRIVATE_QUERY#fragment", keyId: signingKeyId, encryptedSecret: ciphertext }).returning();
+      const [event] = await db.insert(packCompletionEvents).values({ workspaceId: tenant.id, jobId: job.id,
+        logicalRunId: job.logicalRunId, outcome: "done", packStatus: "done", occurredAt: new Date() }).returning();
+      await db.insert(webhookDeliveries).values({ workspaceId: tenant.id, endpointId: endpoint.id, eventId: event.id, endpointRevision: endpoint.revision, status: "exhausted", attempts: 6, lastError: "timeout" });
+    }
+    const out = await buildDbExport(db as unknown as Db, { id: workspace.id, name: workspace.name, plan: "free", creditBalance: 0, role: "admin" }, null, null);
+    expect(out.resolutionCases).toEqual([expect.objectContaining({ id: caseIds[0], description: "Public report for Private export",
+      events: [expect.objectContaining({ actor: "operator", message: "We are reviewing the product label." })] })]);
+    expect(out.creditBudget).toMatchObject({ monthlyLimit: 45.5, updatedBy: reporter });
+    expect(out.creditBudgetHistory).toEqual([expect.objectContaining({ priorLimit: null, newLimit: 45.5, actorUserId: reporter })]);
+    expect(out.completionWebhooks.endpoints).toEqual([expect.objectContaining({ name: "Receiver Private export", destinationOrigin: "https://receiver.example" })]);
+    expect(out.completionWebhooks.events).toHaveLength(1);
+    expect(out.completionWebhooks.deliveries).toEqual([expect.objectContaining({ status: "exhausted", attempts: 6, lastError: "timeout" })]);
+    const document = JSON.stringify(out);
+    for (const hidden of [privateNote, ciphertext, signingKeyId, operator, caseIds[1], "Other private export", "credential", "password", "private-path", "PRIVATE_QUERY", "leaseToken", "encryptedSecret", "keyId", "verificationAttemptedAt"]) {
+      expect(document, hidden).not.toContain(hidden);
+    }
+  });
+
   it("lists products with photos, packs with files and the credit history, signing only this workspace's keys", async () => {
     const [w] = await db.insert(workspaces).values({ name: "Export", plan: "starter" }).returning();
     const [other] = await db.insert(workspaces).values({ name: "Other" }).returning();

@@ -1,6 +1,20 @@
 # Phase 21: seller confidence and integration delivery
 
-Status: **proposal only, not accepted for implementation**. Prepared 2026-10-02 from the shared Phase 18–20 checkout. No feature, schema change, external setup or spending is authorized by this document. Priority below orders candidates for the founder's next planning decision; it does not change existing release priorities.
+Status: **authorized for implementation and deployment, 2026-10-02**. The user's subsequent request to orchestrate and deploy Phase 21 accepts all three candidates below, including optional owner budgets. Implementation proceeds on the tested Phase 18–20 PR #6 prerequisite (`fc44989f30e70d113873acb1dbca927d3b63fea0`). Dependent main merges remain gated by that prerequisite's outstanding CodeQL disposition approval. No alert dismissal, security bypass, new spending, credentials, paid generation or arbitrary third-party webhook delivery is authorized by this phase.
+
+## Accepted implementation decisions
+
+These decisions replace the proposal-only sequencing and acceptance language retained below for rationale. Fixture-backed implementation is authorized; unperformed live pilots and external activation remain explicit acceptance gates.
+
+| Slice | Initial policy | Owner and release boundary |
+|---|---|---|
+| Resolution cases | Reporting member and workspace owner/admin can read a case. Only the reporter or an owner/admin can reopen a resolved case within 30 days; later reports create a new case. At most one open case exists per workspace, job and category. Retain resolved case content for 180 days, with workspace deletion cascading immediately. Source media keeps its existing expiry. | Case lane owns app/operator flows and tests. Operator notes remain private. Resolution never grants compensation or starts generation automatically. Existing authorized operator corrections remain separately audited. |
+| Credit planning and budgets | A labeled UTC calendar month ceiling is owner-only and disabled by default. Count delivered charges plus outstanding holds from every period exactly once. Grants and administrative balance corrections do not manufacture budget headroom; explicit charge reversals must follow documented ledger semantics. Use a trailing 30-day observation window and show insufficient history when projection prerequisites are absent. | Budget lane owns the view, estimates and consistent refusal contract. The schema lane enforces the ceiling inside the existing workspace reservation lock. Already held work is never revoked by a lower limit or rollover. |
+| Private completion webhooks | Opt-in endpoint management, verification and delivery use existing server encryption configuration and fail closed if unavailable. Logical run identity is separate from runner lease identity. Every terminal transition atomically records one stable event per logical run. Use bounded batches after critical existing cron jobs, bounded retries and expiry, and document the current ten-minute scheduling cadence. | Webhook lane owns transport, signing, worker and endpoint UI. Schema lane owns atomic outbox, tenant constraints and claims. Tests use consenting local fixtures only; actual receiver setup or transmission requires explicit authorization. |
+
+The schema lane exclusively owns additive migrations after 0044, schema metadata and database isolation/concurrency tests. Root owns shared integration, review, publication and live SQL execution. New tenant tables require RLS, restrictive OAuth denial and explicit client-role privilege tests. No applied migration is rewritten. Retention, export behavior, safe rollout and rollback limits are recorded with each migration.
+
+Acceptance requires focused domain and database tests, independent security review, repository lint/typecheck/unit tests, production build and browser checks. Main publication requires exact-commit CI and the prerequisite gate; deployment proof requires matching production commit and healthy schema. Live activation and funded acceptance are recorded separately. The orchestration state lives in [the Phase 21 checkpoint](../ops/PHASE_21_CHECKPOINT.md).
 
 ## Why these candidates
 

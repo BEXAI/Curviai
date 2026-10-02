@@ -8,7 +8,10 @@
  *
  * MCP_LINK_KEYS is a comma separated list of kid:secret pairs. The first
  * pair is the newest and signs; every pair verifies. To rotate, put the new
- * pair first and keep the old one for 24 hours (the link lifetime).
+ * pair first. Keep old keys for at least 24 hours (the link lifetime) AND
+ * until all persistent webhook secrets have been rewrapped under the newest
+ * key. Webhook delivery/verification rewraps on read; inactive endpoints must
+ * be verified, rotated or removed before their wrapping key can be retired.
  */
 
 import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
@@ -18,7 +21,7 @@ export interface SigningKey {
   secret: string;
 }
 
-export type SigningPurpose = "link" | "quote";
+export type SigningPurpose = "link" | "quote" | "webhook-secret";
 
 /** Shortest secret accepted: 32 characters (at least 128 bits of entropy
  * when generated as hex or base64). */

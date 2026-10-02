@@ -282,6 +282,7 @@ const REJECTED_STATUS: Record<CreateJobRejection["reason"], number> = {
   needs_photo: 400,
   no_media: 400,
   insufficient_credits: 402,
+  credit_budget_exceeded: 409,
   upgrade_required: 402,
   feature_unavailable: 422,
   unavailable: 503,
@@ -761,6 +762,7 @@ export async function estimatePack(ctx: ApiContext, rawBody: unknown): Promise<A
   const body = estimateChatOf({
     creditsNeeded: estimate.creditsNeeded,
     creditsAvailable: estimate.creditsAvailable,
+    creditBudget: estimate.creditBudget,
     channels: estimate.channels,
     leftOut: estimate.leftOut,
     quote,

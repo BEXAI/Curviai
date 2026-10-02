@@ -16,6 +16,7 @@ const SHOT_OP_STATUS: Record<ShotOpRejection, number> = {
   channel_full: 409,
   conflict: 409,
   insufficient_credits: 402,
+  credit_budget_exceeded: 409,
   unavailable: 503,
   // The added photo failed the server side upload check (not a photo, over
   // the pixel cap, unreadable).
