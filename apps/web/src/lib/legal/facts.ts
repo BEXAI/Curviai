@@ -101,7 +101,13 @@ export interface LegalFacts {
 
 /** Today's legal facts. */
 export const LEGAL_FACTS: LegalFacts = {
-  entity: { name: null, postalAddress: null, governingLaw: null },
+  // Public name and address supplied by the founder on 2026-10-02.
+  // Incorporation in Delaware does not choose the law governing the terms.
+  entity: {
+    name: "AIManagement Inc.",
+    postalAddress: "131 Continental Drive, Suite 305, Newark New Castle, DE 19713",
+    governingLaw: null,
+  },
   support: { email: "hello@curvi.ai", replyBusinessDays: 2 },
   creditTermsSentence: CREDIT_TERMS_SENTENCE,
   refundPolicy: "Fees are billed in advance and are non refundable except where the law requires otherwise.",

@@ -165,15 +165,16 @@ describe("billing warnings on a database", () => {
     expect(await warningCodes(OPEN)).toEqual([]);
   });
 
-  it("warns legal_facts_pending while the terms still leave the entity or governing law for later (law and copy review 13)", async () => {
+  it("warns legal_facts_pending while the supplied business details still leave governing law pending (law and copy review 13)", async () => {
     const warnings = await billingHealthWarnings({
       readEnv: (name) => OPEN[name],
       now: NOW,
       timeoutMs: 1_000,
-      pendingLegalFacts: () => ["entity.name", "entity.governingLaw"],
     });
     expect(warnings.map((warning) => warning.code)).toEqual(["legal_facts_pending"]);
-    expect(warnings[0]?.message).toContain("entity.name, entity.governingLaw");
+    expect(warnings[0]?.message).toContain("entity.governingLaw");
+    expect(warnings[0]?.message).not.toContain("entity.name");
+    expect(warnings[0]?.message).not.toContain("entity.postalAddress");
     // Billing off: nothing to say.
     expect(
       await billingHealthWarnings({ readEnv: () => undefined, now: NOW, timeoutMs: 1_000, pendingLegalFacts: () => ["entity.name"] }),

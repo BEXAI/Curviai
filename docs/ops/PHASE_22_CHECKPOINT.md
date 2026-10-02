@@ -73,3 +73,11 @@ The seven security dispositions, publishing/legal identity, OAuth/test/reviewer 
 Source commit `55bbce4b7987eb145ae0ab62b98e852be49456b8` passes full lint and types, **6,842 unit tests**, the production build and **199 browser tests**, including all four new viewer journeys. Local unit skips are14 real-PostgreSQL tests and one ffmpeg-unavailability diagnostic because ffmpeg is installed. Phase22's hosted rerun is the next integration gate; Phase21's exact parent already passes all14 PG17 tests. Logs: `/tmp/curvi-phase22-{lint,types,unit,e2e}-final.log`. The source scan reports zero leaks in1,770 files; `git diff --check` passes. Independent review closes all five findings, including the inherited MCP read-only settlement bug.
 
 The real strict CLI refuses absent publishing identity, recording and current tools snapshot, exits1 and creates no output directory. Fixture packages are not reviewer deliverables. No actual ChatGPT evidence, final submission ZIP, portal submission, approval, publication or live database update is claimed.
+
+## 18:45 UTC live staging and publisher-details follow-up
+
+Migrations 0045 and 0046 are now applied and independently verified: 47 exact journal records, five RLS tables, unchanged reservation access and zero budgets. 0047 remains held for the compatible deployment with every old writer quiesced. See [durable staging evidence](handoffs/phase22-live-staging.md), which supersedes earlier no-migration observations.
+
+PR 9 exact head `70c6036` passed [hosted CI](https://github.com/BEXAI/Curviai/actions/runs/37033082497): 6,835 unit tests, all 14 PostgreSQL 17 cases without skips and 199 browser tests. Its demo smoke also passed. No prerequisite branch has merged or deployed; PR 6's separate CodeQL gate remains unresolved.
+
+The new isolated `codex/phase22-publisher-details` candidate records the supplied public AIManagement Inc. name/address, with governing law still null and manifest verification placeholders preserved. Full local lint/types, 6,842 units, production build and 199 browsers pass. Root owns publication and exact-head hosted CI. Implementation/review/fixture lanes are complete; the release watcher continues read-only monitoring. User-authorized test accounts/OAuth and assets do not authorize unbounded paid calls or invent platform verification.

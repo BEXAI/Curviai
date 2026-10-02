@@ -2,6 +2,8 @@
 
 Owner: submission lane; root coordinates execution. Updated 2026-10-02, approximately 15:40 UTC. This records preparation, not an OpenAI submission or approval.
 
+Subsequent business-details update on 2026-10-02: the founder supplied and authorized public use of **AIManagement Inc.**, **131 Continental Drive, Suite 305, Newark New Castle, DE 19713**, and described the business as a Delaware corporation established in 2025. This is user-provided business provenance, not independent or OpenAI verification, and does not establish Curvi's founding date. The source terms/privacy now render the name/address; deployment and live read-back remain separate. Governing law, counsel review, verified platform publisher and account/project evidence remain unresolved. The timestamped audit below remains historical; both verified-name manifest placeholders remain unchanged.
+
 ## Deliverables and scope
 
 The lane owns [PHASE_22.md](../../phases/PHASE_22.md) and this handoff only. The plan now covers implementation, actual ChatGPT assets, submission, review follow-through and publication. Earlier proposals remain in Phase 23. No runtime/source implementation, live configuration, credentials, funded calls, upload, submission or third-party messaging was performed by this lane.
@@ -57,17 +59,17 @@ The connection lane separately reported healthy production `dae0fb0`/schema `004
 
 ## Outstanding prerequisites
 
-1. **Identity:** exact OpenAI organization/project, verified publisher, role/global residency and actual public legal name/address/governing law. GitHub/local usernames are insufficient.
-2. **Persistent access:** specific approval for provider/client setup, exact dashboard callback, scopes/workspace, activation and disposable-account containment probe. Secrets stay in authorized dashboards.
-3. **Reviewer:** approved noncustomer account/workspace, sufficient entitlements and bounded proposed 300-credit grant, private credential transmission to OpenAI and maintenance owner. A grant is not provider-spend authority.
-4. **Funded proof:** numeric provider-spend ceiling, approved fixtures, estimated calls/costs and stop condition for screening and real generation.
+1. **Identity:** a new publishing setup named **Curvi** is authorized. Exact OpenAI organization/project, verified publisher and role/global residency evidence remain missing. Public legal name/address and their publication are authorized; governing law and counsel review remain pending. Supplied company details and the setup name do not establish verified platform identity.
+2. **Test access:** dedicated test/reviewer account setup and test OAuth are authorized. Exact dashboard callback, provider/project/client details, scopes/workspace, secure account details and configuration/read-back remain required. Any password/MFA containment mutation needs its exact action-time scope. Secrets stay in authorized dashboards. Authorization does not establish that accounts or OAuth have been created, configured or live-tested.
+3. **Reviewer:** precise entitlements, numeric credit limit, secure reviewer-access details and maintenance owner remain missing. The earlier 300-credit proposal is not an approved grant. A grant is not provider-spend authority.
+4. **Funded proof:** the two supplied model-car photos and existing candle gallery are authorized sample assets. Numeric provider-spend and credit limits, estimated calls/costs and a stop condition remain required before funded screening or real generation.
 5. **Client proof:** actual connection, attachments, confirmation, preview, image/ZIP/report bytes, existing pack, renewal and revocation. Fixtures do not complete this gate.
 6. **Final materials:** sanitized accessible recording, validated/hash-recorded package, current production scan/domain proof, usable private reviewer access and accepted attestations.
 7. **Release:** PR 6's exact-seven CodeQL disposition approval remains pending. No alert-state change or bypass here.
 
 Root received identity/reviewer/recording gaps as soon as established and live 404s immediately after checking. Submission/publication goals are already authorized; only unresolved action-specific legal/access/spend constraints need approval.
 
-Root confirms the main conversation already asks for the bundled identity/public-policy, test/reviewer/OAuth, owned sample/workspace and spend information; answers are pending. Do not repeat those questions. Password/MFA mutations for containment testing need exact action-time scope and secure credential entry; general account approval does not authorize them.
+Root confirms authorization for the new Curvi publishing setup, dedicated test/reviewer accounts, test OAuth, the two supplied model-car photos, the existing candle gallery and public business name/address. Do not repeat those answered questions. Numeric spend/credit limits, exact dashboard and secure account details, verified identity/role/residency, governing law/counsel and action-time attestations remain unresolved. Password/MFA mutations for containment testing need exact action-time scope and secure credential entry; general account approval does not authorize them. No account creation, platform verification or live test completion is established by these approvals.
 
 Phase 21 was subsequently saved as local commits `1004a93` and `72941b2`; final checks are rerunning before root creates the Phase 22 implementation clone. This does not imply a new deployment.
 

@@ -89,6 +89,7 @@ describe("/terms", () => {
     expect(page).toContain(`Last updated ${legalDate(LEGAL_FACTS.termsLastUpdated)}`);
     expect(LEGAL_FACTS.termsLastUpdated).toBe(TERMS_VERSION);
     expect(page).toContain(LEGAL_FACTS.support.email);
+    expect(page).toContain("Curvi is run by AIManagement Inc., 131 Continental Drive, Suite 305, Newark New Castle, DE 19713.");
     expect(page).toContain(`We reply within ${supportReplyTime(LEGAL_FACTS)}.`);
     expect(page).toContain(LEGAL_FACTS.creditTermsSentence);
     expect(page).toContain(LEGAL_FACTS.refundPolicy);
@@ -128,6 +129,8 @@ describe("/privacy", () => {
     const page = text(markup);
     expect(page).toContain(`Last updated ${legalDate(LEGAL_FACTS.privacyLastUpdated)}`);
     expect(page).toContain(LEGAL_FACTS.support.email);
+    expect(page).toContain("Curvi is run by AIManagement Inc., 131 Continental Drive, Suite 305, Newark New Castle, DE 19713.");
+    expect(markup).not.toContain('data-testid="legal-pending"');
     expect(markup).toContain('data-testid="privacy-retention"');
     expect(markup).toContain('id="retention"');
     for (const row of retentionRows(LEGAL_FACTS)) {
@@ -226,13 +229,12 @@ describe("Last updated dates move with the text", () => {
   // subprocessorsLastUpdated in lib/legal/facts.ts) and record the new date
   // and fingerprint here. Never record a new fingerprint under an old date.
   const RECORDED = {
-    // Recorded again at the final combine (release/2026-10-02): PHASE_19's
-    // assistant sections and PHASE_18's email, signup source and free
-    // preview text joined PHASE_20's structure, dated the ship day.
-    terms: { lastUpdated: "2026-10-02", sha256: "d7a7e44aa423a6e3a0f7b21845981e759b4baa1d13d4b068757c81cc93aa0a1f" },
-    // Phase 21 adds seeded retention windows and assistant budget disclosure
-    // on the same release day as the Phase 18–20 privacy revision.
-    privacy: { lastUpdated: "2026-10-02", sha256: "a91db2733c43c38af87c17cb6aa25da7833de49e962f523e76fcd9c09c610d8c" },
+    // Same-day revision on 2026-10-02: the founder supplied the public
+    // business name and address. Governing law is still pending; the terms
+    // acceptance version and existing acceptance records are unchanged.
+    terms: { lastUpdated: "2026-10-02", sha256: "8126b07d54c2be8eab50237ced71bd0d60ad35ee398a5fe0f617ccf789c83281" },
+    // The same founder-supplied identity revision also changes privacy.
+    privacy: { lastUpdated: "2026-10-02", sha256: "4ce8b0ac8c12072fcdf0e47158887bb0c4ac0941020b45a8d095dbf6d94a37d8" },
     subprocessors: {
       lastUpdated: "2026-10-02",
       sha256: "11e13d7a68cec76568f3567ac1f58dd8f43630beaadc6920be25bcbddc6d459c",

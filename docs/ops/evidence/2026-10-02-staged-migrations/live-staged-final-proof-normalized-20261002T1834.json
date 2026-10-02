@@ -1,0 +1,80 @@
+{
+  "tables": [
+    {
+      "rls": true,
+      "name": "pack_case_events"
+    },
+    {
+      "rls": true,
+      "name": "pack_case_notes"
+    },
+    {
+      "rls": true,
+      "name": "pack_cases"
+    },
+    {
+      "rls": true,
+      "name": "workspace_credit_budget_audit"
+    },
+    {
+      "rls": true,
+      "name": "workspace_credit_budgets"
+    }
+  ],
+  "budgets": {
+    "enabled": 0,
+    "configured": 0
+  },
+  "journal": {
+    "count": 47,
+    "latest": 1790953746470
+  },
+  "new_migrations": [
+    {
+      "hash": "1906760bd9b890f72922bb3dc9a75ab58e82081a3637fc7384a922d953f45380",
+      "created_at": 1790953680011
+    },
+    {
+      "hash": "7a90bfdeda33f6659d70f0b31ef89b7eb51ceab3d11276ac05a43091fb7d2983",
+      "created_at": 1790953746470
+    }
+  ],
+  "snapshot_access": {
+    "owner": "postgres",
+    "stable": true,
+    "search_path": [
+      "search_path=public"
+    ],
+    "security_definer": true,
+    "owner_full_ledger": true,
+    "reserve_owner_can_execute": true
+  },
+  "policy_constants": {
+    "credit_budget_period": "utc_calendar_month",
+    "credit_budget_max_monthly": 1000000000
+  },
+  "webhook_tables_absent": true,
+  "tenant_select_policies": [
+    {
+      "name": "pack_case_events_select_visible_case",
+      "qual": "(EXISTS ( SELECT 1\n FROM pack_cases c\n WHERE ((c.id = pack_case_events.case_id) AND (c.workspace_id = pack_case_events.workspace_id))))",
+      "table": "pack_case_events"
+    },
+    {
+      "name": "pack_cases_select_reporter_manager",
+      "qual": "(EXISTS ( SELECT 1\n FROM members m\n WHERE ((m.workspace_id = pack_cases.workspace_id) AND (m.user_id = auth.uid()) AND ((m.user_id = pack_cases.reporter_user_id) OR (m.role = ANY (ARRAY['owner'::text, 'admin'::text]))))))",
+      "table": "pack_cases"
+    },
+    {
+      "name": "workspace_credit_budget_audit_select_manager",
+      "qual": "(EXISTS ( SELECT 1\n FROM members\n WHERE ((members.workspace_id = workspace_credit_budget_audit.workspace_id) AND (members.user_id = auth.uid()) AND (members.role = ANY (ARRAY['owner'::text, 'admin'::text])))))",
+      "table": "workspace_credit_budget_audit"
+    },
+    {
+      "name": "workspace_credit_budgets_select_manager",
+      "qual": "(EXISTS ( SELECT 1\n FROM members\n WHERE ((members.workspace_id = workspace_credit_budgets.workspace_id) AND (members.user_id = auth.uid()) AND (members.role = ANY (ARRAY['owner'::text, 'admin'::text])))))",
+      "table": "workspace_credit_budgets"
+    }
+  ],
+  "logical_run_columns_absent": true
+}
