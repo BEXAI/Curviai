@@ -426,7 +426,7 @@ describe("finding 8: anonymous gallery enumeration", () => {
       [wsA],
     );
     await client.query(
-      "insert into gallery_items (workspace_id, category, consent_at, published) values ($1, 'showcase', now(), true)",
+      "insert into gallery_items (workspace_id, category, consent_at, published, review_status) values ($1, 'showcase', now(), true, 'approved')",
       [wsA],
     );
   });

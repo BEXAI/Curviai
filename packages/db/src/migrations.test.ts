@@ -43,6 +43,27 @@ const EXPECTED_TABLES = [
   "favorites",
   "site_visits",
   "site_visit_salts",
+  // Phase 19 mcp_connections (0028).
+  "mcp_connections",
+  // Phase 18 attribution_and_funnel (P18-01).
+  "signup_attributions",
+  // Phase 18 free_previews (P18-12), a platform table.
+  "free_previews",
+  // Phase 18 lifecycle_email (P18-06), platform tables.
+  "email_sends",
+  "email_suppressions",
+  // Phase 18 pack_feedback (P18-05), a tenant table.
+  "pack_feedback",
+  // Phase 18 pack_claims (P18-04), a platform table.
+  "pack_claims",
+  // Phase 18 referrals (P18-24).
+  "referral_codes",
+  // Phase 20 ops_switches_and_audit (0038, P20-66), a platform table.
+  "ops_audit",
+  // Phase 20 billing_terms (0039, P20-07), a tenant table.
+  "billing_consents",
+  "ops_alerts",
+  "disposable_email_domains",
 ];
 
 const USER_A = "00000000-0000-4000-8000-00000000000a";

@@ -3,9 +3,9 @@ import { eq } from "drizzle-orm";
 import type { PGlite } from "@electric-sql/pglite";
 import { loadRegistry } from "@curvi/specs";
 import { createTestDb, type TestDb } from "./test-helpers";
-import { loadChannelSpecs, loadRecipes } from "./seed";
+import { loadChannelSpecs, loadDisposableEmailDomains, loadRecipes } from "./seed";
 import type { Db } from "./client";
-import { channelSpecs, recipes } from "./schema";
+import { channelSpecs, disposableEmailDomains, recipes } from "./schema";
 
 let client: PGlite;
 let db: TestDb;
@@ -91,5 +91,39 @@ describe("loadRecipes", () => {
 
   it("returns zero for an empty seed list", async () => {
     expect(await loadRecipes(db as unknown as Db, [])).toBe(0);
+  });
+});
+
+describe("loadDisposableEmailDomains", () => {
+  it("loads once, preserves existing timestamps and removes corrected domains", async () => {
+    const initial = ["first.example", "removed.example", "second.example"];
+    expect(await loadDisposableEmailDomains(db as unknown as Db, initial, { batchSize: 2 })).toBe(3);
+    const before = await db.select().from(disposableEmailDomains).where(eq(disposableEmailDomains.domain, "first.example"));
+    expect(await loadDisposableEmailDomains(db as unknown as Db, ["first.example", "second.example", "third.example"], { batchSize: 2 })).toBe(3);
+    const after = await db.select().from(disposableEmailDomains).where(eq(disposableEmailDomains.domain, "first.example"));
+    expect(after).toEqual(before);
+    expect((await db.select().from(disposableEmailDomains)).map((row) => row.domain).sort()).toEqual(["first.example", "second.example", "third.example"]);
+  });
+
+  it("rejects empty and invalid snapshots without changing the old list", async () => {
+    const before = await db.select().from(disposableEmailDomains);
+    for (const list of [[], ["UPPER.example"], ["bad..example"], ["https://bad.example"]]) {
+      await expect(loadDisposableEmailDomains(db as unknown as Db, list, { batchSize: 2 })).rejects.toThrow(/Disposable domain seed/);
+    }
+    expect(await db.select().from(disposableEmailDomains)).toEqual(before);
+  });
+
+  it("rolls back earlier chunks if a later chunk fails", async () => {
+    const before = await db.select().from(disposableEmailDomains);
+    await client.exec(`create function reject_domain_seed_fixture() returns trigger language plpgsql as $$ begin
+      if new.domain = 'rollback.example' then raise exception 'fixture failure'; end if;
+      return new; end $$;
+      create trigger reject_domain_seed_fixture before insert on disposable_email_domains for each row execute function reject_domain_seed_fixture();`);
+    try {
+      await expect(loadDisposableEmailDomains(db as unknown as Db, ["new.example", "rollback.example"], { batchSize: 1 })).rejects.toThrow();
+      expect(await db.select().from(disposableEmailDomains)).toEqual(before);
+    } finally {
+      await client.exec("drop trigger reject_domain_seed_fixture on disposable_email_domains; drop function reject_domain_seed_fixture()");
+    }
   });
 });

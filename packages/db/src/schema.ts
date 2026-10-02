@@ -140,6 +140,9 @@ export type JobOutputOptions = Record<string, unknown>;
  * @curvi/pipeline. Null when the seller skipped the step or on jobs from
  * before 0024. */
 export type JobSellerAnswers = Record<string, unknown>;
+/** The worker payload a deploy saved to start a pack again (deploy_restarts,
+ * PHASE_18 P18-23): the generate-pack input, a JSON object. */
+export type JobRestartPayload = Record<string, unknown>;
 
 /** A product's saved output choices (0023), as the seller picked them
  * (OutputOptionsInput in @curvi/pipeline), never the resolved hex. */
@@ -150,15 +153,39 @@ export type ProductOutputDefaults = Record<string, unknown>;
  * @curvi/pipeline). Null on rows from before 0023. */
 export type SourceMediaIngest = Record<string, unknown>;
 
-export const workspaces = pgTable("workspaces", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  plan: text("plan").notNull().default("free"),
-  stripeCustomerId: text("stripe_customer_id"),
-  shopifyShop: text("shopify_shop"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+/**
+ * The first run answers (docs/phases/PHASE_18.md P18-20, migration
+ * seller_profile): what the workspace sells (a seeded sellerCategories key)
+ * and where (seeded channelChoices values). Written only by the server;
+ * the protected columns trigger refuses a client write.
+ */
+export interface SellerProfileRecord {
+  category?: string;
+  channels?: string[];
+  /** ISO 8601, when the answers were saved. */
+  answeredAt?: string;
+}
+
+export const workspaces = pgTable(
+  "workspaces",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    plan: text("plan").notNull().default("free"),
+    stripeCustomerId: text("stripe_customer_id"),
+    shopifyShop: text("shopify_shop"),
+    // Phase 18 seller_profile (Lane 8 Activation).
+    sellerProfile: jsonb("seller_profile").$type<SellerProfileRecord>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "workspaces_seller_profile_object",
+      sql`${t.sellerProfile} IS NULL OR (jsonb_typeof(${t.sellerProfile}) = 'object' AND octet_length(${t.sellerProfile}::text) <= 1024)`,
+    ),
+  ],
+);
 
 export const members = pgTable(
   "members",
@@ -351,6 +378,20 @@ export const generationJobs = pgTable(
     // The seller's answers to the question step (0024), a JSON object when
     // set. Null when the step was skipped or on jobs from before 0024.
     sellerAnswers: jsonb("seller_answers").$type<JobSellerAnswers>(),
+    // Deploy restarts (migration deploy_restarts, PHASE_18 P18-23). How many
+    // times a deploy queued this pack to start again (capped by the seed's
+    // deployRestarts.max), and, while a restart waits to be picked up, the
+    // worker payload it starts from (cleared when a runner claims it). Only
+    // the server writes either: a trigger refuses client connections.
+    restartCount: integer("restart_count").notNull().default(0),
+    restartPayload: jsonb("restart_payload").$type<JobRestartPayload>(),
+    /** Server owned runner lease and timing metadata (PHASE_20 P20-32/35).
+     * Null for old rows until a runner claims them. The existing restart
+     * payload stores the durable recovery input, so no duplicate is added. */
+    heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }),
+    runnerId: text("runner_id"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -361,6 +402,9 @@ export const generationJobs = pgTable(
     index("generation_jobs_status_idx").on(t.status),
     // The scheduled stale job sweep reads live jobs by status and age (0017).
     index("generation_jobs_status_updated_at_idx").on(t.status, t.updatedAt),
+    index("generation_jobs_live_heartbeat_idx")
+      .on(t.status, t.heartbeatAt)
+      .where(sql`${t.status} IN ('queued', 'analyzing', 'planning', 'generating', 'qc', 'packaging')`),
     uniqueIndex("generation_jobs_workspace_idempotency_key_uq").on(t.workspaceId, t.idempotencyKey),
     check(
       "generation_jobs_output_options_object",
@@ -370,6 +414,12 @@ export const generationJobs = pgTable(
       "generation_jobs_seller_answers_object",
       sql`${t.sellerAnswers} IS NULL OR jsonb_typeof(${t.sellerAnswers}) = 'object'`,
     ),
+    check(
+      "generation_jobs_restart_payload_object",
+      sql`${t.restartPayload} IS NULL OR jsonb_typeof(${t.restartPayload}) = 'object'`,
+    ),
+    check("generation_jobs_restart_count_range", sql`${t.restartCount} >= 0`),
+    check("generation_jobs_runner_id_length", sql`${t.runnerId} IS NULL OR char_length(${t.runnerId}) <= 64`),
   ],
 );
 
@@ -438,7 +488,7 @@ export const spendCapCounters = pgTable("spend_cap_counters", {
   key: text("key").primaryKey(),
   totalMicros: bigint("total_micros", { mode: "number" }).notNull().default(0),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [index("spend_cap_counters_updated_at_idx").on(t.updatedAt)]);
 
 /** Platform tunables the database reads directly, such as the free signup
  * grant (free_signup_credits), seeded from packages/pipeline seed data by
@@ -518,12 +568,17 @@ export const creditLedger = pgTable(
     jobId: uuid("job_id").references(() => generationJobs.id),
     // Idempotency key for charges: at most one charge row per (job, step).
     stepKey: text("step_key"),
+    // Unused: credits never expire (PHASE_20 P20-05), no grant writes it and
+    // migration billing_terms cleared the old top up values.
     expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Server supplied label for the billing history (PHASE_20 P20-09). */
+    note: text("note"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("credit_ledger_workspace_id_idx").on(t.workspaceId),
     index("credit_ledger_job_id_idx").on(t.jobId),
+    check("credit_ledger_note_length", sql`${t.note} IS NULL OR char_length(${t.note}) <= 120`),
     uniqueIndex("credit_ledger_job_step_charge_uq")
       .on(t.jobId, t.stepKey)
       .where(sql`reason = 'charge' and step_key is not null`),
@@ -573,10 +628,24 @@ export const subscriptions = pgTable(
     // True once the subscription is set to end at periodEnd instead of
     // renewing (Stripe cancel_at_period_end), 0019.
     cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+    /** "monthly" or "annual", from the price's interval on every
+     * subscription event (PHASE_20 P20-07, migration billing_terms), so the
+     * renewal notices select on it. Null until the next event for rows
+     * written before it. */
+    cadence: text("cadence").$type<"monthly" | "annual">(),
+    /** A plan change scheduled for the next renewal (PHASE_20 P20-06). */
+    pendingTier: text("pending_tier"),
+    pendingCadence: text("pending_cadence").$type<"monthly" | "annual">(),
+    pendingAt: timestamp("pending_at", { withTimezone: true }),
+    pendingScheduleId: text("pending_schedule_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("subscriptions_workspace_id_idx").on(t.workspaceId),
+    check("subscriptions_pending_cadence", sql`${t.pendingCadence} IS NULL OR ${t.pendingCadence} IN ('monthly', 'annual')`),
+    check("subscriptions_pending_tier", sql`${t.pendingTier} IS NULL OR ${t.pendingTier} IN ('starter', 'growth', 'pro')`),
+    check("subscriptions_pending_schedule_id_length", sql`${t.pendingScheduleId} IS NULL OR char_length(${t.pendingScheduleId}) BETWEEN 1 AND 255`),
+    check("subscriptions_pending_schedule_complete", sql`num_nonnulls(${t.pendingTier}, ${t.pendingCadence}, ${t.pendingAt}, ${t.pendingScheduleId}) IN (0, 4)`),
     // One active subscription per workspace.
     uniqueIndex("subscriptions_one_active_per_workspace_uq")
       .on(t.workspaceId)
@@ -584,22 +653,53 @@ export const subscriptions = pgTable(
   ],
 );
 
+/** pending: signed up from an invite link; qualified: the referred
+ * workspace's first payment arrived; rewarded: both sides got their
+ * credits; rejected: no reward (reject_reason says why); reversed: rewarded,
+ * then a refund or dispute of that payment took the rewards back. */
+export type ReferralStatus = "pending" | "qualified" | "rewarded" | "rejected" | "reversed";
+
+/** One referred workspace per row (docs/phases/PHASE_18.md P18-24,
+ * migration referrals): the invite code that brought it, whose code that
+ * is, and how far the reward went. qualifying_payment is the billing grant
+ * key (invoice:<id> or checkout:<id>) of the payment that qualified it,
+ * which a refund or dispute of that payment matches. Members of the
+ * referrer read their rows (0011); only the server writes. */
 export const referrals = pgTable(
   "referrals",
   {
-    code: text("code").primaryKey(),
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: text("code").references(() => referralCodes.code, { onDelete: "set null" }),
     referrerWorkspaceId: uuid("referrer_workspace_id").references(() => workspaces.id, {
       onDelete: "set null",
     }),
     referredWorkspaceId: uuid("referred_workspace_id").references(() => workspaces.id, {
       onDelete: "set null",
     }),
+    status: text("status").$type<ReferralStatus>().notNull().default("pending"),
+    rejectReason: text("reject_reason"),
+    qualifyingPayment: text("qualifying_payment"),
+    qualifiedAt: timestamp("qualified_at", { withTimezone: true }),
     rewardedAt: timestamp("rewarded_at", { withTimezone: true }),
+    reversedAt: timestamp("reversed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("referrals_referrer_workspace_id_idx").on(t.referrerWorkspaceId),
-    index("referrals_referred_workspace_id_idx").on(t.referredWorkspaceId),
+    uniqueIndex("referrals_referred_workspace_id_uq").on(t.referredWorkspaceId),
+    index("referrals_qualifying_payment_idx").on(t.qualifyingPayment),
+    check(
+      "referrals_status_check",
+      sql`${t.status} in ('pending', 'qualified', 'rewarded', 'rejected', 'reversed')`,
+    ),
+    check(
+      "referrals_reject_reason_check",
+      sql`(${t.status} in ('rejected', 'reversed')) = (${t.rejectReason} is not null) and char_length(coalesce(${t.rejectReason}, '')) <= 40`,
+    ),
+    check(
+      "referrals_qualifying_payment_check",
+      sql`${t.qualifyingPayment} is null or ${t.qualifyingPayment} ~ '^(invoice|checkout):[A-Za-z0-9_]{1,200}$'`,
+    ),
   ],
 );
 
@@ -628,6 +728,10 @@ export const shareLinks = pgTable(
     }),
     views: integer("views").notNull().default(0),
     isPublic: boolean("public").notNull().default(false),
+    // The opt in proof panel (migration share_proof, docs/phases/PHASE_18.md
+    // P18-16): the public page shows each image's measured checks. Off for
+    // seller shares until the owner turns it on (founder decision 9).
+    showProof: boolean("show_proof").notNull().default(false),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -649,11 +753,15 @@ export const galleryItems = pgTable(
     category: text("category"),
     // Anonymous visitors only ever see rows explicitly published to the gallery.
     published: boolean("published").notNull().default(false),
+    reviewStatus: text("review_status").$type<"pending" | "approved" | "rejected">().notNull().default("pending"),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewedBy: text("reviewed_by"),
     consentAt: timestamp("consent_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("gallery_items_workspace_id_idx").on(t.workspaceId),
+    check("gallery_items_review_status", sql`${t.reviewStatus} IN ('pending', 'approved', 'rejected')`),
     // One gallery entry per share page, so opting in twice never lists a
     // makeover twice.
     uniqueIndex("gallery_items_share_slug_uq").on(t.shareSlug).where(sql`share_slug is not null`),
@@ -678,8 +786,20 @@ export const leads = pgTable(
     hits: integer("hits").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    // Phase 18 lifecycle_email (Lane 3 Email): when the visitor ticked "Also
+    // send me tips on listing images and the occasional offer", and on which
+    // tool. Null for every lead captured before that box shipped, so they
+    // never get marketing email (PHASE_18 founder decision 5).
+    marketingConsentAt: timestamp("marketing_consent_at", { withTimezone: true }),
+    consentSource: text("consent_source"),
   },
-  (t) => [uniqueIndex("leads_email_uq").on(t.email)],
+  (t) => [
+    uniqueIndex("leads_email_uq").on(t.email),
+    check(
+      "leads_consent_check",
+      sql`(${t.marketingConsentAt} is null) = (${t.consentSource} is null) and char_length(coalesce(${t.consentSource}, '')) <= 40`,
+    ),
+  ],
 );
 
 export const integrations = pgTable(
@@ -709,7 +829,7 @@ export const events = pgTable(
     props: jsonb("props").$type<Record<string, unknown>>(),
     at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("events_workspace_id_idx").on(t.workspaceId)],
+  (t) => [index("events_workspace_id_idx").on(t.workspaceId), index("events_at_idx").on(t.at)],
 );
 
 /** Why a subscriber opened the cancel flow (Stripe's cancellation feedback values). */
@@ -739,7 +859,9 @@ export const cancelFlows = pgTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     userId: uuid("user_id"),
-    reason: text("reason").$type<CancelReason>().notNull(),
+    // Optional since PHASE_20 P20-07 (Minnesota asks only for what is
+    // needed to cancel): null when the subscriber gave no reason.
+    reason: text("reason").$type<CancelReason>(),
     detail: text("detail"),
     fromTier: text("from_tier"),
     toTier: text("to_tier"),
@@ -749,6 +871,10 @@ export const cancelFlows = pgTable(
     stripeSubscriptionId: text("stripe_subscription_id"),
     /** When a pause ends or a cancellation takes effect. */
     effectiveAt: timestamp("effective_at", { withTimezone: true }),
+    /** A subscription schedule (a downgrade the founder set up in the
+     * Dashboard) released before this choice was applied, so the founder
+     * can see which scheduled downgrade it undid (PHASE_20 P20-06). */
+    releasedScheduleId: text("released_schedule_id"),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -766,9 +892,10 @@ export const churnScores = pgTable("churn_scores", {
 });
 
 /** How a terms acceptance reached the server: the signup confirmation link
- * (auth callback), or the first signed in visit to /app for an account that
- * has no record yet. */
-export type TermsAcceptanceSource = "signup_callback" | "first_app_visit";
+ * (auth callback), the first signed in visit to /app, or the first visit to
+ * the ChatGPT consent page (PHASE_19 P19-09), for an account that has no
+ * record yet. */
+export type TermsAcceptanceSource = "signup_callback" | "first_app_visit" | "assistant_consent";
 
 /**
  * Server side record that a user accepted a version of the terms of service
@@ -833,6 +960,7 @@ export const uploadPreflights = pgTable(
     check("upload_preflights_status_check", sql`${t.status} in ('ready', 'choose', 'blocked', 'unavailable')`),
     uniqueIndex("upload_preflights_workspace_r2_key_uq").on(t.workspaceId, t.r2Key),
     index("upload_preflights_workspace_id_idx").on(t.workspaceId),
+    index("upload_preflights_updated_at_idx").on(t.updatedAt),
   ],
 );
 
@@ -955,7 +1083,453 @@ export const siteVisits = pgTable(
   ],
 );
 
+/**
+ * Assistant connections (migration 0028, docs/phases/PHASE_19.md "Workspace
+ * scoping"): which workspace an OAuth client such as ChatGPT acts in for a
+ * user. One live row (revoked_at null) per (user_id, oauth_client_id), which
+ * covers every ChatGPT account and Codex install of that person on that
+ * client (decision 18). The consent page writes it; the MCP server reads it
+ * by the token's (sub, client_id) on every call and re-reads the membership.
+ * A row is revoked, never reused: a revoked row is never made live again.
+ * profile_id is a random 16 byte base64url id made once per user and copied
+ * into every later row for that user, so get_profile returns the same id
+ * across reconnects and workspace changes (OpenAI O1). user_id has no
+ * foreign key, as members.user_id. Tenant table: the row's user (while a
+ * member) and the workspace's owners and admins read; no client role writes.
+ */
+export const mcpConnections = pgTable(
+  "mcp_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull(),
+    oauthClientId: text("oauth_client_id").notNull(),
+    clientName: text("client_name"),
+    profileId: text("profile_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("mcp_connections_live_user_client_uq")
+      .on(t.userId, t.oauthClientId)
+      .where(sql`${t.revokedAt} is null`),
+    index("mcp_connections_user_client_idx").on(t.userId, t.oauthClientId),
+    index("mcp_connections_workspace_id_idx").on(t.workspaceId),
+    check("mcp_connections_profile_id_check", sql`${t.profileId} ~ '^[A-Za-z0-9_-]{22}$'`),
+    check(
+      "mcp_connections_lengths_check",
+      sql`char_length(${t.oauthClientId}) between 1 and 200 and char_length(coalesce(${t.clientName}, '')) <= 200`,
+    ),
+  ],
+);
+
+// ===========================================================================
+// Phase 18 migrations (docs/phases/PHASE_18.md "Data model summary",
+// principle 10). Named, never numbered: a lane changes this file, runs
+//   pnpm --filter @curvi/db db:generate --name <name>
+// and appends its hand written SQL (RLS, policies, grants, functions,
+// partial indexes Drizzle cannot express) at the very end of the generated
+// file, between these two lines:
+//   -- >>> Phase 18 hand written: <name>
+//   -- <<< Phase 18 hand written: <name>
+// The number is whatever is free when the lane generates. Integrators
+// renumber at the final combine, after 0027_site_visits and after PHASE_19's
+// mcp_connections (p19/integration merges first), by regenerating from the
+// merged schema and re-appending each delimited block. Planned order, which
+// production also applies in:
+//   1. attribution_and_funnel  P18-01, P18-02  Lane 1 Measure     signup_attributions (tenant); events_funnel_first_uq
+//   2. lifecycle_email         P18-06          Lane 3 Email       email_sends, email_suppressions (platform); leads.marketing_consent_at, leads.consent_source
+//   3. pack_feedback           P18-05          Lane 6 Concierge   pack_feedback (tenant)
+//   4. pack_claims             P18-04          Lane 6 Concierge   pack_claims (platform)
+//   5. share_proof             P18-16          Lane 4 Proof       share_links.show_proof
+//   6. free_previews           P18-12          Lane 8 Activation  free_previews (platform)
+//   7. seller_profile          P18-20          Lane 8 Activation  workspaces.seller_profile
+//   8. deploy_restarts         P18-23          Lane 2 Resilience  generation_jobs.restart_count
+//   9. referrals               P18-24          Lane 9 Offer       referral_codes (tenant); referrals reworked
+// New tables go in their migration's block below, with their inferred row
+// types beside them (not in the shared list at the end of this file), so
+// lanes never edit the same lines. New columns go on the existing table's
+// definition above. Tenant tables carry workspace_id and member policies;
+// platform tables keep RLS on with no policies and no client privileges
+// (the leads precedent). Each migration gets its packages/db/src test file.
+// ===========================================================================
+
+// --- attribution_and_funnel (Lane 1 Measure) ---
+
+/** The cookie choice a signup was sent with; null when none was made yet. */
+export type SignupAttributionConsent = "granted" | "denied";
+/** How the account was created: email and password, or Google (P18-13). */
+export type SignupMethod = "email" | "google";
+
+/**
+ * Where a signup came from (docs/phases/PHASE_18.md P18-01): one row per
+ * user, written once by the auth callback on a fresh verification over the
+ * owner connection from the hint the signup form put in the signup metadata
+ * (validated and capped again on the server). self_reported is a seeded
+ * signupSourceChoices key, with the short "Other" text beside it; source is
+ * the seeded page key of the Start free link the visitor clicked; the UTM
+ * tags, ref, share slug, claim and preview come from the signup link;
+ * referrer_host, landing_path and first_seen_at come only from the curvi_ft
+ * first touch cookie, which exists only after cookie consent. consent is the
+ * cookie choice at signup. Tenant table: owners and admins of the workspace
+ * read their own row, nobody writes through a client role, and the app never
+ * shows it to sellers.
+ */
+export const signupAttributions = pgTable(
+  "signup_attributions",
+  {
+    userId: uuid("user_id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    selfReported: text("self_reported"),
+    selfReportedOther: text("self_reported_other"),
+    source: text("source"),
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
+    utmContent: text("utm_content"),
+    utmTerm: text("utm_term"),
+    ref: text("ref"),
+    shareSlug: text("share_slug"),
+    claimId: text("claim_id"),
+    previewId: text("preview_id"),
+    landingPath: text("landing_path"),
+    referrerHost: text("referrer_host"),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }),
+    consent: text("consent").$type<SignupAttributionConsent>(),
+    method: text("method").$type<SignupMethod>().notNull().default("email"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("signup_attributions_workspace_id_idx").on(t.workspaceId),
+    check("signup_attributions_consent_check", sql`${t.consent} is null or ${t.consent} in ('granted', 'denied')`),
+    check("signup_attributions_method_check", sql`${t.method} in ('email', 'google')`),
+    check(
+      "signup_attributions_lengths_check",
+      sql`char_length(coalesce(${t.selfReported}, '')) <= 40
+        and char_length(coalesce(${t.selfReportedOther}, '')) <= 80
+        and char_length(coalesce(${t.source}, '')) <= 40
+        and char_length(coalesce(${t.utmSource}, '')) <= 100
+        and char_length(coalesce(${t.utmMedium}, '')) <= 100
+        and char_length(coalesce(${t.utmCampaign}, '')) <= 100
+        and char_length(coalesce(${t.utmContent}, '')) <= 100
+        and char_length(coalesce(${t.utmTerm}, '')) <= 100
+        and char_length(coalesce(${t.ref}, '')) <= 32
+        and char_length(coalesce(${t.shareSlug}, '')) <= 32
+        and char_length(coalesce(${t.claimId}, '')) <= 64
+        and char_length(coalesce(${t.previewId}, '')) <= 36
+        and char_length(coalesce(${t.landingPath}, '')) <= 200
+        and char_length(coalesce(${t.referrerHost}, '')) <= 100`,
+    ),
+  ],
+);
+
+export type SignupAttribution = typeof signupAttributions.$inferSelect;
+export type NewSignupAttribution = typeof signupAttributions.$inferInsert;
+
+// events_funnel_first_uq (the partial unique index on events (workspace_id,
+// name) where name like 'funnel.first_%') is hand written SQL in the
+// migration, like 0003's events_billing_dedupe_uq, so the shared events
+// definition above stays as it is.
+// --- end attribution_and_funnel ---
+
+// --- lifecycle_email (Lane 3 Email) ---
+
+/** Transactional mail (welcome, pack ready) goes to anyone not suppressed
+ * for all mail; marketing mail also needs no marketing suppression, the
+ * unsubscribe headers and the postal address (P18-06). */
+export type EmailSendKind = "transactional" | "marketing";
+/** pending: claimed, the Resend call not finished. disabled: the switch was
+ * off or the sender was not configured (may be tried again). failed: Resend
+ * refused or did not answer (tried again up to the seeded attempts).
+ * suppressed and sent are final. */
+export type EmailSendStatus = "pending" | "sent" | "failed" | "suppressed" | "disabled";
+export type EmailSuppressionScope = "marketing" | "all";
+export type EmailSuppressionReason = "unsubscribed" | "bounced" | "complained" | "manual";
+
+/**
+ * Every lifecycle email attempt (docs/phases/PHASE_18.md P18-06), one row
+ * per dedupe key, so no email is sent twice for one key. It logs mail to
+ * leads too, who have no workspace, so it is a platform table like leads:
+ * RLS on with no policies and no client privileges. No address is stored:
+ * recipient_key is the sha256 of the normalized email (the 0012
+ * normalized_email_key rules), and error never carries the address.
+ */
+export const emailSends = pgTable(
+  "email_sends",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    recipientKey: text("recipient_key").notNull(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    template: text("template").notNull(),
+    dedupeKey: text("dedupe_key").notNull(),
+    kind: text("kind").$type<EmailSendKind>().notNull(),
+    providerId: text("provider_id"),
+    status: text("status").$type<EmailSendStatus>().notNull().default("pending"),
+    error: text("error"),
+    attempts: integer("attempts").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("email_sends_dedupe_key_uq").on(t.dedupeKey),
+    index("email_sends_recipient_key_idx").on(t.recipientKey),
+    index("email_sends_workspace_id_idx").on(t.workspaceId),
+    index("email_sends_updated_at_idx").on(t.updatedAt),
+    check("email_sends_kind_check", sql`${t.kind} in ('transactional', 'marketing')`),
+    check("email_sends_status_check", sql`${t.status} in ('pending', 'sent', 'failed', 'suppressed', 'disabled')`),
+    check("email_sends_recipient_key_check", sql`${t.recipientKey} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "email_sends_lengths_check",
+      sql`char_length(${t.template}) between 1 and 40
+        and char_length(${t.dedupeKey}) between 1 and 200
+        and char_length(coalesce(${t.providerId}, '')) <= 100
+        and char_length(coalesce(${t.error}, '')) <= 500
+        and ${t.attempts} >= 1`,
+    ),
+  ],
+);
+
+export type EmailSend = typeof emailSends.$inferSelect;
+export type NewEmailSend = typeof emailSends.$inferInsert;
+
+/**
+ * Addresses Curvi must not email (P18-06): a marketing unsubscribe (one
+ * click, the unsubscribe page or the settings toggle) or every email after
+ * a hard bounce or a spam complaint (the Resend webhook). Keyed like
+ * email_sends; a platform table with RLS on, no policies and no client
+ * privileges.
+ */
+export const emailSuppressions = pgTable(
+  "email_suppressions",
+  {
+    recipientKey: text("recipient_key").primaryKey(),
+    scope: text("scope").$type<EmailSuppressionScope>().notNull(),
+    reason: text("reason").$type<EmailSuppressionReason>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("email_suppressions_scope_check", sql`${t.scope} in ('marketing', 'all')`),
+    check(
+      "email_suppressions_reason_check",
+      sql`${t.reason} in ('unsubscribed', 'bounced', 'complained', 'manual')`,
+    ),
+    check("email_suppressions_recipient_key_check", sql`${t.recipientKey} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
+export type EmailSuppression = typeof emailSuppressions.$inferSelect;
+export type NewEmailSuppression = typeof emailSuppressions.$inferInsert;
+// leads.marketing_consent_at and leads.consent_source are on the leads
+// definition above.
+// --- end lifecycle_email ---
+
+// --- pack_feedback (Lane 6 Concierge) ---
+
+/** "Would you use these files in a live listing?" (P18-05). */
+export type PackFeedbackUsable = "yes" | "some" | "not_yet";
+/** "Would you pay for packs like this?" (P18-05). */
+export type PackFeedbackWouldPay = "yes" | "maybe" | "no";
+
+/**
+ * One member's answer about one finished pack (docs/phases/PHASE_18.md
+ * P18-05): would they use the files live, would they pay, what would make
+ * them better, and whether Curvi may quote them with the name they typed.
+ * One answer per pack and person. Tenant table: members of the workspace
+ * read their workspace's rows; the server writes over the owner connection
+ * after it checks membership, so no client role inserts, edits or deletes.
+ */
+export const packFeedback = pgTable(
+  "pack_feedback",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => generationJobs.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull(),
+    usable: text("usable").$type<PackFeedbackUsable>().notNull(),
+    wouldPay: text("would_pay").$type<PackFeedbackWouldPay>(),
+    comment: text("comment"),
+    quoteConsent: boolean("quote_consent").notNull().default(false),
+    displayName: text("display_name"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("pack_feedback_job_user_uq").on(t.jobId, t.userId),
+    index("pack_feedback_workspace_id_idx").on(t.workspaceId),
+    index("pack_feedback_created_at_idx").on(t.createdAt),
+    check("pack_feedback_usable_check", sql`${t.usable} in ('yes', 'some', 'not_yet')`),
+    check("pack_feedback_would_pay_check", sql`${t.wouldPay} is null or ${t.wouldPay} in ('yes', 'maybe', 'no')`),
+    check(
+      "pack_feedback_lengths_check",
+      sql`char_length(coalesce(${t.comment}, '')) <= 500 and char_length(coalesce(${t.displayName}, '')) <= 60`,
+    ),
+    // A quote needs words to quote.
+    check(
+      "pack_feedback_quote_check",
+      sql`not ${t.quoteConsent} or char_length(btrim(coalesce(${t.comment}, ''))) > 0`,
+    ),
+  ],
+);
+
+export type PackFeedback = typeof packFeedback.$inferSelect;
+export type NewPackFeedback = typeof packFeedback.$inferInsert;
+// --- end pack_feedback ---
+
+// --- pack_claims (Lane 6 Concierge) ---
+
+/**
+ * A prospect pack the operator made for concierge outreach
+ * (docs/phases/PHASE_18.md P18-04): the pack (job_id) lives in the
+ * operator's workspace (staff_workspace_id), its share page is link only,
+ * and the claim link carries a token whose sha256 is token_hash, so the
+ * token itself is never stored. prospect_label is the store name the
+ * operator typed. A claim is redeemed once, by the new account it attributes
+ * (claimed_by_workspace_id, claimed_at), and can be taken down by anyone
+ * holding the link (taken_down_at). Platform table: RLS on, no policies, no
+ * client privileges (the leads precedent); only the server's owner
+ * connection reads or writes it.
+ */
+export const packClaims = pgTable(
+  "pack_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tokenHash: text("token_hash").notNull(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => generationJobs.id, { onDelete: "cascade" }),
+    staffWorkspaceId: uuid("staff_workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    prospectLabel: text("prospect_label").notNull(),
+    productSourceUrl: text("product_source_url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    claimedByWorkspaceId: uuid("claimed_by_workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    takenDownAt: timestamp("taken_down_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("pack_claims_token_hash_uq").on(t.tokenHash),
+    uniqueIndex("pack_claims_job_id_uq").on(t.jobId),
+    index("pack_claims_staff_workspace_id_idx").on(t.staffWorkspaceId),
+    index("pack_claims_claimed_by_workspace_id_idx").on(t.claimedByWorkspaceId),
+    check("pack_claims_token_hash_check", sql`${t.tokenHash} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "pack_claims_lengths_check",
+      sql`char_length(btrim(${t.prospectLabel})) between 1 and 80 and char_length(coalesce(${t.productSourceUrl}, '')) <= 2048`,
+    ),
+    // A claiming workspace always comes with its time (the workspace can
+    // later be deleted, which keeps the time).
+    check("pack_claims_claim_check", sql`${t.claimedByWorkspaceId} is null or ${t.claimedAt} is not null`),
+  ],
+);
+
+export type PackClaim = typeof packClaims.$inferSelect;
+export type NewPackClaim = typeof packClaims.$inferInsert;
+// --- end pack_claims ---
+
+// --- free_previews (Lane 8 Activation) ---
+export type FreePreviewStatus = "running" | "done" | "blocked" | "failed" | "claimed";
+
+/**
+ * One free white main image made before signup (docs/phases/PHASE_18.md
+ * P18-12). A platform table: no workspace until a new account claims it,
+ * RLS on with no policies and no client privileges (the leads precedent).
+ * The files live under anon/preview/{id}/ in R2 and expire with the row.
+ * ip_hash is a 32 hex digest under a salt that changes every UTC day and is
+ * never stored, so it can group one day's previews and nothing else;
+ * email_key is the sha256 of the email that unlocked the full size file.
+ */
+export const freePreviews = pgTable(
+  "free_previews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ipHash: text("ip_hash").notNull(),
+    status: text("status").$type<FreePreviewStatus>().notNull().default("running"),
+    blockedReason: text("blocked_reason"),
+    costMicros: bigint("cost_micros", { mode: "number" }).notNull().default(0),
+    /** The stored original's format (jpeg, png or webp after ingest). */
+    sourceFormat: text("source_format"),
+    /** The full size main image's format, as encoded for amazon.main. */
+    mainFormat: text("main_format"),
+    emailKey: text("email_key"),
+    claimedWorkspaceId: uuid("claimed_workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    check("free_previews_status_check", sql`${t.status} in ('running', 'done', 'blocked', 'failed', 'claimed')`),
+    check("free_previews_ip_hash_check", sql`${t.ipHash} ~ '^[0-9a-f]{32}$'`),
+    check("free_previews_email_key_check", sql`${t.emailKey} is null or ${t.emailKey} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "free_previews_source_format_check",
+      sql`${t.sourceFormat} is null or ${t.sourceFormat} in ('jpeg', 'png', 'webp')`,
+    ),
+    check("free_previews_main_format_check", sql`${t.mainFormat} is null or ${t.mainFormat} in ('jpeg', 'png')`),
+    check(
+      "free_previews_lengths_check",
+      sql`char_length(coalesce(${t.blockedReason}, '')) <= 200 and ${t.costMicros} >= 0`,
+    ),
+    check(
+      "free_previews_claim_check",
+      sql`(${t.status} = 'claimed') = (${t.claimedAt} is not null)`,
+    ),
+    index("free_previews_created_at_idx").on(t.createdAt),
+    index("free_previews_expires_at_idx").on(t.expiresAt),
+    index("free_previews_claimed_workspace_id_idx").on(t.claimedWorkspaceId),
+  ],
+);
+
+export type FreePreview = typeof freePreviews.$inferSelect;
+export type NewFreePreview = typeof freePreviews.$inferInsert;
+// --- end free_previews ---
+
+// --- referrals (Lane 9 Offer) ---
+
+/**
+ * One invite code per workspace (docs/phases/PHASE_18.md P18-24), issued
+ * lazily on /app/settings/referrals: lower case letters and digits, the
+ * format the ref landing parameter carries (apps/web/src/lib/attribution.ts).
+ * Tenant table: members of the workspace read their own code; only the
+ * server writes. The reworked referrals table above references code.
+ */
+export const referralCodes = pgTable(
+  "referral_codes",
+  {
+    workspaceId: uuid("workspace_id")
+      .primaryKey()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("referral_codes_code_uq").on(t.code),
+    check("referral_codes_code_check", sql`${t.code} ~ '^[a-z0-9]{4,32}$'`),
+  ],
+);
+
+export type ReferralCode = typeof referralCodes.$inferSelect;
+export type NewReferralCode = typeof referralCodes.$inferInsert;
+
+// credit_ledger_referral_step_uq (a partial unique index on credit_ledger
+// (step_key) where reason = 'referral' and step_key is not null, so each
+// reward and each reversal is written once per referral) is hand written
+// SQL in the migration, so the shared credit_ledger definition above stays
+// as it is.
+// --- end referrals ---
+
 // Inferred row types.
+export type McpConnection = typeof mcpConnections.$inferSelect;
+export type NewMcpConnection = typeof mcpConnections.$inferInsert;
 export type SiteVisit = typeof siteVisits.$inferSelect;
 export type NewSiteVisit = typeof siteVisits.$inferInsert;
 export type SiteVisitSalt = typeof siteVisitSalts.$inferSelect;
@@ -1015,3 +1589,213 @@ export type ChurnScore = typeof churnScores.$inferSelect;
 export type NewChurnScore = typeof churnScores.$inferInsert;
 export type TermsAcceptance = typeof termsAcceptances.$inferSelect;
 export type NewTermsAcceptance = typeof termsAcceptances.$inferInsert;
+
+// ===========================================================================
+// Phase 20 migrations (docs/phases/PHASE_20.md "Data model summary",
+// principle 10). Named, never numbered: a lane changes this file, runs
+//   pnpm --filter @curvi/db db:generate --name <name>
+// on top of the newest migration it has (0027_site_visits on main), and
+// appends its hand written SQL (RLS, policies, grants, functions, data
+// copies Drizzle cannot express) at the very end of the generated file,
+// between these two lines:
+//   -- >>> Phase 20 hand written: <name>
+//   -- <<< Phase 20 hand written: <name>
+// The number is whatever is free when the lane generates. PHASE_19
+// (0028_mcp_connections) and PHASE_18 (0029 to 0037) merged first, so at the
+// final combine (release/2026-10-02) Release 2's two became
+// 0038_ops_switches_and_audit and 0039_billing_terms, each snapshot chained
+// after 0037's. Later Phase 20 migrations generate on top of 0039.
+// Production applies them in numeric order, each after a fresh backup.
+//
+// Planned order (release, lane, items, change):
+//   1. billing_terms          R2  Lane 2 Billing terms    P20-05, P20-07  credit_ledger.expires_at null where reason = 'topup'; subscriptions.cadence; billing_consents (tenant)
+//   2. ops_switches_and_audit R2  Lane 5 Operator basics  P20-20, P20-66  copy each switch row to its ops: key (expand only, old key kept); ops_audit (platform)
+//   3. billing_schedule       R3  Lane 2b Billing later   P20-06, P20-09  subscriptions.pending_tier, pending_cadence, pending_at, pending_schedule_id; credit_ledger.note
+//   4. ops_switches_contract  R3  Lane 5b Deploy          P20-20          delete the old switch keys, each statement with a "-- contract:" comment
+//   5. runner_columns         R3  Lane 8 Runner           P20-32, 33, 35  generation_jobs.heartbeat_at, runner_id, run_payload (if P18-23 lacks it), started_at, finished_at; the partial live index
+//   6. retention_indexes      R3  Lane 10 Schedule        P20-39          indexes on events(at), spend_cap_counters(updated_at), upload_preflights(updated_at)
+//   7. ops_alerts_gallery     R3  Lane 13 Cockpit         P20-47, P20-50  ops_alerts (platform); gallery_items.review_status, reviewed_at, reviewed_by; the new public policy
+//   8. disposable_domains     R4  Lane 15 Security        P20-30          disposable_email_domains (platform); the new signup grant function version
+//   9. pack_batches           R5  Batch 5                 P20-60, P20-61  pack_batches (tenant); generation_jobs.batch_id, listing_copy
+//  10. job_checkpoint         R5  Batch 5                 P20-64          generation_jobs.checkpoint
+// Triggered (P2), numbered when their trigger fires:
+//      breaker_state          P20-36  breaker_state (platform)
+//      products_archive       P20-43  products.archived_at and its index
+//      workspace_invites      P20-59  workspace_invites (tenant)
+// The two Release 2 migrations may generate in either order; each takes the
+// next free number.
+//
+// Rules for every Phase 20 migration (principles 5 and 10):
+// - New tables go in their migration's block below, with their inferred row
+//   types beside them (not in the shared list above), so lanes never edit
+//   the same lines. New columns go on the existing table's definition.
+// - Tenant tables carry workspace_id and member policies, and get a
+//   packages/db/src/<name>.test.ts. Platform tables keep RLS on with no
+//   client policies and REVOKE ALL from anon and authenticated (the 0010 and
+//   0027 pattern), with a test that client roles can neither read nor write.
+// - Every new table gets 0028_mcp_connections' restrictive no_oauth_clients
+//   policy in its own migration's hand written block, with 0028's DO block
+//   (FOREACH t IN ARRAY ARRAY['<table>'], guarded by the authenticated role
+//   so PGlite without it still loads; see 0037_referrals or 0039_billing_terms).
+//   packages/db/src/mcp-connections.test.ts fails for a public table without it.
+// - Expand first, contract later: no DROP, RENAME, ALTER ... TYPE, or
+//   DELETE or UPDATE on platform_settings, except in a statement marked
+//   with a "-- contract:" comment (P20-12's lint).
+// - Never write an ops: row from the seed; a migration copies existing rows
+//   to ops: keys with ON CONFLICT DO NOTHING.
+// ===========================================================================
+
+// --- billing_terms (Lane 2 Billing terms): billing_consents ---
+
+/**
+ * The renewal consent a buyer gave in Stripe Checkout (docs/phases/
+ * PHASE_20.md P20-07): one row per completed plan Checkout Session whose
+ * terms checkbox was accepted, written by the Stripe webhook with the
+ * disclosure version and hash the session carried in its metadata (never
+ * computed at webhook time, so a replay after a wording change still records
+ * what the buyer saw). workspace_id is set null when the workspace is
+ * deleted, because California asks for the record to outlive the account
+ * (renewalNotices.consentRecordYears). Tenant table: owners and admins of
+ * the workspace read it, no client writes, no_oauth_clients.
+ */
+export const billingConsents = pgTable(
+  "billing_consents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    userId: uuid("user_id"),
+    /** normalized_email_key (migration 0012) of the buyer's email. */
+    emailKey: text("email_key"),
+    /** The buyer's email as given, so the record shows who agreed without
+     * the account (law and copy review major 8). */
+    email: text("email"),
+    /** The Stripe customer the plan belongs to. */
+    stripeCustomerId: text("stripe_customer_id"),
+    /** A plan bought in Checkout: its session. */
+    checkoutSessionId: text("checkout_session_id"),
+    /** A plan change a subscriber started from /app/billing, with the
+     * terms beside the button, and confirmed in the portal: its portal
+     * session. Exactly one of the two session ids is set. */
+    portalSessionId: text("portal_session_id"),
+    tier: text("tier").notNull(),
+    cadence: text("cadence").$type<"monthly" | "annual">().notNull(),
+    /** What the session charged, in dollars. */
+    amountUsd: numeric("amount_usd", { precision: 10, scale: 2, mode: "number" }),
+    disclosureVersion: text("disclosure_version").notNull(),
+    disclosureSha256: text("disclosure_sha256").notNull(),
+    /** The exact text shown: Checkout's custom_text (beside the pay button,
+     * then the checkbox) copied from the session, or the terms beside the
+     * plan change button. Its sha256 is disclosure_sha256. */
+    disclosureText: text("disclosure_text"),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("billing_consents_checkout_session_uq").on(t.checkoutSessionId),
+    uniqueIndex("billing_consents_portal_session_uq").on(t.portalSessionId),
+    index("billing_consents_workspace_id_idx").on(t.workspaceId),
+    check(
+      "billing_consents_one_session",
+      sql`(${t.checkoutSessionId} IS NULL) <> (${t.portalSessionId} IS NULL)`,
+    ),
+  ],
+);
+
+export type BillingConsentRow = typeof billingConsents.$inferSelect;
+export type NewBillingConsentRow = typeof billingConsents.$inferInsert;
+
+// --- end billing_terms ---
+
+// --- ops_switches_and_audit (Lane 5 Operator basics): ops_audit ---
+
+/**
+ * The operator audit trail (docs/phases/PHASE_20.md principle 9, P20-66):
+ * one row per operator mutation (a switch, a credit grant, a requeue, the
+ * release script's deploy_pending writes), written by writeOpsAudit
+ * (apps/web/src/lib/ops/audit.ts) in the same transaction as the change.
+ * workspace_id has no foreign key, so deleting a workspace never deletes
+ * its audit trail. detail holds amounts, old and new values and notes,
+ * never secrets or customer content. Platform table: RLS on with no client
+ * policies, no anon or authenticated privileges and the no_oauth_clients
+ * policy; only the owner connection reads or writes it. Not the events
+ * table, which members can insert into and which cascades on workspace
+ * delete.
+ */
+export const opsAudit = pgTable(
+  "ops_audit",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    operatorEmail: text("operator_email").notNull(),
+    action: text("action").notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetId: text("target_id"),
+    workspaceId: uuid("workspace_id"),
+    detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
+    forced: boolean("forced").notNull().default(false),
+  },
+  (t) => [
+    check(
+      "ops_audit_lengths_check",
+      sql`char_length(${t.operatorEmail}) between 3 and 320 and char_length(${t.action}) between 1 and 64 and char_length(${t.targetKind}) between 1 and 64 and char_length(coalesce(${t.targetId}, '')) <= 200`,
+    ),
+    index("ops_audit_at_idx").on(t.at),
+    index("ops_audit_workspace_id_idx").on(t.workspaceId),
+  ],
+);
+
+export type OpsAuditRow = typeof opsAudit.$inferSelect;
+export type NewOpsAuditRow = typeof opsAudit.$inferInsert;
+
+// --- end ops_switches_and_audit ---
+
+// --- ops_alerts_gallery (Lane 13 Cockpit): ops_alerts ---
+
+/** Platform alert history. A recurrence after resolution gets a new row;
+ * the partial unique index prevents concurrent ticks opening duplicates. */
+export const opsAlerts = pgTable("ops_alerts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  rule: text("rule").notNull(),
+  subject: text("subject").notNull(),
+  detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  status: text("status").$type<"open" | "resolved">().notNull().default("open"),
+  count: integer("count").notNull().default(1),
+  openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("ops_alerts_open_rule_subject_uq").on(t.rule, t.subject).where(sql`${t.status} = 'open'`),
+  index("ops_alerts_resolved_at_idx").on(t.resolvedAt),
+  check("ops_alerts_status", sql`${t.status} IN ('open', 'resolved')`),
+  check("ops_alerts_count_positive", sql`${t.count} > 0`),
+  check("ops_alerts_detail_object", sql`jsonb_typeof(${t.detail}) = 'object'`),
+]);
+
+export type OpsAlert = typeof opsAlerts.$inferSelect;
+export type NewOpsAlert = typeof opsAlerts.$inferInsert;
+// --- end ops_alerts_gallery ---
+
+// --- disposable_domains (Lane 15 Security): disposable_email_domains ---
+
+/** Seeded platform list, consulted by the signup grant function even when
+ * signup happens directly through Supabase Auth. No client privileges. */
+export const disposableEmailDomains = pgTable("disposable_email_domains", {
+  domain: text("domain").primaryKey(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  check("disposable_email_domains_normalized", sql`${t.domain} = lower(btrim(${t.domain})) AND char_length(${t.domain}) BETWEEN 1 AND 253 AND ${t.domain} ~ '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'`),
+]);
+
+export type DisposableEmailDomain = typeof disposableEmailDomains.$inferSelect;
+export type NewDisposableEmailDomain = typeof disposableEmailDomains.$inferInsert;
+// --- end disposable_domains ---
+
+// --- pack_batches (Batch 5): pack_batches ---
+// --- end pack_batches ---
+
+// --- breaker_state (triggered): breaker_state ---
+// --- end breaker_state ---
+
+// --- workspace_invites (triggered): workspace_invites ---
+// --- end workspace_invites ---

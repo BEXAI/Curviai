@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { loadRegistry } from "@curvi/specs";
 import type { Db } from "./client";
-import { channelSpecs, recipes } from "./schema";
+import { channelSpecs, disposableEmailDomains, recipes } from "./schema";
 
 /**
  * Upsert every entry from the @curvi/specs registry into channel_specs.
@@ -77,4 +77,36 @@ export async function loadRecipes(db: Db, rows: RecipeSeedRow[]): Promise<number
       },
     });
   return rows.length;
+}
+
+/** Synchronize the vetted domain snapshot atomically. Removed upstream
+ * domains stop withholding credits; an empty or malformed input cannot
+ * erase the list. The seed CLI verifies the pinned digest before calling. */
+export async function loadDisposableEmailDomains(
+  db: Db,
+  domains: readonly string[],
+  options: { batchSize: number },
+): Promise<number> {
+  if (domains.length === 0) throw new Error("Disposable domain seed must not be empty");
+  if (!Number.isInteger(options.batchSize) || options.batchSize < 1) {
+    throw new Error("Disposable domain batch size must be a positive integer");
+  }
+  const validDomain = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+  if (domains.some((domain) => domain.length > 253 || !validDomain.test(domain))) {
+    throw new Error("Disposable domain seed contains an invalid domain");
+  }
+  const unique = [...new Set(domains)];
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('curvi:disposable-domain-seed', 0))`);
+    for (let offset = 0; offset < unique.length; offset += options.batchSize) {
+      await tx.insert(disposableEmailDomains)
+        .values(unique.slice(offset, offset + options.batchSize).map((domain) => ({ domain })))
+        .onConflictDoNothing();
+    }
+    // One JSON parameter avoids PostgreSQL's bind limit as the list grows.
+    await tx.delete(disposableEmailDomains).where(sql`NOT (${disposableEmailDomains.domain} = ANY (
+      ARRAY(SELECT jsonb_array_elements_text(${JSON.stringify(unique)}::jsonb))
+    ))`);
+  });
+  return unique.length;
 }

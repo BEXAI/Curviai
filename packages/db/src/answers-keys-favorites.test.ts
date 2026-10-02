@@ -225,7 +225,9 @@ describe("0024 api_keys", () => {
   // back a key the owner revoked.
   it("has no insert, update or delete policy on api_keys", async () => {
     const res = await client.query<{ policyname: string; cmd: string }>(
-      "select policyname, cmd from pg_policies where schemaname = 'public' and tablename = 'api_keys' order by policyname",
+      // Permissive policies only: the restrictive no_oauth_clients policy of
+      // 0028 grants nothing (mcp-connections.test.ts).
+      "select policyname, cmd from pg_policies where schemaname = 'public' and tablename = 'api_keys' and permissive = 'PERMISSIVE' order by policyname",
     );
     expect(res.rows).toEqual([{ policyname: "api_keys_select_owner_admin", cmd: "SELECT" }]);
   });
