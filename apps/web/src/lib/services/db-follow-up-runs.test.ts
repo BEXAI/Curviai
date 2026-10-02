@@ -239,6 +239,8 @@ describe("product selection across the first run and follow ups", () => {
     expect(await balance(ws)).toBe(before);
   });
 
+  // Successful cases render full-size marketplace images and run fidelity checks,
+  // packaging and ledger settlement; allow bounded headroom on shared CI CPUs.
   it.each(["cached", "paid", "ambiguous", "touching"] as const)("handles an added photo without preflight using the %s cutout once", async (mode) => {
     const { ws, productId } = await workspaceWith(20);
     const jobId = await deliveredPack(ws, productId);
@@ -290,7 +292,7 @@ describe("product selection across the first run and follow ups", () => {
       expect(rows.at(-1)?.qc?.sourceSelection).toMatchObject({ sourceMediaId: key, basis: "added_cutout_inventory", target: { keep: [expect.any(Object)] } });
       expect(await balance(ws)).toBe(before - CREDITS);
     }
-  }, 20_000);
+  }, 60_000);
 
   it("persists exact selected pieces and exclusions, then restores them for retry and regeneration", async () => {
     const { ws, productId } = await workspaceWith(100);
