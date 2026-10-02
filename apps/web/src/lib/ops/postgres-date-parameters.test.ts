@@ -4,11 +4,11 @@ import { InMemoryBreakerStore } from "@curvi/ai";
 import { orphan } from "@curvi/pipeline/seed";
 import { FounderAlerts } from "@curvi/trigger/provider-balance";
 import { notifyStagePaused, resetProviderProbe, storeProviderProbe } from "@curvi/trigger/provider-canary";
-import { ProviderQuotaNotifier } from "../../../../trigger/src/provider-quota";
-import { clearProviderPreflightCache, providerPreflightDetail } from "./provider-preflight";
-import { recoverOrphanJobs } from "./jobs/recovery";
-import { listOperatorJobs, operateJob } from "./ops/jobs";
-import { loadOpsOverview } from "./ops/overview";
+import { ProviderQuotaNotifier } from "../../../../../trigger/src/provider-quota";
+import { clearProviderPreflightCache, providerPreflightDetail } from "../provider-preflight";
+import { recoverOrphanJobs } from "../jobs/recovery";
+import { listOperatorJobs, operateJob } from "./jobs";
+import { loadOpsOverview } from "./overview";
 
 const state = vi.hoisted(() => ({ db: null as Db | null }));
 vi.mock("@/lib/services", () => ({ isDbMode: () => true }));
