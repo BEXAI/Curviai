@@ -91,7 +91,7 @@ export async function purgeStaleSourceMedia(options: PurgeOptions): Promise<Purg
         and not exists (
           select 1 from generation_jobs j
           where j.product_id = sm.product_id
-            and (j.created_at >= ${cutoff.toISOString()}::timestamptz
+            and (greatest(j.created_at, coalesce(j.started_at, j.created_at)) >= ${cutoff.toISOString()}::timestamptz
                  or j.status not in ('done', 'failed', 'canceled'))
         )
         and not exists (select 1 from share_links s where s.before_media_id = sm.id)

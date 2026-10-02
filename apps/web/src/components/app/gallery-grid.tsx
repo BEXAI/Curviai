@@ -218,7 +218,7 @@ export function FavoriteButton({
         </svg>
       </button>
       {error ? (
-        <span className="text-[11px] text-red-700" role="alert">
+        <span className="text-xs text-red-700" role="alert">
           {error}
         </span>
       ) : null}

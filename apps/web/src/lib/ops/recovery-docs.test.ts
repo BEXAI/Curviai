@@ -1,0 +1,59 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+const root = new URL("../../../../../", import.meta.url);
+const read = (path: string) => readFileSync(fileURLToPath(new URL(path, root)), "utf8");
+const recovery = read("docs/ops/DISASTER_RECOVERY.md");
+
+describe("recovery and staging documentation", () => {
+  it("names every production service, cron and configured environment key", () => {
+    const blueprint = read("render.yaml");
+    const names = [...blueprint.matchAll(/^\s{4}name:\s*(\S+)/gm)].map((match) => match[1]);
+    const keys = [...blueprint.matchAll(/^\s+- key:\s*([A-Z][A-Z0-9_]+)/gm)].map((match) => match[1]);
+    expect(names.length).toBeGreaterThan(0);
+    expect(keys.length).toBeGreaterThan(10);
+    for (const name of [...names, ...keys]) expect(recovery, `Missing recovery setting: ${name}`).toContain(`\`${name}\``);
+  });
+  it("names every variable in the launch checklist's environment tables", () => {
+    const keys = read("docs/LAUNCH_CHECKLIST.md").split("\n")
+      .filter((line) => line.startsWith("|"))
+      .flatMap((line) => [...line.split("|")[1].matchAll(/`([A-Z][A-Z0-9_]+)`/g)].map((match) => match[1]));
+    expect(new Set(keys).size).toBeGreaterThan(20);
+    for (const key of keys) expect(recovery, `Missing launch setting: ${key}`).toContain(`\`${key}\``);
+  });
+  it("keeps schema/grant validation ahead of reconnecting the app and records pending acceptance", () => {
+    const schema = recovery.indexOf("3. **Authenticate/decrypt.**");
+    const acl = recovery.indexOf("6. **Validate before any app connection.**");
+    const reconnect = recovery.indexOf("9. **Reconnect in order.**");
+    expect(schema).toBeGreaterThan(0);
+    expect(acl).toBeGreaterThan(schema);
+    expect(reconnect).toBeGreaterThan(acl);
+    expect(recovery).toContain("pg_restore --data-only");
+    expect(recovery).toContain("acl_unchanged");
+    expect(recovery).toContain("ledger_functions_locked");
+    expect(recovery).toContain("founder has not yet walked");
+    expect(recovery).toContain("no password-only in-app bypass");
+  });
+  it("staging explicitly selects free isolated resources without enabling provider canaries or OAuth", () => {
+    const blueprint = read("render.staging.yaml");
+    expect(blueprint).toMatch(/plan: free/);
+    expect(blueprint).toMatch(/autoDeployTrigger: checksPass/);
+    expect(blueprint).toMatch(/key: CURVI_INLINE_PACK_CONCURRENCY\s+value: "1"/);
+    expect(blueprint).toMatch(/key: NEXT_PUBLIC_ENV_LABEL\s+value: staging/);
+    expect(blueprint).toMatch(/key: R2_BUCKET_PRIVATE\s+value: curvi-staging/);
+    expect(blueprint).toMatch(/key: CURVI_PROVIDER_CANARY_ENABLED\s+value: "0"/);
+    expect(blueprint).toMatch(/key: MCP_OAUTH_ENABLED\s+value: "0"/);
+    expect(blueprint).not.toMatch(/sk_(live|test)_\w+/);
+    expect(read("docs/ops/STAGING.md")).toContain("Staging is never a restore target");
+  });
+  it("daily external and paid smoke jobs require explicit repository opt-ins", () => {
+    const workflow = read(".github/workflows/smoke.yml");
+    expect(workflow).toContain("vars.SMOKE_PUBLIC_ENABLED == '1'");
+    expect(workflow).toContain("vars.SMOKE_STAGING_ENABLED == '1'");
+    expect(workflow).toContain("vars.SMOKE_STAGING_PACK_ENABLED == '1'");
+    expect(workflow).toContain("vars.SMOKE_SYNTHETIC_ENABLED == '1' && vars.SMOKE_WORKSPACE_EXCLUDED == '1'");
+    expect(read("playwright.smoke.config.ts")).not.toMatch(/\bwebServer\s*:/);
+    expect(read("e2e/smoke/pack.smoke.ts")).not.toMatch(/\{ request, page \}/);
+  });
+});

@@ -5,11 +5,13 @@ import { getSpec, type ChannelSpec } from "@curvi/specs";
 import { stillStyle } from "../seed/templates";
 import { hexToRgb } from "../color";
 import { boundingBoxOfMask } from "../mask";
-import { decodeMask, decodeToRgba, type RawImage, type RawMask } from "../raw";
+import { decodeMask, decodeToRgba } from "../raw";
 import { fidelityReport } from "../qc/fidelity";
+import { tintInsideMask } from "../qc/testing";
 import { pixelChecks, qcKindForSpec } from "../qc/pixelChecks";
 import { rectProduct } from "../testutil";
-import { loadTemplateFont, resolveTemplateFontFile } from "./font";
+import { DEFAULT_TEMPLATE_FONT } from "../seed/fonts";
+import { loadTemplateFont, resolveFontFile } from "./font";
 import {
   renderTemplateStill,
   sanitizeCallout,
@@ -63,16 +65,6 @@ async function texturedCutout(size = 256): Promise<{ productPng: Buffer; maskPng
   const productPng = await sharp(data, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer();
   const maskPng = await sharp(maskData, { raw: { width: size, height: size, channels: 1 } }).png().toBuffer();
   return { productPng, maskPng };
-}
-
-/** Copy of image with red raised by amount inside mask, like a stray tint. */
-function tintInsideMask(image: RawImage, mask: RawMask, amount: number): RawImage {
-  const data = Buffer.from(image.data);
-  for (let i = 0; i < mask.data.length; i++) {
-    if (mask.data[i] === 0) continue;
-    data[i * 4] = Math.min(255, data[i * 4] + amount);
-  }
-  return { ...image, data };
 }
 
 const colors = {
@@ -454,9 +446,9 @@ describe("sanitizeCallout", () => {
   });
 });
 
-describe("resolveTemplateFontFile", () => {
+describe("resolveFontFile", () => {
   it("resolves the bundled Inter TTF", () => {
-    const file = resolveTemplateFontFile();
+    const file = resolveFontFile(DEFAULT_TEMPLATE_FONT);
     expect(file).not.toBeNull();
     expect(file!.endsWith(".ttf")).toBe(true);
     expect(existsSync(file!)).toBe(true);

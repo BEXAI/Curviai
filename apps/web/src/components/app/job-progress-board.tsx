@@ -7,9 +7,11 @@ import {
   AddPhotoButton,
   CancelPackButton,
   RetryShotButton,
+  RegenerateShotButton,
   type PackActionResult,
 } from "@/components/app/pack-actions";
 import { ComplianceReportPanel } from "@/components/app/compliance-report-panel";
+import { SeeTheProof } from "@/components/app/file-proof";
 import { GalleryGrid } from "@/components/app/gallery-grid";
 import { VersionPick } from "@/components/app/version-pick";
 import { InventoryCard } from "@/components/app/inventory-card";
@@ -19,6 +21,7 @@ import { PackDownloads } from "@/components/app/pack-downloads";
 import { PackReveal } from "@/components/app/pack-reveal";
 import { StatusChip } from "@/components/app/status-chip";
 import { packSummaryLine } from "@/lib/job-copy";
+import { complianceBadgeText } from "@/lib/proof-copy";
 import { isTerminalJobStatus, nextPoll, pollStopCopy, type PollResult, type PollStopReason } from "@/lib/job-poll";
 import { canReveal, revealShots } from "@/lib/makeover";
 import {
@@ -31,6 +34,7 @@ import {
   type GroupedShot,
 } from "@/lib/output-preview";
 import { galleryItemsFromJob } from "@/lib/library";
+import { RESTARTED_PACK_NOTICE } from "@/lib/jobs/restart-copy";
 import { REUSE_LABEL, reuseHref } from "@/lib/reuse";
 import { track } from "@/lib/track";
 import type { JobShotView, JobView } from "@/lib/services/types";
@@ -77,10 +81,10 @@ function StageStepper({ status }: { status: string }) {
             ) : null}
             <span
               className={cn(
-                "flex items-center gap-1.5 rounded-full px-2 py-0.5 font-mono text-[11px] uppercase tracking-wide",
+                "flex items-center gap-1.5 rounded-full px-2 py-0.5 font-mono text-xs uppercase tracking-wide",
                 state === "past" && "text-ink-500",
                 state === "current" && "bg-accent-500/10 font-semibold text-accent-700",
-                state === "ahead" && "text-ink-300",
+                state === "ahead" && "text-ink-600",
               )}
               aria-current={state === "current" ? "step" : undefined}
             >
@@ -100,30 +104,17 @@ function ComplianceBadge({ shot }: { shot: JobShotView }) {
   if (shot.status !== "done" || !shot.compliance) {
     return null;
   }
-  const { pass, fillPct } = shot.compliance;
+  const { pass, fillPct, fidelity } = shot.compliance;
   // A kept photo is never held to a background rule, so no background
   // reading is shown for it (PHASE_15: no pure white check on originals).
   const background = isOriginalShot(shot.shotType) ? null : shot.compliance.background;
   if (!pass) {
     return <Badge variant="warning">Needs another pass</Badge>;
   }
-  if (fillPct !== null && background) {
-    return (
-      <Badge variant="success" data-testid="compliance-badge">
-        Passes channel rules. Fill {fillPct} percent, background {background.join(", ")}
-      </Badge>
-    );
-  }
-  if (fillPct !== null) {
-    return (
-      <Badge variant="success" data-testid="compliance-badge">
-        Passes channel rules. Fill {fillPct} percent
-      </Badge>
-    );
-  }
+  // P18-08: the measured color difference inside the product joins the fill.
   return (
     <Badge variant="success" data-testid="compliance-badge">
-      Passes channel rules
+      {complianceBadgeText({ fillPct, background, fidelity })}
     </Badge>
   );
 }
@@ -252,6 +243,7 @@ export function ShotCard({
         ) : null}
         <div className="mt-3 min-h-6">
           <ComplianceBadge shot={shot} />
+          {shot.status === "done" && shot.compliance?.pass ? <SeeTheProof files={shot.compliance.files} /> : null}
         </div>
         {shot.version ? (
           <VersionPick
@@ -262,6 +254,7 @@ export function ShotCard({
             onDone={onAction}
           />
         ) : null}
+        {canManage && shot.regenerate ? <RegenerateShotButton jobId={job.id} shot={shot} onDone={onAction} /> : null}
         {canManage && shot.action === "retry" ? (
           <RetryShotButton jobId={job.id} shot={shot} title={title} onDone={onAction} />
         ) : null}
@@ -482,6 +475,13 @@ export function JobProgressBoard({ jobId }: { jobId: string }) {
           </div>
         </div>
         <StageStepper status={job.status} />
+        {job.status === "queued" && job.queue ? <p className="text-sm text-ink-600">Your pack is number {job.queue.position} in your workspace queue. Estimated wait: {Math.max(1, Math.ceil(job.queue.etaSeconds / 60))} minutes.</p> : null}
+        {job.status === "failed" || needsReview > 0 ? <a href={`/support?topic=pack&job=${job.id}`} className="text-sm underline">Get help with this pack</a> : null}
+        {job.restarted ? (
+          <p className="max-w-2xl text-sm text-ink-600" data-testid="job-restarted">
+            {RESTARTED_PACK_NOTICE}
+          </p>
+        ) : null}
         {job.status === "failed" && job.error ? (
           <p
             className="max-w-2xl rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"

@@ -33,7 +33,7 @@ import { PaletteNaming } from "../../src/brand/palette";
 import { QuestionPlanAnswer, QuestionPlanTool } from "../../src/questions";
 import { AplusCopyResult } from "../../src/aplus-copy";
 import { PackCopyResult } from "../../src/ad-copy";
-import { adCopyRecipe, type RecipeRow } from "../../src/seed/recipes";
+import { adCopyRecipe, restrictedGoodsIntake, type RecipeRow } from "../../src/seed/recipes";
 import { llmModelProviders, type LlmProviderFamily } from "../../src/seed/models";
 import type { CallOutcome, LlmCaller } from "./callers";
 
@@ -49,6 +49,44 @@ export interface GoldenCase {
   blocks: LlmContentBlock[];
   /** The JSON payload the runner would send for this recipe row. */
   payload: (row: RecipeRow) => unknown;
+  /** New draft checks do not alter an older version's recorded baseline. */
+  minRecipeVersion?: number;
+  /** Absolute checks in addition to JSON validity and baseline comparisons. */
+  violations?: (answer: unknown) => string[];
+}
+
+/**
+ * A golden photo of one of OpenAI's prohibited goods (docs/phases/PHASE_19.md
+ * P19-29). It runs only on an intake recipe that asks for restrictedCategory
+ * (restrictedGoodsIntake), and the bar is absolute, not against Claude: every
+ * image must name this seeded category. The same recipe must name none on
+ * the clean golden photos.
+ */
+export interface ScreeningFixture extends GoldenCase {
+  expectCategory: string;
+}
+
+export interface ScreeningResult {
+  id: string;
+  recipeKey: string;
+  version: number;
+  expected: string;
+  /** The category each image named, or null; empty when nothing parsed. */
+  named: Array<string | null>;
+  pass: boolean;
+}
+
+/** True when this recipe row's prompt asks for restrictedCategory. */
+export function asksRestrictedGoods(row: Pick<RecipeRow, "key" | "version">): boolean {
+  return row.key === restrictedGoodsIntake.key && row.version >= restrictedGoodsIntake.minVersion;
+}
+
+/** The restrictedCategory of each image of an intake answer. */
+export function namedCategories(answer: unknown): Array<string | null> {
+  return list(record(answer).images).map((image) => {
+    const category = record(image).restrictedCategory;
+    return typeof category === "string" ? category : null;
+  });
 }
 
 /** A golden case whose seller text tries to change prices, flags or rules. */
@@ -183,6 +221,8 @@ export interface CaseResult {
   stage: RecipeStage;
   /** The answer passed the runner's schema. */
   schemaPass: boolean;
+  /** Present only for a case with explicit semantic acceptance checks. */
+  semanticIssues?: string[];
   /** The parsed answer, or null when it failed the schema. */
   answer: unknown;
   finish: LlmFinish | null;
@@ -347,6 +387,9 @@ export async function runCase(caller: LlmCaller, selected: SelectedRecipe, golde
     caseId: goldenCase.id,
     stage: row.stage,
     schemaPass,
+    ...(goldenCase.violations ? {
+      semanticIssues: schemaPass ? goldenCase.violations(answer) : ["No valid structured answer."],
+    } : {}),
     answer,
     finish,
     refused: (!outcome.ok && outcome.code === "content_blocked") || finish === "refused" || finish === "filtered",
@@ -426,6 +469,8 @@ export interface LiveReport {
   recipes: RecipeReport[];
   skipped: Array<{ key: string; reason: string }>;
   injection: InjectionResult[];
+  /** The prohibited goods fixtures, on the recipes that ask (P19-29). */
+  screening: ScreeningResult[];
   cases: CaseResult[];
   totals: { calls: number; costMicros: number; tokens: LlmUsage };
   /** The pass bar held for every recipe and fixture. */
@@ -612,6 +657,14 @@ export function recipeReport(
   const { bar, agreement, baselineRate } = baseline
     ? barChecks(selected.row.stage, results, baseline.recipes[selected.row.key], schemaPassRate)
     : { bar: [], agreement: null, baselineRate: null };
+  for (const result of results.filter((r) => r.semanticIssues !== undefined)) {
+    const issues = result.semanticIssues ?? [];
+    bar.push({
+      name: `${result.caseId} semantic checks`,
+      pass: issues.length === 0,
+      detail: issues.length === 0 ? "All explicit checks passed." : issues.join("; "),
+    });
+  }
   return {
     key: selected.row.key,
     version: selected.row.version,
@@ -661,6 +714,8 @@ export interface LiveEvalInput {
   rows: readonly RecipeRow[];
   cases: readonly GoldenCase[];
   injection: readonly InjectionFixture[];
+  /** The prohibited goods fixtures (P19-29); none when left out. */
+  screening?: readonly ScreeningFixture[];
   baseline: Baseline | null;
   only?: string[];
   model?: string;
@@ -683,8 +738,10 @@ export async function runLiveEval(input: LiveEvalInput): Promise<LiveReport> {
   const cases: CaseResult[] = [];
   const recipes: RecipeReport[] = [];
   const injection: InjectionResult[] = [];
+  const screening: ScreeningResult[] = [];
+  const cleanCategoryCases: string[] = [];
   for (const recipe of selected) {
-    const own = input.cases.filter((c) => c.stage === recipe.row.stage);
+    const own = input.cases.filter((c) => c.stage === recipe.row.stage && recipe.row.version >= (c.minRecipeVersion ?? 1));
     const results: CaseResult[] = [];
     for (const goldenCase of own) {
       log(`${recipe.row.key} v${recipe.row.version} on ${recipe.model}: ${goldenCase.id}`);
@@ -697,6 +754,29 @@ export async function runLiveEval(input: LiveEvalInput): Promise<LiveReport> {
       const result = await runCase(input.caller, recipe, fixture);
       cases.push(result);
       injection.push(guardResult(fixture, result, input.baseline));
+    }
+    if (asksRestrictedGoods(recipe.row)) {
+      // No regression on the existing set: no clean golden photo is put in a
+      // prohibited goods category.
+      for (const result of results.filter((r) => r.schemaPass)) {
+        if (namedCategories(result.answer).some((category) => category !== null)) {
+          cleanCategoryCases.push(`${recipe.row.key} v${recipe.row.version} ${result.caseId}`);
+        }
+      }
+      for (const fixture of (input.screening ?? []).filter((f) => f.stage === recipe.row.stage)) {
+        log(`${recipe.row.key} v${recipe.row.version} on ${recipe.model}: screening ${fixture.id}`);
+        const result = await runCase(input.caller, recipe, fixture);
+        cases.push(result);
+        const named = result.schemaPass ? namedCategories(result.answer) : [];
+        screening.push({
+          id: fixture.id,
+          recipeKey: recipe.row.key,
+          version: recipe.row.version,
+          expected: fixture.expectCategory,
+          named,
+          pass: named.length > 0 && named.every((category) => category === fixture.expectCategory),
+        });
+      }
     }
   }
 
@@ -716,6 +796,16 @@ export async function runLiveEval(input: LiveEvalInput): Promise<LiveReport> {
       failures.push(`injection ${result.id}: guard held on Claude but ${result.status} here (${result.violations.join("; ")})`);
     }
   }
+  for (const result of screening.filter((r) => !r.pass)) {
+    failures.push(
+      `screening ${result.id}: ${result.recipeKey} v${result.version} should name ${result.expected}, named ${
+        result.named.length === 0 ? "nothing that parsed" : result.named.map((c) => c ?? "none").join(", ")
+      }`,
+    );
+  }
+  for (const where of cleanCategoryCases) {
+    failures.push(`screening: a clean golden photo was put in a prohibited goods category (${where})`);
+  }
   const tokens = zeroUsage();
   for (const r of cases) addUsage(tokens, r.usage);
   return {
@@ -725,6 +815,7 @@ export async function runLiveEval(input: LiveEvalInput): Promise<LiveReport> {
     recipes,
     skipped,
     injection,
+    screening,
     cases,
     totals: {
       calls: cases.reduce((sum, r) => sum + r.calls, 0),
@@ -742,7 +833,7 @@ export function baselineFromReport(report: LiveReport): Baseline {
   for (const recipe of report.recipes) {
     recipes[recipe.key] = { version: recipe.version, model: recipe.model, cases: {} };
   }
-  const injectionIds = new Set(report.injection.map((i) => i.id));
+  const injectionIds = new Set([...report.injection.map((i) => i.id), ...(report.screening ?? []).map((s) => s.id)]);
   for (const result of report.cases) {
     if (injectionIds.has(result.caseId)) continue;
     const entry = recipes[result.recipeKey];
@@ -811,6 +902,21 @@ export function formatReport(report: LiveReport): string[] {
           i.status,
           i.baselinePass === null ? "-" : i.baselinePass ? "held" : "failed",
           i.guard,
+        ]),
+      ),
+    );
+  }
+  if ((report.screening ?? []).length > 0) {
+    lines.push("");
+    lines.push(
+      ...table(
+        ["screening", "recipe", "expected", "named", "status"],
+        report.screening.map((s) => [
+          s.id,
+          `${s.recipeKey} v${s.version}`,
+          s.expected,
+          s.named.length === 0 ? "-" : s.named.map((c) => c ?? "none").join(", "),
+          s.pass ? "pass" : "fail",
         ]),
       ),
     );

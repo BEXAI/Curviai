@@ -52,19 +52,11 @@ describe("canReveal", () => {
 describe("makeoverShareLink", () => {
   const JOB = "00000000-0000-4000-8000-000000000abc";
 
-  it("copies the workspace only pack page while public share pages are off", () => {
-    expect(makeoverShareLink("https://curvi.ai/", JOB, false)).toEqual({
+  it("copies the workspace only pack page, since public pages live at a published slug, not the job id", () => {
+    expect(makeoverShareLink("https://curvi.ai/", JOB)).toEqual({
       url: `https://curvi.ai/app/jobs/${JOB}`,
       audience: "workspace",
     });
-  });
-
-  it("points at /s/[slug] once public share pages are live", () => {
-    expect(makeoverShareLink("https://curvi.ai", JOB, true)).toEqual({ url: `https://curvi.ai/s/${JOB}`, audience: "public" });
-  });
-
-  it("defaults to the workspace link, since public pages live at a published slug, not the job id", () => {
-    expect(makeoverShareLink("https://curvi.ai", JOB).audience).toBe("workspace");
   });
 });
 

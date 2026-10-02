@@ -1,0 +1,28 @@
+{
+  "id": "{{EVENT_ID}}",
+  "object": "event",
+  "api_version": "2025-08-27.basil",
+  "created": "{{CREATED}}",
+  "data": {
+    "object": {
+      "id": "{{DISPUTE_ID}}",
+      "object": "dispute",
+      "amount": "{{AMOUNT}}",
+      "balance_transactions": [],
+      "charge": "{{CHARGE_ID}}",
+      "created": "{{CREATED}}",
+      "currency": "usd",
+      "evidence_details": { "due_by": "{{CREATED}}", "has_evidence": false, "past_due": false, "submission_count": 0 },
+      "is_charge_refundable": false,
+      "livemode": false,
+      "metadata": {},
+      "payment_intent": "{{PAYMENT_INTENT_ID}}",
+      "reason": "fraudulent",
+      "status": "{{DISPUTE_STATUS}}"
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "{{TYPE}}"
+}

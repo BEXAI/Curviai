@@ -1,0 +1,33 @@
+{
+  "id": "{{LINE_ID}}",
+  "object": "line_item",
+  "amount": "{{LINE_AMOUNT}}",
+  "currency": "usd",
+  "description": "Fixture line",
+  "discount_amounts": [],
+  "discountable": "{{DISCOUNTABLE}}",
+  "discounts": [],
+  "invoice": "{{INVOICE_ID}}",
+  "livemode": false,
+  "metadata": {},
+  "parent": {
+    "invoice_item_details": null,
+    "subscription_item_details": {
+      "invoice_item": null,
+      "proration": "{{PRORATION}}",
+      "proration_details": { "credited_items": null },
+      "subscription": "{{SUBSCRIPTION_ID}}",
+      "subscription_item": "si_FixtureItem"
+    },
+    "type": "subscription_item_details"
+  },
+  "period": { "end": "{{LINE_END}}", "start": "{{LINE_START}}" },
+  "pretax_credit_amounts": [],
+  "pricing": {
+    "price_details": { "price": "{{LINE_PRICE}}", "product": "prod_FixtureTier" },
+    "type": "price_details",
+    "unit_amount_decimal": "{{LINE_AMOUNT}}"
+  },
+  "quantity": 1,
+  "taxes": []
+}

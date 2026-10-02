@@ -1,98 +1,19 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 import { buttonVariants } from "@curvi/ui";
-import { JsonLd } from "@/components/json-ld";
-import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
-import { helpArticles, helpClosing, structuredHelpArticles } from "@/components/marketing/help-articles";
-import { pillarPages } from "@/components/marketing/pillar-copy";
-import { breadcrumbJsonLd, faqPageJsonLd, jsonLdGraph, pageMetadata } from "@/lib/seo";
-
-export const metadata: Metadata = pageMetadata({
-  title: "Help center for AI product images on Shopify and Amazon",
-  description:
-    "Plain answers about Curvi's AI e-commerce images for Shopify and Amazon: what photo to upload, how credits work, compliance reports, brand kits and channels.",
-  path: "/help",
-});
-
+import { HelpIndex } from "@/components/marketing/help-index";
+import { liveHelpArticles, helpClosing } from "@/components/marketing/help-articles";
+import { SignupLink } from "@/components/marketing/signup-link";
+import { LEGAL_FACTS } from "@/lib/legal/facts";
+import { supportReplyTime } from "@/lib/legal/copy";
+import { pageMetadata } from "@/lib/seo";
+export const metadata = pageMetadata({ title: "Curvi help center", description: "Answers about your photos, listing packs, credits and account.", path: "/help" });
 export default function HelpPage() {
-  return (
-    <div className="mx-auto max-w-3xl px-6 py-16">
-      <JsonLd
-        data={jsonLdGraph([
-          faqPageJsonLd(
-            structuredHelpArticles().map((article) => ({ question: article.title, answer: article.body.join(" ") })),
-          ),
-          breadcrumbJsonLd([
-            { name: "Home", path: "/" },
-            { name: "Help center", path: "/help" },
-          ]),
-        ])}
-      />
-      <h1 className="text-4xl font-bold tracking-tight text-ink-950">Help center</h1>
-      <p className="mt-4 text-lg text-ink-600">
-        Plain answers, no ticket required. If something is missing, email{" "}
-        <a href="mailto:hello@curvi.ai" className="font-medium text-ink-900 underline">
-          hello@curvi.ai
-        </a>{" "}
-        and a human replies.
-      </p>
-
-      <nav aria-label="Articles" className="mt-8 rounded-xl border border-ink-100 bg-ink-50 p-5">
-        <h2 className="text-sm font-semibold text-ink-900">In this help center</h2>
-        <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-          {helpArticles.map((article) => (
-            <li key={article.slug}>
-              <a href={`#${article.slug}`} className="text-sm text-ink-600 underline hover:text-ink-950">
-                {article.title}
-              </a>
-              {article.status === "coming_soon" ? <ComingSoonBadge className="ml-2 align-middle" /> : null}
-            </li>
-          ))}
-        </ul>
-      </nav>
-
-      <div className="mt-10 space-y-12">
-        {helpArticles.map((article) => (
-          <article key={article.slug} id={article.slug} className="scroll-mt-24">
-            <h2 className="flex flex-wrap items-center gap-3 text-2xl font-semibold text-ink-950">
-              {article.title}
-              {article.status === "coming_soon" ? <ComingSoonBadge /> : null}
-            </h2>
-            {article.body.map((paragraph) => (
-              <p key={paragraph.slice(0, 40)} className="mt-3 text-ink-600">
-                {paragraph}
-              </p>
-            ))}
-          </article>
-        ))}
-      </div>
-
-      <nav aria-label="Guides" className="mt-16">
-        <h2 className="text-lg font-semibold text-ink-950">Guides</h2>
-        <ul className="mt-3 flex flex-wrap gap-2">
-          {pillarPages.map((guide) => (
-            <li key={guide.path}>
-              <Link
-                href={guide.path}
-                className="inline-block rounded-full border border-ink-200 px-3 py-1 text-sm text-ink-600 hover:bg-ink-50"
-              >
-                {guide.name}
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </nav>
-
-      <div className="mt-10 rounded-xl border border-ink-100 p-8 text-center">
-        <h2 className="text-xl font-semibold text-ink-950">Ready to try it?</h2>
-        <p className="mt-2 text-sm text-ink-600">{helpClosing}</p>
-        <Link
-          href="/signup"
-          className={buttonVariants({ variant: "secondary", size: "lg", className: "mt-5" })}
-        >
-          Get started
-        </Link>
-      </div>
-    </div>
-  );
+  const articles = liveHelpArticles();
+  return <div className="mx-auto max-w-3xl px-6 py-16">
+    <h1 className="text-4xl font-semibold text-ink-950">Help center</h1>
+    <p className="mt-4 text-ink-600">Find an answer, or <Link href="/support" className="underline">contact us</Link> for help with your pack or account.</p>
+    <p className="mt-3 text-sm text-ink-600">If something is missing, email <a className="underline" href={`mailto:${LEGAL_FACTS.support.email}`}>{LEGAL_FACTS.support.email}</a> and a person replies within {supportReplyTime(LEGAL_FACTS)}.</p>
+    <HelpIndex articles={articles.map(({ slug, title, group }) => ({ slug, title, group }))} />
+    <div className="mt-10 rounded-xl border border-ink-100 p-8 text-center"><h2 className="text-xl font-semibold">Ready to try it?</h2><p className="mt-2 text-sm text-ink-600">{helpClosing}</p><SignupLink source="help" className={buttonVariants({ variant: "secondary", size: "lg", className: "mt-5" })}>Get started</SignupLink></div>
+  </div>;
 }

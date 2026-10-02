@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { tiers } from "@curvi/pipeline/seed";
+import { tierByKey, tiers } from "@curvi/pipeline/seed";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import robots from "@/app/robots";
@@ -33,6 +33,7 @@ import {
   serializeJsonLd,
   softwareApplicationJsonLd,
 } from "./seo";
+import { stubOpenCheckout } from "@/lib/billing/test-env";
 
 // CLAUDE.md rule 9: no emojis, no arrows, no dashes as punctuation. Hyphens
 // inside words such as "e-commerce" are fine.
@@ -195,8 +196,8 @@ describe("guide pages", () => {
     }
   });
 
-  it("are in the sitemap", () => {
-    const urls = sitemap().map((entry) => new URL(entry.url).pathname);
+  it("are in the sitemap", async () => {
+    const urls = (await sitemap()).map((entry) => new URL(entry.url).pathname);
     for (const page of pillarPages) {
       expect(urls).toContain(page.path);
     }
@@ -257,10 +258,14 @@ describe("JSON-LD", () => {
     expect(app.offers.map((offer) => offer.price)).toEqual([0]);
   });
 
-  it("prices every offer from the tier seed once Stripe is configured", () => {
-    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_placeholder");
+  it("prices every offer sold online from the tier seed once Stripe is configured", () => {
+    stubOpenCheckout(vi.stubEnv);
     const app = softwareApplicationJsonLd() as { offers: { price: number }[] };
-    expect(app.offers.map((offer) => offer.price)).toEqual(tiers.map((tier) => tier.monthlyUsd));
+    // Agency is set up by email (P20-08), so it is not offered.
+    expect(app.offers.map((offer) => offer.price)).toEqual(
+      tiers.filter((tier) => tier.monthlyUsd === 0 || tier.selfServe).map((tier) => tier.monthlyUsd),
+    );
+    expect(app.offers.map((offer) => offer.price)).not.toContain(tierByKey("agency").monthlyUsd);
   });
 
   it("lists only live features, none of the unshipped ones", () => {
@@ -308,9 +313,12 @@ describe("llms.txt", () => {
   });
 
   it("lists seed prices and every channel requirements page", () => {
-    for (const tier of tiers.filter((t) => t.monthlyUsd > 0)) {
+    for (const tier of tiers.filter((t) => t.monthlyUsd > 0 && t.selfServe)) {
       expect(text).toContain(`$${tier.monthlyUsd} per month`);
     }
+    // Agency is set up by email (P20-08): no price, the larger plan line.
+    expect(text).not.toContain(`$${tierByKey("agency").monthlyUsd} per month`);
+    expect(text).toContain("Need more than Pro? Email us and we will set up a larger plan.");
     for (const spec of imageSpecs()) {
       expect(text).toContain(`${specDisplayName(spec.id)} requirements`);
     }
@@ -350,15 +358,15 @@ describe("llms.txt", () => {
     expect(unqualifiedClaims(SITE_FEATURES.join(". "))).toEqual([]);
   });
 
-  it("lists the API, MCP server, CLI and skill, and says coming soon until they ship", () => {
-    const line = text.split("\n").find((entry) => entry.includes(`/help#${AGENT_HELP_SLUG}`));
-    expect(line).toBeDefined();
+  it("links the agent guide only when its public article is live", () => {
+    const line = text.split("\n").find((entry) => entry.includes(`/help/${AGENT_HELP_SLUG}`));
+    expect(Boolean(line)).toBe(isLive("agentApi"));
     expect(helpArticles.some((article) => article.slug === AGENT_HELP_SLUG)).toBe(true);
     for (const phrase of ["Curvi API", "MCP server", "command line tool", "Curvi skill"]) {
-      expect(line).toContain(phrase);
+      if (line) expect(line).toContain(phrase);
     }
     if (!isLive("agentApi") || !isLive("agentSkill")) {
-      expect(line).toContain("coming soon");
+      if (line) expect(line).toContain("coming soon");
       expect(text).toContain(`- ${FEATURES.agentApi.label}`);
       expect(text).toContain(`- ${FEATURES.agentSkill.label}`);
     }

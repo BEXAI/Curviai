@@ -2,8 +2,11 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
 import { ApiKeysPanel } from "@/components/app/api-keys-panel";
+import { CODEX_KEY_ENV, codexConfigToml, mcpServerUrl } from "@/lib/agent-setup";
 import { listApiKeys } from "@/lib/api-keys/manage";
 import { sessionApiKeyManager } from "@/lib/api-keys/session";
+import { API_KEY_MCP_TOOLS } from "@/lib/api-v1/mcp-tools";
+import { isLive, joinList } from "@/lib/marketing-facts";
 
 export const metadata: Metadata = { title: "API keys" };
 export const dynamic = "force-dynamic";
@@ -68,10 +71,33 @@ export default async function ApiKeysPage() {
             .
           </p>
           <p>
-            To use Curvi from an AI agent, add the MCP server at <code>/api/mcp</code> on this site with the same
-            header. It offers create_pack, get_pack, check_main_image and list_channels.
+            To use Curvi from an AI agent, add the MCP server at <code>{mcpServerUrl()}</code> with the same header. It
+            offers {joinList(API_KEY_MCP_TOOLS.map((tool) => tool.name))}.
           </p>
           <p>File links the API returns work for 15 minutes. Revoke a key here and every call made with it stops at once.</p>
+        </CardContent>
+      </Card>
+
+      <Card data-testid="api-keys-assistants">
+        <CardHeader>
+          <CardTitle>ChatGPT and Codex</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm text-ink-700">
+          <p>
+            {isLive("chatgptPlugin")
+              ? "ChatGPT needs no key. Connect Curvi in ChatGPT and sign in with your Curvi account; you can disconnect it in Settings, Connected apps."
+              : "ChatGPT will not need a key. Connecting Curvi in ChatGPT with your Curvi account is coming soon."}
+          </p>
+          <p>
+            Codex can use a key now. Set the key as <code>{CODEX_KEY_ENV}</code> in your environment and add these lines
+            to your Codex config.toml:
+          </p>
+          <pre
+            data-testid="codex-config"
+            className="overflow-x-auto rounded-lg border border-ink-100 bg-ink-50 p-4 text-xs text-ink-800"
+          >
+            <code>{codexConfigToml()}</code>
+          </pre>
         </CardContent>
       </Card>
     </div>

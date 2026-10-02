@@ -24,11 +24,14 @@ import { publicOrigin } from "@/lib/http/public-origin";
 import { Readable } from "node:stream";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { NextResponse } from "next/server";
+import { ADS_CSV_NAME } from "@curvi/pipeline/csv";
+import { pickedComplianceReport } from "@/lib/compliance-report";
 import { isR2Configured } from "@/lib/env";
+import { recordFunnel } from "@/lib/funnel";
 import { resolveSignedIn } from "@/lib/http/services";
 import { zipStream } from "@/lib/http/zip-stream";
-import { isPageNavigation, packZipEntries, packZipRefusalPath, type PackZipRefusal } from "@/lib/pack-zip";
-import { isWorkspaceKey, objectExists, privateBucket, r2Client } from "@/lib/r2";
+import { isPageNavigation, packZipEntries, packZipAdsCsv, zipAssetMetadata, packZipRefusalPath, type PackZipRefusal } from "@/lib/pack-zip";
+import { getObjectBytes, isWorkspaceKey, objectExists, privateBucket, r2Client } from "@/lib/r2";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
 import { isDbMode } from "@/lib/services";
 import { getDb, servesFiles } from "@/lib/services/db";
@@ -158,12 +161,28 @@ async function packZip(request: Request, { params }: { params: Promise<{ id: str
   ]);
   // Only picked files ship (PHASE_16 workstream 6): an extra scene version
   // the seller has not picked stays out of the zip.
-  const ownVariants = variants.filter((v) => v.picked && isWorkspaceKey(workspaceId, v.r2Key));
+  const ownVariants = variants.filter((v) => v.picked && isWorkspaceKey(workspaceId, v.r2Key))
+    .map((v) => ({ ...v, ...zipAssetMetadata(assetRows.find((a) => a.id === v.assetId)?.qc ?? null) }));
   if (ownVariants.length === 0) {
     return refuse(request, job.id, "no_files", "This pack has no files to download.", 404);
   }
   const report = reports.find((r) => isWorkspaceKey(workspaceId, r.r2Key)) ?? null;
-  const entries = packZipEntries(ownVariants, report);
+  const entries = packZipEntries(ownVariants, null);
+  const inline = new Map<string, Buffer>();
+  let raw: unknown = null;
+  if (report) {
+    try {
+      const bytes = await getObjectBytes(report.r2Key);
+      raw = bytes ? JSON.parse(bytes.toString("utf8")) : null;
+    } catch { /* Exact per-file records below may still supply the report. */ }
+  }
+  const selected = pickedComplianceReport(raw, ownVariants.map((v) => ({ ...v, workspaceId, jobId: job.id })), assetRows);
+  if (report && !selected) {
+    return refuse(request, job.id, "missing_files", "This pack's saved checks are not available right now. Try again or contact us.", 409);
+  }
+  if (selected) inline.set("inline:report", Buffer.from(JSON.stringify(selected, null, 2)));
+  const csv = packZipAdsCsv(ownVariants, entries);
+  if (csv) inline.set("inline:ads", Buffer.from(csv));
 
   const present = await Promise.all(entries.map((entry) => objectExists(entry.r2Key)));
   const missing = entries.filter((_, index) => !present[index]);
@@ -180,9 +199,16 @@ async function packZip(request: Request, { params }: { params: Promise<{ id: str
     );
   }
 
+  // The server side funnel (P18-02): a download, and the workspace's first.
+  await recordFunnel({ workspaceId, name: "download", first: true, props: { kind: "zip" } }, db);
+
   const body = zipStream(
-    entries.map((entry) => ({ name: entry.name, source: entry.r2Key })),
-    openObject,
+    [
+      ...entries.map((entry) => ({ name: entry.name, source: entry.r2Key })),
+      ...(inline.has("inline:report") ? [{ name: "compliance-report.json", source: "inline:report" }] : []),
+      ...(inline.has("inline:ads") ? [{ name: ADS_CSV_NAME, source: "inline:ads" }] : []),
+    ],
+    async (source) => inline.has(source) ? Readable.from([inline.get(source)!]) : openObject(source),
     (err) => console.error(`[pack] zip for job ${job.id} failed`, err),
   );
   return new Response(body, {

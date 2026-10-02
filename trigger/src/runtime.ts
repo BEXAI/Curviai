@@ -1,3 +1,5 @@
+import { costCaps, spendCapPolicy } from "@curvi/pipeline/seed";
+import { resolveHardStopValue } from "./spend-policy";
 /**
  * Runtime dependency wiring for the Trigger.dev task wrappers. With zero env
  * vars set, everything here runs against in memory demo implementations: a
@@ -35,7 +37,7 @@ import { canvasSizeFor, encodeForSpec, stillQcErosion } from "./shot-outputs";
 import { parseShotConcurrency } from "./shot-concurrency";
 import type { DropWorkspace } from "./drops";
 import { LlmMonitorMeter, processLlmMonitor, type LlmMonitor } from "./llm-monitor";
-import { SpendAlertNotifier } from "./spend-alerts";
+import { SpendAlertNotifier, type AlertDedupe } from "./spend-alerts";
 import { processQuotaNotifier, type QuotaEventWriter } from "./provider-quota";
 import {
   activeRecipe,
@@ -337,6 +339,8 @@ export interface RuntimeDepsOptions {
    * per process only, which is fine for demo mode and tests but not for
    * production, where every task run builds fresh deps. */
   capStore?: CapStore;
+  globalHardStopMicros?: () => Promise<number>;
+  workspaceExpectedDailyMicros?: (workspaceId: string) => Promise<number>;
   /** True when the run settles real customer credits (the db backed store).
    * The demo generator is then never used, even with no provider keys:
    * charging for synthetic placeholders is never acceptable. Local db
@@ -351,6 +355,9 @@ export interface RuntimeDepsOptions {
   /** Where provider_quota_exhausted events rows go (the db runtime); logs
    * only without one. */
   quotaEventDb?: QuotaEventWriter;
+  /** Shared claims for the founder's quota emails on cutout and image
+   * providers (PHASE_18 P18-03); the db runtime passes its PgCapStore. */
+  quotaAlertDedupe?: AlertDedupe;
   /** LLM usage counters and the OpenAI founder alerts (docs/phases/
    * PHASE_17.md workstream 6). The db runtime passes one on the shared
    * counters table; without it a process wide monitor keeps in memory
@@ -403,15 +410,14 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   registry.register(new DemoLlmProvider());
   // The founder raises the $150 global hard stop through this env var
   // (plan 4.4). The other cap amounts are platform constants in @curvi/ai.
-  const hardStopUsd = Number(optionalEnv("DAILY_SPEND_HARD_STOP_USD") ?? "");
   const caps = new SpendCaps(opts.capStore ?? new InMemoryCapStore(), () => new Date(), {
-    globalDailyHardStopMicros:
-      Number.isFinite(hardStopUsd) && hardStopUsd > 0 ? Math.round(hardStopUsd * 1_000_000) : undefined,
+    ...spendCapPolicy,
+    globalDailyHardStopMicros: opts.globalHardStopMicros ?? resolveHardStopValue(undefined, optionalEnv("DAILY_SPEND_HARD_STOP_USD")),
   });
   const routing = demoRoutingTable();
   const onSpendAlert = opts.onSpendAlert ?? defaultSpendAlert();
   const llmMonitor = opts.llmMonitor ?? processLlmMonitor();
-  const quotaNotifier = processQuotaNotifier(opts.quotaEventDb);
+  const quotaNotifier = processQuotaNotifier(opts.quotaEventDb, opts.quotaAlertDedupe);
   const ai: PipelineDeps["ai"] = {
     registry,
     routing,
@@ -423,13 +429,11 @@ export function buildRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
     // health endpoint and new pack preflight read the same state.
     breakerStore: processBreakerStore(),
     caps,
+    workspaceExpectedDailyMicros: opts.workspaceExpectedDailyMicros ?? (async () => costCaps.workspaceExpectedDailyMicrosByTier.free),
     onCapAlert: onSpendAlert,
     onInternalError: reportAiInternalError,
     onProviderQuota: async (info: ProviderQuotaInfo) => {
       await quotaNotifier.onProviderQuota(info);
-      // The founder email runs in the background: the router awaits this
-      // hook before it fails over, and a slow Resend must not hold that.
-      llmMonitor.onProviderQuotaInBackground(info);
     },
   };
   const wiring = wireLiveProviders(registry, routing);

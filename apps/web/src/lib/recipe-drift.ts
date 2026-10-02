@@ -4,12 +4,13 @@
  * models from the table first (trigger/src/recipes.ts), so any difference
  * means production runs other prompts or models than the code in this
  * build. Each row is compared on key, version, model, fallback models,
- * active flag and a hash of its body; the report carries hashes and model
+ * active flag, traffic percentage and a hash of its body; the report carries hashes and model
  * ids, never prompt text.
  */
 
 import { createHash } from "node:crypto";
 import { sql } from "@curvi/db";
+import { canonicalJson } from "@curvi/pipeline/output-options";
 import type { SqlExecutor } from "@/lib/service-health";
 
 export interface RecipeLike {
@@ -19,6 +20,7 @@ export interface RecipeLike {
   fallbackModels?: readonly string[] | null;
   body: unknown;
   active: boolean;
+  trafficPct?: number | null;
 }
 
 export type RecipeDriftIssue =
@@ -30,6 +32,7 @@ export type RecipeDriftIssue =
   | "unexpected_active"
   | "model"
   | "fallback_models"
+  | "traffic_pct"
   | "body";
 
 export interface RecipeDrift {
@@ -42,22 +45,8 @@ export interface RecipeDrift {
   actual?: string;
 }
 
-/** JSON with object keys sorted at every level, so a jsonb round trip
- * (which reorders keys) hashes the same as the seed object. */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => (item === undefined ? "null" : canonicalJson(item))).join(",")}]`;
-  }
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
-}
-
-/** Short sha256 of a recipe body in canonical form. */
+/** Short sha256 of a recipe body in canonical form (keys sorted at every
+ * level, so a jsonb round trip hashes the same as the seed object). */
 export function recipeBodyHash(body: unknown): string {
   return createHash("sha256").update(canonicalJson(body)).digest("hex").slice(0, 16);
 }
@@ -77,17 +66,21 @@ export function compareRecipes(tableRows: readonly RecipeLike[], seedRows: reado
   const seed = new Map(seedRows.map((row) => [rowId(row), row]));
 
   for (const expected of seedRows) {
-    if (!expected.active) continue;
     const where = { key: expected.key, version: expected.version };
     const actual = table.get(rowId(expected));
     if (!actual) {
-      drift.push({ ...where, issue: "missing" });
+      if (expected.active) drift.push({ ...where, issue: "missing" });
       continue;
     }
-    if (!actual.active) {
-      drift.push({ ...where, issue: "inactive" });
-      continue;
+    if (actual.active !== expected.active) {
+      drift.push({ ...where, issue: expected.active ? "inactive" : "unexpected_active", expected: String(expected.active), actual: String(actual.active) });
     }
+    const expectedTraffic = expected.trafficPct ?? 100;
+    const actualTraffic = actual.trafficPct ?? 100;
+    if (actualTraffic !== expectedTraffic) {
+      drift.push({ ...where, issue: "traffic_pct", expected: String(expectedTraffic), actual: String(actualTraffic) });
+    }
+    if (!expected.active || !actual.active) continue;
     if (actual.model !== expected.model) {
       drift.push({ ...where, issue: "model", expected: expected.model, actual: actual.model });
     }
@@ -105,7 +98,7 @@ export function compareRecipes(tableRows: readonly RecipeLike[], seedRows: reado
 
   for (const actual of tableRows) {
     if (!actual.active) continue;
-    if (!seed.get(rowId(actual))?.active) {
+    if (!seed.has(rowId(actual))) {
       drift.push({ key: actual.key, version: actual.version, issue: "unexpected_active", actual: actual.model });
     }
   }
@@ -119,6 +112,7 @@ interface RecipeDbRow {
   fallback_models: unknown;
   body: unknown;
   active: boolean | string;
+  traffic_pct?: number | string | null;
 }
 
 /** postgres-js returns the rows as an array, PGlite as { rows }. */
@@ -142,7 +136,7 @@ function parseJson(value: unknown): unknown {
 /** Every row of the recipes table, in the comparable shape. */
 export async function readRecipeRows(db: SqlExecutor): Promise<RecipeLike[]> {
   const rows = rowsOf<RecipeDbRow>(
-    await db.execute(sql`select key, version, model, fallback_models, body, active from recipes`),
+    await db.execute(sql`select key, version, model, fallback_models, body, active, traffic_pct from recipes`),
   );
   return rows.map((row) => {
     const fallbacks = parseJson(row.fallback_models);
@@ -153,6 +147,7 @@ export async function readRecipeRows(db: SqlExecutor): Promise<RecipeLike[]> {
       fallbackModels: Array.isArray(fallbacks) ? fallbacks.filter((m): m is string => typeof m === "string") : [],
       body: parseJson(row.body),
       active: row.active === true || row.active === "t" || row.active === "true",
+      trafficPct: row.traffic_pct == null ? 100 : Number(row.traffic_pct),
     };
   });
 }

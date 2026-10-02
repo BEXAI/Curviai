@@ -48,6 +48,7 @@ import {
   type RecordedProbe,
 } from "@curvi/ai";
 import { liveProviderTargets } from "@curvi/trigger/provider-probes";
+import { readProviderProbes, type StoredProviderProbe } from "@curvi/trigger/provider-canary";
 import { optionalEnv } from "@/lib/env";
 
 export type PreflightVerdict = "ok" | "scenes_paused" | "packs_paused";
@@ -135,10 +136,6 @@ export async function evaluatePreflightDetail(deps: PreflightDeps): Promise<Pref
   return { verdict: "ok", cause: null };
 }
 
-export async function evaluatePreflight(deps: PreflightDeps): Promise<PreflightVerdict> {
-  return (await evaluatePreflightDetail(deps)).verdict;
-}
-
 /** The banner copy for a verdict, or null when there is nothing to say. */
 export function preflightCopy(verdict: PreflightVerdict, cause?: PauseCause | null): string | null {
   if (verdict === "packs_paused") return packsPausedCopy(cause);
@@ -156,10 +153,11 @@ export type RecentQuotaReader = (providers: readonly string[]) => Promise<Map<st
  * it tripped. Never throws.
  */
 export async function restoreQuotaTrips(
-  breaker: Pick<CircuitBreaker, "isOpen" | "tripForQuota">,
+  breaker: Pick<CircuitBreaker, "isOpen" | "tripForQuota"> & Partial<Pick<CircuitBreaker, "reset" | "openReason">>,
   targets: readonly PreflightTarget[],
   readRecent: RecentQuotaReader,
   now: number,
+  resolved: ReadonlyMap<string, number> = new Map(),
 ): Promise<string[]> {
   const cutouts = targets.filter((t) => t.kind === "cutout" && t.configured).map((t) => t.name);
   if (cutouts.length === 0) return [];
@@ -168,6 +166,11 @@ export async function restoreQuotaTrips(
     const recent = await readRecent(cutouts);
     for (const name of cutouts) {
       const at = recent.get(name);
+      const clearedAt = resolved.get(name);
+      if (clearedAt !== undefined && (at === undefined || at <= clearedAt)) {
+        if (await breaker.openReason?.(name) === "quota") await breaker.reset?.(name);
+        continue;
+      }
       if (at === undefined) continue;
       const left = Math.floor((at + QUOTA_OPEN_SECONDS * 1000 - now) / 1000);
       if (left <= 0 || (await breaker.isOpen(name))) continue;
@@ -204,6 +207,15 @@ const readRecentQuotaEvents: RecentQuotaReader = async (providers) => {
       out.set(row.provider, at);
     }
   }
+  // Unlike the hourly history event, this row advances on every answer,
+  // so a fresh quota failure after a pass is never hidden by email dedupe.
+  const latest = await getDb().execute(sql`select key, value from platform_settings where key like 'provider_quota:last:%'`);
+  const latestRows = (Array.isArray(latest) ? latest : ((latest as { rows?: unknown[] }).rows ?? [])) as Array<{ key: string; value: { at?: unknown } }>;
+  for (const row of latestRows) {
+    const provider = row.key.slice("provider_quota:last:".length);
+    const at = row.value?.at;
+    if (providers.includes(provider) && typeof at === "number" && Number.isFinite(at)) out.set(provider, Math.max(at, out.get(provider) ?? 0));
+  }
   return out;
 };
 
@@ -211,7 +223,19 @@ const scope = globalThis as typeof globalThis & {
   __curviPreflight?: { detail: PreflightDetail; at: number };
 };
 
-export type ProviderPreflightDeps = Partial<PreflightDeps> & { readRecentQuota?: RecentQuotaReader };
+export type ProviderPreflightDeps = Partial<PreflightDeps> & {
+  readRecentQuota?: RecentQuotaReader;
+  readStoredProbes?: () => Promise<Map<string, StoredProviderProbe>>;
+};
+
+async function storedProbes(): Promise<Map<string, StoredProviderProbe>> {
+  const { isDbMode } = await import("@/lib/services");
+  if (!isDbMode()) return new Map();
+  const { getDb } = await import("@/lib/services/db");
+  return readProviderProbes(getDb());
+}
+
+export function clearProviderPreflightCache(): void { delete scope.__curviPreflight; }
 
 /** The live verdict and its cause for this process, cached for
  * PREFLIGHT_CACHE_MS. Never throws. */
@@ -225,9 +249,14 @@ export async function providerPreflightDetail(deps?: ProviderPreflightDeps): Pro
   try {
     const breaker = new CircuitBreaker(processBreakerStore());
     const targets = deps?.targets ?? liveProviderTargets(optionalEnv);
+    const durable = await (deps?.readStoredProbes ?? (deps ? async () => new Map<string, StoredProviderProbe>() : storedProbes))();
+    const resolved = new Map([...durable].flatMap(([name, probe]) => {
+      const at = Math.max(probe.passedAt ?? 0, probe.resetAt ?? 0);
+      return at > 0 ? [[name, at] as const] : [];
+    }));
     const readRecent = deps ? deps.readRecentQuota : readRecentQuotaEvents;
     if (readRecent) {
-      await restoreQuotaTrips(breaker, targets, readRecent, now());
+      await restoreQuotaTrips(breaker, targets, readRecent, now(), resolved);
     }
     const injectedOpen = deps?.isOpen;
     const openReason = deps?.openReason ?? (injectedOpen ? undefined : (name: string) => breaker.openReason(name));
@@ -235,7 +264,11 @@ export async function providerPreflightDetail(deps?: ProviderPreflightDeps): Pro
       targets,
       isOpen: injectedOpen ?? ((name) => breaker.isOpen(name)),
       ...(openReason ? { openReason } : {}),
-      lastProbe: deps?.lastProbe ?? lastProbeReport,
+      lastProbe: deps?.lastProbe ?? ((name) => {
+        const probe = durable.get(name);
+        if (probe) return probe.resetAt !== null && probe.resetAt >= probe.at ? null : probe;
+        return lastProbeReport(name);
+      }),
       now,
     });
   } catch (err) {
@@ -245,9 +278,4 @@ export async function providerPreflightDetail(deps?: ProviderPreflightDeps): Pro
     scope.__curviPreflight = { detail, at: now() };
   }
   return detail;
-}
-
-/** The live verdict for this process, cached for PREFLIGHT_CACHE_MS. Never throws. */
-export async function providerPreflight(deps?: ProviderPreflightDeps): Promise<PreflightVerdict> {
-  return (await providerPreflightDetail(deps)).verdict;
 }

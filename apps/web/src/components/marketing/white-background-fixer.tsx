@@ -1,12 +1,21 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Card, CardContent, buttonVariants } from "@curvi/ui";
 import { EmailGate } from "./email-gate";
+import { FreePreviewBox } from "./free-preview-box";
 import { fixerGateCopy } from "./tool-copy";
 
 const DEFAULT_THRESHOLD = 230;
+const MIN_THRESHOLD = 180;
+const MAX_THRESHOLD = 254;
 const PREVIEW_MAX_SIDE = 1200;
+
+/** The slider reads as strength: further right lowers the brightness a pixel
+ * needs to turn white, so more of the photo is whitened. */
+function thresholdFor(strength: number): number {
+  return MIN_THRESHOLD + MAX_THRESHOLD - strength;
+}
 
 /**
  * Threshold based background whitening, entirely in the browser. Pixels where
@@ -20,9 +29,11 @@ const PREVIEW_MAX_SIDE = 1200;
 export function WhiteBackgroundFixer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const [threshold, setThreshold] = useState(DEFAULT_THRESHOLD);
+  const urlRef = useRef<string | null>(null);
+  const [strength, setStrength] = useState(MIN_THRESHOLD + MAX_THRESHOLD - DEFAULT_THRESHOLD);
   const [loaded, setLoaded] = useState(false);
   const [fileName, setFileName] = useState("image");
+  const [sourceFile, setSourceFile] = useState<File | undefined>();
   const [error, setError] = useState<string | null>(null);
 
   const render = useCallback((img: HTMLImageElement, t: number) => {
@@ -50,32 +61,45 @@ export function WhiteBackgroundFixer() {
     ctx.putImageData(imageData, 0, 0);
   }, []);
 
+  // The last chosen file's object URL, released when the next file is
+  // chosen and when the tool unmounts.
+  useEffect(
+    () => () => {
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    },
+    [],
+  );
+
   const onFile = useCallback(
     (file: File | undefined) => {
       if (!file) return;
       setError(null);
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
       const url = URL.createObjectURL(file);
+      urlRef.current = url;
       const img = new Image();
       img.onload = () => {
         imageRef.current = img;
         setFileName(file.name.replace(/\.[^.]+$/, ""));
+        setSourceFile(file);
         setLoaded(true);
-        render(img, threshold);
+        render(img, thresholdFor(strength));
       };
       img.onerror = () => {
         setError("That file could not be read as an image. Try a jpg or png.");
         URL.revokeObjectURL(url);
+        if (urlRef.current === url) urlRef.current = null;
       };
       img.src = url;
     },
-    [render, threshold],
+    [render, strength],
   );
 
-  const onThreshold = useCallback(
+  const onStrength = useCallback(
     (value: number) => {
-      setThreshold(value);
+      setStrength(value);
       if (imageRef.current) {
-        render(imageRef.current, value);
+        render(imageRef.current, thresholdFor(value));
       }
     },
     [render],
@@ -97,7 +121,7 @@ export function WhiteBackgroundFixer() {
           <label className="block cursor-pointer rounded-xl border-2 border-dashed border-ink-200 bg-ink-50 p-8 text-center transition-colors hover:border-accent-500">
             <span className="block text-sm font-medium text-ink-900">Choose a product photo</span>
             <span className="mt-1 block text-sm text-ink-500">
-              Runs in your browser. Nothing is uploaded.
+              Runs in your browser. Nothing is uploaded unless you choose a Curvi cutout below.
             </span>
             <input
               type="file"
@@ -121,13 +145,12 @@ export function WhiteBackgroundFixer() {
               Whitening strength
               <input
                 type="range"
-                min={180}
-                max={254}
-                value={threshold}
-                onChange={(event) => onThreshold(Number(event.target.value))}
+                min={MIN_THRESHOLD}
+                max={MAX_THRESHOLD}
+                value={strength}
+                onChange={(event) => onStrength(Number(event.target.value))}
                 className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-ink-100 accent-accent-500"
               />
-              <span className="w-10 text-right tabular-nums text-ink-500">{threshold}</span>
             </label>
           </div>
           <canvas
@@ -145,6 +168,7 @@ export function WhiteBackgroundFixer() {
               Download preview
             </Button>
           </EmailGate>
+          {sourceFile ? <FreePreviewBox key={urlRef.current} file={sourceFile} /> : null}
         </CardContent>
       </Card>
     </div>

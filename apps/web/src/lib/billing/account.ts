@@ -8,7 +8,12 @@ import { and, eq, events } from "@curvi/db";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
 import { canManageBilling } from "./access";
-import { tierDisplayName } from "./plans";
+import { hasStripeApiKey } from "@/lib/env";
+import { getStripe } from "./stripe";
+import { withCheckoutLock } from "./checkout-guard";
+import { buildPriceTable } from "./price-table";
+import { recoverPendingSchedule } from "./scheduled-change";
+import { isBillingCadence, tierDisplayName, type BillingCadence } from "./plans";
 import { isOpenSubscription, keepsPaidPlan, needsCardUpdate, pastDueMessage } from "./subscription-status";
 
 export interface SubscriptionView {
@@ -16,6 +21,12 @@ export interface SubscriptionView {
   tier: string | null;
   status: string;
   periodEnd: string | null;
+  /** subscriptions.cadence (P20-07), written by the webhook from the
+   * price's interval; null for a row written before it existed. */
+  cadence?: BillingCadence | null;
+  attachedScheduleId?: string | null;
+  scheduleSyncFailed?: boolean;
+  pending?: { tier: string; cadence: BillingCadence; at: string; scheduleId: string } | null;
 }
 
 export interface BillingAccount {
@@ -28,11 +39,27 @@ export function hasOpenSubscription(account: BillingAccount): boolean {
   return isOpenSubscription(account.subscription?.status);
 }
 
-export async function loadBillingAccount(workspaceId: string): Promise<BillingAccount> {
+export async function loadBillingAccount(workspaceId: string, options: { refreshSchedule?: boolean } = {}): Promise<BillingAccount> {
   if (!isDbMode()) {
     return { stripeCustomerId: null, subscription: null };
   }
   const db = getDb();
+  if (options.refreshSchedule && hasStripeApiKey()) {
+    try {
+      return await withCheckoutLock(db, workspaceId, async () => {
+        const account = await loadBillingAccount(workspaceId);
+        if (!account.stripeCustomerId || !account.subscription?.externalId) return account;
+        const attached = await recoverPendingSchedule(db, getStripe(), { workspaceId,
+          customerId: account.stripeCustomerId, subscriptionId: account.subscription.externalId, prices: buildPriceTable() });
+        const refreshed = await loadBillingAccount(workspaceId);
+        return { ...refreshed, subscription: refreshed.subscription ? { ...refreshed.subscription, attachedScheduleId: attached?.scheduleId ?? null } : null };
+      });
+    } catch {
+      const account = await loadBillingAccount(workspaceId);
+      return { ...account, subscription: account.subscription ? { ...account.subscription, scheduleSyncFailed: true } : null };
+    }
+  }
+
   const workspace = await db.query.workspaces.findFirst({
     where: (t, { eq }) => eq(t.id, workspaceId),
   });
@@ -53,6 +80,10 @@ export async function loadBillingAccount(workspaceId: string): Promise<BillingAc
           tier: chosen.tier,
           status: chosen.status ?? "unknown",
           periodEnd: chosen.periodEnd ? chosen.periodEnd.toISOString() : null,
+          cadence: isBillingCadence(chosen.cadence) ? chosen.cadence : null,
+          pending: chosen.pendingTier && isBillingCadence(chosen.pendingCadence) && chosen.pendingAt && chosen.pendingScheduleId
+            ? { tier: chosen.pendingTier, cadence: chosen.pendingCadence, at: chosen.pendingAt.toISOString(), scheduleId: chosen.pendingScheduleId }
+            : null,
         }
       : null,
   };

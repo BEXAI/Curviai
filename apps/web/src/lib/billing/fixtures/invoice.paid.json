@@ -1,0 +1,52 @@
+{
+  "id": "{{EVENT_ID}}",
+  "object": "event",
+  "api_version": "2025-08-27.basil",
+  "created": "{{CREATED}}",
+  "data": {
+    "object": {
+      "id": "{{INVOICE_ID}}",
+      "object": "invoice",
+      "account_country": "US",
+      "amount_due": "{{AMOUNT}}",
+      "amount_paid": "{{AMOUNT}}",
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "billing_reason": "{{BILLING_REASON}}",
+      "collection_method": "charge_automatically",
+      "created": "{{CREATED}}",
+      "currency": "usd",
+      "customer": "{{CUSTOMER_ID}}",
+      "customer_email": "buyer@example.com",
+      "lines": {
+        "object": "list",
+        "data": "{{LINES}}",
+        "has_more": false,
+        "url": "/v1/invoices/{{INVOICE_ID}}/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "next_payment_attempt": null,
+      "number": "FIXTURE-0001",
+      "parent": {
+        "quote_details": null,
+        "subscription_details": {
+          "metadata": { "workspaceId": "{{WORKSPACE_ID}}", "plan": "{{PLAN}}", "cadence": "{{CADENCE}}", "source": "billing" },
+          "subscription": "{{SUBSCRIPTION_ID}}"
+        },
+        "type": "subscription_details"
+      },
+      "period_end": "{{CREATED}}",
+      "period_start": "{{CREATED}}",
+      "status": "paid",
+      "status_transitions": { "finalized_at": "{{CREATED}}", "marked_uncollectible_at": null, "paid_at": "{{CREATED}}", "voided_at": null },
+      "subtotal": "{{AMOUNT}}",
+      "total": "{{AMOUNT}}"
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "invoice.paid"
+}

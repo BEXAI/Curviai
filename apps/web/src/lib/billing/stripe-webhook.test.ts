@@ -1,6 +1,6 @@
 import Stripe from "stripe";
 import { describe, expect, it } from "vitest";
-import { tierByKey, topUps } from "@curvi/pipeline/seed";
+import { tierByKey } from "@curvi/pipeline/seed";
 import { buildPriceTable, tierPriceCents, tierPriceEnvName, topUpPriceEnvName } from "./price-table";
 import {
   billingPeriodStart,
@@ -154,11 +154,8 @@ describe("price table", () => {
       priceCents: tierByKey("growth").annualUsdPerMonth * 12 * 100,
     });
     expect(tierPriceCents("free", "monthly")).toBe(0);
-    expect(table["price_topup_100"]).toEqual({
-      kind: "topup",
-      credits: 100,
-      expiresMonths: topUps.find((t) => t.credits === 100)?.expiresMonths,
-    });
+    // Credits never expire (P20-05): a top up maps to its credits only.
+    expect(table["price_topup_100"]).toEqual({ kind: "topup", credits: 100 });
     expect(table["price_unset"]).toBeUndefined();
   });
 });

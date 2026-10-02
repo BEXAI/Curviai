@@ -324,15 +324,19 @@ describe("demo mode", () => {
     // The cutout preview (P1) shows in demo mode too, for one product only.
     expect(ready.previewUrl).toMatch(/^data:image\/svg\+xml;base64,/);
     expect(demoPreflight("ws/demo/src/e2e-several").previewUrl).toBeNull();
-    expect(demoPreflight("ws/demo/src/e2e-screenshot").previewUrl).toBeNull();
+    expect(demoPreflight("ws/demo/src/e2e-noproduct").previewUrl).toBeNull();
   });
 
-  it("simulates the chooser and a screenshot for the demo's own photos", () => {
+  it("simulates the chooser and a photo with no product for the demo's own photos", () => {
     const several = demoPreflight("ws/demo/src/e2e-several");
     expect(several.status).toBe("choose");
     expect(several.items).toHaveLength(2);
     expect(several.items.every((item) => item.thumbUrl?.startsWith("data:image/svg+xml"))).toBe(true);
     expect(demoPreflight("ws/demo/src/e2e-several", "just the watch").preselect).toBe(1);
-    expect(demoPreflight("ws/demo/src/e2e-screenshot").status).toBe("blocked");
+    const none = demoPreflight("ws/demo/src/e2e-noproduct");
+    expect(none.status).toBe("blocked");
+    expect(none.problem?.code).toBe("no_product");
+    // Screenshots are accepted (founder decision 2026-09-29), in demo mode too.
+    expect(demoPreflight("ws/demo/src/e2e-screenshot").status).toBe("ready");
   });
 });

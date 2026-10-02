@@ -23,6 +23,7 @@ import {
   type Recording,
 } from "./callers";
 import {
+  asksRestrictedGoods,
   baselineFromReport,
   buildRequest,
   formatReport,
@@ -34,9 +35,12 @@ import {
   type GoldenCase,
   type InjectionFixture,
   type RecipeStage,
+  type ScreeningFixture,
 } from "./harness";
 import { GOLDEN_PROFILE, goldenCases, wrapUserDescription } from "./cases";
 import { injectionFixtures } from "./injection";
+import { screeningFixtures } from "./screening";
+import { isRestrictedGoodsKey } from "../../src/seed/restricted-goods";
 import { liveMain, liveRefusal, mergeBaseline, parseLiveArgs } from "./cli";
 
 let cases: GoldenCase[];
@@ -61,6 +65,7 @@ function intakeAnswer(sellable: boolean, extra: Record<string, unknown> = {}) {
         screenshot: false,
         products: [],
         addedOverlays: false,
+        restrictedCategory: null,
         flags,
         ...extra,
       },
@@ -429,6 +434,99 @@ describe("live run on recordings", () => {
     expect(recallOf(["CURVI", "Made in USA"], ["curvi", "made in usa!"])).toEqual({ found: 2, total: 2 });
     expect(recallOf(["AQUA logo"], ["AQUA"])).toEqual({ found: 1, total: 1 });
     expect(recallOf(["CURVI"], [])).toEqual({ found: 0, total: 1 });
+  });
+});
+
+describe("prohibited goods screening (PHASE_19 P19-29)", () => {
+  let screening: ScreeningFixture[];
+  beforeAll(async () => {
+    screening = await screeningFixtures();
+  });
+
+  /** The OpenAI recording, plus an answer for each screening fixture. */
+  function withScreening(answers: Record<string, string | null>, overrides: Record<string, CallOutcome[]> = {}): Recording {
+    const recording = recordingOf("openai", overrides);
+    const intakeKey = keysByStage("openai").get("intake") as string;
+    for (const fixture of screening) {
+      const category = fixture.id in answers ? answers[fixture.id] : fixture.expectCategory;
+      recording.calls.push({
+        recipeKey: intakeKey,
+        caseId: fixture.id,
+        model: "recorded",
+        outcome: okOutcome(intakeAnswer(true, { restrictedCategory: category })),
+      });
+    }
+    return recording;
+  }
+
+  it("draws a vape, a pepper spray and a firework, each expecting its seeded category", () => {
+    expect(screening.map((f) => [f.id, f.expectCategory])).toEqual([
+      ["screen_vape", "tobacco_nicotine"],
+      ["screen_pepper_spray", "self_defense_weapons"],
+      ["screen_firework", "explosives_fireworks"],
+    ]);
+    for (const fixture of screening) {
+      expect(fixture.stage).toBe("intake");
+      expect(fixture.blocks).toHaveLength(1);
+      expect(isRestrictedGoodsKey(fixture.expectCategory)).toBe(true);
+    }
+    const ids = [...cases, ...fixtures, ...screening].map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("runs only on an intake recipe that asks, and passes when each negative names its category", async () => {
+    const intake = selectRecipes(recipeSeedRows, "openai").selected.find((s) => s.row.stage === "intake")!;
+    expect(asksRestrictedGoods(intake.row)).toBe(true);
+    const report = await runLiveEval({
+      caller: replayCaller(withScreening({})),
+      rows: recipeSeedRows,
+      cases,
+      injection: [],
+      screening,
+      baseline: null,
+    });
+    expect(report.screening.map((s) => [s.id, s.pass])).toEqual([
+      ["screen_vape", true],
+      ["screen_pepper_spray", true],
+      ["screen_firework", true],
+    ]);
+    expect(report.failures.filter((f) => f.startsWith("screening"))).toEqual([]);
+    expect(formatReport(report).join("\n")).toContain("screen_pepper_spray");
+
+    // Claude's own version (6) never asks, so nothing runs there.
+    const claude = await runLiveEval({
+      caller: replayCaller(recordingOf("anthropic")),
+      rows: recipeSeedRows,
+      cases,
+      injection: [],
+      screening,
+      baseline: null,
+    });
+    expect(claude.screening).toEqual([]);
+  });
+
+  it("fails on a missed or wrong category, and on a clean golden photo put in one", async () => {
+    const report = await runLiveEval({
+      caller: replayCaller(
+        withScreening(
+          { screen_vape: null, screen_firework: "firearms" },
+          { intake_single_box: [okOutcome(intakeAnswer(true, { restrictedCategory: "adult_products" }))] },
+        ),
+      ),
+      rows: recipeSeedRows,
+      cases,
+      injection: [],
+      screening,
+      baseline: null,
+    });
+    const text = report.failures.join("\n");
+    expect(text).toMatch(/screening screen_vape: intake_normalizer v8 should name tobacco_nicotine, named none/);
+    expect(text).toMatch(/screening screen_firework: .* should name explosives_fireworks, named firearms/);
+    expect(text).toMatch(/a clean golden photo was put in a prohibited goods category \(intake_normalizer v8 intake_single_box\)/);
+    expect(text).not.toMatch(/screen_pepper_spray/);
+    // The screening answers never enter a Claude baseline.
+    const baseline = baselineFromReport(report);
+    expect(Object.keys(baseline.recipes.intake_normalizer?.cases ?? {})).not.toContain("screen_vape");
   });
 });
 

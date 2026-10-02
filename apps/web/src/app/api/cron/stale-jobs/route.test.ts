@@ -12,6 +12,10 @@ const recordRun = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/cron-health", () => ({ recordCronSuccess: recordRun }));
 const deleteSalts = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/visits/store", () => ({ deleteExpiredVisitSalts: deleteSalts }));
+const recovery = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/jobs/recovery", () => ({ recoverOrphanJobs: recovery }));
+const restart = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/jobs/enqueue", () => ({ scheduleRestartPickup: restart }));
 
 import { checkCronAuth } from "@/lib/cron-auth";
 import { POST } from "./route";
@@ -31,6 +35,8 @@ beforeEach(() => {
   sweep.mockReset();
   recordRun.mockReset();
   deleteSalts.mockReset();
+  recovery.mockReset().mockResolvedValue({ claimed: 0, settled: 0, failures: 0 });
+  restart.mockReset();
   for (const name of ["CRON_SECRET", ...Object.keys(DB_ENV)]) {
     vi.stubEnv(name, "");
   }
@@ -86,8 +92,10 @@ describe("POST /api/cron/stale-jobs", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await res.json()).toEqual({ ok: true, mode: "db", reconciled: 1, jobIds: ["job-1"], releaseFailures: [] });
+    expect(await res.json()).toMatchObject({ ok: true, mode: "db", reconciled: 1, jobIds: ["job-1"], releaseFailures: [], recovery: { failures: 0 } });
     expect(sweep).toHaveBeenCalledWith(fakeDb);
+    expect(recovery).toHaveBeenCalledWith(fakeDb);
+    expect(restart).toHaveBeenCalledWith({ force: true });
     // The health endpoint reads this to warn when the sweep stops running.
     expect(recordRun).toHaveBeenCalledWith(fakeDb, "stale-jobs");
     // The visitor count's old salts go on the same schedule.
@@ -104,7 +112,7 @@ describe("POST /api/cron/stale-jobs", () => {
     const res = await POST(request({ "x-cron-secret": SECRET }));
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, mode: "db", reconciled: 0, jobIds: [], releaseFailures: [] });
+    expect(await res.json()).toMatchObject({ ok: true, mode: "db", reconciled: 0, jobIds: [], releaseFailures: [], recovery: { failures: 0 } });
     expect(sweep).toHaveBeenCalledWith(fakeDb);
     expect(recordRun).toHaveBeenCalledWith(fakeDb, "stale-jobs");
     expect(log).toHaveBeenCalled();

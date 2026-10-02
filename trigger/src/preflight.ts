@@ -44,6 +44,7 @@ import {
   renderCutoutPreview,
   renderPieceThumbnails,
   targetQuestionOpen,
+  unionBox,
   uprightSize,
   type IntakeImageResult,
   type InventoryDecision,
@@ -138,16 +139,18 @@ async function recipesFor(deps: PipelineDeps, preflightId: string): Promise<JobR
   }
 }
 
-/** The smallest normalized box holding every box, or null for none. */
-export function unionBox(boxes: readonly NormalizedBox[]): NormalizedBox | null {
-  if (boxes.length === 0) {
+/** The pipeline's unionBox kept inside the photo: its right and bottom edges
+ * capped at 1, and null for no boxes or a union with no area. */
+export function clampedUnionBox(boxes: readonly NormalizedBox[]): NormalizedBox | null {
+  const union = unionBox(boxes);
+  if (!union) {
     return null;
   }
-  const left = Math.min(...boxes.map((b) => b.x));
-  const top = Math.min(...boxes.map((b) => b.y));
-  const right = Math.min(1, Math.max(...boxes.map((b) => b.x + b.width)));
-  const bottom = Math.min(1, Math.max(...boxes.map((b) => b.y + b.height)));
-  return right > left && bottom > top ? { x: left, y: top, width: right - left, height: bottom - top } : null;
+  const right = Math.min(1, union.x + union.width);
+  const bottom = Math.min(1, union.y + union.height);
+  return right > union.x && bottom > union.y
+    ? { x: union.x, y: union.y, width: right - union.x, height: bottom - union.y }
+    : null;
 }
 
 export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflightArgs): Promise<UploadPreflightRun> {
@@ -181,6 +184,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
   const loadOnce = async () => bytes;
   const blocks = await visionBlocks({ loadMedia: loadOnce }, [{ mediaId: mediaKey }], workspaceId, 1);
   let intake: IntakeResult | null = null;
+  let execution: PreflightIntake["execution"];
   try {
     const answer = await llmJson<IntakeResult>(
       deps.ai,
@@ -192,12 +196,13 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
       IntakeToolResult,
     );
     run.costMicros += answer.costMicros;
-    intake = answer.value && answer.value.images.length === 1 ? trustedIntakeAnswer(answer.value, recipe) : null;
+    execution = answer.execution;
+    intake = answer.value && answer.value.images.length === 1 ? trustedIntakeAnswer(answer.value, execution.recipe) : null;
   } catch (err) {
     run.costMicros += failureSpendMicros(err);
     console.warn(`[preflight] intake failed for ${preflightId}`, err instanceof Error ? err.message : err);
   }
-  if (!intake) {
+  if (!intake || !execution) {
     return run;
   }
   const image = intake.images[0];
@@ -205,7 +210,8 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
     image,
     ...(intake.sellerIntent ? { sellerIntent: intake.sellerIntent } : {}),
     noteKey: noteKey(args.note),
-    recipe: { key: recipe.key, version: recipe.version },
+    recipe: { key: execution.recipe.key, version: execution.recipe.version },
+    execution,
     at: (args.now ?? new Date()).toISOString(),
   };
 
@@ -323,7 +329,7 @@ async function takePreflightInventory(
   const match = matchProducts(inventory.objects, products);
   const order = pickerNumbering(inventory.objects).map((index) => inventory.objects[index]);
   const featuredBoxes = inventory.objects.filter((object) => decision.featured.includes(object.index)).map((o) => o.box);
-  run.productBox = unionBox(featuredBoxes.length > 0 ? featuredBoxes : inventory.objects.map((o) => o.box));
+  run.productBox = clampedUnionBox(featuredBoxes.length > 0 ? featuredBoxes : inventory.objects.map((o) => o.box));
   run.items = order.map((object, i) => ({
     number: i + 1,
     label: itemLabel(object, products, match),

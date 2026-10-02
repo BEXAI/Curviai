@@ -98,7 +98,6 @@ export async function routeShopifyTopic(ctx: ShopifyTopicContext): Promise<Shopi
             stripeCustomerId: null,
             credits,
             reason: "grant",
-            expiresMonths: null,
           });
         }
       }

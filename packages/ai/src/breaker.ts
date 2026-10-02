@@ -86,6 +86,12 @@ export class CircuitBreaker {
   async recordSuccess(provider: string): Promise<void> {
     await this.store.set(failuresKey(provider), "0", this.options.windowSeconds);
   }
+
+  /** Explicit successful canary/operator recovery, never ordinary traffic. */
+  async reset(provider: string): Promise<void> {
+    await this.store.set(openKey(provider), "", 0);
+    await this.store.set(failuresKey(provider), "0", this.options.windowSeconds);
+  }
 }
 
 interface StoredEntry {

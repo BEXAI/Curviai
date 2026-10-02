@@ -1,4 +1,5 @@
-import { CONSENT_COOKIE, openaiAdsPixelId } from "@/lib/consent";
+import { openaiAdsPixelId, parseConsent } from "@/lib/consent";
+import { optionalEnv } from "@/lib/env";
 
 /**
  * Server side conversion events for OpenAI Ads (the Conversions API), in
@@ -30,7 +31,7 @@ type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
 /** True when the Cookie header says the visitor accepted cookies. */
 export function adsConsentGranted(cookieHeader: string | null | undefined): boolean {
-  return (cookieHeader ?? "").split(";").some((part) => part.trim() === `${CONSENT_COOKIE}=granted`);
+  return parseConsent(cookieHeader) === "granted";
 }
 
 /** Sends one conversion; returns whether OpenAI accepted it. */
@@ -38,8 +39,7 @@ export async function sendAdsConversion(
   event: AdsConversion,
   opts: { cookieHeader: string | null | undefined; fetchFn?: FetchLike; env?: Record<string, string | undefined> },
 ): Promise<boolean> {
-  const env = opts.env ?? process.env;
-  const key = env.OPENAI_ADS_CONVERSIONS_KEY;
+  const key = opts.env ? opts.env.OPENAI_ADS_CONVERSIONS_KEY : optionalEnv("OPENAI_ADS_CONVERSIONS_KEY");
   const pixelId = openaiAdsPixelId();
   if (!key || !pixelId || !adsConsentGranted(opts.cookieHeader)) {
     return false;

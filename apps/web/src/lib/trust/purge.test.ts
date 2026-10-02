@@ -96,6 +96,15 @@ describe("purgeStaleSourceMedia", () => {
     expect(storage.objects.has(old.key)).toBe(true);
   });
 
+  it("keeps an old source after a recent followup run of an old pack", async () => {
+    const p = await product();
+    const old = await photo(p, 60);
+    await db.insert(generationJobs).values({ workspaceId: ws, productId: p, status: "done", createdAt: daysAgo(60), startedAt: daysAgo(1), updatedAt: NOW });
+    await run();
+    expect(await rowExists(old.id)).toBe(true);
+    expect(storage.objects.has(old.key)).toBe(true);
+  });
+
   it("keeps photos of a product with a pack still running, however old", async () => {
     const p = await product();
     const old = await photo(p, 90);

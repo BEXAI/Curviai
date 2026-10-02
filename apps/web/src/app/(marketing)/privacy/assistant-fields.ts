@@ -1,0 +1,101 @@
+/**
+ * Every field the MCP tools can send to an assistant (CHAT_VIEW_FIELDS in
+ * lib/api-v1/chat-views.ts, nested ones included), mapped to the words the
+ * privacy policy uses for it (./privacy-copy.ts). OpenAI rejects a plugin
+ * whose results carry a user related field the privacy policy does not
+ * cover (docs/verification.md, PHASE_19, O5 and O6), so a test fails when a
+ * chat view gains a field that is not listed here, or when a listed phrase
+ * is missing from the policy (PHASE_19 P19-23).
+ */
+export const ASSISTANT_FIELDS: Readonly<Record<string, string>> = {
+  // get_profile
+  id: "a private id for your Curvi account",
+  email: "your account email",
+  name: "workspace name",
+
+  // create_pack and get_pack
+  pack_id: "pack ids",
+  status: "pack status",
+  finished: "pack status",
+  product: "product titles",
+  channels: "the channels each pack is for",
+  credits: "credits held and credits used",
+  "credits.held": "credits held",
+  "credits.charged": "credits used",
+  progress: "how far a pack has got",
+  "progress.done": "how far a pack has got",
+  "progress.total": "how far a pack has got",
+  images: "file names and types",
+  "images[].name": "file names",
+  "images[].channel": "the channels each pack is for",
+  "images[].kind": "file names and types",
+  "images[].passes_channel_rules": "image check results",
+  "images[].fill_percent": "image check results",
+  "images[].fidelity": "stored product fidelity measurements",
+  "images[].fidelity.meanDeltaE": "average color difference",
+  "images[].fidelity.maxDeltaE": "largest color difference",
+  "images[].fidelity.exactByteShare": "share of exactly matching pixels",
+  "images[].fidelity.maskArea": "number of pixels compared",
+  "images[].fidelity.threshold": "measurement limits",
+  "images[].fidelity.maxDeltaELimit": "measurement limits",
+  "images[].fidelity.kind": "type of image measured",
+  "images[].fidelity.exact": "whether the file is the original upload",
+  "images[].preview_url": "image previews",
+  "images[].download_url": "download links",
+  links_valid_hours: "how long the links work",
+  message: "a short message about each request",
+  error: "a short message about each request",
+  replayed: "whether it repeated an earlier one",
+
+  // estimate_pack
+  credits_needed: "the credits a pack would need",
+  credits_available: "your workspace's credit balance",
+  enough: "your workspace's credit balance",
+  left_out: "the channels a pack would leave out and why",
+  "left_out[].channel": "the channels a pack would leave out",
+  "left_out[].reason": "the channels a pack would leave out and why",
+  quote: "a signed code for an estimate",
+  quote_valid_minutes: "how long it is valid",
+
+  // list_channels
+  "channels[].id": "the channels Curvi offers",
+  "channels[].channel": "the channels Curvi offers",
+  "channels[].name": "the channels Curvi offers",
+  "channels[].width": "their sizes",
+  "channels[].height": "their sizes",
+  "channels[].available": "which of them your plan includes",
+  "channels[].note": "which of them your plan includes",
+  aliases: "other names it accepts for them",
+  "aliases[].alias": "other names it accepts for them",
+  "aliases[].channel": "the channels Curvi offers",
+  bundles: "the pack sets",
+  "bundles[].key": "the pack sets",
+  "bundles[].label": "the pack sets",
+  backgrounds: "backgrounds",
+  "backgrounds[].key": "backgrounds",
+  "backgrounds[].label": "backgrounds",
+  "backgrounds[].hex": "backgrounds",
+  scene_styles: "scene styles",
+  "scene_styles[].value": "scene styles",
+  "scene_styles[].label": "scene styles",
+
+  // check_main_image
+  channel: "the rules it was checked against",
+  spec_id: "the rules it was checked against",
+  pass: "image check results",
+  summary: "image check results",
+  width: "the size of a checked photo",
+  height: "the size of a checked photo",
+  checks: "image check results",
+  "checks[].key": "image check results",
+  "checks[].label": "image check results",
+  "checks[].pass": "image check results",
+  "checks[].measured": "image check results",
+  rules: "the rules it was checked against",
+  "rules.minLongSide": "the rules it was checked against",
+  "rules.minWidth": "the rules it was checked against",
+  "rules.minHeight": "the rules it was checked against",
+  "rules.background": "the rules it was checked against",
+  "rules.fillMinPercent": "the rules it was checked against",
+  "rules.fillMaxPercent": "the rules it was checked against",
+};

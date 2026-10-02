@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ImportFetcher } from "./import-product";
-import { imageDimensions, importPhoto, sniffImageType } from "./image";
+import { imageDimensions, importPhoto, isHeic, sniffImageType } from "./image";
 import { ImportFetchError } from "./safe-fetch";
 
 function png(width: number, height: number): Buffer {
@@ -149,5 +149,19 @@ describe("importPhoto", () => {
       ok: false,
       reason: "unreachable",
     });
+  });
+
+  it("flags a HEIC photo without changing the web copy, and passes a caller's deadline to the fetch", async () => {
+    const heic = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypheic", "latin1"), Buffer.alloc(24)]);
+    expect(isHeic(heic)).toBe(true);
+    expect(isHeic(png(1, 1))).toBe(false);
+    const fetcher = serve(heic);
+    const result = await importPhoto("https://cdn.example.com/x.heic", { fetcher, timeoutMs: 4321 });
+    expect(result).toMatchObject({ ok: false, reason: "not_image", format: "heic" });
+    expect(result.ok ? "" : result.message).toBe("That link is not a JPEG, PNG, WEBP, GIF or TIFF photo. Pick another photo.");
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ timeoutMs: 4321 });
+    const plain = serve(png(10, 10));
+    await importPhoto("https://cdn.example.com/x.png", { fetcher: plain });
+    expect(plain.mock.calls[0]?.[1]).toMatchObject({ timeoutMs: 15_000 });
   });
 });

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   canvasSizeFor,
   normalizeOutputOptions,
@@ -12,7 +12,12 @@ import { stillStyle } from "@curvi/pipeline/seed";
 import { getSpec, listSpecs } from "@curvi/specs";
 import { JobOptionsCard, lookTitle } from "@/components/app/job-options-card";
 import { ShotCard } from "@/components/app/job-progress-board";
-import { downloadAllState, FilePreview } from "@/components/app/pack-downloads";
+import {
+  announcePackFilesChanged,
+  downloadAllState,
+  FilePreview,
+  PACK_FILES_CHANGED_EVENT,
+} from "@/components/app/pack-downloads";
 import { PackReveal } from "@/components/app/pack-reveal";
 import { demoComplianceReport, specRequirementChecks } from "@/lib/compliance-report";
 import { outputOptionsSummary, skippedCopy } from "@/lib/job-copy";
@@ -190,6 +195,19 @@ describe("Download all files", () => {
     expect(downloadAllState({ files: [image] as never }, false)).toBe("after_rerun");
     expect(downloadAllState({ files: [] }, true)).toBe("none");
     expect(downloadAllState({ files: [{ kind: "image", downloadUrl: null }] as never }, true)).toBe("none");
+  });
+
+  it("announces a file change for one job, which the file list listens for to reload", () => {
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    try {
+      const seen: unknown[] = [];
+      target.addEventListener(PACK_FILES_CHANGED_EVENT, (event) => seen.push((event as CustomEvent).detail));
+      announcePackFilesChanged("job-1");
+      expect(seen).toEqual([{ jobId: "job-1" }]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

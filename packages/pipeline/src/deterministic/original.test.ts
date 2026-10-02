@@ -578,6 +578,70 @@ describe("makeOriginalFit: color and format fixtures", () => {
   });
 });
 
+describe("ICC description padding", () => {
+  function profile(type: "desc" | "mluc", text: string): Buffer {
+    const bytes = type === "desc" ? Buffer.from(text, "latin1") : Buffer.from(text, "utf16le").swap16();
+    const dataOffset = type === "desc" ? 12 : 28;
+    const offset = 144;
+    const icc = Buffer.alloc(offset + dataOffset + bytes.length);
+    icc.writeUInt32BE(1, 128);
+    icc.write("desc", 132, "latin1");
+    icc.writeUInt32BE(offset, 136);
+    icc.writeUInt32BE(dataOffset + bytes.length, 140);
+    icc.write(type, offset, "latin1");
+    if (type === "desc") {
+      icc.writeUInt32BE(bytes.length, offset + 8);
+    } else {
+      icc.writeUInt32BE(1, offset + 8);
+      icc.writeUInt32BE(12, offset + 12);
+      icc.write("enUS", offset + 16, "latin1");
+      icc.writeUInt32BE(bytes.length, offset + 20);
+      icc.writeUInt32BE(dataOffset, offset + 24);
+    }
+    bytes.copy(icc, offset + dataOffset);
+    return icc;
+  }
+
+  it.each(["desc", "mluc"] as const)("removes only trailing NULs from %s text", (type) => {
+    for (const [input, expected] of [
+      ["sRGB", "sRGB"], ["sRGB\0\0", "sRGB"], ["a\0b\0\0", "a\0b"],
+      ["\0X\0", "\0X"], ["\0\0", ""], ["", ""],
+    ]) {
+      expect(iccProfileDescription(profile(type, input))).toBe(expected);
+    }
+    if (type === "mluc") expect(iccProfileDescription(profile(type, "製品😀\0\0"))).toBe("製品😀");
+  });
+
+  it("parses long interior NUL runs in both ICC encodings within a bounded subprocess", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "curvi-icc-"));
+    const resolve = createRequire(import.meta.url).resolve;
+    const parser = path.join(path.dirname(fileURLToPath(import.meta.url)), "original.ts");
+    const script = path.join(dir, "icc.mts");
+    const text = `sRGB${"\0".repeat(1_000_000)}X\0\0`;
+    try {
+      await Promise.all(["desc", "mluc"].map((type) => writeFile(path.join(dir, `${type}.icc`), profile(type as "desc" | "mluc", text))));
+      await writeFile(script, `import { readFile } from "node:fs/promises";
+import { iccProfileDescription } from ${JSON.stringify(parser)};
+const descriptions = [];
+for (const type of ["desc", "mluc"]) {
+  const text = iccProfileDescription(await readFile(new URL(type + ".icc", import.meta.url)));
+  if (text !== "sRGB" + "\\0".repeat(1_000_000) + "X") throw new Error(type + " changed ICC text");
+  descriptions.push({ type, length: text.length });
+}
+console.log(JSON.stringify(descriptions));
+`);
+      // A separate process makes the deadline enforceable even if a future
+      // parser regression blocks its event loop with catastrophic backtracking.
+      const { stdout } = await execFileAsync(process.execPath, ["--import", resolve("tsx"), script], { timeout: 5_000 });
+      expect(JSON.parse(stdout.trim())).toEqual([
+        { type: "desc", length: 1_000_005 }, { type: "mluc", length: 1_000_005 },
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 10_000);
+});
+
 describe("makeOriginalFit: the fidelity gate catches drift", () => {
   it("fails a render that was sharpened, brightened by 2 percent or shifted by 1 px", async () => {
     const bytes = await jpegPhoto(2400, 1800);

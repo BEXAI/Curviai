@@ -125,7 +125,7 @@ test.describe("without JavaScript", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1, name: HEADLINE })).toBeVisible();
     await expect(hero(page).getByText(/^Turn one photo into AI product images for Amazon, Shopify/)).toBeVisible();
-    await expect(hero(page).getByRole("link", { name: "Start free" })).toHaveAttribute("href", "/signup");
+    await expect(hero(page).getByRole("link", { name: "Start free" })).toHaveAttribute("href", "/signup?source=home");
     await expect(hero(page).getByRole("link", { name: "Test your main image free" })).toHaveAttribute(
       "href",
       "/tools/main-image-checker",

@@ -5,6 +5,9 @@ import { JsonLd } from "@/components/json-ld";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
 import { ComplianceBadgeDemo } from "@/components/marketing/compliance-badge-demo";
 import { EmailCapture } from "@/components/marketing/email-capture";
+import { FoundingOfferBanner } from "@/components/marketing/founding-offer-banner";
+import { FreePreviewBox } from "@/components/marketing/free-preview-box";
+import { SignupLink } from "@/components/marketing/signup-link";
 import {
   homeChannelTiles,
   homeChannels,
@@ -30,7 +33,7 @@ import { FeatureIcon, FeatureTile, PackTile, SectionHeader, glassTile } from "@/
 import { pillarPages } from "@/components/marketing/pillar-copy";
 import { specSlug } from "@/components/marketing/spec-slug";
 import { LiquidMetalHero, PageMetalBackdrop } from "@/components/ui/liquid-metal-hero";
-import { isStripeConfigured } from "@/lib/env";
+import { isCheckoutOpen } from "@/lib/env";
 import {
   packsForCredits,
   paidTiers,
@@ -109,6 +112,7 @@ export default function HomePage() {
         subtitle={homeHero.lead}
         primaryCtaLabel={homeHeroCtas.primary.label}
         primaryCtaHref={homeHeroCtas.primary.href}
+        primaryCtaSource={homeHeroCtas.primary.source}
         secondaryCtaLabel={homeHeroCtas.secondary.label}
         secondaryCtaHref={homeHeroCtas.secondary.href}
         note={homeHeroNote}
@@ -152,6 +156,8 @@ export default function HomePage() {
                   {homeProof.galleryLink}
                 </Link>
               </p>
+              {/* P18-12: the free white main image, beside the slider; renders nothing while off. */}
+              <FreePreviewBox />
             </div>
             <div className="min-w-0 lg:col-span-7 lg:col-start-1 lg:row-span-3 lg:row-start-1">
               <div className="rounded-3xl bg-white/[0.04] p-2 shadow-[0_2.5rem_7.5rem_-2.5rem_rgb(45_212_191/0.35)] ring-1 ring-inset ring-white/10">
@@ -296,32 +302,31 @@ export default function HomePage() {
             {lowest && highest ? `Plans from $${lowest.monthlyUsd} to $${highest.monthlyUsd} per month. ` : null}
             A typical listing pack of still images uses about {packCredits} credits.
           </p>
-          {isStripeConfigured() ? null : (
+          {isCheckoutOpen() ? null : (
             <p className="mx-auto mt-2 max-w-2xl text-center text-sm text-ink-400">
               Paid plans open soon. You can start on the free plan today.
             </p>
           )}
-          <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-            <Card
-              className={cn(
-                glassTile,
-                "reveal flex flex-col p-8 ring-1 ring-inset ring-wine-700/60 sm:col-span-2 lg:col-span-2 lg:row-span-2",
-              )}
-            >
+          <FoundingOfferBanner tone="night" className="mt-8" />
+          {/* One card per column: Free and the three plans sold online fill
+              a row of four (two by two on small screens), with no empty
+              cell (law and copy review 14). */}
+          <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Card className={cn(glassTile, "reveal flex flex-col p-6 ring-1 ring-inset ring-wine-700/60")}>
               <p className="font-mono text-xs font-semibold uppercase tracking-wider text-ink-400">
                 {homePricing.freeTitle}
               </p>
               <p className="mt-4 text-base text-white">{homePricing.freeBody}</p>
               <p className="mt-2 text-sm text-ink-400">{homePricing.noCard}</p>
-              <Link
-                href={homeHeroCtas.primary.href}
+              <SignupLink
+                source={homeHeroCtas.primary.source}
                 className={buttonVariants({ variant: "secondary", size: "lg", className: "mt-8 w-full lg:mt-auto" })}
               >
                 {homeHeroCtas.primary.label}
-              </Link>
+              </SignupLink>
             </Card>
             {paid.map((tier) => (
-              <Card key={tier.key} className={cn(glassTile, "reveal p-6 lg:col-span-2")}>
+              <Card key={tier.key} className={cn(glassTile, "reveal p-6")}>
                 <p className="font-mono text-xs font-semibold uppercase tracking-wider text-ink-400">
                   {tierDisplayName(tier.key)}
                 </p>

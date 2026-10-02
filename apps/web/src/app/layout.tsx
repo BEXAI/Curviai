@@ -3,7 +3,9 @@ import { Bricolage_Grotesque, Geist, Geist_Mono } from "next/font/google";
 import { AdsPixel } from "@/components/ads-pixel";
 import { Analytics } from "@/components/analytics";
 import { CookieConsent } from "@/components/cookie-consent";
+import { FirstTouch } from "@/components/first-touch";
 import { VisitBeacon } from "@/components/visit-beacon";
+import { EnvironmentBanner } from "@/components/environment-banner";
 import { siteUrl } from "@/lib/env";
 import { SITE_DESCRIPTION, SITE_KEYWORDS, SITE_NAME, SITE_TITLE } from "@/lib/seo";
 import "./globals.css";
@@ -40,6 +42,7 @@ export const metadata: Metadata = {
     description: SITE_DESCRIPTION,
   },
   robots: {
+    ...(process.env.NEXT_PUBLIC_ENV_LABEL ? { index: false, follow: false } : {}),
     googleBot: {
       "max-image-preview": "large",
       "max-snippet": -1,
@@ -52,9 +55,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${inter.variable} ${grotesk.variable} ${jbMono.variable}`}>
       <body className="theme-dark min-h-screen bg-night font-sans text-ink-950 antialiased">
+        <EnvironmentBanner label={process.env.NEXT_PUBLIC_ENV_LABEL} />
         {children}
         <VisitBeacon />
         <Analytics />
+        <FirstTouch />
         <AdsPixel />
         <CookieConsent />
       </body>

@@ -16,8 +16,9 @@ export function ToolPageShell({
   children,
 }: {
   currentPath: string;
-  title: string;
-  description: string;
+  /** Text, or a client part that follows a choice on the page (the checker's channel picker). */
+  title: React.ReactNode;
+  description: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -45,7 +46,7 @@ export function ToolPageShell({
         <h2 className="text-xl font-semibold text-ink-950">{toolPackCta.title}</h2>
         <p className="mx-auto mt-2 max-w-lg text-sm text-ink-600">{toolPackCta.body}</p>
         <div className="mt-6">
-          <EmailCapture />
+          <EmailCapture source="tools" />
         </div>
       </div>
     </div>

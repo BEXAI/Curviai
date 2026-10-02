@@ -249,11 +249,13 @@ async function downloadFiles(deps: CliDeps, files: PackFiles, outDir: string): P
   const used = new Set<string>();
   for (const file of files.files) {
     if (!file.url || !isWebUrl(file.url)) continue;
-    let relative = safeRelativePath(file.channel, file.name);
-    // Two files with one name keep both: the second gets a number.
+    const base = safeRelativePath(file.channel, file.name);
+    const ext = extname(base);
+    const stem = base.slice(0, base.length - ext.length);
+    // Files with one name keep all: the second gets _2, the third _3.
+    let relative = base;
     for (let n = 2; used.has(relative); n += 1) {
-      const ext = extname(relative);
-      relative = `${relative.slice(0, relative.length - ext.length)}_${n}${ext}`;
+      relative = `${stem}_${n}${ext}`;
     }
     used.add(relative);
     // Signed URLs carry their own authority; the API key is never sent to them.

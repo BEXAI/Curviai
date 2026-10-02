@@ -5,6 +5,9 @@
  * can also reject. Both come back here as one result the form renders.
  */
 
+import { track } from "@/lib/track";
+import { authFailureMessage } from "@/lib/auth-errors";
+
 export const AUTH_NETWORK_ERROR = "We could not reach the sign in service. Check your connection and try again.";
 
 export const AUTH_GENERIC_ERROR = "Something went wrong. Please try again.";
@@ -12,6 +15,7 @@ export const AUTH_GENERIC_ERROR = "Something went wrong. Please try again.";
 export type AuthFormName = "signup" | "login" | "forgot_password" | "reset_password";
 
 interface AuthErrorLike {
+  code?: string;
   message?: string;
   name?: string;
   status?: number;
@@ -40,25 +44,16 @@ export async function runAuthCall<T extends { error: AuthErrorLike | null }>(
     if (isNetworkAuthError(value.error)) {
       return { ok: false, message: AUTH_NETWORK_ERROR, kind: "network" };
     }
-    const message = value.error.message?.trim();
-    return { ok: false, message: message ? message : AUTH_GENERIC_ERROR, kind: "rejected" };
+    return { ok: false, message: authFailureMessage(value.error.code), kind: "rejected" };
   }
   return { ok: true, value };
 }
 
 /**
- * Records auth_error in PostHog when analytics is configured and loaded.
+ * Records auth_error in PostHog when analytics is configured, consented to
+ * and loaded (lib/track.ts).
  * Never throws and never blocks the form.
  */
 export function trackAuthError(form: AuthFormName, kind: "network" | "rejected"): void {
-  if (typeof window === "undefined" || !process.env.NEXT_PUBLIC_POSTHOG_KEY) {
-    return;
-  }
-  void import("posthog-js")
-    .then(({ default: posthog }) => {
-      if (posthog.__loaded) {
-        posthog.capture("auth_error", { form, kind });
-      }
-    })
-    .catch(() => undefined);
+  track("auth_error", { form, kind });
 }

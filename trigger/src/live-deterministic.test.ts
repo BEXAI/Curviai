@@ -13,6 +13,7 @@ import {
   type Shot,
 } from "@curvi/pipeline";
 import { stillStyle } from "@curvi/pipeline/seed";
+import { tintInsideMask } from "@curvi/pipeline/testing";
 import { getSpec } from "@curvi/specs";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
 import type { LiveProduct, StillRender } from "./live-product";
@@ -101,16 +102,6 @@ async function texturedProduct(W = TW, H = TH): Promise<LiveProduct> {
     productPng: await encodePng(productRgba),
     maskPng: await maskToSharp(mask).png().toBuffer(),
   };
-}
-
-/** Copy of image with red raised by amount inside mask, like a stray tint. */
-function tintInsideMask(image: RawImage, mask: RawMask, amount: number): RawImage {
-  const data = Buffer.from(image.data);
-  for (let i = 0; i < mask.data.length; i++) {
-    if (mask.data[i] === 0) continue;
-    data[i * 4] = Math.min(255, data[i * 4] + amount);
-  }
-  return { ...image, data };
 }
 
 function shotOf(type: Shot["type"], channel: string, method: Shot["method"] = "deterministic"): Shot {

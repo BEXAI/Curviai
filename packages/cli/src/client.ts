@@ -15,6 +15,7 @@ import type {
   ChannelsResponse,
   CreatePackRequest,
   MainImageCheck,
+  MainImageCheckRequest,
   PackFiles,
   PackResponse,
   PhotoAngle,
@@ -155,7 +156,10 @@ export class CurviClient {
       throw new Error("An API key is required.");
     }
     this.apiKey = options.apiKey;
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
+    let end = baseUrl.length;
+    while (end > 0 && baseUrl.charCodeAt(end - 1) === 47) end--;
+    this.baseUrl = baseUrl.slice(0, end);
     this.fetchImpl = options.fetch ?? ((input, init) => fetch(input, init));
     this.userAgent = options.userAgent;
     this.sleep = options.sleep ?? defaultSleep;
@@ -191,7 +195,8 @@ export class CurviClient {
   /** POST /checks/main-image (checkMainImage): the free Amazon main image
    * checker. It stores nothing, so a retry is safe without a key. */
   checkMainImage(photo: PhotoSource): Promise<MainImageCheck> {
-    const { angle: _angle, ...body } = photoInput(photo);
+    const { angle: _angle, ...rest } = photoInput(photo);
+    const body: MainImageCheckRequest = rest;
     return this.send<MainImageCheck>("POST", "/checks/main-image", { retryable: true, json: body });
   }
 

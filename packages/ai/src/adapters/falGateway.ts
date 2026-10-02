@@ -66,9 +66,6 @@ export interface FalGatewayConfig extends AdapterCommonConfig {
   now?: () => number;
 }
 
-/** Input is passed through to the fal model as the request body. */
-export type FalGatewayInput = Record<string, unknown>;
-
 export interface FalGatewayOutput {
   /** The model's response payload, shape depends on the fal model. */
   result: unknown;

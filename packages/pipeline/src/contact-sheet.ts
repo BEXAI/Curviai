@@ -12,6 +12,7 @@
  */
 import type opentype from "opentype.js";
 import sharp, { type OverlayOptions } from "sharp";
+import { HEX, hexToRgb } from "./color";
 import { CUTOUT_ALPHA_THRESHOLD, maskComponents } from "./isolate";
 import type { BBox } from "./mask";
 import { encodeVisionJpeg, type RawImage } from "./raw";
@@ -46,8 +47,6 @@ export interface ContactSheet {
    * order: the band above it holds the number. */
   cells: Array<{ left: number; top: number; width: number; height: number }>;
 }
-
-const HEX = /^#[0-9a-fA-F]{6}$/;
 
 /** The seven segments each digit lights: a top, b upper right, c lower
  * right, d bottom, e lower left, f upper left, g middle. */
@@ -293,12 +292,4 @@ export async function renderCutoutPreview(
     .resize(side, side, { fit: "inside", withoutEnlargement: true })
     .png()
     .toBuffer();
-}
-
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  return {
-    r: Number.parseInt(hex.slice(1, 3), 16),
-    g: Number.parseInt(hex.slice(3, 5), 16),
-    b: Number.parseInt(hex.slice(5, 7), 16),
-  };
 }

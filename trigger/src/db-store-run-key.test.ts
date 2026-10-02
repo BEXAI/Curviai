@@ -206,3 +206,26 @@ describe("DbJobStore bound to a run that lost the job", () => {
     expect((await row(jobId)).inventory).toEqual(inventory);
   });
 });
+
+
+describe("metered cost across process runs", () => {
+  it("adds different runs, ignores duplicate reports, and includes late fenced cost", async () => {
+    const id = await newJob("generating", "first", 0);
+    await store().forRun("first").setJobState(id, "generating", { costMicros: 100 });
+    await db.update(generationJobs).set({ runKey: "second" }).where(eq(generationJobs.id, id));
+    await store().forRun("second").setJobState(id, "generating", { costMicros: 60 });
+    expect((await row(id)).cogsMicros).toBe(160);
+    expect(await store().forRun("first").setJobState(id, "done", { costMicros: 130 })).toBe(false);
+    await store().forRun("second").setJobState(id, "done", { costMicros: 60 });
+    await store().forRun("first").setJobState(id, "failed", { costMicros: 120 });
+    expect(await row(id)).toMatchObject({ cogsMicros: 190, status: "done", runnerId: null, restartPayload: null });
+    expect((await row(id)).finishedAt).toBeInstanceOf(Date);
+  });
+  it("does not count the previous pack cost again for a followup", async () => {
+    const id = await newJob("generating", "pack", 0);
+    await store().forRun("pack").setJobState(id, "done", { costMicros: 100 });
+    await db.update(generationJobs).set({ status: "generating", runKey: "followup" }).where(eq(generationJobs.id, id));
+    await store().forRun("followup").setJobState(id, "done", { costMicros: 125, baseCostMicros: 100 });
+    expect((await row(id)).cogsMicros).toBe(125);
+  });
+});

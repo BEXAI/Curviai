@@ -49,7 +49,7 @@ import {
 import type { JobRecipes } from "./recipes";
 import { JobLedgerPlan, type LedgerAction } from "./state";
 
-export type PackFollowUpReason = "retry" | "add_angle";
+export type PackFollowUpReason = "retry" | "add_angle" | "regenerate";
 
 export interface PackFollowUpInput {
   /** Tells a follow up payload apart from a GeneratePackInput on a shared queue. */
@@ -115,12 +115,6 @@ export interface PackFollowUpSummary {
   needsReview: number;
   costMicros: number;
   error?: string;
-}
-
-export function isPackFollowUpInput(payload: unknown): payload is PackFollowUpInput {
-  return (
-    typeof payload === "object" && payload !== null && (payload as { kind?: unknown }).kind === "follow_up"
-  );
 }
 
 /**
@@ -233,7 +227,7 @@ export async function runPackFollowUp(
   // Back to done: the pack was delivered by its first run. A job a cancel or
   // a settle already finished is left as it is (setJobState refuses).
   const backToDone = async (): Promise<void> => {
-    await store.setJobState(input.jobId, "done", { costMicros: input.baseCostMicros + costMicros });
+    await store.setJobState(input.jobId, "done", { costMicros: input.baseCostMicros + costMicros, baseCostMicros: input.baseCostMicros });
   };
   const summarize = (state: PackFollowUpSummary["state"], error?: string): PackFollowUpSummary => ({
     jobId: input.jobId,
@@ -314,7 +308,7 @@ export async function runPackFollowUp(
     const passing = outcomes.filter((o) => o.status === "passed");
     if (passing.length > 0) {
       await assertLive();
-      const numbered = numberFollowUpFiles(passing, input.existingFilesBySpec);
+      const numbered = numberFollowUpFiles(passing, input.reason === "regenerate" ? {} : input.existingFilesBySpec);
       const { full } = numbered;
       const assets = numbered.assets.map((asset) =>
         input.socialBadge && badgeEligible(asset.specId) ? { ...asset, badge: true } : asset,
@@ -330,6 +324,7 @@ export async function runPackFollowUp(
           ref: f.ref,
           width: f.measured?.width ?? null,
           height: f.measured?.height ?? null,
+          report: f,
         }));
       let recorded = new Set<string>();
       if (built && files.length > 0) {

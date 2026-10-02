@@ -145,7 +145,33 @@ describe("strictToolSchema", () => {
     const sellerIntent = { featureOnly: null, exclude: [], mustKeep: [], styleNotes: null };
     const answer = { ...base, screenshot: false, products: [] };
     expect(IntakeToolResult.safeParse({ images: [answer], sellerIntent }).success).toBe(false);
-    expect(IntakeToolResult.safeParse({ images: [{ ...answer, addedOverlays: false }], sellerIntent }).success).toBe(true);
+    expect(IntakeToolResult.safeParse({ images: [{ ...answer, addedOverlays: false, restrictedCategory: null }], sellerIntent }).success).toBe(true);
+  });
+
+  it("requires intake version 8's restrictedCategory from the model, from the seeded list, and defaults it to null on read", () => {
+    const tool = strictToolSchema(IntakeToolResult) as {
+      properties: { images: { items: { properties: Record<string, unknown>; required: string[] } } };
+    };
+    const item = tool.properties.images.items;
+    expect(item.required).toContain("restrictedCategory");
+    expect(JSON.stringify(item.properties.restrictedCategory)).toContain('"tobacco_nicotine"');
+    expect(JSON.stringify(item.properties.restrictedCategory)).toContain("null");
+    const base = {
+      sellableProduct: true,
+      distinctProducts: 1,
+      sharpEnough: true,
+      flags: { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false },
+    };
+    // Answers from versions 1 to 7, which never asked, read as none.
+    expect(IntakeResult.parse({ images: [base] }).images[0].restrictedCategory).toBeNull();
+    expect(IntakeResult.parse({ images: [{ ...base, restrictedCategory: "self_defense_weapons" }] }).images[0].restrictedCategory).toBe(
+      "self_defense_weapons",
+    );
+    expect(IntakeResult.safeParse({ images: [{ ...base, restrictedCategory: "vape" }] }).success).toBe(false);
+    const sellerIntent = { featureOnly: null, exclude: [], mustKeep: [], styleNotes: null };
+    const answer = { ...base, screenshot: false, products: [], addedOverlays: false };
+    expect(IntakeToolResult.safeParse({ images: [answer], sellerIntent }).success).toBe(false);
+    expect(IntakeToolResult.safeParse({ images: [{ ...answer, restrictedCategory: "explosives_fireworks" }], sellerIntent }).success).toBe(true);
   });
 
   it("keeps property names that match keywords and keeps enums", () => {

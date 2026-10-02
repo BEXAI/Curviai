@@ -1,0 +1,118 @@
+name: Smoke
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "25 11 * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Existing environment to check (paid targets need their repository opt-in too)
+        type: choice
+        default: production
+        options: [production, staging, synthetic]
+      expected_sha:
+        description: Expected deployed commit (optional)
+        type: string
+        required: false
+      allow_pack:
+        description: Authorize one paid main-image pack for this dispatch
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.event_name }}-${{ inputs.target || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  demo:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ALLOW_DEMO_MODE: "1"
+      NEXT_PUBLIC_OUTPUT_OPTIONS: "1"
+      SMOKE_BASE_URL: http://localhost:3100
+      SMOKE_MODE: demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm build
+      - name: Start demo and run public smoke (no sign in or pack)
+        shell: bash
+        run: |
+          PORT=3100 pnpm start > "$RUNNER_TEMP/curvi-demo.log" 2>&1 &
+          demo_pid=$!
+          trap 'kill "$demo_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..60}; do
+            if curl --fail --silent http://localhost:3100/api/health > /dev/null; then break; fi
+            sleep 2
+          done
+          pnpm exec playwright test --config=playwright.smoke.config.ts
+
+  public-production:
+    if: (github.event_name == 'schedule' && vars.SMOKE_PUBLIC_ENABLED == '1') || (github.event_name == 'workflow_dispatch' && inputs.target == 'production')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SMOKE_BASE_URL: https://curvi.ai
+      SMOKE_MODE: production
+      SMOKE_EXPECTED_SHA: ${{ inputs.expected_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright test --config=playwright.smoke.config.ts
+
+  staging:
+    if: vars.SMOKE_STAGING_ENABLED == '1' && ((github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    env:
+      SMOKE_BASE_URL: ${{ vars.STAGING_SITE_URL }}
+      SMOKE_MODE: staging
+      SMOKE_EXPECTED_SHA: ${{ inputs.expected_sha }}
+      SMOKE_USER_EMAIL: ${{ secrets.SMOKE_USER_EMAIL }}
+      SMOKE_USER_PASSWORD: ${{ secrets.SMOKE_USER_PASSWORD }}
+      SMOKE_API_KEY: ${{ secrets.SMOKE_STAGING_API_KEY }}
+      SMOKE_ALLOW_PACKS: ${{ vars.SMOKE_STAGING_PACK_ENABLED == '1' && (github.event_name == 'schedule' || inputs.allow_pack) && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright test --config=playwright.smoke.config.ts
+
+  synthetic:
+    if: vars.SMOKE_SYNTHETIC_ENABLED == '1' && vars.SMOKE_WORKSPACE_EXCLUDED == '1' && ((github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && inputs.target == 'synthetic' && inputs.allow_pack))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-smoke
+    env:
+      SMOKE_BASE_URL: https://curvi.ai
+      SMOKE_MODE: synthetic
+      SMOKE_ALLOW_PRODUCTION_PACK: "1"
+      SMOKE_WORKSPACE_EXCLUDED: "1"
+      SMOKE_API_KEY: ${{ secrets.SMOKE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright test --config=playwright.smoke.config.ts

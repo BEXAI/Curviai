@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 import { authenticateApiKey, type ApiAuthError, type ApiCaller } from "@/lib/api-keys/auth";
 import type { ApiScope } from "@/lib/api-keys/format";
+import { requestHostAllowed } from "@/lib/http/client-ip";
 import type { ApiResult } from "./actions";
 
 /** Body cap for requests that may carry base64 photos: up to eight photos
@@ -35,6 +36,9 @@ export async function authorize(
   request: Request,
   scope: ApiScope | null,
 ): Promise<{ caller: ApiCaller } | { response: NextResponse }> {
+  if (!requestHostAllowed(request)) {
+    return { response: NextResponse.json({ error: "This host is not allowed.", reason: "host_forbidden" }, { status: 403 }) };
+  }
   const auth = await authenticateApiKey(request.headers, scope);
   return auth.ok ? { caller: auth.caller } : { response: authErrorResponse(auth.error) };
 }

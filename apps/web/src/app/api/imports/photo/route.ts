@@ -14,6 +14,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { PHOTO_FAILURE_STATUS } from "@/lib/api-v1/photos";
 import { isR2Configured } from "@/lib/env";
 import { readJsonCapped } from "@/lib/http/json-body";
 import { sameOriginOrRefuse } from "@/lib/http/same-origin";
@@ -21,7 +22,7 @@ import { resolveSignedIn } from "@/lib/http/services";
 import { putSourceObject } from "@/lib/r2";
 import { limitByIp, limitByUser } from "@/lib/rate-limit";
 import { isDbMode } from "@/lib/services";
-import { importPhoto, type PhotoImportResult } from "@/lib/url-import/image";
+import { importPhoto } from "@/lib/url-import/image";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -34,15 +35,6 @@ const R2_IMPORTS_NOTICE =
 const PhotoRequest = z.object({
   url: z.string().trim().min(1).max(2048),
 });
-
-const FAILURE_STATUS: Record<Extract<PhotoImportResult, { ok: false }>["reason"], number> = {
-  invalid_url: 400,
-  blocked_host: 400,
-  not_image: 422,
-  too_large: 422,
-  timeout: 504,
-  unreachable: 502,
-};
 
 export async function POST(request: Request): Promise<NextResponse> {
   const crossSite = sameOriginOrRefuse(request);
@@ -91,7 +83,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const result = await importPhoto(parsed.data.url);
   if (!result.ok) {
-    return NextResponse.json({ error: result.message, reason: result.reason }, { status: FAILURE_STATUS[result.reason] });
+    return NextResponse.json({ error: result.message, reason: result.reason }, { status: PHOTO_FAILURE_STATUS[result.reason] });
   }
   const { photo } = result;
   let key: string;

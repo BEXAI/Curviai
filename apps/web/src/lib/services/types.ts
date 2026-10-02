@@ -6,6 +6,8 @@
  * the view types.
  */
 
+import type { StoredFidelity } from "@curvi/pipeline/fidelity-record";
+import type { FileProofView } from "@/lib/proof-view";
 import type { OutputOptionsInput, PhotoBackgroundChoice } from "@curvi/pipeline/output-options";
 import type { ComplianceReportView } from "@/lib/compliance-report";
 import type { OutputOptionsSummary } from "@/lib/job-copy";
@@ -13,6 +15,7 @@ import type { BrandPaletteOutcome } from "@/lib/brand/types";
 import type { GalleryFilters, GalleryItem } from "@/lib/library";
 import type { ReusePrefill } from "@/lib/reuse";
 import type { PreflightBox, PreflightOutcome } from "@/lib/preflight/types";
+import type { SellerAnswer, SellerProfile } from "@/lib/seller-profile";
 
 export type {
   ComplianceCheckView,
@@ -101,6 +104,12 @@ export interface ShotCompliance {
   fillPct: number | null;
   /** Measured background color, when the channel has a background rule. */
   background: [number, number, number] | null;
+  /** The color inside the product measured on the shot's file (P18-08):
+   * null when nothing was measured, absent on views built before it. */
+  fidelity?: StoredFidelity | null;
+  /** Each delivered file's measured proof, for "See the proof" (P18-16).
+   * Absent for shots saved before Phase 18. */
+  files?: FileProofView[];
 }
 
 export interface JobShotView {
@@ -124,6 +133,8 @@ export interface JobShotView {
   /** What the seller can do with this card on a delivered pack: run a shot
    * that needs review again, or add the photo a skipped shot waits for. */
   action?: ShotAction | null;
+  /** A delivered scene whose original photo is still available. */
+  regenerate?: { credits: number };
   /** How the board names the angle an add_photo card waits for, e.g. "back". */
   angle?: string | null;
   /** The delivered asset behind a finished card, for favorites (PHASE_16
@@ -180,6 +191,11 @@ export interface JobView {
    * (outputOptionsSummary in lib/job-copy.ts). Absent when the stored
    * options could not be read. */
   outputOptions?: OutputOptionsSummary;
+  /** True when a deploy stopped the pack mid run and it started again
+   * (generation_jobs.restart_count, P18-23): the page says so once. */
+  restarted?: boolean;
+  /** Queue position contains no other workspace identifiers. */
+  queue?: { position: number; etaSeconds: number };
 }
 
 /** One product the inventory found in a photo, as the pack page lists it. */
@@ -229,6 +245,8 @@ export interface IntegrationView {
   kind: "shopify" | "amazon";
   status: "connected" | "not_connected";
   detail: string;
+  /** A help link shown after the detail, for a row that is not connected. */
+  link?: { href: string; label: string };
 }
 
 export interface CreateJobInput {
@@ -274,37 +292,118 @@ export interface CreateJobInput {
    * question kind, resolved against the seed's full choices. Used only
    * when sellerAnswers is absent. */
   answers?: { channels?: string; mood?: string };
+  /** The most credits the pack may hold (PHASE_19 P19-16): the smaller of
+   * an assistant's signed estimate and its max_credits. A pack whose hold
+   * would be larger is refused with over_max_credits before anything is
+   * written or reserved. Absent (the web form, the REST API) means no cap. */
+  maxCredits?: number;
+  /** Earlier Idempotency-Keys a retry of this same request may have used
+   * (PHASE_19 P19-16: an assistant's derived key of the previous 10 minute
+   * window). A replay under one of them answers first; a conflict under one
+   * is ignored, and the request goes on under idempotencyKey. */
+  previousIdempotencyKeys?: string[];
+  /** "assistant" for a pack started through /api/mcp (PHASE_19 P19-29):
+   * the worker then stops it at intake when the product is one of OpenAI's
+   * prohibited goods, with nothing charged. Absent (the web form, the REST
+   * API) keeps today's behavior. */
+  audience?: "assistant";
+  /** Where the pack was started from, for the server side funnel's
+   * pack_started step (docs/phases/PHASE_18.md P18-02). Absent is the web
+   * form. */
+  origin?: PackOrigin;
 }
+
+/** Why createJob refused a pack. */
+export type CreateJobRejectionReason =
+  | "maintenance"
+  | "workspace_day_cap"
+  | "empty_plan"
+  | "unknown_product"
+  | "insufficient_credits"
+  | "role_forbidden"
+  | "needs_photo"
+  | "no_media"
+  /** A requested feature is not live yet (for example video). */
+  | "feature_unavailable"
+  /** A requested feature is live but not in the workspace's plan. */
+  | "upgrade_required"
+  /** Not a credit problem: the database or the queue failed. Retry. */
+  | "unavailable"
+  /** The requested mode is not offered yet (Concept Mode). */
+  | "mode_unavailable"
+  /** An upload failed the server side ingest check (wrong type,
+   * over a cap, unreadable). The seller uploads a different file. */
+  | "invalid_upload"
+  /** The output options name something that is not there, such as a
+   * brand color the kit no longer has. The seller picks again. */
+  | "invalid_options"
+  /** The hold is larger than input.maxCredits (PHASE_19 P19-16). */
+  | "over_max_credits";
+
+export interface CreateJobRejection {
+  outcome: "rejected";
+  reason: CreateJobRejectionReason;
+  message: string;
+  /** insufficient_credits and over_max_credits: what the pack would hold
+   * (PHASE_19 P19-14), so an assistant can say both numbers. */
+  creditsNeeded?: number;
+  /** insufficient_credits: the workspace's balance when it was refused. */
+  creditsAvailable?: number;
+  /** over_max_credits: the cap the request named. */
+  maxCredits?: number;
+}
+
+/** upload: the web form; import: a product link (P18-11); preview: a
+ * claimed free preview (P18-12); claim: a prospect claim (P18-04); api: the
+ * v1 API or MCP. */
+export type PackOrigin = "upload" | "import" | "preview" | "claim" | "api";
 
 export type CreateJobResult =
   | { outcome: "created"; job: JobView }
   | { outcome: "replayed"; job: JobView }
   /** existingJobId is only present when the caller may see that job. */
   | { outcome: "conflict"; existingJobId?: string }
+  | CreateJobRejection;
+
+/**
+ * What estimateJob reads (PHASE_19 P19-16): a createJob request whose photos
+ * are not stored. Each upload names the key and hash createJob would get for
+ * the same photo, with the upright size the server side ingest records, so
+ * the estimate plans exactly what the hold plans.
+ */
+export interface EstimateJobInput
+  extends Omit<CreateJobInput, "idempotencyKey" | "uploads" | "maxCredits" | "previousIdempotencyKeys" | "sellerAnswers"> {
+  uploads?: Array<{
+    key: string;
+    sha256: string;
+    kind: "image";
+    angle?: PhotoAngle;
+    width: number | null;
+    height: number | null;
+  }>;
+}
+
+/** A requested channel spec the estimated pack would not make. coming_soon:
+ * its images do not ship yet (0 credits); not_made: no image is planned for
+ * it with these photos and choices, for example a kept photo too small for
+ * the channel. */
+export interface EstimateLeftOut {
+  specId: string;
+  reason: "coming_soon" | "not_made";
+}
+
+export type EstimateJobResult =
   | {
-      outcome: "rejected";
-      reason:
-        | "unknown_product"
-        | "insufficient_credits"
-        | "role_forbidden"
-        | "needs_photo"
-        | "no_media"
-        /** A requested feature is not live yet (for example video). */
-        | "feature_unavailable"
-        /** A requested feature is live but not in the workspace's plan. */
-        | "upgrade_required"
-        /** Not a credit problem: the database or the queue failed. Retry. */
-        | "unavailable"
-        /** The requested mode is not offered yet (Concept Mode). */
-        | "mode_unavailable"
-        /** An upload failed the server side ingest check (wrong type,
-         * over a cap, unreadable). The seller uploads a different file. */
-        | "invalid_upload"
-        /** The output options name something that is not there, such as a
-         * brand color the kit no longer has. The seller picks again. */
-        | "invalid_options";
-      message: string;
-    };
+      outcome: "estimated";
+      /** Exactly what createJob would hold for the same request. */
+      creditsNeeded: number;
+      /** The workspace's balance now. */
+      creditsAvailable: number;
+      /** The requested specs the pack would make files for. */
+      channels: string[];
+      leftOut: EstimateLeftOut[];
+    }
+  | CreateJobRejection;
 
 /** Why a retry or an added photo was refused. Routes map each to a status:
  * not_found 404, role_forbidden 403, foreign_key 403, not_ready 409,
@@ -380,6 +479,12 @@ export interface JobFileView {
   /** Same origin download link that signs a fresh url on every click and
    * names the file; null when files are not stored (demo mode or R2 unset). */
   downloadUrl: string | null;
+  /** The shot that made an image, so an assistant's view can carry its
+   * channel check (PHASE_19 P19-14). Null or absent for zips, the report
+   * and files whose shot is not recorded. */
+  shotId?: string | null;
+  /** Only the QC report for these exact delivered bytes, never a shot aggregate. */
+  fidelity?: StoredFidelity | null;
 }
 
 export interface JobFilesView {
@@ -452,6 +557,11 @@ export interface Services {
   ensureWorkspace(): Promise<WorkspaceSummary | null>;
   /** Renames the workspace. Owner and admin only in db mode. */
   renameWorkspace(workspaceId: string, name: string): Promise<SaveResult>;
+  /** The first run answers (P18-20), or null when none were saved. */
+  getSellerProfile(workspaceId: string): Promise<SellerProfile | null>;
+  /** Saves the first run answers (P18-20). Owners, admins and editors in db
+   * mode; the answer is already checked against the seed. */
+  saveSellerProfile(workspaceId: string, answer: SellerAnswer): Promise<SaveResult>;
   listProducts(workspaceId: string): Promise<ProductSummary[]>;
   /** The products library: every product with its photo count and pack
    * history, newest product first. */
@@ -461,6 +571,15 @@ export interface Services {
   /** Reading a job advances the demo simulation by one tick. */
   getJob(workspaceId: string, jobId: string): Promise<JobView | null>;
   createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult>;
+  /** What createJob would hold for the same request, the balance and the
+   * channels left out, computed the same way and writing nothing: no
+   * product, no photo, no job, no hold (PHASE_19 P19-16, estimate_pack).
+   * Refuses exactly as createJob refuses before its hold. */
+  estimateJob(workspaceId: string, input: EstimateJobInput): Promise<EstimateJobResult>;
+  /** The workspace's credit balance, or null when the caller is not a
+   * member of it (PHASE_19 P19-16). Never the "current" workspace: an
+   * assistant names the workspace its connection is bound to. */
+  workspaceBalance(workspaceId: string): Promise<number | null>;
   /** Cancels a running pack: owner, admin and editor only. Stops remaining
    * shots at the runner's next checkpoint and returns every credit held for
    * shots that were not delivered. */
@@ -468,6 +587,7 @@ export interface Services {
   /** Runs one shot that needs review again on a delivered pack, holding its
    * credits by the pack rules and returning them if it does not pass. */
   retryShot(workspaceId: string, jobId: string, shotId: string): Promise<ShotOpResult>;
+  regenerateShot(workspaceId: string, jobId: string, shotId: string): Promise<ShotOpResult>;
   /** Adds the photo a skipped "needs photo" shot waits for, then plans and
    * runs the shots it unlocks on the delivered pack. */
   addShotPhoto(workspaceId: string, jobId: string, shotId: string, input: AddShotPhotoInput): Promise<ShotOpResult>;
@@ -490,7 +610,8 @@ export interface Services {
   getBrandKit(workspaceId: string): Promise<BrandKitView>;
   /** True when packs may carry output options other than today's pack: the
    * NEXT_PUBLIC_OUTPUT_OPTIONS flag is on and, in db mode, the
-   * output_options_enabled kill switch too (cached briefly per process). */
+   * ops:output_options_enabled operator switch too (cached briefly per
+   * process, docs/phases/PHASE_20.md P20-20). */
   outputOptionsEnabled(): Promise<boolean>;
   saveBrandKit(workspaceId: string, kit: BrandKitView): Promise<SaveResult>;
   /** Suggests brand colors from an uploaded logo (PHASE_16 workstream 7).

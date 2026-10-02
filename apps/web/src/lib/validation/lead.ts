@@ -13,6 +13,9 @@ export const EMAIL_MAX_LENGTH = 254;
 export const leadRequestSchema = z.object({
   email: z.string().trim().toLowerCase().max(EMAIL_MAX_LENGTH).pipe(z.email()),
   source: z.enum(LEAD_SOURCES),
+  /** The unticked "Also send me tips on listing images and the occasional
+   * offer" box (PHASE_18 P18-06). Only true is consent. */
+  marketingConsent: z.boolean().optional(),
   [LEAD_HONEYPOT_FIELD]: z.string().max(500).optional(),
 });
 

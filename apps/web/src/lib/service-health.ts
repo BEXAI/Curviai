@@ -32,11 +32,18 @@
  * stable codes without failing it either:
  * a restart cannot fix an env value, and failing would restart the instance
  * every minute and take the marketing site down with it.
+ *
+ * `status` (docs/phases/PHASE_20.md P20-15) is the one word a monitor can
+ * match: "down" for today's `ok: false` cases, "degraded" when a warning
+ * stops or threatens packs, payments, backups or alerts, "ok" otherwise.
+ * `degradedBy` lists the codes behind it. The severity of each code lives
+ * in lib/health-status.ts; `ok` and the status code are unchanged by it.
  */
 
 import { sql } from "@curvi/db";
 import journal from "../../../../packages/db/migrations/meta/_journal.json";
 import type { InlineRunnerStats } from "@/lib/jobs/inline-runner";
+import { classify, downCodes, type ClassifyContext, type HealthStatus } from "@/lib/health-status";
 
 export type DatabaseCheck = "ok" | "failed" | "skipped";
 export type SchemaCheck = "current" | "behind" | "unknown" | "skipped";
@@ -51,6 +58,13 @@ export interface HealthBody {
   /** True only when every check passed. Monitors alert on this, not on the
    * status code, which stays 200 for a database failure after boot. */
   ok: boolean;
+  /** "ok", "degraded" or "down" (lib/health-status.ts). The second monitor
+   * matches `"status":"ok"`; no other key in the public body is named
+   * status. */
+  status: HealthStatus;
+  /** The down and degraded codes behind `status`, down codes first; empty
+   * when ok. */
+  degradedBy: string[];
   mode: "demo" | "db";
   checks: {
     database: DatabaseCheck;
@@ -92,6 +106,10 @@ export interface HealthCheckDeps {
    * database check, with its outcome. A throw is logged and reported as the
    * code config_check_failed; it never fails the check. */
   configWarnings?: (state: { database: DatabaseCheck }) => string[] | Promise<string[]>;
+  /** What the severity of some codes depends on: whether checkout is open,
+   * and which providers sit in a paused stage. Read once, after
+   * configWarnings. */
+  classifyContext?: () => ClassifyContext;
   /** Migrations this build ships, from the journal. */
   migrations?: MigrationMark[];
   commit?: string | null;
@@ -167,6 +185,38 @@ export async function readLatestAppliedMigration(db: SqlExecutor): Promise<numbe
   }
   const value = Number(latest);
   return Number.isFinite(value) ? value : null;
+}
+
+export interface ReleaseHealthDetail {
+  appliedWhen: number | null;
+  runningPacks: number | null;
+  checkedAt: string;
+}
+
+/** A fresh, global drain snapshot for the authenticated release CLI. Public
+ * readiness deliberately caches its schema result; release decisions cannot.
+ * Owned followups with no start time are waiting locally and cannot start
+ * while deploy_pending is set. Legacy active rows count conservatively. */
+export async function readReleaseHealthDetail(
+  db: SqlExecutor,
+  timeoutMs = HEALTH_DB_TIMEOUT_MS,
+  now: () => Date = () => new Date(),
+): Promise<ReleaseHealthDetail> {
+  const [appliedWhen, runningPacks] = await Promise.all([
+    withTimeout(() => readLatestAppliedMigration(db), timeoutMs).catch(() => null),
+    withTimeout(async () => {
+      const rows = rowsOf<{ running: string | number }>(await db.execute(sql`
+        select count(*)::text as running from generation_jobs
+        where status in ('analyzing', 'planning', 'generating', 'qc', 'packaging')
+          and (runner_id is null or started_at is not null)
+      `));
+      const raw = rows[0]?.running;
+      if (raw === undefined || raw === null) return null;
+      const count = Number(raw);
+      return Number.isSafeInteger(count) && count >= 0 ? count : null;
+    }, timeoutMs).catch(() => null),
+  ]);
+  return { appliedWhen, runningPacks, checkedAt: now().toISOString() };
 }
 
 class TimeoutError extends Error {
@@ -277,10 +327,14 @@ export async function runHealthCheck(deps: HealthCheckDeps): Promise<HealthResul
     }
   }
 
+  const severity = classify([...downCodes({ database, schema, packRunner }), ...warnings], deps.classifyContext?.() ?? {});
+
   return {
     status: failsCheck ? 503 : 200,
     body: {
       ok,
+      status: severity.status,
+      degradedBy: severity.degradedBy,
       mode: deps.mode,
       checks: { database, schema, packRunner },
       migrations: { expected, applied },
@@ -309,4 +363,60 @@ export interface BreakerReader {
 export async function providerQuotaWarnings(names: readonly string[], breaker: BreakerReader): Promise<string[]> {
   const reasons = await Promise.all(names.map((name) => breaker.openReason(name).catch(() => null)));
   return names.filter((_, i) => reasons[i] === "quota").map((name) => `provider_quota:${name}`);
+}
+
+/** The breaker read the stage check needs. */
+export interface BreakerOpenReader {
+  isOpen(provider: string): Promise<boolean>;
+}
+
+/** A provider as the live wiring lists it (trigger/src/provider-probes.ts). */
+export interface StageProvider {
+  name: string;
+  stages: readonly string[];
+  configured: boolean;
+}
+
+/**
+ * `breaker_open:<stage>` for every pipeline stage whose configured providers
+ * all have an open breaker (P20-15), and the providers of those stages, so
+ * a `provider_quota:<name>` warning counts as degraded only when it pauses
+ * a stage. A stage with no configured provider is the key warnings' job
+ * (no_*_provider), not this one. A breaker that cannot be read counts as
+ * closed.
+ */
+export async function stageBreakerWarnings(
+  providers: readonly StageProvider[],
+  breaker: BreakerOpenReader,
+): Promise<{ codes: string[]; pausedProviders: string[] }> {
+  const configured = providers.filter((provider) => provider.configured);
+  const open = new Set<string>();
+  await Promise.all(
+    configured.map(async (provider) => {
+      if (await breaker.isOpen(provider.name).catch(() => false)) open.add(provider.name);
+    }),
+  );
+  const stages = [...new Set(configured.flatMap((provider) => provider.stages))];
+  const codes: string[] = [];
+  const paused = new Set<string>();
+  for (const stage of stages) {
+    const serving = configured.filter((provider) => provider.stages.includes(stage));
+    if (serving.length > 0 && serving.every((provider) => open.has(provider.name))) {
+      codes.push(`breaker_open:${stage}`);
+      for (const provider of serving) paused.add(provider.name);
+    }
+  }
+  return { codes, pausedProviders: [...paused] };
+}
+
+/** The new pack preflight's verdict as health codes (lib/provider-
+ * preflight.ts): `packs_paused:<cause>` while packs that need a cutout
+ * cannot start, `scenes_paused` while scenes are paused. */
+export function preflightWarnings(detail: {
+  verdict: "ok" | "scenes_paused" | "packs_paused";
+  cause: "quota" | "failures" | null;
+}): string[] {
+  if (detail.verdict === "packs_paused") return [`packs_paused:${detail.cause ?? "failures"}`];
+  if (detail.verdict === "scenes_paused") return ["scenes_paused"];
+  return [];
 }

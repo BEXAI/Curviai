@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {
+      "id": "daily-copies-locked-7-days",
+      "enabled": true,
+      "prefix": "daily/",
+      "condition": { "type": "Age", "maxAgeSeconds": 604800 }
+    }
+  ]
+}

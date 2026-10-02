@@ -1,3 +1,4 @@
+import { resolveGlobalHardStop, workspaceExpectedDailyMicros } from "./spend-policy";
 /**
  * Database backed runtime wiring. When DATABASE_URL is set, tasks and the web
  * app's inline fallback persist job state, assets, ledger settlement and pack
@@ -68,9 +69,12 @@ export function buildDbRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps 
   const base = buildRuntimeDeps({
     ...opts,
     capStore,
+    globalHardStopMicros: () => resolveGlobalHardStop(db),
+    workspaceExpectedDailyMicros: (workspaceId) => workspaceExpectedDailyMicros(db, workspaceId),
     realCredits: true,
     onSpendAlert: alerts.onSpendAlert,
     quotaEventDb: db,
+    quotaAlertDedupe: capStore,
     llmMonitor: globalScope.__curviDbLlmMonitor,
   });
   if (base.ai.caps) {
@@ -95,3 +99,5 @@ export function buildDbRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps 
 export function resolveRuntimeDeps(opts: RuntimeDepsOptions = {}): PipelineDeps {
   return buildDbRuntimeDeps(opts) ?? buildRuntimeDeps(opts);
 }
+
+export { resolveGlobalHardStop } from "./spend-policy";

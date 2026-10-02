@@ -9,15 +9,15 @@ import {
   identityClaims,
   specAvailability,
   typicalPackCredits,
+  CREDIT_TERMS_SENTENCE,
   unqualifiedClaims,
-  UNUSED_CREDITS_SENTENCE,
 } from "@/lib/marketing-facts";
 import { SITE_FEATURES, channelPageSeo } from "@/lib/seo";
 import { brandKitCopy } from "./brand-kit-copy";
 import { categories } from "./categories";
 import { channelPageCopy } from "./channel-copy";
 import { complianceDemoRows } from "./compliance-badge-demo";
-import { helpArticles, helpClosing, structuredHelpArticles } from "./help-articles";
+import { aiLabelingHelpArticle, helpArticles, helpClosing, structuredHelpArticles } from "./help-articles";
 import {
   homeChannelTiles,
   homeChannels,
@@ -44,14 +44,15 @@ import { pillarPageTexts, pillarPages } from "./pillar-copy";
 import { signupLead } from "./signup-copy";
 import { imageSpecs, specDisplayName } from "./spec-slug";
 import { checkerGateCopy, checkerVerdictCopy, fixerGateCopy, resizerGateCopy, toolPackCta } from "./tool-copy";
+import { stubKeyOnly, stubOpenCheckout } from "@/lib/billing/test-env";
 
 // CLAUDE.md rule 9: no emojis, no arrows, no dashes as punctuation. Hyphens
 // inside words such as "e-commerce" are fine.
 const FORBIDDEN_COPY = /[‒-―←-⇿⟵-⟿]|\s-\s|--|\p{Extended_Pictographic}/u;
 
-// The seed's rollover policy (one cycle, up to one month of allowance) is not
-// enforced: subscription credits never expire today. Copy states
-// UNUSED_CREDITS_SENTENCE instead and must never bring the cap back.
+// Credits never expire while the account is open (P20-05, founder decision
+// 10; the seed's old rollover policy is gone). Copy states
+// CREDIT_TERMS_SENTENCE and must never bring a cap or a lifetime back.
 const CAPPED_ROLLOVER =
   /carr(?:y|ies|ied) over|roll(?:s|ed)? ?over|up to (?:one|a|\d+) months? of (?:your|the) allowance|capped at (?:one|a|\d+) months?/i;
 
@@ -182,8 +183,16 @@ describe("unused credits", () => {
 
   it("say what happens to unused credits with the one shared sentence", () => {
     const help = helpArticles.find((article) => article.slug === "how-credits-work");
-    expect(help?.body.join(" ")).toContain(UNUSED_CREDITS_SENTENCE);
-    expect(UNUSED_CREDITS_SENTENCE).not.toMatch(CAPPED_ROLLOVER);
+    expect(help?.body.join(" ")).toContain(CREDIT_TERMS_SENTENCE);
+    expect(CREDIT_TERMS_SENTENCE).not.toMatch(CAPPED_ROLLOVER);
+  });
+
+  it("never state a credit lifetime or expiry (P20-05)", () => {
+    const LIFETIME = /\bexpir|usable for \d+ months|last(?:s)? \d+ months|\d+ months? (?:after|from) (?:purchase|you buy)/i;
+    expect(CREDIT_TERMS_SENTENCE).not.toMatch(/expire/i);
+    for (const { where, text } of liveCopy()) {
+      expect(text, where).not.toMatch(LIFETIME);
+    }
   });
 
   it("recognize the retired capped wording", () => {
@@ -234,8 +243,13 @@ describe("FAQPage JSON-LD", () => {
     );
   });
 
-  it("adds the billing article once Stripe is configured, never coming soon ones", () => {
-    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_placeholder");
+  it("keeps billing out while only the Stripe key is set (P20-01)", () => {
+    stubKeyOnly(vi.stubEnv);
+    expect(structuredHelpArticles().map((article) => article.slug)).not.toContain("billing-and-cancellation");
+  });
+
+  it("adds the billing article once checkout is open, never coming soon ones", () => {
+    stubOpenCheckout(vi.stubEnv);
     const slugs = structuredHelpArticles().map((article) => article.slug);
     expect(slugs).toContain("billing-and-cancellation");
     for (const article of helpArticles.filter((a) => a.status === "coming_soon")) {
@@ -351,6 +365,8 @@ const RETIRED_IDENTITY_CLAIMS = [
   "AI e-commerce images for Shopify and Amazon from one photo, product pixels untouched.",
   "It ensures that the subject of your original photo remains unchanged.",
   "Curvi preserves your device pixels exactly and swaps only the environment.",
+  "Curvi masks the product so its pixels are locked before anything else happens.",
+  "Curvi fixes every failing main image from the same photo, with your product pixels untouched.",
 ];
 
 /**
@@ -422,5 +438,30 @@ describe("product identity claims", () => {
     expect(answer).toContain(`${QC_THRESHOLDS.other.maxMeanDeltaE} for the rest`);
     const tile = homeFeatures.find((feature) => feature.key === "fidelity");
     expect(tile?.body).toMatch(/^Never redrawn by AI\./);
+  });
+});
+
+// P18-09 part 2: the AI labeling answer waits for the founder's smoke:iptc
+// run on a production file (claim C-11), but its words are checked now so
+// publishing it is only a list change.
+describe("AI labeling answer", () => {
+  const text = [aiLabelingHelpArticle.title, ...aiLabelingHelpArticle.body].join(" ");
+
+  it("follows the copy rules and claims nothing that is not live", () => {
+    expect(text).not.toMatch(FORBIDDEN_COPY);
+    expect(unqualifiedClaims(text)).toEqual([]);
+    expect(identityClaims(text)).toEqual([]);
+  });
+
+  it("quotes the three values Google Merchant Center lists and never says share pages carry the label", () => {
+    for (const value of ["TrainedAlgorithmicMedia", "CompositeSynthetic", "AlgorithmicMedia"]) {
+      expect(text).toContain(value);
+    }
+    expect(text).toContain("share page copies");
+    expect(text).not.toMatch(/share pages? (?:carry|keep|show) the (?:tag|label)/i);
+  });
+
+  it("stays unpublished until the production check is recorded", () => {
+    expect(helpArticles.map((article) => article.slug)).not.toContain(aiLabelingHelpArticle.slug);
   });
 });

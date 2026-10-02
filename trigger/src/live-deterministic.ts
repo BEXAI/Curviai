@@ -32,6 +32,7 @@ import {
   type Shot,
 } from "@curvi/pipeline";
 import {
+  HEX,
   backgroundFor,
   productSizeFillFor,
   rgbToHex,
@@ -58,8 +59,6 @@ export const DETERMINISTIC_LIVE_TYPES: ReadonlySet<ShotType> = new Set<ShotType>
   // upload, never from a cutout, so renderDeterministicShot refuses it.
   "original_photo",
 ]);
-
-const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 export async function renderDeterministicShot(input: {
   shot: Shot;
@@ -114,7 +113,7 @@ export async function renderDeterministicShot(input: {
 
 /** First valid brand kit hex, else the seeded fallback. */
 function brandHex(brandColors: string[] | undefined): string {
-  const found = (brandColors ?? []).map((c) => c.trim()).find((c) => HEX_COLOR.test(c));
+  const found = (brandColors ?? []).map((c) => c.trim()).find((c) => HEX.test(c));
   return found ?? stillStyle.fallbackBrandHex;
 }
 

@@ -26,6 +26,7 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { dimensionBounds, isExactSize, requiresWhiteBackground, type ChannelSpec } from "@curvi/specs";
+import { webpIsLossless } from "../ingest/image";
 import { dilate, type BBox } from "../mask";
 import {
   canvasSizeFor,
@@ -915,24 +916,13 @@ function specFormat(format: string | undefined): string {
   }
 }
 
-/** A WebP whose image chunk is VP8L (lossless). Reads the RIFF chunk list only. */
-function webpIsLossless(bytes: Buffer): boolean {
-  if (bytes.length < 16 || bytes.toString("latin1", 0, 4) !== "RIFF" || bytes.toString("latin1", 8, 12) !== "WEBP") {
-    return false;
-  }
-  let offset = 12;
-  while (offset + 8 <= bytes.length) {
-    const fourcc = bytes.toString("latin1", offset, offset + 4);
-    if (fourcc === "VP8L") {
-      return true;
-    }
-    if (fourcc === "VP8 ") {
-      return false;
-    }
-    const size = bytes.readUInt32LE(offset + 4);
-    offset += 8 + size + (size % 2);
-  }
-  return false;
+/** ICC text may contain embedded NULs. Remove only its trailing padding in
+ * one backward scan; an unanchored NUL regex can retry a long interior run
+ * at every offset when an uploaded profile ends in a non-NUL character. */
+function trimTrailingNuls(text: string): string {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 0) end--;
+  return text.slice(0, end);
 }
 
 /**
@@ -963,7 +953,7 @@ export function iccProfileDescription(icc: Buffer): string | null {
       if (type === "desc") {
         const count = icc.readUInt32BE(offset + 8);
         const end = Math.min(offset + 12 + count, offset + size);
-        return icc.toString("latin1", offset + 12, end).replace(/\0+$/, "");
+        return trimTrailingNuls(icc.toString("latin1", offset + 12, end));
       }
       if (type === "mluc") {
         const records = icc.readUInt32BE(offset + 8);
@@ -990,7 +980,7 @@ export function iccProfileDescription(icc: Buffer): string | null {
         for (let k = 0; k + 1 < chosen.length; k += 2) {
           text += String.fromCharCode(icc.readUInt16BE(chosen.at + k));
         }
-        return text.replace(/\0+$/, "");
+        return trimTrailingNuls(text);
       }
       return null;
     }

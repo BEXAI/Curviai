@@ -12,7 +12,10 @@ import {
   type PlanActionMode,
 } from "@/components/app/billing-actions";
 import { CancelFlow } from "@/components/app/cancel-flow";
-import { isStripeConfigured } from "@/lib/env";
+import { BillingHistory } from "@/components/app/billing-history";
+import { ScheduledPlanButton } from "@/components/app/scheduled-plan";
+import { RenewalTerms } from "@/components/marketing/renewal-terms";
+import { hasStripeApiKey, isCheckoutOpen } from "@/lib/env";
 import { canManageBilling } from "@/lib/billing/access";
 import {
   hasOpenSubscription,
@@ -27,15 +30,21 @@ import {
   annualSavingsUsd,
   formatCredits,
   formatUsd,
+  isPaidTierKey,
+  planChangeDirection,
   priceForCadence,
   tierDisplayName,
+  type BillingCadence,
+  type PlanPrice,
 } from "@/lib/billing/plans";
+import { firstRenewal, showTaxLine, TAX_LINE } from "@/lib/billing/renewal-terms";
 import { isStripeTaxEnabled } from "@/lib/billing/stripe";
 import { needsCardUpdate, pastDueMessage } from "@/lib/billing/subscription-status";
-import { topUpMonths, UNUSED_CREDITS_SENTENCE } from "@/lib/marketing-facts";
+import { CREDIT_TERMS_SENTENCE } from "@/lib/marketing-facts";
 import { getServices } from "@/lib/services";
 
 export const metadata: Metadata = { title: "Billing" };
+
 export const dynamic = "force-dynamic";
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -73,10 +82,14 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
     );
   }
 
-  const account = await loadBillingAccount(workspace.id);
+  const account = await loadBillingAccount(workspace.id, { refreshSchedule: canManageBilling(workspace.role) });
   const planName = tierDisplayName(workspace.plan);
-  const stripeLive = isStripeConfigured();
+  const stripeLive = isCheckoutOpen();
   const canBill = canManageBilling(workspace.role);
+  // The portal needs only the API key and a customer (portal/route.ts), so
+  // a subscriber can update a card or cancel even while checkout is closed
+  // by a readiness problem (law and copy review major 6).
+  const portalOpen = canBill && hasStripeApiKey() && Boolean(account.stripeCustomerId);
   const subscribed = hasOpenSubscription(account);
   const subscription = account.subscription;
   const pastDue = needsCardUpdate(subscription?.status);
@@ -123,7 +136,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
         <div className="rounded-xl border border-red-200 bg-red-50 p-4" role="alert" data-testid="past-due-banner">
           <p className="text-sm font-semibold text-red-900">Your last payment did not go through.</p>
           <p className="mt-1 text-sm text-red-800">{pastDueMessage(subscription?.status, subscribedPlanName, canBill)}</p>
-          {canBill && stripeLive && account.stripeCustomerId ? (
+          {portalOpen ? (
             <div className="mt-3">
               <PortalButton label="Update card" variant="primary" />
             </div>
@@ -135,16 +148,16 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4" role="status" data-testid="negative-balance">
           <p className="text-sm font-semibold text-amber-900">Your credit balance is below zero.</p>
           <p className="mt-1 text-sm text-amber-800">
-            A move to a smaller plan returned money for time on the bigger plan, so the credits that time paid for were
-            taken back, including some you had already used. New packs can start again once a top up or your next
-            renewal brings the balance back up.
+            A plan change returned money for time you had already been billed for, so the credits that time paid for
+            were taken back, including some you had already used. New packs can start again once a top up or your
+            next renewal brings the balance back up.
           </p>
         </div>
       ) : null}
 
       {!canBill ? (
         <div className="rounded-xl border border-ink-100 bg-ink-50 p-4 text-sm text-ink-700" data-testid="billing-role-notice">
-          Client seats can see the plan but cannot change billing. Ask the workspace owner for any change.
+          Only the workspace owner or an admin can change billing. Ask them for any change.
         </div>
       ) : null}
 
@@ -162,9 +175,11 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
         <FinishUpgradeCard
           intent={intent}
           currentPlan={workspace.plan}
+          currentCadence={subscription?.cadence ?? null}
           subscribed={subscribed}
           stripeLive={stripeLive}
-          taxEnabled={stripeLive && isStripeTaxEnabled()}
+          taxEnabled={stripeLive && showTaxLine(isStripeTaxEnabled())}
+          now={new Date()}
         />
       ) : null}
 
@@ -172,29 +187,38 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
         planName={planName}
         creditBalance={workspace.creditBalance}
         subscription={subscription}
-        canManage={canBill && stripeLive && Boolean(account.stripeCustomerId)}
+        canManage={portalOpen}
       />
 
       <section>
         <h2 className="text-lg font-semibold text-ink-950">Plans</h2>
         <p className="mt-1 text-sm text-ink-500">
           {subscribed
-            ? "Changing plans opens the Stripe customer portal, where you confirm the new plan and any prorated charge."
-            : `Every plan buys credits. ${UNUSED_CREDITS_SENTENCE}`}
+            ? "Moving to a bigger plan opens the Stripe customer portal, where you confirm the new plan and any prorated charge. Smaller plans and changes from yearly to monthly billing start at your next renewal."
+            : `Every plan buys credits. ${CREDIT_TERMS_SENTENCE}`}
         </p>
         <div className="mt-4">
           <PlanPicker
             currentPlan={workspace.plan}
             hasSubscription={subscribed}
+            currentCadence={subscription?.cadence ?? null}
             mode={mode}
-            initialCadence={intent?.cadence ?? "monthly"}
+            initialCadence={intent?.cadence}
+            today={new Date().toISOString()}
           />
+          {stripeLive && showTaxLine(isStripeTaxEnabled()) ? (
+            <p className="mt-3 text-sm text-ink-500" data-testid="tax-line">
+              {TAX_LINE}
+            </p>
+          ) : null}
         </div>
       </section>
 
       <section id="top-ups">
         <h2 className="text-lg font-semibold text-ink-950">Top ups</h2>
-        <p className="mt-1 text-sm text-ink-500">One time credit packs on top of any plan, including Free.</p>
+        <p className="mt-1 text-sm text-ink-500" data-testid="top-up-terms">
+          One time credit packs on top of any plan, including Free. {CREDIT_TERMS_SENTENCE}
+        </p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:max-w-2xl">
           {topUps.map((topUp) => (
             <Card key={topUp.credits}>
@@ -202,7 +226,6 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
                 <p className="font-medium text-ink-900">
                   {formatCredits(topUp.credits)} for {formatUsd(topUp.usd)}
                 </p>
-                <p className="mt-1 text-xs text-ink-400">Stays usable for {topUpMonths()} months.</p>
                 <div className="mt-4">
                   {mode === "checkout" ? (
                     <CheckoutButton
@@ -224,15 +247,24 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
         </div>
       </section>
 
+      <BillingHistory canViewInvoices={canBill} />
+
       {cancelPlan ? (
         <section id="cancel-plan" data-testid="cancel-section">
           <h2 className="text-lg font-semibold text-ink-950">Cancel plan</h2>
-          {cancelState?.pending ? (
+          {cancelState?.pending?.outcome === "canceled" ? (
             <p className="mt-1 text-sm text-ink-600" data-testid="cancel-pending">
-              {cancelState.pending.outcome === "canceled"
-                ? `Your ${tierDisplayName(cancelPlan)} plan is set to end on ${formatDate(cancelState.pending.effectiveAt)}. Open the customer portal to renew it.`
-                : `Billing is paused until ${formatDate(cancelState.pending.effectiveAt)}. Your plan and credits stay as they are.`}
+              {`Your ${tierDisplayName(cancelPlan)} plan is set to end on ${formatDate(cancelState.pending.effectiveAt)}. Open the customer portal to renew it.`}
             </p>
+          ) : cancelState?.pending ? (
+            <>
+              <p className="mt-1 text-sm text-ink-600" data-testid="cancel-pending">
+                {`Billing is paused until ${formatDate(cancelState.pending.effectiveAt)}. Your plan and credits stay as they are. You can still cancel.`}
+              </p>
+              <div className="mt-4">
+                <CancelFlow planName={tierDisplayName(cancelPlan)} />
+              </div>
+            </>
           ) : (
             <>
               <p className="mt-1 text-sm text-ink-500">
@@ -288,6 +320,15 @@ function CurrentPlanCard({
             : `${formatCredits(creditBalance)} available.`}
         </p>
         {periodLine ? <p className="mt-1 text-sm text-ink-600">{periodLine}</p> : null}
+        {subscription?.pending ? <div className="mt-3 space-y-2" data-testid="pending-plan-change">
+          <p className="text-sm text-ink-600">Your plan changes to {tierDisplayName(subscription.pending.tier)}, billed {subscription.pending.cadence === "annual" ? "yearly" : "monthly"}, on {formatDate(subscription.pending.at)}. Until then you keep {planName} and its credits.</p>
+          {canManage ? <ScheduledPlanButton label={`Keep ${planName}`} /> : null}
+        </div> : null}
+        {!subscription?.pending && subscription?.attachedScheduleId ? <div className="mt-3 space-y-2">
+          <p className="text-sm text-ink-600">A billing schedule is attached to this plan. Keep your current plan to cancel its future changes.</p>
+          {canManage ? <ScheduledPlanButton label={`Keep ${planName}`} /> : null}
+        </div> : null}
+        {subscription?.scheduleSyncFailed ? <p className="mt-3 text-sm text-ink-600">We could not confirm scheduled changes with Stripe. Refresh Billing before choosing another change.</p> : null}
         {!subscription ? (
           <p className="mt-1 text-sm text-ink-500">No subscription yet. Pick a plan below when you are ready.</p>
         ) : null}
@@ -305,26 +346,44 @@ function CurrentPlanCard({
 function FinishUpgradeCard({
   intent,
   currentPlan,
+  currentCadence,
   subscribed,
   stripeLive,
   taxEnabled,
+  now,
 }: {
   intent: CheckoutIntent;
   currentPlan: string;
+  currentCadence: BillingCadence | null;
   subscribed: boolean;
   stripeLive: boolean;
   taxEnabled: boolean;
+  now: Date;
 }) {
   const tier = tierByKey(intent.tier);
   const name = tierDisplayName(intent.tier);
   const price = priceForCadence(tier, intent.cadence);
   const otherCadence = intent.cadence === "annual" ? "monthly" : "annual";
-  const alreadyOnPlan = subscribed && currentPlan === intent.tier;
+  // P20-06 stopgap: a subscriber's change follows planChangeDirection, so a
+  // yearly to monthly move (even onto a bigger plan) is an email, not a
+  // button, and a monthly to yearly move on the same plan is an upgrade.
+  const from: PlanPrice | null =
+    subscribed && isPaidTierKey(currentPlan) ? { tier: currentPlan, cadence: currentCadence ?? "monthly" } : null;
+  const target: PlanPrice = { tier: intent.tier, cadence: intent.cadence };
+  const direction = from ? planChangeDirection(from, target) : null;
+  const alreadyOnPlan = direction === "same";
+  const byEmail = direction === "downgrade" && stripeLive;
 
   return (
     <Card className="border-accent-500 shadow-md" data-testid="finish-upgrade">
       <CardHeader>
-        <CardTitle>{alreadyOnPlan ? `You are on the ${name} plan` : `Finish upgrading to ${name}`}</CardTitle>
+        <CardTitle>
+          {alreadyOnPlan
+            ? `You are on the ${name} plan`
+            : from?.tier === intent.tier
+              ? `Switch ${name} to ${intent.cadence === "annual" ? "yearly" : "monthly"} billing`
+              : `Finish upgrading to ${name}`}
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <p className="flex items-baseline gap-1">
@@ -335,7 +394,7 @@ function FinishUpgradeCard({
           {intent.cadence === "annual"
             ? `Billed ${formatUsd(price.billedUsd)} once a year, with ${formatCredits(price.creditsPerInvoice)} added up front.`
             : `Billed ${formatUsd(price.billedUsd)} each month, with ${formatCredits(price.creditsPerInvoice)} added each month.`}
-          {taxEnabled ? " Tax is added at checkout where it applies." : ""}
+          {taxEnabled ? ` ${TAX_LINE}` : ""}
         </p>
         <PlanFeatureList tier={intent.tier} />
         <div className="mt-5 max-w-sm">
@@ -343,9 +402,17 @@ function FinishUpgradeCard({
             stripeLive ? (
               <PortalButton label="Manage plan" />
             ) : null
+          ) : byEmail ? (
+            <ScheduledPlanButton label={`Switch to ${name} at renewal`} target={target} />
           ) : stripeLive ? (
             <CheckoutButton
-              label={subscribed ? `Switch to ${name} in the customer portal` : "Continue to payment"}
+              label={
+                !subscribed
+                  ? "Continue to payment"
+                  : from?.tier === intent.tier
+                    ? "Switch to yearly billing in the customer portal"
+                    : `Switch to ${name} in the customer portal`
+              }
               body={{ kind: "tier", tier: intent.tier, cadence: intent.cadence, source: "finish_upgrade" }}
             />
           ) : (
@@ -355,6 +422,14 @@ function FinishUpgradeCard({
             />
           )}
         </div>
+        {!alreadyOnPlan ? (
+          <RenewalTerms
+            tier={intent.tier}
+            cadence={intent.cadence}
+            renewsOn={subscribed ? null : firstRenewal(now, intent.cadence)}
+            className="max-w-xl"
+          />
+        ) : null}
         {!alreadyOnPlan ? (
           <p className="mt-3">
             <CadenceSwitchLink
@@ -367,7 +442,7 @@ function FinishUpgradeCard({
             />
           </p>
         ) : null}
-        {subscribed && !alreadyOnPlan && stripeLive ? (
+        {subscribed && !alreadyOnPlan && !byEmail && stripeLive ? (
           <p className="mt-3 text-xs text-ink-500">
             You already have a subscription, so the change is confirmed in the Stripe customer portal, which shows any
             prorated charge before you agree.

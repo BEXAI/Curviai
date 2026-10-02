@@ -1,10 +1,11 @@
+import { TEST_SPEND_CAPS as SPEND_CAPS } from "./testing/cap-policy";
 import { describe, expect, it } from "vitest";
-import { dailyWorkspaceCeilingMicros, InMemoryCapStore, SPEND_CAPS, SpendCaps } from "./caps";
+import { dailyWorkspaceCeilingMicros, InMemoryCapStore, SpendCaps } from "./caps";
 
 function setup(startDate = "2026-09-27T10:00:00Z") {
   const state = { date: new Date(startDate) };
   const store = new InMemoryCapStore();
-  const caps = new SpendCaps(store, () => state.date);
+  const caps = new SpendCaps(store, () => state.date, SPEND_CAPS);
   return { state, store, caps };
 }
 
@@ -15,7 +16,7 @@ describe("SpendCaps", () => {
     expect(SPEND_CAPS.perPackMicros).toBe(8_000_000);
     expect(SPEND_CAPS.globalDailyAlertMicros).toBe(50_000_000);
     expect(SPEND_CAPS.globalDailyHardStopMicros).toBe(150_000_000);
-    expect(dailyWorkspaceCeilingMicros(1_000_000)).toBe(3_000_000);
+    expect(dailyWorkspaceCeilingMicros(1_000_000, SPEND_CAPS.workspaceDailyMultiplier)).toBe(3_000_000);
   });
 
   it("blocks the pack when cumulative cost would cross the cap", async () => {
@@ -140,7 +141,7 @@ describe("SpendCaps", () => {
       },
       add: (key: string, delta: number) => store.add(key, delta),
     };
-    const caps = new SpendCaps(racingStore);
+    const caps = new SpendCaps(racingStore, () => new Date(), SPEND_CAPS);
     const result = await caps.checkAndReservePack("job1", 2_000_000);
     expect(result.allowed).toBe(false);
     expect(await store.get(result.key)).toBe(7_000_000);
@@ -152,13 +153,21 @@ describe("SpendCaps", () => {
   });
 
   it("honors a raised global hard stop, the founder's env knob", async () => {
-    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date("2026-09-27T12:00:00Z"), {
+    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date("2026-09-27T12:00:00Z"), { ...SPEND_CAPS, ...{
       globalDailyHardStopMicros: 200_000_000,
-    });
+    } });
     const big = await caps.checkAndReserveGlobalDay(180_000_000);
     expect(big.allowed).toBe(true);
     expect(big.alert).toBe(true);
     const over = await caps.checkAndReserveGlobalDay(30_000_000);
     expect(over.allowed).toBe(false);
   });
+});
+
+it("checks a changed operator hard stop before the next reservation", async () => {
+  let limit = 100;
+  const caps = new SpendCaps(new InMemoryCapStore(), () => new Date(), { ...SPEND_CAPS, globalDailyHardStopMicros: async () => limit });
+  expect((await caps.checkAndReserveGlobalDay(80)).allowed).toBe(true);
+  limit = 50;
+  expect((await caps.checkAndReserveGlobalDay(1)).allowed).toBe(false);
 });

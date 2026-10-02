@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getSpec } from "@curvi/specs";
 import { amazonMainRules } from "@/lib/marketing-facts";
+import { checkerChannelFor } from "./checker-rules";
 import { checkRows, flattenOnWhite, measurePixels, summaryLine, type CheckerRules } from "./main-image-analysis";
 
 const spec = amazonMainRules();
@@ -110,5 +112,55 @@ describe("fill range (Update.md 6.10)", () => {
     const rows = checkRows({ width: 500, height: 500 }, m, rules);
     expect(rows.find((row) => row.key === "fill")?.pass).toBe(false);
     expect(summaryLine(rows)).toBe("Fails 2 of 3 checks");
+  });
+});
+
+describe("rules for other channels (P18-10)", () => {
+  const white: [number, number, number, number] = [255, 255, 255, 255];
+  const product: [number, number, number, number] = [30, 30, 30, 255];
+  const google = checkerChannelFor("google").rules;
+  const googleSpec = getSpec("google.merchant.main");
+
+  it("checks Google's minimum width and height instead of a longest side", () => {
+    const m = measurePixels(canvas(100, white, { side: 80, color: product }), 100, 100);
+    const minWidth = googleSpec.minWidth ?? 1;
+    const minHeight = googleSpec.minHeight ?? 1;
+    const big = checkRows({ width: minWidth, height: minHeight }, m, google).find((row) => row.key === "resolution");
+    expect(big?.label).toBe(`Image is at least ${minWidth} by ${minHeight} px`);
+    expect(big?.pass).toBe(true);
+    const narrow = checkRows({ width: minWidth - 1, height: minHeight * 4 }, m, google).find(
+      (row) => row.key === "resolution",
+    );
+    expect(narrow?.pass).toBe(false);
+  });
+
+  it("names white or transparent for Google and still reads transparency as white", () => {
+    const data = canvas(100, [0, 0, 0, 0], { side: 80, color: [40, 90, 160, 255] });
+    flattenOnWhite(data);
+    const rows = checkRows({ width: 1000, height: 1000 }, measurePixels(data, 100, 100), google);
+    const background = rows.find((row) => row.key === "background");
+    expect(background?.label).toBe("Background at the edges is white or transparent");
+    expect(background?.pass).toBe(true);
+    expect(background?.measured).toContain("or fully transparent");
+  });
+
+  it("applies Google's fill range, not Amazon's", () => {
+    const side = Math.ceil(google.fillMinPercent ?? 0) + 1;
+    // Inside Google's range but under Amazon's minimum.
+    expect(side).toBeLessThan(rules.fillMinPercent ?? 0);
+    const m = measurePixels(canvas(100, white, { side, color: product }), 100, 100);
+    const googleFill = checkRows({ width: 1000, height: 1000 }, m, google).find((row) => row.key === "fill");
+    expect(googleFill?.pass).toBe(true);
+    expect(googleFill?.label).toBe(`Product fills ${google.fillMinPercent} to ${google.fillMaxPercent} percent of the frame`);
+    expect(checkRows({ width: 2000, height: 2000 }, m, rules).find((row) => row.key === "fill")?.pass).toBe(false);
+  });
+
+  it("leaves out the rows a channel publishes no rule for", () => {
+    const m = measurePixels(canvas(100, white, { side: 50, color: product }), 100, 100);
+    const rows = checkRows({ width: 300, height: 300 }, m, { minLongSide: 0, fillMinPercent: null, fillMaxPercent: null });
+    expect(rows.map((row) => row.key)).toEqual(["background"]);
+    expect(summaryLine(rows)).toBe("Passes the check");
+    const two = checkRows({ width: 300, height: 300 }, m, { minLongSide: 200, fillMinPercent: null, fillMaxPercent: null });
+    expect(summaryLine(two)).toBe("Passes both checks");
   });
 });

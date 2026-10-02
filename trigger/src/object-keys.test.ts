@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isWorkspaceObjectKey } from "./object-keys";
+import { isWorkspaceObjectKey, isWorkspaceTmpKey } from "./object-keys";
 
 describe("isWorkspaceObjectKey (4.1 worker side)", () => {
   it("accepts keys under the workspace's own prefix", () => {
@@ -17,4 +17,12 @@ describe("isWorkspaceObjectKey (4.1 worker side)", () => {
     expect(isWorkspaceObjectKey("ws1", null)).toBe(false);
     expect(isWorkspaceObjectKey("ws1", undefined)).toBe(false);
   });
+});
+
+it("temporary keys stay within their workspace and cannot be treated as source keys", () => {
+  expect(isWorkspaceTmpKey("w1", "tmp/ws/w1/cache/a")).toBe(true);
+  for (const key of ["tmp/ws/w2/cache/a", "tmp/ws/w10/a", "tmp/ws/w1/../a", "tmp/ws/w1/a\\b", "ws/w1/src/a"]) {
+    expect(isWorkspaceTmpKey("w1", key)).toBe(false);
+  }
+  expect(isWorkspaceObjectKey("w1", "tmp/ws/w1/cache/a")).toBe(false);
 });

@@ -1,10 +1,8 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
 import { VISITORS_COPY, VisitorsDashboard, VisitorsNotice } from "@/components/app/visitors-dashboard";
-import { isOperator } from "@/lib/ops";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
-import { getSessionUser } from "@/lib/supabase/server";
+import { requireOperator } from "@/lib/ops/access";
 import { visitsHashKey } from "@/lib/visits/key";
 import { loadVisitorStats, type VisitorStats } from "@/lib/visits/stats";
 import { deleteExpiredVisitSalts } from "@/lib/visits/store";
@@ -23,18 +21,8 @@ export const metadata: Metadata = {
 };
 export const dynamic = "force-dynamic";
 
-async function currentUser() {
-  try {
-    return await getSessionUser();
-  } catch {
-    return null;
-  }
-}
-
 export default async function VisitorsPage() {
-  if (!isOperator(await currentUser())) {
-    notFound();
-  }
+  await requireOperator();
   if (!isDbMode()) {
     return <VisitorsNotice message={VISITORS_COPY.needsDatabase} />;
   }

@@ -1,3 +1,4 @@
+import { spendCapPolicy } from "../seed/models";
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import {
@@ -485,7 +486,7 @@ describe("compositeShot harmonize aspect ratio (Update.md 2.14)", () => {
     const meter = new InMemoryCostMeter();
     const breakerStore = new InMemoryBreakerStore();
     const capStore = new InMemoryCapStore();
-    const spendCaps = new SpendCaps(capStore, () => new Date("2026-09-28T12:00:00Z"));
+    const spendCaps = new SpendCaps(capStore, () => new Date("2026-09-28T12:00:00Z"), spendCapPolicy);
     const jobId = "job-aspect";
     const routed: Provider = {
       name: "chain",

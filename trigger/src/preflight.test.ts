@@ -23,15 +23,19 @@ import {
   type PipelineDeps,
   type ShotGenerator,
 } from "./pipeline-runner";
-import { CUTOUT_PREVIEW_LONG_SIDE, runUploadPreflight, unionBox } from "./preflight";
+import { clampedUnionBox, CUTOUT_PREVIEW_LONG_SIDE, runUploadPreflight } from "./preflight";
 import {
   intakeAsksAddedOverlays,
+  intakeAsksRestrictedGoods,
   noteKey,
   PREFLIGHT_FRESH_MS,
+  restrictedCategoriesOf,
   reusablePreflightIntake,
   trustedIntakeAnswer,
   type PreflightIntake,
+  type RecipeExecution,
 } from "./preflight-intake";
+import { llmModelProviderName, seedRecipe, standbySeedRecipes, type ResolvedRecipe } from "./recipes";
 import { demoProfile, DemoShotGenerator } from "./runtime";
 
 // docs/phases/PHASE_14.md workstream 4 and item 3.2, runner side.
@@ -81,6 +85,7 @@ const twoProductsImage: IntakeImageResult = {
     { label: "blue bottle", box: blueBox, matchesIntent: "unclear" },
   ],
   addedOverlays: false,
+  restrictedCategory: null,
   flags,
 };
 
@@ -199,7 +204,7 @@ describe("cutout cache", () => {
   });
 
   it("keys the cache under the workspace prefix", () => {
-    expect(cutoutCacheKey(WS, new Uint8Array([1]))).toMatch(new RegExp(`^ws/${WS}/cache/cutout/[0-9a-f]{64}\\.png$`));
+    expect(cutoutCacheKey(WS, new Uint8Array([1]))).toMatch(new RegExp(`^tmp/ws/${WS}/cache/cutout/[0-9a-f]{64}\\.png$`));
   });
 });
 
@@ -239,6 +244,62 @@ describe("reusablePreflightIntake", () => {
     const flagged = { preflight: preflightOf({ ...twoProductsImage, addedOverlays: true }) };
     expect(reusablePreflightIntake([flagged], undefined, recipe, now)?.images[0].addedOverlays).toBe(true);
   });
+
+  const screeningRecipe = { key: intakeKey, version: 8 };
+  const screening = {
+    recipeId: "approved-intake-8",
+    providers: [llmModelProviderName(seedRecipe("intake").models[0])],
+  };
+  const execution: RecipeExecution = {
+    recipe: { ...screeningRecipe, recipeId: screening.recipeId, source: "db" },
+    provider: screening.providers[0],
+  };
+
+  it("requires execution provenance for assistant screening while preserving legacy web reuse", () => {
+    const legacy = { preflight: preflightOf(twoProductsImage, { recipe: screeningRecipe }) };
+    expect(reusablePreflightIntake([legacy], undefined, screeningRecipe, now)?.images).toEqual([twoProductsImage]);
+    expect(reusablePreflightIntake([legacy], undefined, screeningRecipe, now, screening)).toBeNull();
+  });
+
+  it("accepts an approved database answer from a provider in the current live chain", () => {
+    const screened = {
+      preflight: preflightOf(twoProductsImage, { recipe: screeningRecipe, execution }),
+    };
+    expect(reusablePreflightIntake([screened], undefined, screeningRecipe, now, screening)?.images).toEqual([
+      twoProductsImage,
+    ]);
+    expect(reusablePreflightIntake([screened], undefined, screeningRecipe, now, { ...screening, recipeId: null })).toBeNull();
+    expect(reusablePreflightIntake([screened], undefined, screeningRecipe, now, { ...screening, providers: [] })).toBeNull();
+  });
+
+  it("rejects seed, mismatched and retired provider provenance on any screened photo", () => {
+    const valid = { preflight: preflightOf(twoProductsImage, { recipe: screeningRecipe, execution }) };
+    const invalid: Array<[string, RecipeExecution]> = [
+      ["seed fallback", { ...execution, recipe: { ...execution.recipe, recipeId: null, source: "seed" } }],
+      ["seed origin with a claimed database row", { ...execution, recipe: { ...execution.recipe, source: "seed" } }],
+      ["another database row", { ...execution, recipe: { ...execution.recipe, recipeId: "replaced-intake-8" } }],
+      ["missing database row", { ...execution, recipe: { ...execution.recipe, recipeId: null } }],
+      ["another recipe key", { ...execution, recipe: { ...execution.recipe, key: analyzeKey } }],
+      ["older execution relabeled as version 8", { ...execution, recipe: { ...execution.recipe, version: 6 } }],
+      ["provider outside the live chain", { ...execution, provider: "retired-intake-provider" }],
+    ];
+    for (const [reason, recorded] of invalid) {
+      const invalidPhoto = { preflight: preflightOf(twoProductsImage, { recipe: screeningRecipe, execution: recorded }) };
+      expect(reusablePreflightIntake([valid, invalidPhoto], undefined, screeningRecipe, now, screening), reason).toBeNull();
+    }
+  });
+
+  it("rejects an older prompt for screening even when its database provenance matches", () => {
+    const olderRecipe = { ...screeningRecipe, version: 7 };
+    const older = {
+      preflight: preflightOf(twoProductsImage, {
+        recipe: olderRecipe,
+        execution: { ...execution, recipe: { ...execution.recipe, version: olderRecipe.version } },
+      }),
+    };
+    expect(reusablePreflightIntake([older], undefined, olderRecipe, now, screening)).toBeNull();
+    expect(reusablePreflightIntake([older], undefined, olderRecipe, now)?.images).toEqual([twoProductsImage]);
+  });
 });
 
 describe("trustedIntakeAnswer", () => {
@@ -255,6 +316,27 @@ describe("trustedIntakeAnswer", () => {
     expect(trustedIntakeAnswer(answer, older).images[0].addedOverlays).toBe(false);
     expect(trustedIntakeAnswer(answer, { key: "other_recipe", version: 9 }).images[0].addedOverlays).toBe(false);
     expect(answer.images[0].addedOverlays).toBe(true);
+  });
+
+  it("keeps restrictedCategory only from version 8 on (PHASE_19 P19-29), and lists each category once", () => {
+    const restricted = {
+      images: [
+        { ...twoProductsImage, restrictedCategory: "self_defense_weapons" as const },
+        { ...twoProductsImage, restrictedCategory: "self_defense_weapons" as const },
+        { ...twoProductsImage, restrictedCategory: "tobacco_nicotine" as const },
+      ],
+    };
+    const v8 = { key: intakeRecipe.key, version: 8 };
+    const v7 = { key: intakeRecipe.key, version: 7 };
+    expect(intakeAsksRestrictedGoods(v8)).toBe(true);
+    expect(intakeAsksRestrictedGoods(v7)).toBe(false);
+    expect(trustedIntakeAnswer(restricted, v8)).toBe(restricted);
+    expect(restrictedCategoriesOf(trustedIntakeAnswer(restricted, v8))).toEqual(["self_defense_weapons", "tobacco_nicotine"]);
+    expect(restrictedCategoriesOf(trustedIntakeAnswer(restricted, v7))).toEqual([]);
+    // Version 7 asked for addedOverlays, so that flag is kept.
+    const both = { images: [{ ...twoProductsImage, addedOverlays: true, restrictedCategory: "firearms" as const }] };
+    expect(trustedIntakeAnswer(both, v7).images[0]).toMatchObject({ addedOverlays: true, restrictedCategory: null });
+    expect(restrictedCategoriesOf({ images: [twoProductsImage] })).toEqual([]);
   });
 });
 
@@ -290,7 +372,7 @@ describe("a stored target box in the runner", () => {
     expect(chosen.ambiguous).toEqual([]);
     expect(chosen.targets.m1.box).toEqual(blueBox);
     const bare = selectTargets(
-      { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags }] },
+      { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, restrictedCategory: null, flags }] },
       [{ mediaId: "m1", targetBox: blueBox }],
       "job",
     );
@@ -328,7 +410,7 @@ describe("runGeneratePack with a preflight", () => {
     sku: "SKU1",
     seoSlug: "watch",
   };
-  const single: IntakeImageResult = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags };
+  const single: IntakeImageResult = { sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, restrictedCategory: null, flags };
 
   function deps(ai: AiDeps): PipelineDeps & { store: InMemoryJobStore } {
     return { ai, store: new InMemoryJobStore(), clock: systemClock, generator: new DemoShotGenerator() };
@@ -423,6 +505,78 @@ describe("runUploadPreflight", () => {
     expect(oldRun.intake?.image.addedOverlays).toBe(false);
   });
 
+  it("records the older standby that actually answered and discards its guessed restricted category", async () => {
+    const assigned: ResolvedRecipe = {
+      ...seedRecipe("intake"), version: 8, recipeId: "approved-intake-8", source: "db",
+    };
+    const standby = standbySeedRecipes(assigned).find((candidate) =>
+      candidate.version < 8 && candidate.models.some((model) => !assigned.models.includes(model)),
+    );
+    if (!standby) throw new Error("Expected an older active intake standby with its own model");
+    const standbyModel = standby.models.find((model) => !assigned.models.includes(model))!;
+    const guessed = { ...twoProductsImage, restrictedCategory: "tobacco_nicotine" as const };
+    const { deps, intake } = preflightDeps({ images: [guessed] }, generator(null, 0));
+    const provider = new MockProvider({
+      name: llmModelProviderName(standbyModel), tasks: [intakeKey], output: { images: [guessed] }, costMicros: 800,
+    });
+    deps.ai.registry.register(provider);
+    deps.recipes = { forJob: async () => ({ intake: assigned }) };
+    const now = new Date();
+
+    const run = await runUploadPreflight(deps, { preflightId: "pf-standby", workspaceId: WS, mediaKey: KEY, now });
+
+    expect(provider.invocations).toBe(1);
+    expect(intake.invocations).toBe(0);
+    expect(provider.calls[0].input).toMatchObject({ system: standby.system });
+    expect(run.intake).toMatchObject({
+      recipe: { key: standby.key, version: standby.version },
+      execution: {
+        recipe: { key: standby.key, version: standby.version, recipeId: null, source: "seed" },
+        provider: provider.name,
+      },
+      image: { restrictedCategory: null },
+    });
+    expect(run.costMicros).toBe(800);
+    if (!run.intake) throw new Error("Expected the successful standby intake answer");
+    const photo = { preflight: run.intake };
+    expect(reusablePreflightIntake([photo], undefined, standby, now)).not.toBeNull();
+    expect(reusablePreflightIntake([photo], undefined, assigned, now, {
+      recipeId: assigned.recipeId,
+      providers: assigned.models.map(llmModelProviderName),
+    })).toBeNull();
+  });
+
+  it("records approved database execution so the current live provider's answer can screen a later pack", async () => {
+    const assigned: ResolvedRecipe = {
+      ...seedRecipe("intake"), version: 8, recipeId: "approved-intake-8", source: "db",
+    };
+    const restricted = { ...twoProductsImage, restrictedCategory: "tobacco_nicotine" as const };
+    const { deps, intake } = preflightDeps({ images: [restricted] }, generator(null, 0));
+    const provider = new MockProvider({
+      name: llmModelProviderName(assigned.models[0]), tasks: [intakeKey], output: { images: [restricted] },
+    });
+    deps.ai.registry.register(provider);
+    deps.recipes = { forJob: async () => ({ intake: assigned }) };
+    const now = new Date();
+
+    const run = await runUploadPreflight(deps, { preflightId: "pf-approved", workspaceId: WS, mediaKey: KEY, now });
+
+    expect(provider.invocations).toBe(1);
+    expect(intake.invocations).toBe(0);
+    expect(run.intake).toMatchObject({
+      recipe: { key: assigned.key, version: assigned.version },
+      execution: {
+        recipe: { key: assigned.key, version: assigned.version, recipeId: assigned.recipeId, source: "db" },
+        provider: provider.name,
+      },
+      image: { restrictedCategory: "tobacco_nicotine" },
+    });
+    if (!run.intake) throw new Error("Expected the approved database intake answer");
+    expect(reusablePreflightIntake([{ preflight: run.intake }], undefined, assigned, now, {
+      recipeId: assigned.recipeId, providers: [provider.name],
+    })?.images[0].restrictedCategory).toBe("tobacco_nicotine");
+  });
+
   it("preselects the piece the note decides", async () => {
     const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
     const run = await runUploadPreflight(deps, { preflightId: "pf-2", workspaceId: WS, mediaKey: KEY, note: "the blue one only" });
@@ -437,13 +591,13 @@ describe("runUploadPreflight", () => {
     const { deps } = preflightDeps({ images: [twoProductsImage] }, generator(twoBottles()));
     const run = await runUploadPreflight(deps, { preflightId: "pf-1b", workspaceId: WS, mediaKey: KEY, note: "" });
     expect(run.items.some((i) => i.featured)).toBe(false);
-    const union = unionBox(run.items.map((i) => i.box))!;
+    const union = clampedUnionBox(run.items.map((i) => i.box))!;
     expect(run.productBox).toEqual(union);
     for (const item of run.items) {
       expect(item.box.x).toBeGreaterThanOrEqual(union.x);
       expect(item.box.x + item.box.width).toBeLessThanOrEqual(union.x + union.width + 1e-9);
     }
-    expect(unionBox([])).toBeNull();
+    expect(clampedUnionBox([])).toBeNull();
   });
 
   it("draws the cutout preview of the one product the pack is for (PHASE_15 P1)", async () => {

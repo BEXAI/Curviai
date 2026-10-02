@@ -6,11 +6,15 @@
  * salts older than yesterday (lib/visits/store.ts), so they go on time even
  * on a day with no visits; that cleanup only logs a failure and never
  * changes the answer. Protected by CRON_SECRET (lib/cron-auth); run it every
- * 10 minutes or so. In demo mode there is nothing to sweep.
+ * 10 minutes or so. In demo mode there is nothing to sweep. It also looks
+ * for packs a deploy queued to start again (P18-23) and runs them here,
+ * after the response, as the backstop to the health poll's pickup.
  */
 
 import { NextResponse, type NextRequest } from "next/server";
 import { checkCronAuth } from "@/lib/cron-auth";
+import { recoverOrphanJobs } from "@/lib/jobs/recovery";
+import { scheduleRestartPickup } from "@/lib/jobs/enqueue";
 import { recordCronSuccess } from "@/lib/cron-health";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
@@ -43,8 +47,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const db = getDb();
     await deleteOldVisitSalts(db);
+    const recovery = await recoverOrphanJobs(db);
     const result = await sweepStaleJobs(db);
-    if (result.releaseFailures.length === 0) {
+    scheduleRestartPickup({ force: true });
+    if (result.releaseFailures.length === 0 && recovery.failures === 0) {
       // Health warns when this goes stale (lib/cron-health.ts).
       await recordCronSuccess(db, "stale-jobs");
     }
@@ -60,13 +66,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
     return NextResponse.json(
       {
-        ok: result.releaseFailures.length === 0,
+        ok: result.releaseFailures.length === 0 && recovery.failures === 0,
+        recovery,
         mode: "db",
         reconciled: result.reconciled.length,
         jobIds: result.reconciled.map((job) => job.id),
         releaseFailures: result.releaseFailures,
       },
-      { status: result.releaseFailures.length === 0 ? 200 : 500, headers: NO_STORE },
+      { status: result.releaseFailures.length === 0 && recovery.failures === 0 ? 200 : 500, headers: NO_STORE },
     );
   } catch (err) {
     console.error("[cron] stale job sweep failed", err);

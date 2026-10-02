@@ -27,6 +27,11 @@
  *    is still running. Settling marks the job failed through the existing
  *    failure path and releases its credit hold, so a deploy never leaves a
  *    job stuck in a working state until the 30 minute reconciler finds it.
+ *    With a requeue step (docs/phases/PHASE_18.md P18-23), a job that has
+ *    not started, or is still running when the grace window ends, is first
+ *    offered to it: a job it queues to start again on another instance is
+ *    not settled. A running job's abort signal fires before the requeue, so
+ *    the stopped run starts no new generation attempt.
  *
  * The class is pure: the pack run, the settle step and the heartbeat are
  * injected, so tests drive it without a database or a pipeline.
@@ -48,6 +53,9 @@ function runKeyOf(payload: InlinePackJob): string {
 /** Why the runner settled a job itself instead of the pack run finishing it. */
 export type SettleReason = "crashed" | "not_started" | "interrupted" | "timed_out";
 
+/** The shutdown reasons a job may be queued to start again for (P18-23). */
+export type RequeueReason = Extract<SettleReason, "not_started" | "interrupted">;
+
 export interface InlineRunnerConfig {
   /** Packs allowed to run at once in this process. */
   concurrency: number;
@@ -61,6 +69,8 @@ export interface InlineRunnerConfig {
    * timed_out, its slot is freed and the queue moves on. Default
    * DEFAULT_MAX_RUN_MS; always below the stale run reconciler's window. */
   maxRunMs?: number;
+  /** Delay between memory or deploy backpressure checks. */
+  startRetryMs?: number;
   /** How long a waiting job keeps heartbeating. A job that waited longer is
    * left for the stale run reconciler, so a wedged queue can never hold
    * credits forever. Default DEFAULT_MAX_QUEUE_WAIT_MS. */
@@ -82,10 +92,23 @@ export interface InlineRunnerDeps<P extends InlinePackJob> {
   /** Marks a job this runner will not finish as failed (never touching a job
    * that already finished) and releases its credit hold. */
   settle: (payload: P, reason: SettleReason) => Promise<void>;
+  /** Offered every job a shutdown stops (not started, or interrupted) before
+   * it is settled. True when the job was queued to start again elsewhere
+   * (P18-23), so it is not settled; false or a throw settles it as before. */
+  requeue?: (payload: P, reason: RequeueReason) => Promise<boolean>;
   /** Bumps updated_at on jobs still waiting for a slot. `runKeys` holds the
    * run key of every waiting entry that carries one, so a follow up (whose
    * job is already back in generating) is heartbeated too. */
   heartbeat?: (jobIds: string[], runKeys: string[]) => Promise<void>;
+  /** Heartbeats active runs without changing their progress timestamp. */
+  heartbeatRunning?: (jobs: P[]) => Promise<void>;
+  /** Hold starts for memory or a deploy, while accepted jobs stay queued. */
+  canStart?: (running: number) => boolean | Promise<boolean>;
+  /** Runs a job's run, its time cap and the runner's log lines about it in
+   * that job's context, so error reports carry the job's tags
+   * (docs/phases/PHASE_20.md P20-13, lib/sentry/jobs.ts). The context
+   * follows the work across awaits and timers. Identity when absent. */
+  inJobContext?: <T>(payload: P, work: () => T) => T;
   logger?: InlineRunnerLogger;
 }
 
@@ -108,6 +131,9 @@ export interface ShutdownReport {
   interrupted: number;
   /** Running packs whose time cap passed during the grace window. */
   timedOut: number;
+  /** Of the not started and interrupted jobs, those queued to start again
+   * on another instance instead of being settled (P18-23). */
+  requeued: number;
 }
 
 /** Thrown by assertAccepting once a shutdown has begun. */
@@ -196,6 +222,8 @@ interface Entry<P> {
   timedOut: boolean;
   /** True once the job waited past maxQueueWaitMs (logged once). */
   waitExpired: boolean;
+  /** True once a shutdown queued the job to start again instead of settling it. */
+  requeued: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   abort: AbortController;
   resolve: () => void;
@@ -215,6 +243,7 @@ function createEntry<P>(payload: P): Entry<P> {
     settling: null,
     timedOut: false,
     waitExpired: false,
+    requeued: false,
     timer: null,
     abort: new AbortController(),
     resolve,
@@ -229,6 +258,8 @@ export class InlinePackRunner<P extends InlinePackJob> {
   private draining = false;
   private shutdownPromise: Promise<ShutdownReport> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private startTimer: ReturnType<typeof setTimeout> | null = null;
+  private pumping = false;
   private readonly logger: InlineRunnerLogger;
   private readonly maxRunMs: number;
   private readonly maxQueueWaitMs: number;
@@ -297,6 +328,8 @@ export class InlinePackRunner<P extends InlinePackJob> {
     }
     this.draining = true;
     this.stopHeartbeat();
+    if (this.startTimer) clearTimeout(this.startTimer);
+    this.startTimer = null;
     this.shutdownPromise = this.drain(signal);
     return this.shutdownPromise;
   }
@@ -323,24 +356,68 @@ export class InlinePackRunner<P extends InlinePackJob> {
       finished: inFlight.length - stillRunning.length - timedOut,
       interrupted: stillRunning.length,
       timedOut,
+      requeued: [...notStarted, ...stillRunning].filter((entry) => entry.requeued).length,
     };
     this.logger.info(
-      `[jobs] ${signal}: inline runner drained (${report.finished} finished, ${report.interrupted} interrupted, ${report.timedOut} timed out, ${report.notStarted} not started)`,
+      `[jobs] ${signal}: inline runner drained (${report.finished} finished, ${report.interrupted} interrupted, ${report.timedOut} timed out, ${report.notStarted} not started, ${report.requeued} queued to start again)`,
     );
     return report;
   }
 
   private pump(): void {
-    while (!this.draining && this.running.size < this.config.concurrency && this.waiting.length > 0) {
-      const entry = this.waiting.shift();
-      if (entry) {
-        this.start(entry);
+    if (this.pumping) return;
+    if (!this.deps.canStart) {
+      while (!this.draining && this.running.size < this.config.concurrency && this.waiting.length > 0) {
+        const entry = this.waiting.shift();
+        if (entry) this.start(entry);
       }
+      this.syncHeartbeat();
+      return;
     }
-    this.syncHeartbeat();
+    this.pumping = true;
+    void this.pumpWaiting().finally(() => {
+      this.pumping = false;
+      this.syncHeartbeat();
+      if (!this.draining && !this.startTimer && this.waiting.length > 0 && this.running.size < this.config.concurrency) this.pump();
+    });
+  }
+
+  private async pumpWaiting(): Promise<void> {
+    while (!this.draining && this.running.size < this.config.concurrency && this.waiting.length > 0) {
+      if (this.deps.canStart) {
+        let allowed = false;
+        try {
+          allowed = await this.deps.canStart(this.running.size);
+        } catch (err) {
+          this.logger.warn("[jobs] could not check whether a pack may start", err);
+        }
+        if (!allowed) {
+          if (!this.draining && !this.startTimer) {
+            this.startTimer = setTimeout(() => {
+              this.startTimer = null;
+              this.pump();
+            }, this.config.startRetryMs ?? 5_000);
+            this.startTimer.unref?.();
+          }
+          return;
+        }
+        // A drain may have started while the shared deploy switch was read.
+        if (this.draining) return;
+      }
+      const entry = this.waiting.shift();
+      if (entry) this.start(entry);
+    }
   }
 
   private start(entry: Entry<P>): void {
+    if (this.deps.inJobContext) {
+      this.deps.inJobContext(entry.payload, () => this.startRun(entry));
+    } else {
+      this.startRun(entry);
+    }
+  }
+
+  private startRun(entry: Entry<P>): void {
     const { jobId } = entry.payload;
     const key = runKeyOf(entry.payload);
     this.running.set(key, entry);
@@ -400,6 +477,17 @@ export class InlinePackRunner<P extends InlinePackJob> {
       if (reason === "interrupted" && !entry.abort.signal.aborted) {
         entry.abort.abort(new InlineRunnerClosedError());
       }
+      if ((reason === "not_started" || reason === "interrupted") && this.deps.requeue) {
+        try {
+          if (await this.deps.requeue(entry.payload, reason)) {
+            entry.requeued = true;
+            this.finish(entry);
+            return;
+          }
+        } catch (err) {
+          this.logger.error(`[jobs] could not queue job ${entry.payload.jobId} to start again (${reason}); settling it`, err);
+        }
+      }
       try {
         await this.deps.settle(entry.payload, reason);
       } catch (err) {
@@ -419,7 +507,8 @@ export class InlinePackRunner<P extends InlinePackJob> {
   }
 
   private syncHeartbeat(): void {
-    const needed = !this.draining && this.waiting.length > 0 && Boolean(this.deps.heartbeat);
+    const needed = !this.draining && ((this.waiting.length > 0 && Boolean(this.deps.heartbeat)) ||
+      (this.running.size > 0 && Boolean(this.deps.heartbeatRunning)));
     if (needed && !this.heartbeatTimer) {
       this.heartbeatTimer = setInterval(() => void this.beat(), this.config.heartbeatMs);
       this.heartbeatTimer.unref?.();
@@ -455,11 +544,11 @@ export class InlinePackRunner<P extends InlinePackJob> {
         );
       }
     }
-    if (ids.length === 0 || !this.deps.heartbeat) {
-      return;
-    }
     try {
-      await this.deps.heartbeat(ids, runKeys);
+      if (ids.length > 0 && this.deps.heartbeat) await this.deps.heartbeat(ids, runKeys);
+      if (this.running.size > 0 && this.deps.heartbeatRunning) {
+        await this.deps.heartbeatRunning([...this.running.values()].map((entry) => entry.payload));
+      }
     } catch (err) {
       this.logger.warn(`[jobs] heartbeat for ${ids.length} waiting jobs failed`, err);
     }

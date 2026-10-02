@@ -192,6 +192,9 @@ export async function POST(request: Request): Promise<NextResponse> {
 }
 
 const REJECTED_STATUS = {
+  maintenance: 503,
+  workspace_day_cap: 429,
+  empty_plan: 422,
   unknown_product: 404,
   role_forbidden: 403,
   needs_photo: 400,
@@ -203,4 +206,6 @@ const REJECTED_STATUS = {
   mode_unavailable: 400,
   invalid_upload: 422,
   invalid_options: 400,
+  // Only an assistant sends a credit cap (PHASE_19 P19-16); the form never does.
+  over_max_credits: 409,
 } as const;

@@ -15,6 +15,7 @@ import {
 import { channelName, SIZED_FOR_EACH_CHANNEL_TITLE } from "@/lib/output-options-copy";
 import { isTransparentShot, previewAspect } from "@/lib/output-preview";
 import { allHeroCandidatesOriginal } from "@/lib/shares/hero";
+import { SHARE_BUTTONS_COPY } from "@/lib/shares/loop-copy";
 import { track } from "@/lib/track";
 
 type View = "slider" | "side";
@@ -278,6 +279,12 @@ export function PackReveal({ jobId, sourceImageUrl, shots }: PackRevealProps) {
             ) : null}
             <p className="sr-only" aria-live="polite">
               {copyState === "copied" ? "Link copied to the clipboard." : ""}
+            </p>
+            <p className="mt-3 text-xs text-ink-600" data-testid="share-networks-hint">
+              {SHARE_BUTTONS_COPY.revealHint}{" "}
+              <a href="#share" className="font-medium text-ink-900 underline">
+                {SHARE_BUTTONS_COPY.revealLink}
+              </a>
             </p>
             <p className="mt-3 text-xs text-ink-500" data-testid="share-audience">
               {share.audience === "public"

@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { MCP_LOG_MAX_CHARS, logMcpEvent, mcpLogCounts, redactLogText, setMcpLogSinkForTests, type McpLogEntry } from "./mcp-log";
+import {
+  MCP_LOG_MAX_CHARS,
+  addMcpLogSink,
+  logMcpEvent,
+  mcpLogCounts,
+  redactLogText,
+  setMcpLogSinkForTests,
+  type McpLogEntry,
+} from "./mcp-log";
 
 // The redacting MCP logger (PHASE_19 P19-02): no token, signed link, tool
 // result or client _meta hint can reach the sink.
@@ -70,5 +78,23 @@ describe("logMcpEvent", () => {
       throw new Error("sink down");
     });
     expect(() => logMcpEvent("challenge", { reason: "no_connection" })).not.toThrow();
+  });
+
+  it("hands the same redacted entry to an added sink, such as an error tracker, until it is removed", () => {
+    const main: McpLogEntry[] = [];
+    const tracker: McpLogEntry[] = [];
+    setMcpLogSinkForTests((entry) => main.push(entry));
+    const failing = addMcpLogSink(() => {
+      throw new Error("tracker down");
+    });
+    const remove = addMcpLogSink((entry) => tracker.push(entry));
+    logMcpEvent("tool_error", { reason: "rate_limited", tool: "get_pack" }, { error: new Error(`Bearer ${JWT}`) });
+    expect(tracker).toEqual(main);
+    expect(JSON.stringify(tracker)).not.toContain(JWT);
+    remove();
+    failing();
+    logMcpEvent("unauthorized", { reason: "invalid_token" });
+    expect(tracker).toHaveLength(1);
+    expect(main).toHaveLength(2);
   });
 });

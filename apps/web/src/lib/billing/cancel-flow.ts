@@ -10,6 +10,7 @@
 
 import type Stripe from "stripe";
 import { retentionOffers, tierByKey, type TierKey } from "@curvi/pipeline/seed";
+import { longDate } from "@/lib/dates";
 import {
   formatCredits,
   formatUsd,
@@ -34,10 +35,6 @@ export const CANCEL_REASONS = [
 export type CancelReason = (typeof CANCEL_REASONS)[number]["key"];
 
 export const CANCEL_REASON_KEYS = CANCEL_REASONS.map((r) => r.key) as [CancelReason, ...CancelReason[]];
-
-export function isCancelReason(value: unknown): value is CancelReason {
-  return typeof value === "string" && (CANCEL_REASON_KEYS as string[]).includes(value);
-}
 
 /** Longest free text a subscriber can add to their reason. */
 export const MAX_CANCEL_DETAIL = 500;
@@ -81,6 +78,9 @@ export interface OfferContext {
   usedOffers: ReadonlySet<SaveOfferKind>;
   /** The subscription already carries a discount. */
   hasDiscount: boolean;
+  /** Whether the smaller plan offer may show; the seed's
+   * retentionOffers.smallerPlanOffer (off until P20-06's P1 part). */
+  smallerPlanOffer?: boolean;
 }
 
 /** The paid tier just below this one, or null on the smallest plan. */
@@ -99,8 +99,9 @@ function months(n: number): string {
   return `${n === 1 ? "one" : n} ${n === 1 ? "month" : "months"}`;
 }
 
-/** Offer order by reason: the offer most likely to answer it comes first. */
-export function offerOrderFor(reason: CancelReason): SaveOfferKind[] {
+/** Offer order by reason: the offer most likely to answer it comes first.
+ * No reason (it is optional, P20-07) gets the default order. */
+export function offerOrderFor(reason: CancelReason | null): SaveOfferKind[] {
   switch (reason) {
     case "too_expensive":
       return ["discount", "downgrade", "pause"];
@@ -136,14 +137,14 @@ export function eligibleOffers(ctx: OfferContext): SaveOffer[] {
   }
 
   const target = downgradeTarget(ctx.tier);
-  if (target) {
+  if (target && (ctx.smallerPlanOffer ?? retentionOffers.smallerPlanOffer)) {
     const lower = tierByKey(target);
     const price = priceForCadence(lower, cadence);
     offers.push({
       kind: "downgrade",
       toTier: target,
       title: `Switch to ${tierDisplayName(target)} for ${formatPrice(price.perMonthUsd)} a month`,
-      body: `${formatCredits(lower.creditsPerMonth)} a month instead of ${formatCredits(tier.creditsPerMonth)}. The smaller plan starts now with no extra charge, and your next bill is ${formatPrice(price.billedUsd)}. Credits you already have stay.`,
+      body: `${formatCredits(lower.creditsPerMonth)} a month instead of ${formatCredits(tier.creditsPerMonth)}. The smaller plan starts at your next renewal, when your bill becomes ${formatPrice(price.billedUsd)}. Until then you keep your current plan and credits.`,
       action: `Switch to ${tierDisplayName(target)}`,
     });
   }
@@ -162,7 +163,7 @@ export function eligibleOffers(ctx: OfferContext): SaveOffer[] {
 }
 
 /** eligibleOffers in the order that fits the reason. */
-export function offersForReason(offers: SaveOffer[], reason: CancelReason): SaveOffer[] {
+export function offersForReason(offers: SaveOffer[], reason: CancelReason | null): SaveOffer[] {
   const order = offerOrderFor(reason);
   return [...offers].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
 }
@@ -219,14 +220,16 @@ export function stripeFeedbackFor(reason: CancelReason): Stripe.SubscriptionUpda
   return reason;
 }
 
-/** Cancels at the end of the paid period, with the reason on Stripe too. */
-export function buildCancelParams(reason: CancelReason, detail: string | null): Stripe.SubscriptionUpdateParams {
+/** Cancels at the end of the paid period, with the reason on Stripe too
+ * when the subscriber gave one (it is optional, P20-07). */
+export function buildCancelParams(reason: CancelReason | null, detail: string | null): Stripe.SubscriptionUpdateParams {
+  const details = {
+    ...(reason ? { feedback: stripeFeedbackFor(reason) } : {}),
+    ...(detail ? { comment: detail.slice(0, MAX_CANCEL_DETAIL) } : {}),
+  };
   return {
     cancel_at_period_end: true,
-    cancellation_details: {
-      feedback: stripeFeedbackFor(reason),
-      ...(detail ? { comment: detail.slice(0, MAX_CANCEL_DETAIL) } : {}),
-    },
+    ...(Object.keys(details).length > 0 ? { cancellation_details: details } : {}),
   };
 }
 
@@ -258,9 +261,7 @@ export function outcomeNotice(input: {
   effectiveAt: Date | null;
   toTier?: TierKey | null;
 }): string {
-  const date = input.effectiveAt
-    ? input.effectiveAt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" })
-    : null;
+  const date = input.effectiveAt ? longDate(input.effectiveAt) : null;
   if (!input.stripeApplied && input.outcome !== "kept") {
     return "Thanks, we saved your choice. Card payments are not open yet, so nothing is charged or changed today, and we will email you to confirm.";
   }
@@ -270,13 +271,13 @@ export function outcomeNotice(input: {
         ? `Billing is paused until ${date}. Your plan and credits stay as they are.`
         : "Billing is paused. Your plan and credits stay as they are.";
     case "downgraded":
-      return `You are now on ${tierDisplayName(input.toTier ?? "starter")}. Your next bill is at the new price.`;
+      return `Your plan changes to ${tierDisplayName(input.toTier ?? "starter")} ${date ? `on ${date}` : "at your next renewal"}. Until then you keep your current plan and credits.`;
     case "discounted":
       return `The discount is on. Your next ${months(retentionOffers.discount.months)} cost ${retentionOffers.discount.percentOff} percent less.`;
     case "canceled":
       return date
-        ? `Your plan is canceled. It stays active until ${date}, then your workspace moves to the Free plan.`
-        : "Your plan is canceled. It stays active until the end of the period you paid for, then your workspace moves to the Free plan.";
+        ? `Your plan is canceled. You keep it until ${date}.`
+        : "Your plan is canceled. You keep it until the end of the period you paid for.";
     case "kept":
       return "Good to have you. Nothing changed.";
   }

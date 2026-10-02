@@ -1,7 +1,10 @@
 /**
- * The Amazon main image checker's measurements, kept free of the DOM so they
- * can be unit tested. The browser draws the photo onto a white canvas, reads
- * the pixels back and hands them here.
+ * The main image checker's measurements, kept free of the DOM so they can be
+ * unit tested. The browser draws the photo onto a white canvas, reads the
+ * pixels back and hands them here; the store image audit (P18-18) and the
+ * API check read the pixels on the server and hand them here too. The rules
+ * come from the chosen channel's registry spec (lib/tools/checker-rules.ts,
+ * P18-10); Amazon's are the default.
  *
  * Two fixes from Update.md: transparent pixels are composited on white before
  * they are measured, so a cutout PNG no longer reads as black with a 100
@@ -10,11 +13,22 @@
  * bounding box side over the frame's longest side (6.10).
  */
 
-/** The amazon.main thresholds, passed in from the spec registry (CLAUDE.md rule 2). */
+/** One channel's main image thresholds, passed in from the spec registry (CLAUDE.md rule 2). */
 export interface CheckerRules {
+  /** Shortest accepted longest side; 0 when the channel publishes none. */
   minLongSide: number;
-  fillMinPercent: number;
-  fillMaxPercent: number;
+  /** Smallest accepted width and height, when the channel publishes them (Google Merchant). */
+  minWidth?: number;
+  minHeight?: number;
+  /** The fill range; null when the channel publishes none, and the fill row is left out. */
+  fillMinPercent: number | null;
+  fillMaxPercent: number | null;
+  /**
+   * What the edge pixels must be. "white" (the default, Amazon) is pure
+   * white; "white_or_transparent" (Google Merchant) also takes transparent
+   * pixels, which flattenOnWhite has already turned white.
+   */
+  background?: "white" | "white_or_transparent";
 }
 
 export interface CheckRow {
@@ -99,55 +113,102 @@ export function measurePixels(data: Uint8ClampedArray | Uint8Array, width: numbe
   };
 }
 
-function fillMeasured(m: PixelMeasurements, rules: CheckerRules): string {
+function fillMeasured(m: PixelMeasurements, min: number, max: number): string {
   if (!m.hasProduct) {
     return "No product pixels found, the image is almost entirely white";
   }
   const percent = m.fillRatio * 100;
   const base = `Measured fill ${percent.toFixed(1)} percent of the longest frame side`;
-  if (percent < rules.fillMinPercent) {
+  if (percent < min) {
     return `${base}, so the product looks small in search results`;
   }
-  if (percent > rules.fillMaxPercent) {
+  if (percent > max) {
     return `${base}, so the product is cropped too tight`;
   }
   return base;
 }
 
-/** The three report rows for an image of the given natural size. */
+/** The size row, or null when the channel publishes no minimum size. */
+function resolutionRow(size: { width: number; height: number }, rules: CheckerRules): CheckRow | null {
+  const longSide = Math.max(size.width, size.height);
+  const minWidth = rules.minWidth ?? 0;
+  const minHeight = rules.minHeight ?? 0;
+  const hasLongSide = rules.minLongSide > 1;
+  const hasBox = minWidth > 1 || minHeight > 1;
+  if (!hasLongSide && !hasBox) {
+    return null;
+  }
+  const box = `${Math.max(1, minWidth)} by ${Math.max(1, minHeight)} px`;
+  let label = `Image is at least ${box}`;
+  if (hasLongSide) {
+    label = hasBox
+      ? `Longest side is at least ${rules.minLongSide} px and the image is at least ${box}`
+      : `Longest side is at least ${rules.minLongSide} px so zoom works`;
+  }
+  return {
+    key: "resolution",
+    label,
+    pass: longSide >= rules.minLongSide && size.width >= minWidth && size.height >= minHeight,
+    measured: hasLongSide
+      ? `Measured ${size.width} by ${size.height} px, longest side ${longSide} px`
+      : `Measured ${size.width} by ${size.height} px`,
+  };
+}
+
+function backgroundRow(m: PixelMeasurements, rules: CheckerRules): CheckRow {
+  const share = `${(m.borderWhiteShare * 100).toFixed(1)} percent`;
+  if (rules.background === "white_or_transparent") {
+    return {
+      key: "background",
+      label: "Background at the edges is white or transparent",
+      pass: m.borderWhiteShare >= BORDER_WHITE_PASS_SHARE,
+      measured: `Measured ${share} of edge pixels at exactly 255 255 255 or fully transparent`,
+    };
+  }
+  return {
+    key: "background",
+    label: "Background at the edges is pure white, RGB 255 255 255",
+    pass: m.borderWhiteShare >= BORDER_WHITE_PASS_SHARE,
+    measured: `Measured ${share} of edge pixels at exactly 255 255 255`,
+  };
+}
+
+/**
+ * The report rows for an image of the given natural size: the size (when
+ * the channel publishes a minimum), the background, and the fill (when it
+ * publishes a range).
+ */
 export function checkRows(
   size: { width: number; height: number },
   m: PixelMeasurements,
   rules: CheckerRules,
 ): CheckRow[] {
-  const longSide = Math.max(size.width, size.height);
-  const fillPercent = m.fillRatio * 100;
-  return [
-    {
-      key: "resolution",
-      label: `Longest side is at least ${rules.minLongSide} px so zoom works`,
-      pass: longSide >= rules.minLongSide,
-      measured: `Measured ${size.width} by ${size.height} px, longest side ${longSide} px`,
-    },
-    {
-      key: "background",
-      label: "Background at the edges is pure white, RGB 255 255 255",
-      pass: m.borderWhiteShare >= BORDER_WHITE_PASS_SHARE,
-      measured: `Measured ${(m.borderWhiteShare * 100).toFixed(1)} percent of edge pixels at exactly 255 255 255`,
-    },
-    {
+  const rows: CheckRow[] = [];
+  const resolution = resolutionRow(size, rules);
+  if (resolution) {
+    rows.push(resolution);
+  }
+  rows.push(backgroundRow(m, rules));
+  const { fillMinPercent: min, fillMaxPercent: max } = rules;
+  if (min !== null && max !== null) {
+    const fillPercent = m.fillRatio * 100;
+    rows.push({
       key: "fill",
-      label: `Product fills ${rules.fillMinPercent} to ${rules.fillMaxPercent} percent of the frame`,
-      pass: m.hasProduct && fillPercent >= rules.fillMinPercent && fillPercent <= rules.fillMaxPercent,
-      measured: fillMeasured(m, rules),
-    },
-  ];
+      label: `Product fills ${min} to ${max} percent of the frame`,
+      pass: m.hasProduct && fillPercent >= min && fillPercent <= max,
+      measured: fillMeasured(m, min, max),
+    });
+  }
+  return rows;
 }
 
 /** "Passes all 3 checks" or "Fails 2 of 3 checks", for the free summary. */
 export function summaryLine(rows: CheckRow[]): string {
   const failed = rows.filter((row) => !row.pass).length;
   if (failed === 0) {
+    if (rows.length <= 2) {
+      return rows.length === 2 ? "Passes both checks" : "Passes the check";
+    }
     return `Passes all ${rows.length} checks`;
   }
   return `Fails ${failed} of ${rows.length} ${rows.length === 1 ? "check" : "checks"}`;

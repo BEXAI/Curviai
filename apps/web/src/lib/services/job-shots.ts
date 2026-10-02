@@ -16,7 +16,9 @@
  * progress, and the rerun's own final row settles it.
  */
 
+import { readStoredFidelity } from "@curvi/pipeline/fidelity-record";
 import { needsReviewNote, skippedCopy, type ShotCopyContext } from "@/lib/job-copy";
+import { fileProofsFromQc } from "@/lib/proof-view";
 import { angleLabel, angleOfSkippedShot, isRetryable, RERUN_STEP_STATUS } from "./shot-ops";
 import type { JobShotView, JobStatus, ShotCompliance, ShotStatus } from "./types";
 
@@ -76,10 +78,15 @@ export function complianceFromQc(qc: Record<string, unknown> | null | undefined)
     Array.isArray(qc.background) && qc.background.length === 3
       ? ([Number(qc.background[0]), Number(qc.background[1]), Number(qc.background[2])] as [number, number, number])
       : null;
+  // Measured on the shot's file since Phase 18 (P18-08); older rows have none.
+  const fidelity = readStoredFidelity(qc.fidelity);
+  const files = fileProofsFromQc(qc);
   return {
     pass: qc.pass === true,
     fillPct: typeof qc.fillPct === "number" ? qc.fillPct : null,
     background,
+    ...(fidelity ? { fidelity } : {}),
+    ...(files.length > 0 ? { files } : {}),
   };
 }
 

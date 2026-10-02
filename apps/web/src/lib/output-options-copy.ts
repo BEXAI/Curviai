@@ -171,9 +171,6 @@ export function consistentStyleNote(specId: string): string {
   return `${familyName(specId)} suggests one background style across your store.`;
 }
 
-/** The Copy table's Shopify soft note. */
-export const SHOPIFY_SOFT_NOTE = consistentStyleNote("shopify.product");
-
 /**
  * A kept photo too small for a spec within the enlarge limit: "This photo is
  * 900 by 675 pixels, too small for Amazon secondary images without
@@ -332,9 +329,6 @@ export function leftOutAfterPauseLine(specIds: readonly string[]): string | null
 /** The runner could not read the stored options and failed closed. */
 export const OPTIONS_UNREADABLE_COPY =
   "This pack's image choices could not be read, so nothing was charged. Please try again.";
-
-/** The kill switch is off, so the pack runs as Marketplace ready. */
-export const OPTIONS_PAUSED_COPY = `Image choices are paused right now, so this pack uses ${LOOK_TITLES.marketplace}.`;
 
 /** The makeover title when every hero candidate is the seller's own photo (item 34). */
 export const SIZED_FOR_EACH_CHANNEL_TITLE = "Sized for each channel";

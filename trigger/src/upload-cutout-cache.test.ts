@@ -29,6 +29,12 @@ describe("hasFreshUploadCutout", () => {
     expect(await hasFreshUploadCutout(WS, source, { store, now: () => NOW })).toBe(true);
   });
 
+  it("reuses a fresh legacy cache entry while new writes use tmp", async () => {
+    expect(key.startsWith(`tmp/ws/${WS}/`)).toBe(true);
+    const store = storeWith({ [key.slice(4)]: new Date(NOW.getTime() - 60_000) });
+    expect(await hasFreshUploadCutout(WS, source, { store, now: () => NOW })).toBe(true);
+  });
+
   it("is false once the cached cutout is past the freshness window", async () => {
     const store = storeWith({ [key]: new Date(NOW.getTime() - CUTOUT_CACHE_FRESH_MS - 1) });
     expect(await hasFreshUploadCutout(WS, source, { store, now: () => NOW })).toBe(false);

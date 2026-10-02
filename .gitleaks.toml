@@ -1,0 +1,186 @@
+title = "Curvi: default detection with reviewed exact fixture exceptions"
+
+[extend]
+useDefault = true
+
+# Every exception requires BOTH an exact source path and the complete known
+# fixture line. Changed literals, additional values on the line, and the same
+# values anywhere else remain scanned. No test directory or rule is disabled.
+# Configuration semantics: https://github.com/gitleaks/gitleaks/blob/v8.30.1/README.md
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Render environment variable NAME with sync=false; not a credential value."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)render\.yaml$''',
+  '''(?:^|/)render\.staging\.yaml$''',
+]
+regexes = ['''^\s*- key: R2_BUCKET_PRIVATE\s*$''']
+
+[[rules.allowlists]]
+description = "Deterministic synthetic token/key fixture in the named test only."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)packages/cli/src/cli\.test\.ts$''',
+  '''(?:^|/)packages/cli/src/client\.test\.ts$''',
+]
+regexes = ['''^\s*const KEY = "curvi_test_0123456789abcdef";\s*$''']
+
+[[rules.allowlists]]
+description = "Deterministic synthetic token/key fixture in the named test only."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/app/api/visits/route\.test\.ts$''',
+]
+regexes = ['''^\s*const KEY = "route-test-key-0123456789abcdef0123456789";\s*$''']
+
+[[rules.allowlists]]
+description = "Deterministic synthetic token/key fixture in the named test only."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/visits/visits\.test\.ts$''',
+]
+regexes = ['''^\s*const KEY = "visits-test-key-0123456789abcdef0123456789";\s*$''']
+
+[[rules.allowlists]]
+description = "Deterministic synthetic token/key fixture in the named test only."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/app/api/claims/\[token\]/takedown/route\.test\.ts$''',
+  '''(?:^|/)apps/web/src/app/auth/callback/route\-claim\.test\.ts$''',
+  '''(?:^|/)apps/web/src/components/marketing/prospect\-share\-page\.test\.ts$''',
+  '''(?:^|/)e2e/prospects\.spec\.ts$''',
+]
+regexes = ['''^\s*const TOKEN = "0123456789abcdef0123456789abcdef01234567";\s*$''']
+
+[[rules.allowlists]]
+description = "Deterministic synthetic token/key fixture in the named test only."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/app/api/mcp/mcp\-pack\-links\.test\.ts$''',
+]
+regexes = ['''^\s*const keys = \[\{ kid: "k1", secret: "0123456789abcdef0123456789abcdef" \}\];\s*$''']
+
+[[rules.allowlists]]
+description = "Deterministic synthetic token/key fixture in the named test only."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/services/attribution\.test\.ts$''',
+]
+regexes = ['''^\s*const token = "a1b2c3d4e5f60718293a4b5c6d7e8f90";\s*$''']
+
+[[rules.allowlists]]
+description = "Deterministic synthetic token/key fixture in the named test only."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)packages/cli/src/cli\.test\.ts$''',
+]
+regexes = ['''^\s*expect\(await readConfig\(h\.deps\)\)\.toEqual\(\{ apiKey: "other_key_987654321", apiUrl: "http://localhost:3000/api/v1" \}\);\s*$''']
+
+[[rules.allowlists]]
+description = "Mock Stripe SDK fixture or non-secret refund idempotency identifier."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/billing/stripe\.test\.ts$''',
+]
+regexes = ['''^\s*expect\(second\?\.\[1\]\)\.toMatchObject\(\{ idempotencyKey: "curvi-dup-refund-sub_dup-1" \}\);\s*$''']
+
+[[rules.allowlists]]
+description = "Non-secret test request idempotency identifier."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/app/api/ops/prospects/prospects\-routes\.test\.ts$''',
+  '''(?:^|/)apps/web/src/lib/prospects/prospects\.test\.ts$''',
+]
+regexes = ['''^\s*idempotencyKey: "abcdef123456",\s*$''']
+
+[[rules.allowlists]]
+description = "Non-secret test request idempotency identifier."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/prospects/prospects\.test\.ts$''',
+]
+regexes = ['''^\s*idempotencyKey: "abcdef654321",\s*$''']
+
+[[rules.allowlists]]
+description = "Explicit stubEnv challenge fixture used only by the route unit test."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/app/openai\-apps\-challenge\.test\.ts$''',
+]
+regexes = ['''^\s*vi\.stubEnv\("OPENAI_APPS_CHALLENGE_TOKEN", "oac_7Hk2pQx9Vw\\n"\);\s*$''']
+
+[[rules]]
+id = "jwt"
+
+[[rules.allowlists]]
+description = "Synthetic alphabet/JWT-signature strings used to assert telemetry redaction."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/sentry/scrub\.test\.ts$''',
+]
+regexes = ['''^\s*"jwt eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.c2lnbmF0dXJlc2lnbmF0dXJl",\s*$''']
+
+[[rules]]
+id = "stripe-access-token"
+
+[[rules.allowlists]]
+description = "Synthetic alphabet/JWT-signature strings used to assert telemetry redaction."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/sentry/scrub\.test\.ts$''',
+]
+regexes = ['''^\s*"stripe sk_live_abcdefghijkl and rk_test_abcdefghijkl and whsec_abcdefghijkl",\s*$''']
+
+[[rules.allowlists]]
+description = "Deterministic synthetic token/key fixture in the named test only."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/billing/webhook\-route\.test\.ts$''',
+]
+regexes = ['''^\s*const header = new Stripe\("sk_test_placeholder"\)\.webhooks\.generateTestHeaderString\(\{ payload: body, secret: SECRET \}\);\s*$''']
+
+[[rules.allowlists]]
+description = "Mock Stripe SDK fixture or non-secret refund idempotency identifier."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/billing/stripe\-webhook\.test\.ts$''',
+]
+regexes = ['''^\s*const stripe = new Stripe\("sk_test_placeholder"\);\s*$''']
+
+[[rules.allowlists]]
+description = "Mock Stripe SDK fixture or non-secret refund idempotency identifier."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/billing/stripe\.test\.ts$''',
+]
+regexes = ['''^\s*const stripe = new Stripe\("sk_test_placeholder", \{ httpClient: Stripe\.createFetchHttpClient\(fetchFn\) \}\);\s*$''']
+
+[[rules.allowlists]]
+description = "Mock Stripe SDK fixture or non-secret refund idempotency identifier."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''(?:^|/)apps/web/src/lib/billing/readiness\.test\.ts$''',
+]
+regexes = ['''^\s*expect\(JSON\.stringify\(billingReadiness\(reader\(\{ STRIPE_SECRET_KEY: "sk_test_secretvalue" \}\)\)\)\)\.not\.toContain\(\s*$''']

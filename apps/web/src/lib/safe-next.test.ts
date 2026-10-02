@@ -68,13 +68,17 @@ describe("safeNextPath (Update.md 4.3 open redirect)", () => {
 });
 
 describe("parseCheckoutIntent", () => {
-  const paid = tiers.filter((t) => t.monthlyUsd > 0);
+  const paid = tiers.filter((t) => t.monthlyUsd > 0 && t.selfServe);
 
-  it("accepts every paid tier from the seed on both cadences", () => {
+  it("accepts every paid tier sold online from the seed on both cadences", () => {
     for (const tier of paid) {
       expect(parseCheckoutIntent(tier.key, "monthly")).toEqual({ plan: tier.key, cadence: "monthly" });
       expect(parseCheckoutIntent(tier.key, "annual")).toEqual({ plan: tier.key, cadence: "annual" });
     }
+  });
+
+  it("ignores Agency, which is set up by email (P20-08)", () => {
+    expect(parseCheckoutIntent("agency", "monthly")).toBeNull();
   });
 
   it("defaults a missing cadence to monthly and normalizes case", () => {
@@ -164,7 +168,7 @@ describe("plan intent copy (true with or without Stripe)", () => {
 
   it("keeps the plain confirmation message when no plan was picked", () => {
     expect(confirmationSentMessage(null)).toBe(
-      "Almost there. We sent a confirmation link to your inbox. Open it on this device and your workspace will be ready. Check spam if it does not arrive in a minute.",
+      "Almost there. We sent a confirmation link to your inbox. Open it on any device and your workspace will be ready. If it does not arrive in a minute, check spam or send it again.",
     );
   });
 });

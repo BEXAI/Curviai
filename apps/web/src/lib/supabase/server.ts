@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { cache } from "react";
 import { isSupabaseConfigured, optionalEnv } from "@/lib/env";
 
 /**
@@ -35,7 +36,12 @@ export async function createSupabaseServerClient() {
   );
 }
 
-export async function getSessionUser() {
+/**
+ * The signed in user, checked with Supabase Auth. Memoized per request with
+ * React cache(), so the layout, the page and the services they call share
+ * one auth round trip instead of one each.
+ */
+export const getSessionUser = cache(async () => {
   const supabase = await createSupabaseServerClient();
   if (!supabase) {
     return null;
@@ -44,4 +50,4 @@ export async function getSessionUser() {
     data: { user },
   } = await supabase.auth.getUser();
   return user;
-}
+});

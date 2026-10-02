@@ -37,7 +37,7 @@ import {
   type RawMask,
 } from "@curvi/pipeline";
 import { hexToRgb } from "@curvi/pipeline/output-options";
-import { canvasDefaults, stillStyle } from "@curvi/pipeline/seed";
+import { stillStyle } from "@curvi/pipeline/seed";
 import { dimensionBounds, requiresWhiteBackground, type ChannelSpec } from "@curvi/specs";
 import { ShotUnavailableError } from "./errors";
 
@@ -294,16 +294,8 @@ function backgroundExact(image: RawImage, checkMask: RawMask, rgb: readonly [num
   return true;
 }
 
-/**
- * Canvas size for a spec: its fixed size, or the seeded default raised to the
- * spec minimum and capped at the spec maximum when the spec leaves it open.
- */
-export function canvasSizeFor(spec: ChannelSpec): { width: number; height: number } {
-  const bounds = dimensionBounds(spec);
-  const width = spec.width ?? clamp(canvasDefaults.width, bounds.minWidth, bounds.maxWidth);
-  const height = spec.height ?? clamp(width, bounds.minHeight, bounds.maxHeight);
-  return { width, height };
-}
+/** Canvas size for a spec; the one rule lives in @curvi/pipeline. */
+export { canvasSizeFor } from "@curvi/pipeline/output-options";
 
 /** True when a width x height file meets the spec's size rules. */
 export function fitsSpecSize(spec: ChannelSpec, width: number, height: number): boolean {

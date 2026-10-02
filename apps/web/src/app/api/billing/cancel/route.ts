@@ -22,6 +22,9 @@ import { loadBillingAccount } from "@/lib/billing/account";
 import { CANCEL_REASON_KEYS, MAX_CANCEL_DETAIL } from "@/lib/billing/cancel-flow";
 import { applyCancelChoice, cancelOptions } from "@/lib/billing/cancel-service";
 import { liveCancelDeps } from "@/lib/billing/cancel-store";
+import { withCheckoutLock } from "@/lib/billing/checkout-guard";
+import { isDbMode } from "@/lib/services";
+import { getDb } from "@/lib/services/db";
 import { readJsonCapped } from "@/lib/http/json-body";
 import { sameOriginOrRefuse } from "@/lib/http/same-origin";
 import { resolveSignedIn } from "@/lib/http/services";
@@ -34,7 +37,9 @@ export const dynamic = "force-dynamic";
 const SAFE_TEXT = /^[^\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F<>]*$/;
 
 const CancelRequest = z.object({
-  reason: z.enum(CANCEL_REASON_KEYS),
+  // Optional (docs/phases/PHASE_20.md P20-07, Minnesota asks only for what
+  // cancelling needs).
+  reason: z.enum(CANCEL_REASON_KEYS).optional().nullable(),
   detail: z.string().max(MAX_CANCEL_DETAIL).regex(SAFE_TEXT).optional().nullable(),
   choice: z.enum(["pause", "downgrade", "discount", "cancel", "keep"]),
 });
@@ -84,18 +89,16 @@ export async function POST(request: Request): Promise<NextResponse> {
   const parsed = CancelRequest.safeParse(body.data);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "invalid_request", notice: "Pick a reason and an option, and keep the note under 500 characters." },
+      { error: "invalid_request", notice: "Pick an option, and keep the note under 500 characters." },
       { status: 400 },
     );
   }
-  const [account, user] = await Promise.all([loadBillingAccount(workspace.id), getSessionUser().catch(() => null)]);
-  const result = await applyCancelChoice(liveCancelDeps(), {
-    workspace,
-    account,
-    userId: user?.id ?? null,
-    reason: parsed.data.reason,
-    detail: parsed.data.detail ?? null,
-    choice: parsed.data.choice,
+  const result = await withCheckoutLock(isDbMode() ? getDb() : null, workspace.id, async () => {
+    const [account, user] = await Promise.all([loadBillingAccount(workspace.id), getSessionUser().catch(() => null)]);
+    return applyCancelChoice(liveCancelDeps(), {
+      workspace, account, userId: user?.id ?? null,
+      reason: parsed.data.reason ?? null, detail: parsed.data.detail ?? null, choice: parsed.data.choice,
+    });
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.error, notice: result.notice }, { status: result.status });

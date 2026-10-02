@@ -1,0 +1,76 @@
+# Select this Blueprint path explicitly; production uses render.yaml.
+# No resource is created until the founder applies it. See docs/ops/STAGING.md.
+services:
+  - type: web
+    name: curvi-staging
+    runtime: node
+    repo: https://github.com/BEXAI/Curviai
+    branch: main
+    region: oregon
+    plan: free
+    autoDeployTrigger: checksPass
+    buildCommand: pnpm install --frozen-lockfile && pnpm run build
+    startCommand: pnpm run start
+    healthCheckPath: /api/health
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NEXT_PUBLIC_ENV_LABEL
+        value: staging
+      - key: NEXT_PUBLIC_SITE_URL
+        sync: false
+      - key: CURVI_INLINE_PACK_CONCURRENCY
+        value: "1"
+      - key: CURVI_SHOT_CONCURRENCY
+        value: "1"
+      - key: NEXT_PUBLIC_OUTPUT_OPTIONS
+        value: "1"
+      - key: CURVI_PROVIDER_CANARY_ENABLED
+        value: "0"
+      - key: MCP_OAUTH_ENABLED
+        value: "0"
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET_PRIVATE
+        value: curvi-staging
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: NEXT_PUBLIC_TURNSTILE_SITE_KEY
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_STARTER_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_STARTER_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_GROWTH_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_GROWTH_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_PRO_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_PRO_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_TOPUP_100
+        sync: false
+      - key: STRIPE_PRICE_TOPUP_500
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+      - key: OPS_EMAILS
+        sync: false

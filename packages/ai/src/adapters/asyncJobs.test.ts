@@ -1,3 +1,4 @@
+import { TEST_SPEND_CAPS as SPEND_CAPS } from "../testing/cap-policy";
 /**
  * Async job adapters (BFL, fal) and result downloads with fake fetch and a
  * fake clock; nothing here touches the network. Covers Update.md 5.1: a
@@ -145,7 +146,7 @@ describe("BFL adapter after a paid create", () => {
     const provider = bfl(fake.fetchFn, { pollTimeoutMs: 50, now: steppingClock() });
     const r = router(provider);
     const store = new InMemoryCapStore();
-    const spendCaps = new SpendCaps(store, () => new Date("2026-09-28T12:00:00Z"));
+    const spendCaps = new SpendCaps(store, () => new Date("2026-09-28T12:00:00Z"), SPEND_CAPS);
 
     const err = await callWithFailover(r.registry, r.routing, r.meter, r.breakers, request, {
       sleep: async () => {},

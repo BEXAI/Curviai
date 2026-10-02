@@ -5,6 +5,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Button, Input } from "@curvi/ui";
 import { track } from "@/lib/track";
 import { LEAD_HONEYPOT_FIELD, type LeadSource } from "@/lib/lead-sources";
+import { MarketingConsentCheckbox } from "./marketing-consent";
 
 /** Remembered per browser, so a visitor who already left an email is not asked again. */
 const UNLOCK_STORAGE_KEY = "curvi.tools.unlocked";
@@ -46,6 +47,8 @@ export function EmailGate({
   const [unlocked, setUnlocked] = useState(false);
   const [email, setEmail] = useState("");
   const [honeypot, setHoneypot] = useState("");
+  // P18-06: unticked by default; only a tick is marketing consent.
+  const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,7 +67,7 @@ export function EmailGate({
         const response = await fetch("/api/leads", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ email, source, [LEAD_HONEYPOT_FIELD]: honeypot }),
+          body: JSON.stringify({ email, source, marketingConsent: consent, [LEAD_HONEYPOT_FIELD]: honeypot }),
         });
         if (!response.ok) {
           const payload = (await response.json().catch(() => null)) as { error?: string } | null;
@@ -80,7 +83,7 @@ export function EmailGate({
         setBusy(false);
       }
     },
-    [email, honeypot, source],
+    [consent, email, honeypot, source],
   );
 
   if (unlocked) {
@@ -123,6 +126,7 @@ export function EmailGate({
           {busy ? "Unlocking" : "Show full results"}
         </Button>
       </form>
+      <MarketingConsentCheckbox id={`${id}-consent`} checked={consent} onChange={setConsent} />
       {error ? (
         <p className="mt-2 text-sm text-red-600" role="alert">
           {error}

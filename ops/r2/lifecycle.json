@@ -1,0 +1,6 @@
+{
+  "Rules": [
+    { "ID": "anonymous-previews", "Status": "Enabled", "Filter": { "Prefix": "anon/" }, "Expiration": { "Days": 2 } },
+    { "ID": "temporary-workspace-objects", "Status": "Enabled", "Filter": { "Prefix": "tmp/" }, "Expiration": { "Days": 7 } }
+  ]
+}

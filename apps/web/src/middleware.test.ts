@@ -45,8 +45,27 @@ afterEach(() => {
 });
 
 describe("middleware", () => {
-  it("guards /app and the auth pages", () => {
-    expect(config.matcher).toEqual(["/app/:path*", "/login", "/signup"]);
+  it("overwrites a forged operator enrollment path including after a cookie refresh", async () => {
+    signedIn = true;
+    refreshSession = true;
+    const response = await middleware(new NextRequest("https://curvi.ai/app/ops", {
+      headers: { "x-curvi-ops-path": "/app/ops/security" },
+    }));
+    expect(response.headers.get("x-middleware-request-x-curvi-ops-path")).toBe("/app/ops");
+  });
+  it("guards /app and the auth pages, and refreshes the session on the OAuth pages", () => {
+    expect(config.matcher).toEqual(["/app/:path*", "/login", "/signup", "/oauth/:path*"]);
+  });
+
+  it("never redirects on the consent page, signed in or out (PHASE_19 P19-09)", async () => {
+    const path = "/oauth/consent?authorization_id=abcDEF0123456789abcDEF0123456789";
+    expect(location(await visit(path))).toBeNull();
+    signedIn = true;
+    refreshSession = true;
+    const response = await visit(path);
+    expect(location(response)).toBeNull();
+    // The refreshed session cookie still reaches the browser.
+    expect(response.headers.get("set-cookie")).toContain("sb-test-auth-token=rotated");
   });
 
   it("keeps the query string in next when a signed out visitor opens /app", async () => {

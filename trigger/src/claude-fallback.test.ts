@@ -41,10 +41,16 @@ describe("Claude fallback after an OpenAI quota answer (phase 17)", () => {
         "brand_palette_namer v2",
         "copy_generator v4",
         "intake_normalizer v7",
+        // PHASE_19 P19-29: version 7's chain with the prohibited goods prompt.
+        "intake_normalizer v8",
         "product_analyzer v4",
         "qc_judge v2",
         "question_planner v2",
         "shot_planner v3",
+        // Inactive drafts still need a working Claude fallback when explicitly
+        // evaluated; this does not enroll them in production traffic.
+        "shot_planner v4",
+        "shot_planner v5",
         "target_picker v2",
       ].sort(),
     );

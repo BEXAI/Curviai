@@ -29,6 +29,7 @@ import {
   requiresWhiteBackground,
   type ChannelSpec,
 } from "@curvi/specs";
+import { HEX } from "./color";
 import type { Shot } from "./schemas";
 import { MAX_BRAND_COLORS } from "./seed/brand";
 import {
@@ -46,8 +47,8 @@ import {
 } from "./seed/templates";
 import { variationOptions } from "./seed/variations";
 
-/** A six digit hex color, like #1F2A44. */
-export const HEX = /^#[0-9A-Fa-f]{6}$/;
+/** A six digit hex color, like #1F2A44 (defined in ./color). */
+export { HEX };
 
 /** The most a source is scaled up for any output (PHASE_13.md item 7). Kept
  * photos use the same cap (PHASE_15 control 6). */
@@ -409,18 +410,23 @@ export const LOOK_PRESETS: Readonly<Record<LookKey, OutputChoices>> = {
 /** Today's pack: Marketplace ready. */
 export const DEFAULT_OUTPUT_OPTIONS: NormalizedOutputOptions = normalizeOutputOptions({});
 
-/** Canonical JSON: object keys sorted at every depth, so key order never matters. */
-function canonicalJson(value: unknown): string {
+/**
+ * Canonical JSON: object keys sorted at every depth, so key order never
+ * matters (a jsonb round trip reorders keys). Undefined object fields are
+ * dropped, and an undefined array item or top level value is written as
+ * null, as JSON.stringify does.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
   if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
+    return `[${value.map((item) => (item === undefined ? "null" : canonicalJson(item))).join(",")}]`;
   }
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
 }
 
 function choicesOf(options: NormalizedOutputOptions | OutputChoices): OutputChoices {
@@ -996,7 +1002,7 @@ export function cropWindowFor(
 /**
  * Canvas size for a spec: its fixed size, or the seeded default raised to
  * the spec minimum and capped at the spec maximum when the spec leaves it
- * open. Same rule as the worker's canvasSizeFor.
+ * open. The worker re-exports this from trigger/src/shot-outputs.ts.
  */
 export function canvasSizeFor(spec: ChannelSpec): { width: number; height: number } {
   const bounds = dimensionBounds(spec);

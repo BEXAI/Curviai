@@ -13,6 +13,8 @@
  * either can carry a user's data.
  */
 
+import { redactTokenPath } from "@/lib/token-paths";
+
 export interface CspViolation {
   documentUrl: string | null;
   blockedUrl: string | null;
@@ -48,7 +50,7 @@ export function redactUrl(value: unknown): string | null {
     if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
       return url.protocol;
     }
-    return `${url.origin}${url.pathname}`.slice(0, 300);
+    return redactTokenPath(`${url.origin}${url.pathname}`).slice(0, 300);
   } catch {
     return value.split(/[?#]/)[0].slice(0, 100);
   }

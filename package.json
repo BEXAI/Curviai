@@ -14,12 +14,23 @@
     "typecheck": "pnpm -r run typecheck && tsc -p tsconfig.json",
     "e2e": "playwright test",
     "eval": "pnpm --filter @curvi/pipeline run eval",
+    "plugin:zip": "pnpm --filter @curvi/openai-plugin run zip",
+    "web:script": "pnpm --filter @curvi/web script",
+    "ops:restore-drill": "pnpm --filter @curvi/web ops:restore-drill",
+    "billing:verify": "pnpm --filter @curvi/web billing:verify",
+    "report:unit-economics": "pnpm --filter @curvi/web report:unit-economics",
+    "ops:grant-credits": "pnpm --filter @curvi/web ops:grant-credits",
     "db:generate": "pnpm --filter @curvi/db db:generate",
     "db:migrate": "pnpm --filter @curvi/db db:migrate",
     "db:seed": "pnpm --filter @curvi/trigger db:seed",
-    "trigger:dev": "pnpm --filter @curvi/trigger dev"
+    "billing:price-notice": "pnpm --filter @curvi/web billing:price-notice",
+    "ops:memory-test": "pnpm --filter @curvi/web ops:memory-test",
+    "smoke": "playwright test --config=playwright.smoke.config.ts",
+    "ops:migrate": "pnpm --filter @curvi/web ops:migrate",
+    "release": "pnpm --filter @curvi/web release"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@playwright/test": "^1.49.0",
     "@types/node": "^24.0.0",
     "eslint": "^9.15.0",
@@ -29,7 +40,8 @@
   },
   "pnpm": {
     "overrides": {
-      "postcss": "8.5.28"
+      "postcss": "8.5.28",
+      "@esbuild-kit/core-utils>esbuild": "0.25.12"
     }
   }
 }

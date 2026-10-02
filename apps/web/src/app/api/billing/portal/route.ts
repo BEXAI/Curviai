@@ -9,7 +9,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { isStripeConfigured, siteUrl } from "@/lib/env";
+import { hasStripeApiKey, siteUrl } from "@/lib/env";
 import { BILLING_FORBIDDEN_NOTICE, canManageBilling } from "@/lib/billing/access";
 import { loadBillingAccount } from "@/lib/billing/account";
 import { getStripe } from "@/lib/billing/stripe";
@@ -34,7 +34,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!canManageBilling(workspace.role)) {
     return NextResponse.json({ error: "billing_forbidden", notice: BILLING_FORBIDDEN_NOTICE }, { status: 403 });
   }
-  if (!isStripeConfigured()) {
+  if (!hasStripeApiKey()) {
     return NextResponse.json(
       {
         error: "billing_not_configured",

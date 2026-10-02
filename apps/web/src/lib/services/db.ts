@@ -12,6 +12,7 @@
 
 import {
   createDb,
+  spendCapCounters,
   type Db,
   assetVariants,
   brandKits,
@@ -20,8 +21,8 @@ import {
   packFiles,
   generationJobs,
   jobSteps,
-  platformSettings,
   products,
+  recordFunnelEvent,
   sourceMedia,
   uploadPreflights,
   workspaces,
@@ -31,6 +32,7 @@ import {
   type SourceMediaTargetBox,
 } from "@curvi/db";
 import {
+  bundleOf,
   cutoutMediaIds,
   keepMediaIdsFor,
   normalizeOutputOptions,
@@ -40,19 +42,28 @@ import {
 } from "@curvi/pipeline/output-options";
 import type { IngestImageFormat, SourceMediaIngest } from "@curvi/pipeline/ingest";
 import type { Shot } from "@curvi/pipeline/schemas";
+import { parseVariationShotId, variationShotId } from "@curvi/pipeline/variations";
+import { SOURCE_RETENTION_DAYS } from "@/lib/trust/purge";
 import { getSpec, hasSpec, refusesOverlays } from "@curvi/specs";
 import type { PackFollowUpInput, PackFollowUpReason } from "@curvi/trigger/follow-up";
 import {
+  costCaps,
+  creditCosts,
+  followUpPricing,
+  serviceListLimits,
+  variationOptions,
   AUTO_STYLE_PRESET,
   entitlementsFor,
   presets,
   socialBadgeByTier,
   tierByKey,
+  type TierKey,
 } from "@curvi/pipeline/seed";
 import { isAngleRole, printableEndorsements, printableSellerLines, type AngleRole } from "@curvi/pipeline/seller-inputs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   buildComplianceReportView,
+  pickedComplianceReport,
   REPORT_NOT_READY,
   REPORT_NOT_STORED,
   unavailableComplianceReport,
@@ -60,12 +71,13 @@ import {
 } from "@/lib/compliance-report";
 import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
-import {
-  CONCEPT_MODE_AVAILABLE,
-  OUTPUT_OPTIONS_SWITCH_KEY,
-  outputOptionsAvailable,
-  outputOptionsSwitchOn,
-} from "@/lib/features";
+import { CONCEPT_MODE_AVAILABLE, opsSwitch, outputOptionsAvailable } from "@/lib/features";
+import { resolveGlobalHardStop } from "@curvi/trigger/db-runtime";
+import { getPackMaintenance } from "@/lib/pack-maintenance";
+import { runnerId } from "@/lib/jobs/runner-owner";
+import { fidelityForVariant } from "./file-fidelity";
+import { queueView } from "@/lib/jobs/queue-view";
+import { platformSettingReader } from "@/lib/platform-settings";
 import { inventoryView } from "@/lib/inventory-copy";
 import { outputOptionsSummary, publicJobError, shotCopyContextOf } from "@/lib/job-copy";
 import { OPTIONS_UNREADABLE_COPY } from "@/lib/output-options-copy";
@@ -79,7 +91,7 @@ import { enqueueGeneratePack, enqueuePackFollowUp, settleJob } from "@/lib/jobs/
 import { currentInlinePackRunner, InlineRunnerClosedError } from "@/lib/jobs/inline-runner";
 import { brandStyleFor, buildGeneratePackInput, seoSlugFor, type PayloadBrandKit } from "@/lib/jobs/payload";
 import { pickSourcePhoto } from "@/lib/makeover";
-import { estimatePackCredits } from "@/lib/pack-estimate";
+import { estimatePackCredits, estimatedSpecCoverage, type EstimateSellerInputs } from "@/lib/pack-estimate";
 import {
   getObjectBytes,
   isWorkspaceKey,
@@ -103,11 +115,18 @@ import type { UploadPreflight } from "@curvi/db";
 import { brandKitInputSchema, brandKitIssueNotice, normalizeFontChoice } from "@/lib/validation/brand-kit";
 import { brandPaletteOutcomeOf, defaultBrandPaletteRun, type BrandPaletteOutcome, type BrandPaletteRunner } from "@/lib/brand/palette";
 import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
+import { answerSaysSomething, readSellerProfile, sellerProfileJson, type SellerAnswer, type SellerProfile } from "@/lib/seller-profile";
 import { isUuid } from "@/lib/validation/ids";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import { ingestUpload, type IngestOutcome } from "@/lib/trust/ingest";
 import { r2TrustStorage } from "@/lib/trust/storage";
-import { ProvisioningError, RESTARTING_MESSAGE } from "./errors";
+import {
+  INSUFFICIENT_CREDITS_MESSAGE,
+  NO_BILLABLE_SHOTS_MESSAGE,
+  ProvisioningError,
+  RESTARTING_MESSAGE,
+  overMaxCreditsRejection,
+} from "./errors";
 import { buildShotViews } from "./job-shots";
 import {
   LIBRARY_PAGE_SIZE,
@@ -130,6 +149,7 @@ import {
   type OutputPhoto,
 } from "./output-options";
 import { looksStale, reconcileStaleJobs } from "./reconcile";
+import { AMAZON_NOT_CONNECTED, SHOPIFY_NOT_CONNECTED } from "@/lib/integration-copy";
 import {
   angleLabel,
   angleOfSkippedShot,
@@ -147,8 +167,11 @@ import type {
   BrandKitView,
   CancelJobResult,
   CreateJobInput,
+  CreateJobRejection,
   CreateJobResult,
   CreateProductInput,
+  EstimateJobInput,
+  EstimateJobResult,
   IntegrationView,
   JobFileDownload,
   JobFilesView,
@@ -284,7 +307,7 @@ function preflightIngestOf(row: UploadPreflight | undefined): SourceMediaIngest 
 const MAX_PACK_MEDIA = MAX_PACK_PHOTOS;
 
 /** Most products the library lists, newest first. */
-const MAX_LIBRARY_PRODUCTS = 100;
+const MAX_LIBRARY_PRODUCTS = serviceListLimits.products;
 
 type ProductRow = typeof products.$inferSelect;
 
@@ -447,6 +470,25 @@ export interface PackMedia {
   reencoded?: boolean | null;
 }
 
+/** What the hold reads from a pack request (createJob's or estimateJob's). */
+type HoldRequest = Pick<
+  CreateJobInput,
+  "channels" | "mode" | "outputOptions" | "sku" | "boxContents" | "comparisonFacts" | "endorsements"
+> & { uploads?: ReadonlyArray<{ key: string; background?: CreateJobUpload["background"] }> };
+
+type CreateJobUpload = NonNullable<CreateJobInput["uploads"]>[number];
+
+/** The hold for a request and what createJob writes from it. */
+interface PackHold {
+  sellerUpdates: ReturnType<typeof sellerInputUpdates>;
+  brandColors: string[];
+  brandKit: PayloadBrandKit | null;
+  output: Extract<ReturnType<typeof resolveJobOutput>, { ok: true }>;
+  /** The estimate inputs the hold was priced from. */
+  estimateInputs: EstimateSellerInputs;
+  creditsReserved: number;
+}
+
 /** The photos a pack runs on: this request's uploads when it sent any,
  * otherwise the product's stored photos, one entry per object, capped at
  * MAX_PACK_MEDIA. Stored photos are never mixed into a pack that sent new
@@ -507,7 +549,7 @@ function fileDownloadPath(jobId: string, fileId: string): string {
  * the time cap or a restart settled writes no files and charges nothing, so
  * it stays unserved. */
 /** Most delivered assets one library read scans before its filters. */
-const LIBRARY_SCAN_LIMIT = 600;
+const LIBRARY_SCAN_LIMIT = serviceListLimits.assetScan;
 
 const ASSET_NOT_FOUND = "This image does not exist in your workspace.";
 
@@ -541,6 +583,7 @@ export class DbService implements Services {
     }
     const membershipRow = await this.db.query.members.findFirst({
       where: (t, { eq }) => eq(t.userId, userId),
+      orderBy: (t, { asc }) => [sql`case when ${t.role} = 'owner' then 0 else 1 end`, asc(t.createdAt), asc(t.workspaceId)],
     });
     let membership: { workspaceId: string; role: WorkspaceRole } | null = membershipRow
       ? { workspaceId: membershipRow.workspaceId, role: membershipRow.role }
@@ -599,6 +642,46 @@ export class DbService implements Services {
       .set({ name: trimmed, updatedAt: new Date() })
       .where(eq(workspaces.id, workspaceId));
     return { ok: true, notice: "Workspace name saved." };
+  }
+
+  async getSellerProfile(workspaceId: string): Promise<SellerProfile | null> {
+    const row = await this.db.query.workspaces.findFirst({
+      columns: { sellerProfile: true },
+      where: (t, { eq }) => eq(t.id, workspaceId),
+    });
+    return readSellerProfile(row?.sellerProfile ?? null);
+  }
+
+  /** Saves the first run answers on the owner connection (the column is
+   * protected from client connections, migration seller_profile) and
+   * records segment_answered for the funnel. */
+  async saveSellerProfile(workspaceId: string, answer: SellerAnswer): Promise<SaveResult> {
+    const userId = await this.deps.getUserId();
+    if (!userId) {
+      return { ok: false, notice: "Sign in to save your answers.", reason: "forbidden" };
+    }
+    const membership = await this.db.query.members.findFirst({
+      where: (t) => and(eq(t.userId, userId), eq(t.workspaceId, workspaceId)),
+    });
+    if (!membership || !["owner", "admin", "editor"].includes(membership.role)) {
+      return { ok: false, notice: "Only owners, admins and editors can answer for the workspace.", reason: "forbidden" };
+    }
+    await this.db
+      .update(workspaces)
+      .set({ sellerProfile: sellerProfileJson(answer, new Date()), updatedAt: new Date() })
+      .where(eq(workspaces.id, workspaceId));
+    if (answerSaysSomething(answer)) {
+      await recordFunnelEvent(this.db, {
+        workspaceId,
+        name: "segment_answered",
+        props: {
+          category: answer.category,
+          channels: answer.channels.join(","),
+          channel_count: answer.channels.length,
+        },
+      });
+    }
+    return { ok: true, notice: "Saved. Your first pack starts with these channels." };
   }
 
   /**
@@ -959,6 +1042,24 @@ export class DbService implements Services {
 
     // The seller's original photo for the before and after reveal, signed
     // like the shot previews and only for a pack that serves files.
+    if (current.status === "done" && role !== null && role !== "client") {
+      const sourceKeys = new Set((await this.db.query.sourceMedia.findMany({
+        where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.productId, current.productId)),
+      })).map((m) => m.r2Key));
+      const cached = new Map<string, boolean>();
+      for (const shot of shots) {
+        if (!shot.assetId || shot.status !== "done") continue;
+        const asset = assetRows.filter((a) => a.qc?.shotId === shot.shotId).at(-1);
+        const planned = storedShot(asset?.qc ?? null);
+        if (!asset?.approved || !planned || planned.method !== "composite_generate" || planned.type !== "lifestyle" || planned.carouselId || planned.channels.some((id) => id.endsWith(".main")) || !sourceKeys.has(planned.sourceMediaId)) continue;
+        const baseId = parseVariationShotId(shot.shotId)?.baseShotId ?? shot.shotId;
+        const maxVersion = Math.max(1, ...shots.map((s) => { const v = parseVariationShotId(s.shotId); return v?.baseShotId === baseId ? v.variation : 1; }));
+        if (maxVersion >= variationOptions.max) continue;
+        if (!cached.has(planned.sourceMediaId)) cached.set(planned.sourceMediaId, await this.cutoutCached(workspaceId, planned.sourceMediaId));
+        shot.regenerate = { credits: (maxVersion <= followUpPricing.regenerateFreePerShot ? 0 : creditCosts.generativeStill) + (cached.get(planned.sourceMediaId) ? 0 : creditCosts.deterministic) };
+      }
+    }
+
     let sourceImageUrl: string | null = null;
     if (current.status === "done" && isR2Configured() && shots.some((s) => s.imageUrl)) {
       const mediaRows = await this.db.query.sourceMedia.findMany({
@@ -993,6 +1094,7 @@ export class DbService implements Services {
       creditsCharged: current.creditsCharged,
       createdAt: current.createdAt.toISOString(),
       shots,
+      ...(current.status === "queued" ? { queue: await queueView(this.db, current.id) } : {}),
       // Raw worker errors can name providers; the board gets plain copy and
       // the detail stays in the row and the logs.
       error: current.status === "failed" ? publicJobError(current.error) : null,
@@ -1001,6 +1103,8 @@ export class DbService implements Services {
       followUpRunning: Boolean(report) && !["done", "failed", "canceled"].includes(current.status),
       inventory: inventoryView(current.inventory),
       ...this.outputOptionsView(current, storedOutput, assetRows),
+      // A deploy stopped it mid run and it started again (P18-23).
+      ...((current.restartCount ?? 0) > 0 ? { restarted: true } : {}),
     };
   }
 
@@ -1125,14 +1229,9 @@ export class DbService implements Services {
     if (!outputOptionsAvailable()) {
       return false;
     }
-    return outputOptionsSwitchOn(async () => {
-      const [row] = await this.db
-        .select({ value: platformSettings.value })
-        .from(platformSettings)
-        .where(eq(platformSettings.key, OUTPUT_OPTIONS_SWITCH_KEY))
-        .limit(1);
-      return row?.value;
-    });
+    // The operator switch (P20-20): its stored value, or the seed default
+    // when no row is stored, and off when the read fails.
+    return opsSwitch("ops:output_options_enabled", platformSettingReader(this.db));
   }
 
   /** The job's stored options for a follow up, or a refusal when they
@@ -1229,6 +1328,9 @@ export class DbService implements Services {
         message: "This shot cannot run again. Start a new pack for this product to try it.",
       };
     }
+    if (planned.type === "carousel_slide" || planned.carouselId) return {
+      outcome: "rejected", reason: "not_retryable", message: "Run the whole carousel again to keep its slides consistent.",
+    };
     const shot = retryShotFor(planned, await this.filesBySpec(workspaceId, job.id));
     if (!shot) {
       return {
@@ -1238,6 +1340,49 @@ export class DbService implements Services {
       };
     }
     return this.startFollowUp(workspaceId, job, "retry", [shot], shot.type, stored.output);
+  }
+
+  /** A new unpicked version of a delivered composite scene, using the
+   * original source and the same generation and fidelity checks. */
+  async regenerateShot(workspaceId: string, jobId: string, shotId: string): Promise<ShotOpResult> {
+    const start = await this.followUpStart(workspaceId, jobId);
+    if ("rejected" in start) return start.rejected;
+    const stored = this.followUpOutput(start.job);
+    if ("rejected" in stored) return stored.rejected;
+    const rows = await this.db.query.assets.findMany({
+      where: (t, { and, eq }) => and(eq(t.jobId, jobId), eq(t.workspaceId, workspaceId)),
+      orderBy: (t, { asc }) => [asc(t.createdAt)],
+    });
+    const latest = rows.filter((a) => a.qc?.shotId === shotId).at(-1);
+    const planned = storedShot(latest?.qc ?? null);
+    if (!latest?.approved || !planned || planned.method !== "composite_generate" || planned.type !== "lifestyle" || planned.carouselId || planned.channels.some((id) => id.endsWith(".main"))) {
+      return { outcome: "rejected", reason: "not_retryable", message: "Only a delivered scene can have another version." };
+    }
+    const delivered = await this.db.query.assetVariants.findFirst({
+      where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.assetId, latest.id)),
+    });
+    if (!delivered) return { outcome: "rejected", reason: "not_retryable", message: "This scene has no delivered file." };
+    const source = await this.db.query.sourceMedia.findFirst({
+      where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.productId, start.job.productId), eq(t.r2Key, planned.sourceMediaId)),
+    });
+    if (!source || !isWorkspaceSourceKey(workspaceId, planned.sourceMediaId)) return {
+      outcome: "rejected", reason: "not_retryable", message: `The original photo for this pack was deleted after ${SOURCE_RETENTION_DAYS} days, so we cannot make another version from it. Start a new pack with the photo to make more.`,
+    };
+    const baseId = parseVariationShotId(shotId)?.baseShotId ?? shotId;
+    const versions = rows.flatMap((a) => {
+      const id = typeof a.qc?.shotId === "string" ? a.qc.shotId : "";
+      const parsed = parseVariationShotId(id);
+      return id === baseId ? [1] : parsed?.baseShotId === baseId ? [parsed.variation] : [];
+    });
+    const next = Math.max(1, ...versions) + 1;
+    if (next > variationOptions.max) return { outcome: "rejected", reason: "not_retryable", message: `This scene already has ${variationOptions.max} versions. Pick the one you want to ship.` };
+    const cached = await this.cutoutCached(workspaceId, planned.sourceMediaId);
+    const { variations: _variations, ...original } = planned;
+    void _variations;
+    const shot: Shot = { ...original, id: variationShotId(baseId, next), variation: next,
+      credits: (next - 1 <= followUpPricing.regenerateFreePerShot ? 0 : creditCosts.generativeStill) + (cached ? 0 : creditCosts.deterministic),
+    };
+    return this.startFollowUp(workspaceId, start.job, "regenerate", [shot], shot.type, stored.output);
   }
 
   /**
@@ -1413,6 +1558,8 @@ export class DbService implements Services {
     output: ResolvedOutputOptions | null,
     prepare?: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<void>,
   ): Promise<ShotOpResult> {
+    const maintenance = await getPackMaintenance(this.db);
+    if (maintenance.paused) return { outcome: "rejected", reason: "unavailable", message: maintenance.message };
     const credits = followUpCredits(shots);
     if (inlineRunnerDraining()) {
       return { outcome: "rejected", reason: "unavailable", message: RESTARTING_MESSAGE };
@@ -1431,7 +1578,7 @@ export class DbService implements Services {
         await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
         const moved = await tx
           .update(generationJobs)
-          .set({ status: "generating", runKey, updatedAt: new Date() })
+          .set({ status: "generating", runKey, runnerId: runnerId(), heartbeatAt: new Date(), startedAt: null, finishedAt: null, updatedAt: new Date() })
           .where(
             and(
               eq(generationJobs.id, job.id),
@@ -1497,6 +1644,12 @@ export class DbService implements Services {
         baseCostMicros,
         output,
       });
+      const saved = Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "runKey"));
+      const persisted = await this.db.update(generationJobs)
+        .set({ restartPayload: { ...saved, acceptedAt: new Date().toISOString() } })
+        .where(and(eq(generationJobs.id, job.id), eq(generationJobs.workspaceId, workspaceId), eq(generationJobs.runKey, runKey), eq(generationJobs.status, "generating")))
+        .returning({ id: generationJobs.id });
+      if (!persisted.length) throw new FollowUpNotReadyError();
       await enqueuePackFollowUp(payload);
     } catch (err) {
       const restarting = err instanceof InlineRunnerClosedError;
@@ -1711,7 +1864,7 @@ export class DbService implements Services {
         await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
         const moved = await tx
           .update(generationJobs)
-          .set({ status: "done", runKey: sql`gen_random_uuid()::text`, updatedAt: new Date() })
+          .set({ status: "done", runKey: sql`gen_random_uuid()::text`, restartPayload: null, runnerId: null, heartbeatAt: null, finishedAt: new Date(), updatedAt: new Date() })
           .where(
             and(
               eq(generationJobs.id, jobId),
@@ -1804,35 +1957,34 @@ export class DbService implements Services {
   }
 
   /**
-   * Creates a pack job (Update.md 6.3). Everything that can reject the
-   * request is checked before anything is written: role, mode, product,
-   * uploads, photo requirement and the credit estimate. The product (when
-   * new), the uploads, the job row and the credit hold are then written in
-   * one transaction, so a rejected or failed attempt leaves no empty product,
-   * no stray media and no job behind. Uploads insert with ON CONFLICT DO
-   * NOTHING against the (workspace_id, r2_key) unique index, so a retry never
-   * duplicates a photo.
+   * The checks every pack request meets first, in createJob's order: the
+   * caller's seat, the mode, the plan's entitlements (from the seed) and the
+   * product. Shared with estimateJob (PHASE_19 P19-16). Reads only.
    */
-  async createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
-    const replay = await this.replayFor(workspaceId, input);
-    if (replay) {
-      return replay;
-    }
-
+  private async packGate(
+    workspaceId: string,
+    input: Pick<CreateJobInput, "mode" | "channels" | "productId">,
+  ): Promise<{ ok: false; rejection: CreateJobRejection } | { ok: true; tier: TierKey; existingProduct: ProductRow | null }> {
     const role = await this.currentRole(workspaceId);
     if (role === null || role === "client") {
       return {
-        outcome: "rejected",
-        reason: "role_forbidden",
-        message: "Client seats can review assets but cannot start packs or spend credits.",
+        ok: false,
+        rejection: {
+          outcome: "rejected",
+          reason: "role_forbidden",
+          message: "Client seats can review assets but cannot start packs or spend credits.",
+        },
       };
     }
 
     if (input.mode === "concept" && !CONCEPT_MODE_AVAILABLE) {
       return {
-        outcome: "rejected",
-        reason: "mode_unavailable",
-        message: "Concept Mode is not available yet. Start a Listing Mode pack from a real photo.",
+        ok: false,
+        rejection: {
+          outcome: "rejected",
+          reason: "mode_unavailable",
+          message: "Concept Mode is not available yet. Start a Listing Mode pack from a real photo.",
+        },
       };
     }
 
@@ -1844,10 +1996,10 @@ export class DbService implements Services {
     const tier = tierKeyOf(workspace?.plan);
     const entitled = checkChannelEntitlements(input.channels, tier);
     if (!entitled.ok) {
-      return { outcome: "rejected", reason: entitled.reason, message: entitled.message };
+      return { ok: false, rejection: { outcome: "rejected", reason: entitled.reason, message: entitled.message } };
     }
 
-    let existingProduct: typeof products.$inferSelect | null = null;
+    let existingProduct: ProductRow | null = null;
     if (input.productId !== "new") {
       existingProduct = isUuid(input.productId)
         ? ((await this.db.query.products.findFirst({
@@ -1855,9 +2007,245 @@ export class DbService implements Services {
           })) ?? null)
         : null;
       if (!existingProduct) {
-        return { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." };
+        return {
+          ok: false,
+          rejection: { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." },
+        };
       }
     }
+    return { ok: true, tier, existingProduct };
+  }
+
+  /** The photos a pack of this product already has: stored images in this
+   * workspace's source prefix, newest first, at most MAX_PACK_MEDIA. */
+  private async storedPackMedia(workspaceId: string, existingProduct: ProductRow | null): Promise<PackMedia[]> {
+    if (!existingProduct) {
+      return [];
+    }
+    return (
+      await this.db.query.sourceMedia.findMany({
+        where: (t, { and, eq, like }) =>
+          and(eq(t.productId, existingProduct.id), eq(t.workspaceId, workspaceId), like(t.r2Key, `ws/${workspaceId}/src/%`)),
+        orderBy: (t, { desc }) => [desc(t.createdAt)],
+        limit: MAX_PACK_MEDIA,
+      })
+    )
+      .filter((m) => isWorkspaceSourceKey(workspaceId, m.r2Key))
+      .map(
+        (m): PackMedia => ({
+          r2Key: m.r2Key,
+          kind: m.kind,
+          angle: isAngleRole(m.angle) ? m.angle : null,
+          targetBox: m.targetBox ?? null,
+          width: m.width,
+          height: m.height,
+          reencoded: ingestRecordOf(m.ingest)?.reencoded ?? null,
+        }),
+      );
+  }
+
+  /**
+   * The hold createJob takes for a request, from the pack's photos: the
+   * seller inputs the product will hold, the brand kit, the resolved output
+   * options and the seed estimate (outputEstimateInputs), in createJob's
+   * order with its refusals. Shared with estimateJob (PHASE_19 P19-16), so
+   * an estimate is the hold by construction. Reads only.
+   */
+  private async holdFor(
+    workspaceId: string,
+    input: HoldRequest,
+    tier: TierKey,
+    existingProduct: ProductRow | null,
+    media: PackMedia[],
+    options: { cutoutPause: boolean },
+  ): Promise<{ ok: false; rejection: CreateJobRejection } | ({ ok: true } & PackHold)> {
+    const reject = (reason: CreateJobRejection["reason"], message: string) =>
+      ({ ok: false, rejection: { outcome: "rejected", reason, message } }) as const;
+    // Seller inputs this request saves on the product, and what the product
+    // then holds. The hold covers the shots they unlock (the photo angles,
+    // in_the_box and comparison), so the worker's budget trim keeps them.
+    const sellerUpdates = sellerInputUpdates(input);
+    const sellerInputs = {
+      boxContents: sellerUpdates.boxContents ?? printableSellerLines(existingProduct?.boxContents),
+      comparisonFacts: sellerUpdates.comparisonFacts ?? printableSellerLines(existingProduct?.comparisonFacts),
+      endorsements: sellerUpdates.endorsements ?? printableEndorsements(existingProduct?.endorsements),
+    };
+
+    // Plan 2.7: Listing Mode requires at least one real photo. Angles that
+    // were not photographed are skipped by the planner, never invented.
+    if (input.mode === "listing" && !media.some((m) => m.kind !== "video")) {
+      return reject("needs_photo", "Listing Mode needs at least one real photo of this product. Upload one first.");
+    }
+
+    // The brand kit is read before the estimate, because a brand color is
+    // resolved and snapshotted from it. It stays optional styling: a failed
+    // read falls back to the default colors, unless the seller picked a
+    // brand color, which then cannot be resolved.
+    let brandColors: string[] = [];
+    let brandKit: PayloadBrandKit | null = null;
+    let brandKitRead = true;
+    try {
+      const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
+      brandColors = Array.isArray(kit?.colors) ? kit.colors.filter((c): c is string => typeof c === "string") : [];
+      brandKit = kit ? { fonts: kit.fonts ?? null, logoKey: kit.logoR2Key, stylePreset: kit.stylePreset } : null;
+    } catch (err) {
+      brandKitRead = false;
+      console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
+    }
+
+    // The seller's output options (PHASE_15 item 24), resolved against the
+    // flags, the plan and the kit. Kept photos are this pack's photos by R2
+    // key, with the stored sizes, so the hold knows which channels each one
+    // can reach.
+    const photos: OutputPhoto[] = media
+      .filter((m) => m.kind !== "video")
+      .map((m) => ({ id: m.r2Key, angle: m.angle, width: m.width ?? null, height: m.height ?? null }));
+    if (!brandKitRead && input.outputOptions?.color?.kind === "brand") {
+      return reject("unavailable", UNAVAILABLE_MESSAGE);
+    }
+    const photoBackgrounds = photoBackgroundsOf(input.uploads);
+    const wantsOptions =
+      input.mode !== "concept" &&
+      (isNonDefaultRequest(input.outputOptions) || hasPhotoBackgroundOverride(input.outputOptions, photoBackgrounds));
+    const output = resolveJobOutput({
+      input: input.outputOptions,
+      mode: input.mode,
+      enabled: wantsOptions ? await this.outputOptionsEnabled() : true,
+      brandColors,
+      brandKitsAllowed: entitlementsFor(tier).brandKits > 0,
+      photos,
+      photoBackgrounds,
+    });
+    if (!output.ok) {
+      return reject(output.reason, output.message);
+    }
+
+    // While every cutout provider is down, only a pack that needs no cutout
+    // may start (a Keep pack with no white required channel and no extras),
+    // or one whose every cutout is already in the upload cache.
+    if (options.cutoutPause && packNeedsCutout(input.channels, output.flags)) {
+      const paused = await this.cutoutPauseRefusal(
+        workspaceId,
+        cutoutMediaIds(output.flags.photos, input.channels, output.flags),
+      );
+      if (paused) {
+        return reject("unavailable", paused);
+      }
+    }
+
+    // Reservation is a seed cost estimate that leaves out shots production
+    // cannot deliver; the worker's planner recomputes the exact plan and
+    // charge_credits bills only the assets that pass QC. The same estimate
+    // inputs as the form and the demo (outputEstimateInputs).
+    const estimateInputs: EstimateSellerInputs = {
+      angles: media.filter((m) => m.kind !== "video").flatMap((m) => (m.angle ? [m.angle] : [])),
+      hasBoxContents: sellerInputs.boxContents.length > 0,
+      hasComparisonFacts: sellerInputs.comparisonFacts.length > 0,
+      hasEndorsements: sellerInputs.endorsements.length > 0,
+      ...outputEstimateInputs(output.resolved, photos),
+    };
+    const creditsReserved = estimatePackCredits(input.channels, input.mode, tier, estimateInputs).total;
+    return { ok: true, sellerUpdates, brandColors, brandKit, output, estimateInputs, creditsReserved };
+  }
+
+  /** estimate_pack (PHASE_19 P19-16): createJob's gate and hold for the same
+   * request, the balance and the channels left out, writing nothing. */
+  async estimateJob(workspaceId: string, input: EstimateJobInput): Promise<EstimateJobResult> {
+    const gate = await this.packGate(workspaceId, input);
+    if (!gate.ok) {
+      return gate.rejection;
+    }
+    const { tier, existingProduct } = gate;
+    // The uploads as createJob registers them, with the sizes its ingest
+    // records for the same bytes (the caller measured them upright).
+    const uploads: PackMedia[] = [
+      ...new Map(
+        (input.uploads ?? []).filter((u) => isWorkspaceSourceKey(workspaceId, u.key)).map((u) => [u.key, u]),
+      ).values(),
+    ].map((u) => ({
+      r2Key: u.key,
+      kind: u.kind,
+      angle: u.angle ?? null,
+      targetBox: null,
+      width: u.width,
+      height: u.height,
+    }));
+    const media = mergePackMedia(uploads, await this.storedPackMedia(workspaceId, existingProduct));
+    const hold = await this.holdFor(workspaceId, input, tier, existingProduct, media, { cutoutPause: false });
+    if (!hold.ok) {
+      return hold.rejection;
+    }
+    if (hold.creditsReserved <= 0) {
+      return { outcome: "rejected", reason: "empty_plan", message: NO_BILLABLE_SHOTS_MESSAGE };
+    }
+    const coverage = estimatedSpecCoverage(input.channels, input.mode, tier, hold.estimateInputs);
+    return {
+      outcome: "estimated",
+      creditsNeeded: hold.creditsReserved,
+      creditsAvailable: await this.creditBalance(workspaceId),
+      channels: coverage.made,
+      leftOut: [
+        ...coverage.comingSoon.map((specId) => ({ specId, reason: "coming_soon" as const })),
+        ...coverage.notMade.map((specId) => ({ specId, reason: "not_made" as const })),
+      ],
+    };
+  }
+
+  async workspaceBalance(workspaceId: string): Promise<number | null> {
+    if ((await this.currentRole(workspaceId)) === null) {
+      return null;
+    }
+    return this.creditBalance(workspaceId);
+  }
+
+  /** The replay or conflict answer for this request's key, after a replay
+   * under one of its previous keys (PHASE_19 P19-16). A conflict under a
+   * previous key is not this request's, so it is passed over. */
+  private async replayForAny(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult | null> {
+    for (const key of input.previousIdempotencyKeys ?? []) {
+      if (key === input.idempotencyKey) {
+        continue;
+      }
+      const earlier = await this.replayFor(workspaceId, { ...input, idempotencyKey: key });
+      if (earlier?.outcome === "replayed") {
+        return earlier;
+      }
+    }
+    return this.replayFor(workspaceId, input);
+  }
+
+  /**
+   * Creates a pack job (Update.md 6.3). Everything that can reject the
+   * request is checked before anything is written: role, mode, product,
+   * uploads, photo requirement, the credit estimate and, for an assistant,
+   * its credit cap (PHASE_19 P19-16). The product (when new), the uploads,
+   * the job row and the credit hold are then written in one transaction, so
+   * a rejected or failed attempt leaves no empty product, no stray media and
+   * no job behind. Uploads insert with ON CONFLICT DO NOTHING against the
+   * (workspace_id, r2_key) unique index, so a retry never duplicates a photo.
+   */
+  async createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
+    const replay = await this.replayForAny(workspaceId, input);
+    if (replay) {
+      return replay;
+    }
+
+    const maintenance = await getPackMaintenance(this.db);
+    if (maintenance.paused) return { outcome: "rejected", reason: "maintenance", message: maintenance.message };
+    const gate = await this.packGate(workspaceId, input);
+    if (!gate.ok) {
+      return gate.rejection;
+    }
+    const { tier, existingProduct } = gate;
+    const today = new Date().toISOString().slice(0, 10);
+    const counters = await this.db.select().from(spendCapCounters).where(inArray(spendCapCounters.key, [`caps:workspace:${workspaceId}:${today}`, `caps:global:${today}`]));
+    const spent = (key: string) => Number(counters.find((r) => r.key === key)?.totalMicros ?? 0);
+    if (spent(`caps:workspace:${workspaceId}:${today}`) >= costCaps.workspaceExpectedDailyMicrosByTier[tier] * costCaps.workspaceDailyMultiplier) return {
+      outcome: "rejected", reason: "workspace_day_cap", message: "This workspace reached its daily limit. It resets tomorrow, or email hello@curvi.ai.",
+    };
+    if (spent(`caps:global:${today}`) >= await resolveGlobalHardStop(this.db)) return {
+      outcome: "rejected", reason: "unavailable", message: "New packs are paused for today. Please try again tomorrow.",
+    };
 
     // Only keys inside this workspace's source prefix count, for this
     // request's uploads and for the photos already stored on the product.
@@ -1902,33 +2290,7 @@ export class DbService implements Services {
       width: checked.get(u.key)?.width ?? null,
       height: checked.get(u.key)?.height ?? null,
     }));
-    const storedMedia = existingProduct
-      ? (
-          await this.db.query.sourceMedia.findMany({
-            where: (t, { and, eq, like }) =>
-              and(
-                eq(t.productId, existingProduct.id),
-                eq(t.workspaceId, workspaceId),
-                like(t.r2Key, `ws/${workspaceId}/src/%`),
-              ),
-            orderBy: (t, { desc }) => [desc(t.createdAt)],
-            limit: MAX_PACK_MEDIA,
-          })
-        )
-          .filter((m) => isWorkspaceSourceKey(workspaceId, m.r2Key))
-          .map(
-            (m): PackMedia => ({
-              r2Key: m.r2Key,
-              kind: m.kind,
-              angle: isAngleRole(m.angle) ? m.angle : null,
-              targetBox: m.targetBox ?? null,
-              width: m.width,
-              height: m.height,
-              reencoded: ingestRecordOf(m.ingest)?.reencoded ?? null,
-            }),
-          )
-      : [];
-    const merged = mergePackMedia(uploads, storedMedia);
+    const merged = mergePackMedia(uploads, await this.storedPackMedia(workspaceId, existingProduct));
 
     // The preflight at upload (PHASE_14.md workstream 4): a photo it found a
     // blocking problem in never starts a pack, so nothing is held for it,
@@ -1978,99 +2340,18 @@ export class DbService implements Services {
       };
     }
 
-    // Seller inputs this request saves on the product, and what the product
-    // then holds. The hold covers the shots they unlock (the photo angles,
-    // in_the_box and comparison), so the worker's budget trim keeps them.
-    const sellerUpdates = sellerInputUpdates(input);
-    const sellerInputs = {
-      boxContents: sellerUpdates.boxContents ?? printableSellerLines(existingProduct?.boxContents),
-      comparisonFacts: sellerUpdates.comparisonFacts ?? printableSellerLines(existingProduct?.comparisonFacts),
-      endorsements: sellerUpdates.endorsements ?? printableEndorsements(existingProduct?.endorsements),
-    };
-
-    // Plan 2.7: Listing Mode requires at least one real photo. Angles that
-    // were not photographed are skipped by the planner, never invented.
-    if (input.mode === "listing" && !media.some((m) => m.kind !== "video")) {
-      return {
-        outcome: "rejected",
-        reason: "needs_photo",
-        message: "Listing Mode needs at least one real photo of this product. Upload one first.",
-      };
+    const hold = await this.holdFor(workspaceId, input, tier, existingProduct, media, { cutoutPause: true });
+    if (!hold.ok) {
+      return hold.rejection;
     }
-
-    // The brand kit is read before the estimate, because a brand color is
-    // resolved and snapshotted from it. It stays optional styling: a failed
-    // read falls back to the default colors, unless the seller picked a
-    // brand color, which then cannot be resolved.
-    let brandColors: string[] = [];
-    let brandKit: PayloadBrandKit | null = null;
-    let brandKitRead = true;
-    try {
-      const kit = await this.db.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
-      brandColors = Array.isArray(kit?.colors) ? kit.colors.filter((c): c is string => typeof c === "string") : [];
-      brandKit = kit ? { fonts: kit.fonts ?? null, logoKey: kit.logoR2Key, stylePreset: kit.stylePreset } : null;
-    } catch (err) {
-      brandKitRead = false;
-      console.warn(`[jobs] brand kit lookup failed for workspace ${workspaceId}; using default colors`, err);
-    }
-
-    // The seller's output options (PHASE_15 item 24), resolved against the
-    // flags, the plan and the kit. Kept photos are this pack's photos by R2
-    // key, with the stored sizes, so the hold knows which channels each one
-    // can reach.
-    const photos: OutputPhoto[] = media
-      .filter((m) => m.kind !== "video")
-      .map((m) => ({ id: m.r2Key, angle: m.angle, width: m.width ?? null, height: m.height ?? null }));
-    if (!brandKitRead && input.outputOptions?.color?.kind === "brand") {
-      return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
-    }
-    const photoBackgrounds = photoBackgroundsOf(input.uploads);
-    const wantsOptions =
-      input.mode !== "concept" &&
-      (isNonDefaultRequest(input.outputOptions) || hasPhotoBackgroundOverride(input.outputOptions, photoBackgrounds));
-    const output = resolveJobOutput({
-      input: input.outputOptions,
-      mode: input.mode,
-      enabled: wantsOptions ? await this.outputOptionsEnabled() : true,
-      brandColors,
-      brandKitsAllowed: entitlementsFor(tier).brandKits > 0,
-      photos,
-      photoBackgrounds,
-    });
-    if (!output.ok) {
-      return { outcome: "rejected", reason: output.reason, message: output.message };
-    }
-
-    // While every cutout provider is down, only a pack that needs no cutout
-    // may start (a Keep pack with no white required channel and no extras),
-    // or one whose every cutout is already in the upload cache.
-    if (packNeedsCutout(input.channels, output.flags)) {
-      const paused = await this.cutoutPauseRefusal(
-        workspaceId,
-        cutoutMediaIds(output.flags.photos, input.channels, output.flags),
-      );
-      if (paused) {
-        return { outcome: "rejected", reason: "unavailable", message: paused };
-      }
-    }
-
-    // Reservation is a seed cost estimate that leaves out shots production
-    // cannot deliver; the worker's planner recomputes the exact plan and
-    // charge_credits bills only the assets that pass QC. The same estimate
-    // inputs as the form and the demo (outputEstimateInputs).
-    const creditsReserved = estimatePackCredits(input.channels, input.mode, tier, {
-      angles: media.filter((m) => m.kind !== "video").flatMap((m) => (m.angle ? [m.angle] : [])),
-      hasBoxContents: sellerInputs.boxContents.length > 0,
-      hasComparisonFacts: sellerInputs.comparisonFacts.length > 0,
-      hasEndorsements: sellerInputs.endorsements.length > 0,
-      ...outputEstimateInputs(output.resolved, photos),
-    }).total;
+    const { sellerUpdates, brandColors, brandKit, output, creditsReserved } = hold;
     if (creditsReserved <= 0) {
-      return {
-        outcome: "rejected",
-        reason: "insufficient_credits",
-        message: "This selection plans no billable shots. Pick at least one channel.",
-      };
+      return { outcome: "rejected", reason: "empty_plan", message: NO_BILLABLE_SHOTS_MESSAGE };
+    }
+    // An assistant's cap (PHASE_19 P19-16, founder decision 5): never hold
+    // more than the estimate it showed the seller, or its max_credits.
+    if (input.maxCredits !== undefined && creditsReserved > input.maxCredits) {
+      return overMaxCreditsRejection(creditsReserved, input.maxCredits);
     }
 
     // A server draining for a restart or deploy takes no new packs. Asking
@@ -2088,7 +2369,7 @@ export class DbService implements Services {
     // The run key goes on the job row in the same transaction and rides the
     // payload, so the runner's liveness checks name this run (0019).
     const runKey = crypto.randomUUID();
-    let created: { product: ProductRow; jobId: string; insertedMediaIds: string[] };
+    let created: { product: ProductRow; jobId: string; insertedMediaIds: string[]; payload: ReturnType<typeof buildGeneratePackInput> };
     try {
       created = await this.db.transaction(async (tx) => {
         // Lock the workspace row before anything else. The foreign key checks
@@ -2181,45 +2462,10 @@ export class DbService implements Services {
             ...(sellerAnswers ? { sellerAnswers: { ...sellerAnswers } } : {}),
           })
           .returning({ id: generationJobs.id });
-        try {
-          await tx.execute(
-            sql`select reserve_credits(${workspaceId}::uuid, ${creditsReserved}::numeric, ${inserted.id}::uuid)`,
-          );
-        } catch (err) {
-          throw new ReservationError(err);
-        }
-        return { product, jobId: inserted.id, insertedMediaIds: insertedMedia.map((m) => m.id) };
-      });
-    } catch (err) {
-      if (err instanceof ReservationError && isInsufficientCreditsError(err.original)) {
-        // The transaction rolled back, so nothing was reserved or written.
-        return {
-          outcome: "rejected",
-          reason: "insufficient_credits",
-          message: "Not enough credits for this pack. Top up or pick fewer channels.",
-        };
-      }
-      if (isUniqueViolation(err)) {
-        // A concurrent request with the same Idempotency-Key committed first.
-        const winner = await this.replayFor(workspaceId, input);
-        if (winner) {
-          return winner;
-        }
-      }
-      // Anything else is not a credit problem and must never read as one
-      // (Update.md 1.8). The transaction rolled back, so nothing is held.
-      console.error(
-        `[jobs] could not create a job in workspace ${workspaceId}`,
-        err instanceof ReservationError ? err.original : err,
-      );
-      return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
-    }
-    const { product, jobId, insertedMediaIds } = created;
-
-    try {
-      await enqueueGeneratePack({
+        const payload = {
+        workspaceExpectedDailyMicros: costCaps.workspaceExpectedDailyMicrosByTier[tier],
         ...buildGeneratePackInput({
-          jobId,
+          jobId: inserted.id,
           workspaceId,
           tier,
           channels: input.channels,
@@ -2245,9 +2491,54 @@ export class DbService implements Services {
           brandKit,
           outputOptions: output.resolved,
           ...(sellerAnswers ? { sellerAnswers } : {}),
+          ...(input.audience ? { audience: input.audience } : {}),
         }),
         runKey,
+      };
+        const { runKey: _savedRunKey, ...restartPayload } = payload;
+        void _savedRunKey;
+        await tx.update(generationJobs).set({ restartPayload, runnerId: runnerId(), heartbeatAt: new Date() }).where(eq(generationJobs.id, inserted.id));
+        try {
+          await tx.execute(
+            sql`select reserve_credits(${workspaceId}::uuid, ${creditsReserved}::numeric, ${inserted.id}::uuid)`,
+          );
+        } catch (err) {
+          throw new ReservationError(err);
+        }
+        return { product, jobId: inserted.id, insertedMediaIds: insertedMedia.map((m) => m.id), payload };
       });
+    } catch (err) {
+      if (err instanceof ReservationError && isInsufficientCreditsError(err.original)) {
+        // The transaction rolled back, so nothing was reserved or written.
+        // Both numbers ride along for an assistant (PHASE_19 P19-14); the
+        // web keeps its own line.
+        return {
+          outcome: "rejected",
+          reason: "insufficient_credits",
+          message: INSUFFICIENT_CREDITS_MESSAGE,
+          creditsNeeded: creditsReserved,
+          creditsAvailable: await this.creditBalance(workspaceId),
+        };
+      }
+      if (isUniqueViolation(err)) {
+        // A concurrent request with the same Idempotency-Key committed first.
+        const winner = await this.replayFor(workspaceId, input);
+        if (winner) {
+          return winner;
+        }
+      }
+      // Anything else is not a credit problem and must never read as one
+      // (Update.md 1.8). The transaction rolled back, so nothing is held.
+      console.error(
+        `[jobs] could not create a job in workspace ${workspaceId}`,
+        err instanceof ReservationError ? err.original : err,
+      );
+      return { outcome: "rejected", reason: "unavailable", message: UNAVAILABLE_MESSAGE };
+    }
+    const { jobId, insertedMediaIds } = created;
+
+    try {
+      await enqueueGeneratePack(created.payload);
     } catch (err) {
       // The reservation must never strand when the queue is unreachable, and
       // a cleanup failure must never hide why the pack did not start.
@@ -2265,6 +2556,20 @@ export class DbService implements Services {
       await this.abandonJob(workspaceId, jobId, "The pack could not be queued.", existingProduct ? [] : insertedMediaIds);
       return { outcome: "rejected", reason: "unavailable", message: restarting ? RESTARTING_MESSAGE : UNAVAILABLE_MESSAGE };
     }
+
+    // The server side funnel (P18-02): every started pack, and the
+    // workspace's first once. Never throws.
+    await recordFunnelEvent(this.db, {
+      workspaceId,
+      name: "pack_started",
+      first: true,
+      props: {
+        channels: input.channels.length,
+        bundle: bundleOf(output.resolved),
+        mode: input.mode,
+        from: input.origin ?? "upload",
+      },
+    });
 
     const job = await this.getJob(workspaceId, jobId);
     if (!job) {
@@ -2457,7 +2762,17 @@ export class DbService implements Services {
     // download route, which signs a fresh, named url on each click
     // (Update.md 6.6). Keys outside this workspace are never signed.
     const canSign = isR2Configured();
+    let storedReport: unknown = null;
+    const reportRow = packRows.find((p) => p.kind === "report" && p.channel === null && isWorkspaceKey(workspaceId, p.r2Key));
+    if (canSign && reportRow) {
+      try { const bytes = await getObjectBytes(reportRow.r2Key); storedReport = bytes ? JSON.parse(bytes.toString("utf8")) : null; } catch { /* Missing reports provide no fidelity claim. */ }
+    }
     const files: JobFileView[] = [];
+    // DbJobStore records each asset's shot id in its qc verdict (as getJob
+    // reads it), so an image can carry its shot's check to an assistant.
+    const shotIdByAssetId = new Map(
+      assetRows.flatMap((a) => (a.qc && typeof a.qc.shotId === "string" ? [[a.id, a.qc.shotId] as const] : [])),
+    );
     // Only picked files ship: an extra scene version the seller has not
     // picked is shown on its card, never in the pack's files.
     const variants = variantRows
@@ -2482,6 +2797,8 @@ export class DbService implements Services {
         bytes: variant.bytes,
         url,
         downloadUrl: canSign ? fileDownloadPath(job.id, id) : null,
+        shotId: shotIdByAssetId.get(variant.assetId) ?? null,
+        fidelity: fidelityForVariant(storedReport, { ...variant, workspaceId, jobId: job.id }, assetRows.find((a) => a.id === variant.assetId)?.qc),
       });
     }
     for (const pack of packRows.filter((p) => isWorkspaceKey(workspaceId, p.r2Key))) {
@@ -2570,10 +2887,7 @@ export class DbService implements Services {
     const row =
       reports.find((r) => r.channel === null && isWorkspaceKey(workspaceId, r.r2Key)) ??
       reports.find((r) => isWorkspaceKey(workspaceId, r.r2Key));
-    if (!row || !isR2Configured()) {
-      return unavailableComplianceReport(meta, REPORT_NOT_STORED);
-    }
-    const bytes = await getObjectBytes(row.r2Key);
+    const bytes = row && isR2Configured() ? await getObjectBytes(row.r2Key).catch(() => null) : null;
     let raw: unknown = null;
     try {
       raw = bytes ? JSON.parse(bytes.toString("utf8")) : null;
@@ -2583,9 +2897,18 @@ export class DbService implements Services {
     // A Keep pack's white required files had their background removed for
     // that file only, and the report says so.
     const keptBackground = readStoredOutputOptions(job.outputOptions)?.background === "keep";
-    const view = raw === null ? null : buildComplianceReportView(raw, meta, { keptBackground });
+    const assetRows = await this.db.query.assets.findMany({
+      where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId)),
+    });
+    const variantRows = assetRows.length ? await this.db.query.assetVariants.findMany({
+      where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), eq(t.picked, true), inArray(t.assetId, assetRows.map((a) => a.id))),
+    }) : [];
+    const selected = pickedComplianceReport(raw, variantRows
+      .filter((v) => isWorkspaceKey(workspaceId, v.r2Key))
+      .map((v) => ({ ...v, workspaceId, jobId: job.id })), assetRows);
+    const view = selected ? buildComplianceReportView(selected, meta, { keptBackground }) : null;
     if (!view) {
-      console.error(`[jobs] compliance report for job ${job.id} is missing or unreadable at ${row.r2Key}`);
+      console.error(`[jobs] compliance report for job ${job.id} has no readable saved checks`);
       return unavailableComplianceReport(meta, REPORT_NOT_STORED);
     }
     return view;
@@ -2983,14 +3306,13 @@ export class DbService implements Services {
   }
 
   async listMembers(workspaceId: string): Promise<MemberView[]> {
-    const rows = await this.db.query.members.findMany({
-      where: (t, { eq }) => eq(t.workspaceId, workspaceId),
-    });
-    return rows.map((row) => ({
-      id: row.userId,
-      label: `Member ${row.userId.slice(0, 8)}`,
-      role: row.role,
-    }));
+    if ((await this.currentRole(workspaceId)) === null) return [];
+    const result = await this.db.execute(sql`
+      select m.user_id, m.role, u.email from members m
+      left join auth.users u on u.id = m.user_id
+      where m.workspace_id = ${workspaceId}::uuid order by m.created_at, m.user_id`);
+    const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as Array<{ user_id: string; role: WorkspaceRole; email: string | null }>;
+    return rows.map((row) => ({ id: row.user_id, label: row.email?.trim() || `Member ${row.user_id.slice(0, 8)}`, role: row.role }));
   }
 
   async listIntegrations(workspaceId: string): Promise<IntegrationView[]> {
@@ -3000,15 +3322,10 @@ export class DbService implements Services {
     const kinds: IntegrationView["kind"][] = ["shopify", "amazon"];
     return kinds.map((kind) => {
       const row = rows.find((r) => r.kind === kind);
-      return {
-        kind,
-        status: row?.encryptedToken ? "connected" : "not_connected",
-        detail: row?.encryptedToken
-          ? "Connected."
-          : kind === "shopify"
-            ? "Connect a store to get auto packs for new products."
-            : "Amazon publishing arrives after launch. Packs download to convention names today.",
-      };
+      if (row?.encryptedToken) {
+        return { kind, status: "connected", detail: "Connected." };
+      }
+      return { kind, status: "not_connected", ...(kind === "shopify" ? SHOPIFY_NOT_CONNECTED : AMAZON_NOT_CONNECTED) };
     });
   }
 }

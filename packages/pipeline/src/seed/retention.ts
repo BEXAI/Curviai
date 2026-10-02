@@ -14,6 +14,11 @@ export const retentionOffers = {
   /** Each offer is given at most once per workspace, so a save offer cannot
    * turn into a standing discount by canceling every few months. */
   oncePerWorkspace: true,
+  /**
+   * The "smaller plan" save offer uses scheduleDowngrade and starts at the
+   * next renewal. The runtime also requires a database-backed schedule writer.
+   */
+  smallerPlanOffer: true,
 } as const;
 
 export type RetentionOffers = typeof retentionOffers;

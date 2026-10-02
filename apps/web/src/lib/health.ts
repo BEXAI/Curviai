@@ -15,7 +15,8 @@ import {
   processBreakerStore,
 } from "@curvi/ai";
 import { cutoutModelSeedRows } from "@curvi/pipeline/seed";
-import { isR2Configured, isStripeConfigured, isSupabaseConfigured, optionalEnv } from "@/lib/env";
+import { billingReadiness } from "@/lib/billing/readiness";
+import { isR2Configured, isSupabaseConfigured, optionalEnv } from "@/lib/env";
 
 export interface HealthProviderEntry {
   /** Registry name, e.g. "anthropic". */
@@ -34,6 +35,11 @@ export interface HealthProviderReport {
 export interface HealthServiceReport {
   name: string;
   configured: boolean;
+  /** Stripe only (P20-01): checkout is open, so a payment can be verified
+   * and granted. The Release 2 gate reads it here. */
+  checkoutOpen?: boolean;
+  /** Stripe only: the readiness problem codes keeping checkout closed. */
+  problems?: string[];
 }
 
 export interface HealthReport {
@@ -52,9 +58,22 @@ export const DEFAULT_PROVIDER_ENTRIES: HealthProviderEntry[] = [
   { name: "bfl-flux", kind: "image", envVar: BFL_API_KEY_ENV },
   { name: "openai-image", kind: "image", envVar: OPENAI_API_KEY_ENV },
   { name: "fal-gateway", kind: "video", envVar: FAL_API_KEY_ENV },
-  // Cutouts run on fal (BiRefNet); FAL_KEY is the required cutout key.
-  ...cutoutModelSeedRows.map((row) => ({ name: row.providerName, kind: "cutout", envVar: FAL_API_KEY_ENV })),
+  // Cutouts run on fal (BiRefNet), each row under the key the seed names
+  // (FAL_KEY, and FAL_KEY_BACKUP for the backup row).
+  ...cutoutModelSeedRows.map((row) => ({ name: row.providerName, kind: "cutout", envVar: row.keyEnv })),
 ];
+
+/** The stripe entry: a secret key is set (configured), and whether
+ * checkout is open with what keeps it closed (P20-01). */
+export function stripeServiceReport(readEnv: (name: string) => string | undefined = optionalEnv): HealthServiceReport {
+  const readiness = billingReadiness(readEnv);
+  return {
+    name: "stripe",
+    configured: readiness.apiKey,
+    checkoutOpen: readiness.checkoutOpen,
+    problems: readiness.problems.map((problem) => problem.code),
+  };
+}
 
 export class HealthRegistry {
   constructor(
@@ -76,7 +95,7 @@ export class HealthRegistry {
       { name: "supabase", configured: isSupabaseConfigured() },
       { name: "database", configured: Boolean(this.readEnv("DATABASE_URL")) },
       { name: "r2", configured: isR2Configured() },
-      { name: "stripe", configured: isStripeConfigured() },
+      stripeServiceReport(this.readEnv),
       { name: "shopify", configured: Boolean(this.readEnv("SHOPIFY_API_SECRET")) },
     ];
     return { mode, providers, services, generatedAt: new Date().toISOString() };

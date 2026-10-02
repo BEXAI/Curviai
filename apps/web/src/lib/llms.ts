@@ -1,10 +1,17 @@
 import { creditCosts, tiers } from "@curvi/pipeline/seed";
 import { categories } from "@/components/marketing/categories";
-import { AGENT_HELP_SLUG, structuredHelpArticles } from "@/components/marketing/help-articles";
+import {
+  AGENT_HELP_SLUG,
+  articleSnippet,
+  CHATGPT_HELP_SLUG,
+  CHATGPT_LISTING_URL,
+  structuredHelpArticles,
+} from "@/components/marketing/help-articles";
 import { homeFaqs } from "@/components/marketing/home-copy";
 import { answerFaqs, pillarPages, type PillarPage } from "@/components/marketing/pillar-copy";
 import { imageSpecs, specDisplayName, specSlug } from "@/components/marketing/spec-slug";
-import { isStripeConfigured, siteUrl } from "@/lib/env";
+import { LARGER_PLAN_EMAIL, LARGER_PLAN_LINE } from "@/lib/billing/plans";
+import { isCheckoutOpen, siteUrl } from "@/lib/env";
 import {
   amazonMainRules,
   comingSoonFeatures,
@@ -18,6 +25,7 @@ import {
   typicalPackCredits,
 } from "@/lib/marketing-facts";
 import { SITE_CATEGORY, SITE_DESCRIPTION, SITE_FEATURES, SITE_POSITIONING, SITE_SUMMARY } from "@/lib/seo";
+import { checkerChannels } from "@/lib/tools/checker-rules";
 
 /**
  * llms.txt (llmstxt.org): a plain markdown map of the site for AI answer and
@@ -58,10 +66,25 @@ function agentAccessSummary(): string {
   ].join("; ");
 }
 
+/**
+ * The ChatGPT and Codex line (PHASE_19 P19-24): ChatGPT needs no API key, and
+ * the line says coming soon until the plugin is published.
+ */
+export function chatgptSummary(live = isLive("chatgptPlugin"), listingUrl = CHATGPT_LISTING_URL): string {
+  if (!live) {
+    return "Curvi in ChatGPT and Codex, signed in with a Curvi account and no API key, is coming soon";
+  }
+  return [
+    "connect a Curvi account in ChatGPT or Codex, with no API key, and make packs from a product photo in the chat",
+    ...(listingUrl ? [`listing: ${listingUrl}`] : []),
+  ].join("; ");
+}
+
 /** Everything before the first H2: summary, positioning, facts, pricing and FAQ. */
 function introLines(): string[] {
   const free = tiers.find((tier) => tier.key === "free");
-  const paid = tiers.filter((tier) => tier.monthlyUsd > 0);
+  // Plans sold online only; Agency is set up by email (P20-08).
+  const paid = tiers.filter((tier) => tier.monthlyUsd > 0 && tier.selfServe);
   const main = amazonMainRules();
 
   return [
@@ -100,7 +123,8 @@ function introLines(): string[] {
       (tier) =>
         `- ${tierDisplayName(tier.key)}: $${tier.monthlyUsd} per month, or $${tier.annualUsdPerMonth} per month billed annually, for ${tier.creditsPerMonth} credits per month, about ${packsForCredits(tier.creditsPerMonth)} listing packs`,
     ),
-    ...(isStripeConfigured() ? [] : ["- Paid plans cannot be bought yet. Start on the free plan."]),
+    `- ${LARGER_PLAN_LINE} Write to ${LARGER_PLAN_EMAIL}.`,
+    ...(isCheckoutOpen() ? [] : ["- Paid plans cannot be bought yet. Start on the free plan."]),
     `- Credits: ${creditCosts.deterministic} credit for a white background main image, cutout, resize or sweep; ${creditCosts.generativeStill} credit for a generative still up to 2K`,
     `- A typical listing pack of still images uses about ${typicalPackCredits()} credits, and only files that pass their checks are charged`,
     "",
@@ -123,11 +147,12 @@ export function buildLlmsTxt(): string {
     `- [Pricing](${url("/pricing")}): plans, credits and top ups`,
     `- [Help center](${url("/help")}): uploads, credits, compliance reports, brand kits and channels`,
     `- [Gallery](${url("/gallery")}): illustrated before and after examples of the pack format`,
-    `- [Curvi for AI agents](${url(`/help#${AGENT_HELP_SLUG}`)}): ${agentAccessSummary()}`,
+    ...(isLive("agentApi") ? [`- [Curvi for AI agents](${url(`/help/${AGENT_HELP_SLUG}`)}): ${agentAccessSummary()}`] : []),
+    ...(isLive("chatgptPlugin") ? [`- [Curvi in ChatGPT and Codex](${url(`/help/${CHATGPT_HELP_SLUG}`)}): ${chatgptSummary()}`] : []),
     "",
     "## Free tools",
     "",
-    `- [Amazon main image checker](${url("/tools/main-image-checker")}): measures background whiteness, product fill and resolution in the browser`,
+    `- [Main image checker](${url("/tools/main-image-checker")}): measures background whiteness, product fill and resolution in the browser against the rules of ${joinList(checkerChannels().map((channel) => channel.name))}`,
     `- [White background fixer](${url("/tools/white-background-fixer")}): turns an off white background into pure white, preview quality`,
     `- [Marketplace image resizer](${url("/tools/marketplace-resizer")}): resizes one photo for each marketplace with the expected file names`,
     "",
@@ -204,11 +229,15 @@ export function buildLlmsFullTxt(): string {
     "",
     `Source: ${url("/help")}`,
     "",
-    ...structuredHelpArticles().flatMap((article) => [
-      `### ${article.title}`,
-      "",
-      ...article.body.flatMap((paragraph) => [paragraph, ""]),
-    ]),
+    ...structuredHelpArticles().flatMap((article) => {
+      const snippet = articleSnippet(article);
+      return [
+        `### ${article.title}`,
+        "",
+        ...article.body.flatMap((paragraph) => [paragraph, ""]),
+        ...(snippet ? ["```toml", snippet, "```", ""] : []),
+      ];
+    }),
   ];
   return lines.join("\n");
 }

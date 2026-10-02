@@ -134,8 +134,8 @@ describe("platform settings seed", () => {
     expect(row?.value).toBe(tierByKey("free").creditsOnce);
   });
 
-  it("seeds the output options kill switch on", () => {
-    expect(platformSettingSeedRows.find((r) => r.key === "output_options_enabled")?.value).toBe(true);
+  it("no longer seeds the output options kill switch, an operator switch since P20-20", () => {
+    expect(platformSettingSeedRows.find((r) => r.key === "output_options_enabled")).toBeUndefined();
   });
 });
 

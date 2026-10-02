@@ -1,9 +1,4 @@
-/**
- * Weekly metrics digest: pure composition of the founder email plus a
- * Resend REST sender using plain fetch (CURVI_BUILD_PLAN.md section 8, the
- * Trigger.dev cron row). Envless behavior: without RESEND_API_KEY and a
- * recipient the sender returns a clear setup notice and sends nothing.
- */
+/** Pure composition for the operational metrics report. */
 
 export interface MonthlyMetrics {
   /** Month the numbers describe, e.g. "2026-09". */
@@ -29,7 +24,15 @@ export interface DigestLlmSpend {
   byFamily: Record<string, { costMicros: number; calls: number; inputTokens: number; cachedInputTokens: number; reasoningTokens: number }>;
 }
 
-const LLM_FAMILY_NAMES: Record<string, string> = { openai: "OpenAI", anthropic: "Claude" };
+/** Display names of the LLM provider families in founder emails and the
+ * health details. This module imports nothing, so the LLM monitor, the
+ * spend alerts and the web app can all use it without an import cycle. */
+export const LLM_FAMILY_NAMES: Readonly<Record<string, string>> = { openai: "OpenAI", anthropic: "Claude" };
+
+/** The display name of an LLM provider family, or the family id itself. */
+export function llmFamilyName(family: string): string {
+  return LLM_FAMILY_NAMES[family] ?? family;
+}
 
 export interface MetricsReader {
   read(): Promise<MonthlyMetrics>;
@@ -56,7 +59,12 @@ export interface DigestEmail {
   text: string;
 }
 
-const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+export const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
+/** USD micros as dollars, for example 1500000 as $1.50. */
+export function dollars(micros: number): string {
+  return usd.format(micros / 1_000_000);
+}
 
 function pct(share: number): string {
   return `${(share * 100).toFixed(1)}%`;
@@ -83,7 +91,7 @@ export function composeDigest(metrics: MonthlyMetrics): DigestEmail {
       const f = byFamily[family];
       const cachedShare = f.inputTokens > 0 ? f.cachedInputTokens / f.inputTokens : 0;
       lines.push(
-        `${LLM_FAMILY_NAMES[family] ?? family}: ${usd.format(f.costMicros / 1_000_000)} over ${f.calls} calls, ${pct(cachedShare)} of input tokens cached, ${f.reasoningTokens} reasoning tokens`,
+        `${llmFamilyName(family)}: ${dollars(f.costMicros)} over ${f.calls} calls, ${pct(cachedShare)} of input tokens cached, ${f.reasoningTokens} reasoning tokens`,
       );
     }
   }
@@ -97,64 +105,4 @@ export function composeDigest(metrics: MonthlyMetrics): DigestEmail {
     subject: `Curvi weekly metrics for ${metrics.month}`,
     text: lines.join("\n"),
   };
-}
-
-export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
-
-export interface SendDigestOptions {
-  apiKey?: string;
-  from?: string;
-  to?: string;
-  fetchImpl?: FetchLike;
-}
-
-export interface DigestSendResult {
-  sent: boolean;
-  id?: string;
-  notice?: string;
-}
-
-export const RESEND_EMAILS_URL = "https://api.resend.com/emails";
-export const DEFAULT_DIGEST_FROM = "Curvi Reports <reports@curvi.ai>";
-
-export async function sendDigestEmail(
-  email: DigestEmail,
-  opts: SendDigestOptions,
-): Promise<DigestSendResult> {
-  if (!opts.apiKey) {
-    return {
-      sent: false,
-      notice: "Set RESEND_API_KEY to send the weekly metrics digest. The digest was composed but not sent.",
-    };
-  }
-  if (!opts.to) {
-    return {
-      sent: false,
-      notice:
-        "Set METRICS_DIGEST_TO to the founder email address to send the weekly metrics digest. The digest was composed but not sent.",
-    };
-  }
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const res = await fetchImpl(RESEND_EMAILS_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${opts.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: opts.from ?? DEFAULT_DIGEST_FROM,
-      to: [opts.to],
-      subject: email.subject,
-      text: email.text,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    return {
-      sent: false,
-      notice: `Resend returned status ${res.status}. ${body}`.trim(),
-    };
-  }
-  const data = (await res.json().catch(() => ({}))) as { id?: string };
-  return { sent: true, id: data.id };
 }

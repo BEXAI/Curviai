@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 // the cancel flow with save offers, the brand kit font and preset choices,
 // and the readable compliance report with its PDF download.
 
-test("cancel flow asks the reason, offers save options, and records a cancel without Stripe", async ({ page }) => {
+test("cancel flow: optional reason, one ask, and a cancel button beside the offers (P20-07)", async ({ page }) => {
   await page.goto("/app/billing");
   const section = page.getByTestId("cancel-section");
   await expect(section).toBeVisible();
@@ -12,22 +12,37 @@ test("cancel flow asks the reason, offers save options, and records a cancel wit
 
   const flow = page.getByTestId("cancel-flow");
   await expect(flow).toContainText("Why do you want to cancel?");
-  await expect(page.getByTestId("cancel-continue")).toBeDisabled();
+  // The reason is optional.
+  await expect(page.getByTestId("cancel-continue")).toBeEnabled();
   await page.getByTestId("cancel-reason-too_expensive").check();
   await page.getByTestId("cancel-continue").click();
 
-  // Too expensive leads with the discount, then the smaller plan, then a pause.
+  // One question before any offer.
+  await expect(page.getByTestId("cancel-ask")).toContainText("Want to see other options first?");
+  await page.getByTestId("cancel-show-offers").click();
+
+  // Too expensive leads with the discount, then a pause. The smaller plan
+  // offer stays hidden until P20-06's P1 part schedules it for the renewal.
   await expect(flow).toContainText("Before you go");
   const offers = flow.locator("[data-testid^='cancel-offer-']");
-  await expect(offers).toHaveCount(3);
+  await expect(offers).toHaveCount(2);
   await expect(offers.first()).toHaveAttribute("data-testid", "cancel-offer-discount");
-  await expect(page.getByTestId("cancel-offer-downgrade")).toContainText("Switch to Starter");
+  await expect(page.getByTestId("cancel-offer-downgrade")).toHaveCount(0);
   await expect(page.getByTestId("cancel-offer-pause")).toContainText("Pause billing");
 
-  await page.getByTestId("cancel-no-thanks").click();
-  await expect(flow).toContainText("Cancel your Growth plan?");
-  await page.getByTestId("cancel-confirm").click();
+  // Cancel works in one click from beside the offers.
+  await expect(page.getByTestId("cancel-offers-cancel")).toHaveText("Cancel my plan");
+  await page.getByTestId("cancel-offers-cancel").click();
   await expect(page.getByTestId("cancel-result")).toContainText("nothing is charged or changed today");
+});
+
+test("cancel flow cancels in one click when the seller declines the options", async ({ page }) => {
+  await page.goto("/app/billing");
+  await page.getByTestId("cancel-open").click();
+  await page.getByTestId("cancel-continue").click();
+  await expect(page.getByTestId("cancel-ask")).toBeVisible();
+  await page.getByTestId("cancel-now").click();
+  await expect(page.getByTestId("cancel-result")).toBeVisible();
 });
 
 test("cancel flow can end in a save offer", async ({ page }) => {
@@ -35,6 +50,7 @@ test("cancel flow can end in a save offer", async ({ page }) => {
   await page.getByTestId("cancel-open").click();
   await page.getByTestId("cancel-reason-unused").check();
   await page.getByTestId("cancel-continue").click();
+  await page.getByTestId("cancel-show-offers").click();
   const offers = page.getByTestId("cancel-flow").locator("[data-testid^='cancel-offer-']");
   await expect(offers.first()).toHaveAttribute("data-testid", "cancel-offer-pause");
   await page.getByTestId("cancel-offer-pause").getByRole("button").click();

@@ -28,6 +28,23 @@ const KEY = "probe-test-key";
 const price = { perImageMicros: 1 };
 
 describe("adapter probes", () => {
+  it.each([0, 9, 123])("reads the numeric BFL credit balance %s without creating a job", async (credits) => {
+    const fetchFn = vi.fn(async () => Response.json({ credits, privateDetail: "never expose" }));
+    const provider = new BflFluxProvider({ name: "b", tasks: [], apiKey: KEY, model: "m", priceTable: price, fetchFn });
+    const result = await provider.probe();
+    expect(result).toMatchObject({ balanceCredits: credits, ok: credits > 0, status: credits > 0 ? 200 : 402 });
+    expect(JSON.stringify(result)).not.toContain("privateDetail");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a malformed BFL credit response without echoing it", async () => {
+    const provider = new BflFluxProvider({ name: "b", tasks: [], apiKey: KEY, model: "m", priceTable: price,
+      fetchFn: async () => Response.json({ credits: "100", detail: KEY }) });
+    const result = await provider.probe();
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(KEY);
+  });
+
   it("Anthropic reads the model resource with the key and version headers", async () => {
     const { fetchFn, calls } = recordingFetch();
     const provider = new AnthropicLLMProvider({

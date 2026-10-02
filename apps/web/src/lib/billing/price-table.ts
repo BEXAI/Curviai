@@ -21,7 +21,7 @@ export type PriceMapping =
        * webhook measures proration lines against it. */
       priceCents: number;
     }
-  | { kind: "topup"; credits: number; expiresMonths: number };
+  | { kind: "topup"; credits: number };
 
 /** priceId to what it grants. */
 export type PriceTable = Record<string, PriceMapping>;
@@ -66,7 +66,7 @@ export function buildPriceTable(readEnv: EnvReader = optionalEnv): PriceTable {
   for (const topUp of topUps) {
     const priceId = readEnv(topUpPriceEnvName(topUp.credits));
     if (priceId) {
-      table[priceId] = { kind: "topup", credits: topUp.credits, expiresMonths: topUp.expiresMonths };
+      table[priceId] = { kind: "topup", credits: topUp.credits };
     }
   }
   return table;

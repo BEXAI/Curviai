@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubKeyOnly, stubOpenCheckout } from "@/lib/billing/test-env";
 import { GET } from "./route";
 
 const SECRET = "probe-secret-value-for-tests";
@@ -26,7 +27,7 @@ function stubFetch(statusFor: (url: string) => number | "hang" | "throw"): void 
           init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
         });
       }
-      return new Response(JSON.stringify({ note: "body that must not be echoed" }), { status });
+      return new Response(JSON.stringify({ note: "body that must not be echoed", credits: 123 }), { status });
     }),
   );
 }
@@ -104,7 +105,7 @@ describe("GET /api/health/providers probes", () => {
       kind: "cutout",
       envVar: "FAL_KEY",
       stages: ["cutout"],
-      probe: { ok: true, status: null, skipped: "This provider has no key probe." },
+      probe: { ok: false, status: null, error: "No recorded cutout canary. Enable and run the protected provider canary first." },
     });
     const gemini = body.providers.find((p: { name: string }) => p.name === "gemini-image");
     expect(typeof gemini.probe.latencyMs).toBe("number");
@@ -140,6 +141,26 @@ describe("GET /api/health/providers probes", () => {
     const body = await res.json();
     const byName = Object.fromEntries(body.providers.map((p: { name: string; probe: unknown }) => [p.name, p.probe]));
     expect(byName["gemini-image"]).toMatchObject({ ok: false, status: null, error: "No answer within 10 seconds." });
-    expect(byName["bfl-flux"]).toMatchObject({ ok: false, status: null, error: "The call did not reach the provider (TypeError)." });
+    expect(byName["bfl-flux"]).toMatchObject({ ok: false, status: null, error: "The credit balance probe did not complete." });
+  });
+
+  it("carries checkoutOpen and the readiness problems on the stripe service entry (P20-01)", async () => {
+    vi.stubEnv("CRON_SECRET", SECRET);
+    stubFetch(() => 200);
+    stubKeyOnly(vi.stubEnv);
+    const closed = await (await GET(probeRequest({ authorization: `Bearer ${SECRET}` }))).json();
+    const stripeClosed = closed.services.find((s: { name: string }) => s.name === "stripe");
+    expect(stripeClosed).toMatchObject({ configured: true, checkoutOpen: false });
+    expect(stripeClosed.problems).toContain("stripe_webhook_secret_missing");
+
+    stubOpenCheckout(vi.stubEnv);
+    const open = await (await GET(probeRequest({ authorization: `Bearer ${SECRET}` }))).json();
+    expect(open.services.find((s: { name: string }) => s.name === "stripe")).toEqual({
+      name: "stripe",
+      configured: true,
+      checkoutOpen: true,
+      problems: [],
+    });
+    expect(JSON.stringify(open)).not.toContain("sk_test_open_checkout");
   });
 });

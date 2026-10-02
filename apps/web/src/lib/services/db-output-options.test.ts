@@ -25,8 +25,8 @@ import {
   workspaces,
 } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
-import { eq, loadChannelSpecs, type Db, type SourceMediaAngle } from "@curvi/db";
-import { backgroundSwatches, creditCosts, stillStyle } from "@curvi/pipeline/seed";
+import { eq, loadChannelSpecs, sql, type Db, type SourceMediaAngle } from "@curvi/db";
+import { backgroundSwatches, creditCosts, opsSwitchDefaults, stillStyle } from "@curvi/pipeline/seed";
 import type { Shot } from "@curvi/pipeline/schemas";
 import type { GeneratePackPayload } from "@/lib/jobs/payload";
 import { estimatePackCredits } from "@/lib/pack-estimate";
@@ -275,7 +275,7 @@ describe("DbService.createJob with output options", () => {
     expect(defaults.outcome).toBe("created");
   });
 
-  it("reads the env flag and the platform_settings kill switch, failing closed without the row", async () => {
+  it("reads the env flag and the ops:output_options_enabled operator switch, on by its seed default without a row", async () => {
     const { ws, productId } = await workspaceWith("starter");
     const live = service({ enabled: null });
     vi.stubEnv("NEXT_PUBLIC_OUTPUT_OPTIONS", "0");
@@ -284,22 +284,42 @@ describe("DbService.createJob with output options", () => {
       reason: "feature_unavailable",
     });
 
+    // docs/phases/PHASE_20.md P20-20: no row reads opsSwitchDefaults (on).
     vi.stubEnv("NEXT_PUBLIC_OUTPUT_OPTIONS", "1");
     resetOutputOptionsSwitchForTests();
-    expect(await live.outputOptionsEnabled()).toBe(false);
+    expect(opsSwitchDefaults["ops:output_options_enabled"].default).toBe(true);
+    expect(await live.outputOptionsEnabled()).toBe(true);
 
     await db
       .insert(platformSettings)
-      .values({ key: "output_options_enabled", value: false })
+      .values({ key: "ops:output_options_enabled", value: false })
       .onConflictDoUpdate({ target: platformSettings.key, set: { value: false } });
     resetOutputOptionsSwitchForTests();
     expect(await live.createJob(ws, jobInput(productId, { outputOptions: KEEP }))).toMatchObject({
       reason: "feature_unavailable",
     });
 
-    await db.update(platformSettings).set({ value: true }).where(eq(platformSettings.key, "output_options_enabled"));
+    // The old key is no longer read: only the ops: row decides.
+    await db
+      .insert(platformSettings)
+      .values({ key: "output_options_enabled", value: true })
+      .onConflictDoUpdate({ target: platformSettings.key, set: { value: true } });
+    resetOutputOptionsSwitchForTests();
+    expect(await live.outputOptionsEnabled()).toBe(false);
+
+    // A value of the wrong shape fails closed, as the old reader did.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await db
+      .update(platformSettings)
+      .set({ value: sql`'{"on": true}'::jsonb` })
+      .where(eq(platformSettings.key, "ops:output_options_enabled"));
+    resetOutputOptionsSwitchForTests();
+    expect(await live.outputOptionsEnabled()).toBe(false);
+
+    await db.update(platformSettings).set({ value: true }).where(eq(platformSettings.key, "ops:output_options_enabled"));
     resetOutputOptionsSwitchForTests();
     expect((await live.createJob(ws, jobInput(productId, { outputOptions: KEEP }))).outcome).toBe("created");
+    await db.delete(platformSettings).where(eq(platformSettings.key, "ops:output_options_enabled"));
     await db.delete(platformSettings).where(eq(platformSettings.key, "output_options_enabled"));
   });
 

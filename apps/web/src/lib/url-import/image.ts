@@ -4,9 +4,14 @@
  * its magic bytes (the Content-Type header is ignored), the 25 MB image cap
  * and the 80 megapixel cap. The bytes then go to R2 under the workspace's
  * source prefix, the same place a browser upload lands.
+ *
+ * The public API and the MCP server read photo links and ChatGPT attachment
+ * links (PHASE_19 P19-15) through this same import, so every link a caller
+ * sends gets the SSRF safe fetch and the same checks.
  */
 
 import { createHash } from "node:crypto";
+import { detectFormat } from "@curvi/pipeline/ingest";
 import {
   ALLOWED_IMAGE_CONTENT_TYPES,
   IMAGE_MAX_BYTES,
@@ -29,7 +34,20 @@ export interface ImportedPhoto {
 
 export type PhotoImportResult =
   | { ok: true; photo: ImportedPhoto }
-  | { ok: false; reason: "invalid_url" | "blocked_host" | "not_image" | "too_large" | "timeout" | "unreachable"; message: string };
+  | {
+      ok: false;
+      reason: "invalid_url" | "blocked_host" | "not_image" | "too_large" | "timeout" | "unreachable";
+      message: string;
+      /** Set on a not_image refusal whose bytes are a HEIC or HEIF photo, so
+       * a caller can say so (PHASE_19 P19-15). Curvi still cannot read it. */
+      format?: "heic";
+    };
+
+/** True when the bytes are a HEIC or HEIF photo (an ISO BMFF ftyp box with a
+ * HEIC brand, the pipeline's detectFormat), which sharp cannot decode. */
+export function isHeic(body: Uint8Array): boolean {
+  return detectFormat(body.subarray(0, 64)) === "heic";
+}
 
 const MESSAGES = {
   invalid_url: "That photo link is not one we can use. Pick another photo, or add one with Choose a file.",
@@ -115,7 +133,15 @@ export function imageDimensions(
   }
 }
 
-export async function importPhoto(rawUrl: string, deps: { fetcher?: ImportFetcher } = {}): Promise<PhotoImportResult> {
+export interface ImportPhotoOptions {
+  fetcher?: ImportFetcher;
+  /** One deadline for the fetch, every redirect and the body. Defaults to
+   * IMAGE_FETCH_TIMEOUT_MS; a set of photos passes what is left of its own
+   * deadline (lib/api-v1/photos.ts). */
+  timeoutMs?: number;
+}
+
+export async function importPhoto(rawUrl: string, deps: ImportPhotoOptions = {}): Promise<PhotoImportResult> {
   const fetcher = deps.fetcher ?? safeFetch;
   let body: Buffer;
   try {
@@ -124,7 +150,7 @@ export async function importPhoto(rawUrl: string, deps: { fetcher?: ImportFetche
       // an upload type we take.
       accept: "image/jpeg,image/png,image/webp,image/gif;q=0.9,image/tiff;q=0.5",
       maxBytes: IMAGE_MAX_BYTES,
-      timeoutMs: IMAGE_FETCH_TIMEOUT_MS,
+      timeoutMs: Math.max(1, Math.round(deps.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS)),
     });
     if (response.status !== 200) {
       return { ok: false, reason: "unreachable", message: MESSAGES.unreachable };
@@ -145,7 +171,7 @@ export async function importPhoto(rawUrl: string, deps: { fetcher?: ImportFetche
 
   const contentType = sniffImageType(body);
   if (!contentType) {
-    return { ok: false, reason: "not_image", message: MESSAGES.not_image };
+    return { ok: false, reason: "not_image", message: MESSAGES.not_image, ...(isHeic(body) ? { format: "heic" as const } : {}) };
   }
   const size = imageDimensions(body, contentType);
   const readable = size !== null && size.width > 0 && size.height > 0;

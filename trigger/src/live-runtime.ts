@@ -8,7 +8,7 @@
  * the demo implementations keep working.
  */
 
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
 import {
   AnthropicLLMProvider,
   ASYNC_JOB_TIMEOUT_MARGIN_MS,
@@ -115,14 +115,15 @@ export const WORKING_SOURCE_MAX_PX = Math.ceil(
   Math.max(...listSpecs().map((spec) => Math.max(spec.width ?? 0, spec.height ?? 0, spec.minWidth ?? 0, spec.minHeight ?? 0))) *
     1.25,
 );
-import { CUTOUT_CACHE_FRESH_MS, cutoutCacheKey, r2CutoutCacheStore, type CutoutCacheStore } from "./cutout-cache";
+import { CUTOUT_CACHE_FRESH_MS, cutoutCacheKey, readTemporaryCache, r2CutoutCacheStore, type CutoutCacheStore } from "./cutout-cache";
 import { restoreSourceEdges } from "./cutout-edges";
+import { optionalEnv, type ReadEnv } from "./env";
 import { ShotFailedAfterSpendError, ShotUnavailableError } from "./errors";
 import { DETERMINISTIC_LIVE_TYPES, renderDeterministicShot } from "./live-deterministic";
 import { ORIGINAL_NOT_PREPARED, renderOriginalShot } from "./live-original";
 import type { LiveProduct, StillRender } from "./live-product";
 import { isWorkspaceObjectKey } from "./object-keys";
-import { R2_REQUEST_TIMEOUTS } from "./r2";
+import { r2FromEnv } from "./r2";
 import { llmModelProviderName, openaiLlmPriceTable, seedRecipe } from "./recipes";
 import {
   failureSpendMicros,
@@ -153,12 +154,7 @@ import {
   type QcErosion,
 } from "./shot-outputs";
 
-export type ReadEnv = (name: string) => string | undefined;
-
-function readEnvDefault(name: string): string | undefined {
-  const value = process.env[name];
-  return value && value.length > 0 ? value : undefined;
-}
+export type { ReadEnv } from "./env";
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -250,7 +246,9 @@ export class ScenePlateBridge implements CostAwareProvider {
     if (!sync || !signal || signal.aborted) {
       return () => {};
     }
-    const estimate = this.inner.estimateCostMicros?.(req);
+    // The bridge's own estimate prices the request the inner adapter really
+    // gets (an OpenAI plate at the size the bridge picks), as reserved.
+    const estimate = this.estimateCostMicros(req);
     if (typeof estimate !== "number" || !(estimate > 0)) {
       return () => {};
     }
@@ -455,7 +453,7 @@ function openaiSizeFor(width: number, height: number): string {
 export function wireLiveProviders(
   registry: ProviderRegistry,
   routing: RoutingTable,
-  readEnv: ReadEnv = readEnvDefault,
+  readEnv: ReadEnv = optionalEnv,
   fetchFn: FetchLike = fetch,
 ): LiveWiring {
   const wiring: LiveWiring = { llmLive: false, imageProviders: [], cutoutProviders: [], cutoutLive: false };
@@ -587,22 +585,12 @@ export function wireLiveProviders(
 export type MediaLoader = (sourceMediaId: string) => Promise<Buffer | null>;
 
 /** R2 backed media loader; null when R2 credentials are not configured. */
-export function makeR2MediaLoader(readEnv: ReadEnv = readEnvDefault): MediaLoader | null {
-  const accountId = readEnv("R2_ACCOUNT_ID");
-  const accessKeyId = readEnv("R2_ACCESS_KEY_ID");
-  const secretAccessKey = readEnv("R2_SECRET_ACCESS_KEY");
-  if (!accountId || !accessKeyId || !secretAccessKey) {
+export function makeR2MediaLoader(readEnv: ReadEnv = optionalEnv): MediaLoader | null {
+  const r2 = r2FromEnv(readEnv);
+  if (!r2) {
     return null;
   }
-  const bucket = readEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
-  const client = new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId, secretAccessKey },
-    // A stalled socket to R2 fails instead of hanging the shot, and with it
-    // the process wide queue kept photo shots wait in.
-    requestHandler: R2_REQUEST_TIMEOUTS,
-  });
+  const { client, bucket } = r2;
   return async (key: string) => {
     try {
       const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
@@ -1032,9 +1020,12 @@ export class LiveShotGenerator implements ShotGenerator {
     const caps = this.opts.ai.caps;
     return caps
       ? [
-          { spendCaps: caps, capKind: "image_asset", assetId: args.shot.id },
+          // Shot ids repeat in every pack, so the per asset cap is scoped to
+          // the job; a seller retry (same jobId) still shares it.
+          { spendCaps: caps, capKind: "image_asset", assetId: `${args.jobId}:${args.shot.id}` },
           { spendCaps: caps, capKind: "pack", jobId: args.jobId },
           { spendCaps: caps, capKind: "global_day" },
+          ...(this.opts.ai.workspaceExpectedDailyMicros ? [{ spendCaps: caps, capKind: "workspace_day" as const, planExpectedDailyMicros: this.opts.ai.workspaceExpectedDailyMicros }] : []),
         ]
       : undefined;
   }
@@ -1118,7 +1109,7 @@ export class LiveShotGenerator implements ShotGenerator {
     const store = this.opts.cutoutCache;
     if (!store) return null;
     const key = cutoutCacheKey(workspaceId, working, "png");
-    const hit = await store.get(key).catch(() => null);
+    const hit = await readTemporaryCache(store, key);
     const now = (this.opts.now ?? (() => new Date()))().getTime();
     if (!hit || now - hit.storedAt.getTime() >= CUTOUT_CACHE_FRESH_MS) return null;
     return decodeToRgba(hit.bytes).catch(() => null);
@@ -1209,6 +1200,7 @@ export class LiveShotGenerator implements ShotGenerator {
       ? [
           { spendCaps: ai.caps, capKind: "pack", jobId: args.jobId },
           { spendCaps: ai.caps, capKind: "global_day" },
+          ...(ai.workspaceExpectedDailyMicros ? [{ spendCaps: ai.caps, capKind: "workspace_day" as const, planExpectedDailyMicros: ai.workspaceExpectedDailyMicros }] : []),
         ]
       : undefined;
     const key = `${args.jobId}:${args.mediaId}`;
@@ -1892,7 +1884,7 @@ export class LiveShotGenerator implements ShotGenerator {
     const pending = (async (): Promise<RawImage> => {
       const store = this.opts.cutoutCache;
       if (!regenerate && store) {
-        const stored = await store.get(key).catch(() => null);
+        const stored = await readTemporaryCache(store, key);
         if (stored) {
           return plateToCanvas(stored.bytes, size);
         }
@@ -1927,7 +1919,7 @@ export const CAROUSEL_SCENE_NOT_READY = "The carousel's scene could not be made,
 /** Where a carousel's scene layer is kept: under the workspace and the job. */
 export function carouselPlateKey(workspaceId: string, jobId: string, carouselId: string): string {
   const safe = (value: string) => value.replace(/[^A-Za-z0-9_-]/g, "") || "x";
-  return `ws/${workspaceId}/cache/carousel/${safe(jobId)}/${safe(carouselId)}.png`;
+  return `tmp/ws/${workspaceId}/cache/carousel/${safe(jobId)}/${safe(carouselId)}.png`;
 }
 
 /** A scene layer at the carousel's whole canvas size: resized to cover it
@@ -1996,7 +1988,7 @@ export async function hasFreshUploadCutout(
   if (!store || source.length === 0) return false;
   try {
     const working = await prepareWorkingSource(source, WORKING_SOURCE_MAX_PX).catch(() => source);
-    const hit = await store.get(cutoutCacheKey(workspaceId, working, "png"));
+    const hit = await readTemporaryCache(store, cutoutCacheKey(workspaceId, working, "png"));
     const now = (opts.now ?? (() => new Date()))().getTime();
     return hit !== null && now - hit.storedAt.getTime() < CUTOUT_CACHE_FRESH_MS;
   } catch {

@@ -8,10 +8,11 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { readJsonCapped } from "@/lib/http/json-body";
 import { sameOriginOrRefuse } from "@/lib/http/same-origin";
 import { resolveSignedIn } from "@/lib/http/services";
 import { limitByIp, limitByUser, userRateLimitSubject } from "@/lib/rate-limit";
-import { RETRY_AFTER_SECONDS } from "@/lib/services/workspace-response";
+import { refusalInit } from "@/lib/services/workspace-response";
 import type { FavoriteResult } from "@/lib/services/types";
 import { isUuid } from "@/lib/validation/ids";
 
@@ -42,12 +43,6 @@ export async function PUT(
   if (!isUuid(assetId)) {
     return NextResponse.json({ error: "This image does not exist in your workspace." }, { status: 404 });
   }
-  let body: z.infer<typeof Body>;
-  try {
-    body = Body.parse(await request.json());
-  } catch {
-    return NextResponse.json({ error: "Send favorite as true or false." }, { status: 400 });
-  }
   const resolved = await resolveSignedIn("Sign in to save favorites.");
   if ("response" in resolved) {
     return resolved.response;
@@ -56,13 +51,17 @@ export async function PUT(
   if (userLimited) {
     return userLimited;
   }
-  const result = await resolved.services.setFavorite(resolved.workspace.id, assetId, body.favorite);
+  const raw = await readJsonCapped(request);
+  if (!raw.ok) {
+    return raw.response;
+  }
+  const body = Body.safeParse(raw.data);
+  if (!body.success) {
+    return NextResponse.json({ error: "Send favorite as true or false." }, { status: 400 });
+  }
+  const result = await resolved.services.setFavorite(resolved.workspace.id, assetId, body.data.favorite);
   if (result.outcome === "saved") {
     return NextResponse.json({ favorite: result.favorite });
   }
-  const status = STATUS[result.reason];
-  return NextResponse.json(
-    { error: result.message, reason: result.reason },
-    status === 503 ? { status, headers: { "Retry-After": RETRY_AFTER_SECONDS } } : { status },
-  );
+  return NextResponse.json({ error: result.message, reason: result.reason }, refusalInit(STATUS[result.reason]));
 }

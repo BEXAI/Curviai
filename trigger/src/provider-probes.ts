@@ -38,9 +38,10 @@ import {
   type ImageModelSeedRow,
   type LlmProviderFamily,
 } from "@curvi/pipeline/seed";
+import { optionalEnv, type ReadEnv } from "./env";
 import { llmModelProviderName, openaiLlmPriceTable } from "./recipes";
 
-export type ReadEnv = (name: string) => string | undefined;
+export type { ReadEnv } from "./env";
 type FetchLike = typeof fetch;
 
 export type LiveProviderKind = "llm" | "image" | "cutout";
@@ -56,11 +57,6 @@ export interface LiveProviderTarget {
   configured: boolean;
   /** An adapter to probe the key with; null when the key is unset. */
   provider: Provider | null;
-}
-
-function readEnvDefault(name: string): string | undefined {
-  const value = process.env[name];
-  return value && value.length > 0 ? value : undefined;
 }
 
 /** LLM stages: every active seeded recipe stage. */
@@ -94,7 +90,7 @@ const IMAGE_KEY_ENV: Record<ImageModelSeedRow["family"], string> = {
 };
 
 /** Every live provider the wiring knows, configured or not, in wiring order. */
-export function liveProviderTargets(readEnv: ReadEnv = readEnvDefault, fetchFn?: FetchLike): LiveProviderTarget[] {
+export function liveProviderTargets(readEnv: ReadEnv = optionalEnv, fetchFn?: FetchLike): LiveProviderTarget[] {
   const targets: LiveProviderTarget[] = [];
 
   // One target per priced LLM model, keyed by its provider family
@@ -173,7 +169,7 @@ export function liveProviderTargets(readEnv: ReadEnv = readEnvDefault, fetchFn?:
       provider: falKey
         ? new FalCutoutProvider({
             name: row.providerName,
-            tasks: [],
+            tasks: [CUTOUT_TASK],
             apiKey: falKey,
             modelId: row.model,
             modelParams: row.params,

@@ -5,6 +5,8 @@
  * free of server imports so the client share panel can use them.
  */
 
+import type { FileProofView } from "@/lib/proof-view";
+
 export type ShareKind = "before_after" | "pack";
 
 export const SHARE_KINDS: readonly ShareKind[] = ["before_after", "pack"];
@@ -22,15 +24,24 @@ export interface ShareStatus {
   path: string | null;
   kind: ShareKind;
   inGallery: boolean;
+  /** Owner consent may be waiting for review before it becomes public. */
+  galleryRequested?: boolean;
+  galleryReviewStatus?: "pending" | "approved" | "rejected" | null;
   /** False when the original photo is gone, so the page shows the results only. */
   hasBefore: boolean;
   views: number;
+  /** True when the public page shows each image's measured checks (P18-16). */
+  showProof: boolean;
 }
 
 export interface PublishShareInput {
   kind: ShareKind;
   /** The owner's opt in to the public gallery at /gallery. */
   gallery: boolean;
+  /** Show the measured checks on the public page (P18-16). Off for a new
+   * seller share unless asked (founder decision 9); left out, a republish
+   * keeps the page's current choice. Operator prospect shares send true. */
+  proof?: boolean;
 }
 
 export type ShareActionResult =
@@ -50,6 +61,9 @@ export interface PublicShareImage {
    * its own aspect box (previewAspect). Absent for the before photo and for
    * drawn illustrations. */
   specId?: string | null;
+  /** The file's measured proof, only on a page whose owner turned proof on
+   * (P18-16). Numbers and check rows only: never a key, id or file name. */
+  proof?: FileProofView | null;
 }
 
 /** Everything the public page shows, and nothing more (no ids, no keys). */
@@ -69,6 +83,9 @@ export interface PublicShare {
    * there is no makeover to compare, so the page is titled "Sized for each
    * channel" and never offers a before and after. */
   sizedForChannels: boolean;
+  /** True when the owner turned on the measured checks (P18-16): the after
+   * image and every pack image carry their proof. */
+  proof?: boolean;
 }
 
 export interface GalleryEntry {
@@ -77,6 +94,12 @@ export interface GalleryEntry {
   category: string | null;
   before: PublicShareImage | null;
   after: PublicShareImage;
+  /** True when the pack was made in an operator's workspace (P18-14,
+   * founder decision 15): the gallery says "Made by the Curvi team" instead
+   * of "Shared by the seller". */
+  madeByTeam?: boolean;
+  /** A quote the seller let Curvi use (P18-05), shown under a seller's entry. */
+  quote?: { text: string; name: string | null } | null;
 }
 
 export interface ShareStore {

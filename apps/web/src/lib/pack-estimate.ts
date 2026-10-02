@@ -392,6 +392,47 @@ function lineFor(shot: Shot, context: LineContext): { key: string; name: LineNam
   }
 }
 
+/** The requested specs an estimated pack makes files for, and the ones it
+ * leaves out. */
+export interface EstimatedSpecCoverage {
+  /** Specs a deliverable shot targets, in request order. */
+  made: string[];
+  /** Specs only shots that do not ship yet target (0 credits). */
+  comingSoon: string[];
+  /** Specs no planned shot targets with these photos and choices, for
+   * example a kept photo too small for the channel. */
+  notMade: string[];
+}
+
+/**
+ * Which requested specs the pack estimatePackCredits prices makes files for
+ * (PHASE_19 P19-16, estimate_pack's left_out). The same plan from the same
+ * inputs, so an assistant can say which channels a pack leaves out before
+ * any credit is held.
+ */
+export function estimatedSpecCoverage(
+  channels: readonly string[],
+  mode: EstimateMode,
+  tier: TierKey,
+  inputs?: EstimateSellerInputs,
+): EstimatedSpecCoverage {
+  const shots = referencePack(channels, mode, tier, REFERENCE_MEDIA_ID, inputs).shots;
+  const deliverable = new Set<string>();
+  const undeliverable = new Set<string>();
+  for (const shot of shots) {
+    const target = isShotMethodDeliverable(shot.method) ? deliverable : undeliverable;
+    for (const specId of shot.channels) {
+      target.add(specId);
+    }
+  }
+  const requested = [...new Set(channels)];
+  return {
+    made: requested.filter((specId) => deliverable.has(specId)),
+    comingSoon: requested.filter((specId) => !deliverable.has(specId) && undeliverable.has(specId)),
+    notMade: requested.filter((specId) => !deliverable.has(specId) && !undeliverable.has(specId)),
+  };
+}
+
 export function estimatePackCredits(
   channels: string[],
   mode: EstimateMode,

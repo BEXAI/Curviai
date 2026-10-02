@@ -25,3 +25,14 @@ export class MockEmbeddingCosineCheck implements EmbeddingCosineCheck {
     return 1;
   }
 }
+
+/** Copy of image with red raised by amount inside mask, like a stray tint:
+ * the rule 3 tests check that a fidelity report fails on it. */
+export function tintInsideMask(image: RawImage, mask: RawMask, amount: number): RawImage {
+  const data = Buffer.from(image.data);
+  for (let i = 0; i < mask.data.length; i++) {
+    if (mask.data[i] === 0) continue;
+    data[i * 4] = Math.min(255, data[i * 4] + amount);
+  }
+  return { ...image, data };
+}

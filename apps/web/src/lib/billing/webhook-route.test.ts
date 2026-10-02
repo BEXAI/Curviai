@@ -86,7 +86,9 @@ describe("POST /api/webhooks/stripe", () => {
 
   it("gives the handler a Stripe lookup that reads subscriptions once Stripe has keys", async () => {
     await POST(signedRequest(paidEvent));
-    expect(behavior.deps).toEqual({});
+    // Without keys: payload only, plus the activation email sender (P20-07).
+    expect(Object.keys(behavior.deps as object)).toEqual(["activation"]);
+    expect(typeof (behavior.deps as { activation?: { planActivated?: unknown } }).activation?.planActivated).toBe("function");
 
     vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_route");
     await POST(signedRequest(paidEvent));

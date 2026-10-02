@@ -485,6 +485,33 @@ function colorsIn(words: readonly string[]): ColorName[] {
   return words.filter((w) => w in COLOR_WORDS).map((w) => COLOR_WORDS[w]);
 }
 
+/** The members of a that b does not hold, sorted. */
+function onlyIn<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): T[] {
+  return [...a].filter((x) => !b.has(x)).sort();
+}
+
+/**
+ * The wanted and excluded colors and product words of noteSignals and
+ * answerSignals. A color or word on both sides is dropped from both, since
+ * it cannot tell the products apart.
+ */
+function sidedSignals(
+  wantColors: readonly ColorName[],
+  want: readonly string[],
+  exclude: readonly string[],
+): Pick<NoteSignals, "wantColors" | "excludeColors" | "wantWords" | "excludeWords"> {
+  const wantColorSet = new Set(wantColors);
+  const excludeColorSet = new Set(colorsIn(exclude));
+  const wantWordSet = new Set(productWords(want));
+  const excludeWordSet = new Set(productWords(exclude));
+  return {
+    wantColors: onlyIn(wantColorSet, excludeColorSet),
+    excludeColors: onlyIn(excludeColorSet, wantColorSet),
+    wantWords: onlyIn(wantWordSet, excludeWordSet),
+    excludeWords: onlyIn(excludeWordSet, wantWordSet),
+  };
+}
+
 /**
  * Reads the note and the intent intake parsed from it. The raw note is split
  * into clauses on punctuation, "but" and "then"; in each clause the words
@@ -507,16 +534,8 @@ export function noteSignals(note: string | null | undefined, intent?: SellerInte
   if (intent?.featureOnly) want.push(...wordsOf(intent.featureOnly));
   for (const item of intent?.exclude ?? []) exclude.push(...wordsOf(item));
 
-  const wantColorSet = new Set(colorsIn(want));
-  const excludeColorSet = new Set(colorsIn(exclude));
-  const wantWordSet = new Set(productWords(want));
-  const excludeWordSet = new Set(productWords(exclude));
-  const onlyIn = <T>(a: Set<T>, b: Set<T>): T[] => [...a].filter((x) => !b.has(x)).sort();
   return {
-    wantColors: onlyIn(wantColorSet, excludeColorSet),
-    excludeColors: onlyIn(excludeColorSet, wantColorSet),
-    wantWords: onlyIn(wantWordSet, excludeWordSet),
-    excludeWords: onlyIn(excludeWordSet, wantWordSet),
+    ...sidedSignals(colorsIn(want), want, exclude),
     wantPhrases: intent?.featureOnly ? [phraseOf(intent.featureOnly)].filter(Boolean) : [],
     excludePhrases: (intent?.exclude ?? []).map(phraseOf).filter(Boolean),
   };
@@ -656,16 +675,8 @@ export function answerSignals(target: { label: string; color: string | null; oth
   const want = wordsOf(target.label.slice(0, 200));
   const exclude = target.others.flatMap((o) => wordsOf(o.slice(0, 200)));
   const measured = COLOR_NAMES.find((c) => c === target.color);
-  const wantColorSet = new Set<ColorName>(measured ? [measured] : colorsIn(want));
-  const excludeColorSet = new Set(colorsIn(exclude));
-  const wantWordSet = new Set(productWords(want));
-  const excludeWordSet = new Set(productWords(exclude));
-  const onlyIn = <T>(a: Set<T>, b: Set<T>): T[] => [...a].filter((x) => !b.has(x)).sort();
   return {
-    wantColors: onlyIn(wantColorSet, excludeColorSet),
-    excludeColors: onlyIn(excludeColorSet, wantColorSet),
-    wantWords: onlyIn(wantWordSet, excludeWordSet),
-    excludeWords: onlyIn(excludeWordSet, wantWordSet),
+    ...sidedSignals(measured ? [measured] : colorsIn(want), want, exclude),
     wantPhrases: [phraseOf(target.label)].filter(Boolean),
     excludePhrases: target.others.map(phraseOf).filter(Boolean),
   };

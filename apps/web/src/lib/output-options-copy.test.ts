@@ -10,6 +10,7 @@ import { listSpecs, requiresWhiteBackground } from "@curvi/specs";
 import { PACKS_PAUSED_COPY } from "@/lib/provider-preflight";
 import {
   conflictCopy,
+  consistentStyleNote,
   conflictLines,
   DARK_COLOR_EDGE_NOTE,
   EXTRA_FAMILY_NAMES,
@@ -18,11 +19,9 @@ import {
   KEEP_PHOTOS_PAUSED_COPY,
   leftOutAfterPauseLine,
   LOOK_TITLES,
-  OPTIONS_PAUSED_COPY,
   OPTIONS_UNREADABLE_COPY,
   OTHER_ITEMS_KEPT_COPY,
   overlaysRefusedLine,
-  SHOPIFY_SOFT_NOTE,
   SIZED_FOR_EACH_CHANNEL_TITLE,
   tooSmallLine,
   whiteChannelsLine,
@@ -101,7 +100,7 @@ describe("conflict copy", () => {
     const sand = resolved({ color: { kind: "swatch", key: "sand" } }, "#EADFCF");
     const lines = conflictLines(conflictsFor(specIds, sand, [{ id: "p1" }]), { background: "remove" });
     expect(lines.filter((line) => line.code === "white_required")).toHaveLength(1);
-    expect(lines.map((line) => line.text)).toContain(SHOPIFY_SOFT_NOTE);
+    expect(lines.map((line) => line.text)).toContain(consistentStyleNote("shopify.product"));
   });
 
   it("words the other codes with names from the registry and the numbers of the photo", () => {
@@ -111,7 +110,7 @@ describe("conflict copy", () => {
     expect(overlaysRefusedLine(["ebay.listing", "google.merchant.lifestyle"])).toBe(
       "eBay and Google do not allow added text, borders or watermarks on photos. If yours has any, leave these channels out or upload a clean photo. Your product's own logo and labels are fine.",
     );
-    expect(SHOPIFY_SOFT_NOTE).toBe("Shopify suggests one background style across your store.");
+    expect(consistentStyleNote("shopify.product")).toBe("Shopify suggests one background style across your store.");
     expect(conflictCopy({ code: "other_items", photoId: "p1" }, { background: "keep" }).text).toBe(OTHER_ITEMS_KEPT_COPY);
     expect(tooSmallLine("amazon.secondary", { width: 900, height: 675 })).toBe(
       `This photo is 900 by 675 pixels, too small for Amazon secondary images without enlarging it more than ${MAX_SOURCE_UPSCALE} times, so it will be left out there. Upload the original from your camera to include it.`,
@@ -167,7 +166,6 @@ describe("color notes and pause copy", () => {
     );
     expect(leftOutAfterPauseLine([])).toBeNull();
     expect(OPTIONS_UNREADABLE_COPY).toBe("This pack's image choices could not be read, so nothing was charged. Please try again.");
-    expect(OPTIONS_PAUSED_COPY).toBe("Image choices are paused right now, so this pack uses Marketplace ready.");
     // The pause banner keeps the promise the old one made.
     expect(PACKS_PAUSED_COPY).toContain("Nothing will be charged.");
   });
@@ -176,11 +174,10 @@ describe("color notes and pause copy", () => {
     const strings = [
       FORCED_WHITE_NOTE,
       DARK_COLOR_EDGE_NOTE,
-      SHOPIFY_SOFT_NOTE,
+      consistentStyleNote("shopify.product"),
       KEEP_PHOTOS_PAUSED_COPY,
       KEEP_PHOTOS_INSTEAD_LABEL,
       OPTIONS_UNREADABLE_COPY,
-      OPTIONS_PAUSED_COPY,
       OTHER_ITEMS_KEPT_COPY,
       SIZED_FOR_EACH_CHANNEL_TITLE,
       ...Object.values(LOOK_TITLES),

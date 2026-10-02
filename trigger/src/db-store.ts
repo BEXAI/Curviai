@@ -20,12 +20,15 @@ import {
   assets,
   generationJobs,
   jobSteps,
+  spendCapCounters,
   loadChannelSpecs,
   packFiles,
   sql,
   and,
+  asc,
   eq,
   notInArray,
+  recordFunnelEvent,
   type Db,
   type JobRecipeVariant,
 } from "@curvi/db";
@@ -134,23 +137,55 @@ export class DbJobStore implements JobStore {
     const error =
       state === "failed" && meta && typeof meta.error === "string" ? meta.error : undefined;
     const cogsMicros = cogsFrom(meta);
-    // COGS only ever grows: the runner reports its running total of metered
-    // provider spend, and a later, smaller report must not erase earlier spend.
-    const cogs =
-      cogsMicros !== undefined
-        ? { cogsMicros: sql`greatest(${generationJobs.cogsMicros}, ${cogsMicros}::bigint)` }
-        : {};
+    if (cogsMicros !== undefined) await this.recordRunCost(jobId, cogsMicros);
+    const terminal = TERMINAL_JOB_STATES.includes(state);
+    const now = new Date();
     const rows = await this.db
       .update(generationJobs)
-      .set({ status: state, updatedAt: new Date(), ...(error !== undefined ? { error } : {}), ...cogs })
+      .set({ status: state, updatedAt: now, ...(error !== undefined ? { error } : {}),
+        ...(terminal ? { finishedAt: now, runnerId: null, heartbeatAt: null, ...(state !== "failed" ? { restartPayload: null } : {}) } : {}),
+      })
       .where(this.liveJob(jobId))
-      .returning({ id: generationJobs.id });
-    if (rows.length === 0 && cogsMicros !== undefined) {
-      // The job was already settled (for example by the stale run reconciler),
-      // but the provider spend is real, so it still lands on the job's COGS.
-      await this.db.update(generationJobs).set(cogs).where(eq(generationJobs.id, jobId));
+      .returning({ id: generationJobs.id, workspaceId: generationJobs.workspaceId, credits: generationJobs.creditsCharged });
+    if (state === "done" && rows.length > 0) {
+      // The server side funnel (docs/phases/PHASE_18.md P18-02): a pack
+      // finished, and the workspace's first once. A follow up that finishes
+      // again repeats the same job_id. Never throws.
+      await recordFunnelEvent(this.db, {
+        workspaceId: rows[0].workspaceId,
+        name: "pack_done",
+        first: true,
+        props: {
+          job_id: jobId,
+          passed: countFrom(meta?.passed),
+          needs_review: countFrom(meta?.needsReview),
+          credits: Number(rows[0].credits ?? 0),
+        },
+      });
     }
     return rows.length > 0;
+  }
+
+  /** Reports are cumulative within a run, but additive across runs. A durable
+   * counter makes duplicate and late reports safe even after a process restart.
+   * Cost is recorded regardless of run ownership: provider spend already happened. */
+  private async recordRunCost(jobId: string, reported: number): Promise<void> {
+    const key = `caps:pack:${jobId}:cogs:${this.opts.runKey ?? "legacy"}`;
+    await this.db.transaction(async (tx) => {
+      const job = await tx.select({ id: generationJobs.id, cogs: generationJobs.cogsMicros })
+        .from(generationJobs).where(eq(generationJobs.id, jobId)).for("update");
+      if (!job[0]) return;
+      const [previous] = await tx.select({ total: spendCapCounters.totalMicros }).from(spendCapCounters)
+        .where(eq(spendCapCounters.key, key));
+      // Legacy runs reported whole-job totals before per-run counters existed.
+      const baseline = previous?.total ?? (this.opts.runKey ? 0 : job[0].cogs);
+      const total = Math.max(baseline, reported);
+      await tx.insert(spendCapCounters).values({ key, totalMicros: total, updatedAt: new Date() })
+        .onConflictDoUpdate({ target: spendCapCounters.key, set: { totalMicros: total, updatedAt: new Date() } });
+      if (total > baseline) await tx.update(generationJobs)
+        .set({ cogsMicros: sql`${generationJobs.cogsMicros} + ${total - baseline}::bigint` })
+        .where(eq(generationJobs.id, jobId));
+    });
   }
 
   /** Bumps updated_at on a live job so a long generation phase never looks
@@ -255,8 +290,25 @@ export class DbJobStore implements JobStore {
     }
   }
 
+  /**
+   * Saves a shot's asset and its final progress row, only while this run
+   * still owns the job (inOwnedRun). A run a deploy stopped can still finish
+   * a provider call after requeueForRestart superseded its assets and moved
+   * the job to a restart key; its late asset is dropped, so the rerun's
+   * asset is the only one for that shot (no stale numbers on the pack page
+   * or the public proof panel, no duplicate progress card).
+   */
   async saveAsset(asset: StoredAsset): Promise<void> {
-    await this.db.insert(assets).values({
+    const saved = await this.inOwnedRun(asset.jobId, asset.workspaceId, (tx) => this.insertAsset(tx, asset));
+    if (!saved) {
+      console.warn(`[db-store] dropped a late asset for job ${asset.jobId}: this run no longer owns the job`);
+      return;
+    }
+    await this.heartbeat(asset.jobId);
+  }
+
+  private async insertAsset(db: Db, asset: StoredAsset): Promise<void> {
+    await db.insert(assets).values({
       workspaceId: asset.workspaceId,
       jobId: asset.jobId,
       shotType: asset.shotType,
@@ -272,12 +324,19 @@ export class DbJobStore implements JobStore {
         // The progress board's green badge reads these measured values.
         fillPct: asset.measured.fillPct,
         background: asset.measured.background,
+        // The measured product fidelity (P18-08): null when no product
+        // reference was measured. outputs holds each passed channel
+        // output's numbers and proof rows, digitalSource the AI label its
+        // files carry (P18-16).
+        fidelity: asset.fidelity ?? null,
+        ...(asset.outputs ? { outputs: asset.outputs } : {}),
+        ...(asset.digitalSource ? { digitalSource: asset.digitalSource } : {}),
         // The planned shot, so the seller can run a shot that needs review
         // again exactly as planned (pack follow ups).
         ...(asset.shot ? { shot: asset.shot } : {}),
       },
     });
-    await this.db.insert(jobSteps).values({
+    await db.insert(jobSteps).values({
       workspaceId: asset.workspaceId,
       jobId: asset.jobId,
       shotId: asset.shotId,
@@ -289,7 +348,6 @@ export class DbJobStore implements JobStore {
       status: asset.status === "passed" ? "done" : "needs_review",
       costMicros: Math.round(asset.costMicros),
     });
-    await this.heartbeat(asset.jobId);
   }
 
   /**
@@ -351,6 +409,7 @@ export class DbJobStore implements JobStore {
     await this.ensureChannelSpecs();
 
     const variants: Array<typeof assetVariants.$inferInsert> = [];
+    const fileReports = new Map<string, Record<string, PackFileReport>>();
     for (const file of report.files) {
       const localPath = path.join(pack.outDir, "files", file.channel, file.file);
       if (!(await exists(localPath))) {
@@ -362,6 +421,7 @@ export class DbJobStore implements JobStore {
       if (!assetId) {
         continue;
       }
+      fileReports.set(assetId, { ...fileReports.get(assetId), [key]: file });
       variants.push({
         workspaceId: pack.workspaceId,
         assetId,
@@ -385,6 +445,7 @@ export class DbJobStore implements JobStore {
         }
         const key = variationFileKey(pack.workspaceId, pack.jobId, batch.variation, file.channel, file.file);
         const { bytes } = await uploader.upload(localPath, key);
+        if (file.report) fileReports.set(assetId, { ...fileReports.get(assetId), [key]: file.report });
         variants.push({
           workspaceId: pack.workspaceId,
           assetId,
@@ -440,6 +501,7 @@ export class DbJobStore implements JobStore {
       if (variants.length > 0) {
         await tx.insert(assetVariants).values(variants);
       }
+      await persistFileReports(tx as unknown as Db, pack.workspaceId, pack.jobId, fileReports);
       await tx.insert(packFiles).values(packRows);
     });
   }
@@ -468,6 +530,7 @@ export class DbJobStore implements JobStore {
     await this.ensureChannelSpecs();
 
     const variants: Array<typeof assetVariants.$inferInsert> = [];
+    const fileReports = new Map<string, Record<string, PackFileReport>>();
     for (const file of batch.files) {
       const assetId = assetIdByShot.get(file.ref);
       const localPath = path.join(batch.outDir, "files", file.channel, file.file);
@@ -476,6 +539,7 @@ export class DbJobStore implements JobStore {
       }
       const key = followUpFileKey(batch.workspaceId, batch.jobId, batch.runKey, file.channel, file.file);
       const { bytes } = await uploader.upload(localPath, key);
+      if (file.report) fileReports.set(assetId, { ...fileReports.get(assetId), [key]: file.report });
       variants.push({
         workspaceId: batch.workspaceId,
         assetId,
@@ -501,6 +565,7 @@ export class DbJobStore implements JobStore {
         throw new JobAbandonedError(batch.jobId);
       }
       await tx.insert(assetVariants).values(variants);
+      await persistFileReports(tx as unknown as Db, batch.workspaceId, batch.jobId, fileReports);
       await tx
         .delete(packFiles)
         .where(
@@ -537,7 +602,8 @@ export class DbJobStore implements JobStore {
    * connections, so the shot to asset mapping is resolved from the database,
    * never from in process state. */
   private async assetIdsByShot(jobId: string): Promise<Map<string, string>> {
-    const rows = await this.db.select().from(assets).where(eq(assets.jobId, jobId));
+    // Oldest first, so the newest asset of a shot wins the map.
+    const rows = await this.db.select().from(assets).where(eq(assets.jobId, jobId)).orderBy(asc(assets.createdAt));
     const map = new Map<string, string>();
     for (const row of rows) {
       const shotId = row.qc && typeof row.qc.shotId === "string" ? row.qc.shotId : null;
@@ -558,12 +624,18 @@ export class DbJobStore implements JobStore {
 
 /** The runner's metered provider spend for the job (plan 4.4.3 cogsMicros),
  * passed as meta.costMicros on the done and failed transitions. */
+/** A count the runner reported, or null when it sent none. */
+function countFrom(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+}
+
 function cogsFrom(meta?: Record<string, unknown>): number | undefined {
   const value = meta?.costMicros;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     return undefined;
   }
-  return Math.round(value);
+  const base = typeof meta?.baseCostMicros === "number" && Number.isFinite(meta.baseCostMicros) ? Math.max(0, meta.baseCostMicros) : 0;
+  return Math.max(0, Math.round(value - base));
 }
 
 /** Neutral stage label for a planned shot; provider names never reach the
@@ -592,5 +664,17 @@ async function exists(file: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Exact post-packaging checks belong to these object bytes, not another
+ * version that happens to share the same filename. Kept in the delivery
+ * transaction, with the asset's other QC/COGS metadata left intact. */
+async function persistFileReports(db: Db, workspaceId: string, jobId: string, reports: Map<string, Record<string, PackFileReport>>): Promise<void> {
+  for (const [assetId, files] of reports) {
+    await db.update(assets).set({ qc: sql`jsonb_set(
+      coalesce(${assets.qc}, '{}'::jsonb), '{fileReports}',
+      coalesce(${assets.qc}->'fileReports', '{}'::jsonb) || ${JSON.stringify(files)}::jsonb
+    )` }).where(and(eq(assets.id, assetId), eq(assets.workspaceId, workspaceId), eq(assets.jobId, jobId)));
   }
 }

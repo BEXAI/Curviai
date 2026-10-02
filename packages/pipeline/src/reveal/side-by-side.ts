@@ -10,6 +10,8 @@
  * rather than drawn in a fallback face.
  */
 import sharp, { type OverlayOptions } from "sharp";
+import { HEX } from "../color";
+import { INGEST_PIXEL_CAP } from "../ingest/image";
 import { loadTemplateFont } from "../templates/font";
 
 export interface SideBySideInput {
@@ -41,17 +43,12 @@ export interface SideBySideResult {
   labeled: boolean;
 }
 
-/** Largest input side accepted, in pixels, so a huge upload cannot exhaust memory. */
-export const SIDE_BY_SIDE_MAX_INPUT_PIXELS = 80_000_000;
-
-const HEX = /^#[0-9a-fA-F]{6}$/;
-
 function hex(value: string | undefined, fallback: string): string {
   return value && HEX.test(value) ? value : fallback;
 }
 
 async function fitPanel(input: Buffer, side: number, background: string): Promise<Buffer> {
-  return sharp(input, { limitInputPixels: SIDE_BY_SIDE_MAX_INPUT_PIXELS })
+  return sharp(input, { limitInputPixels: INGEST_PIXEL_CAP })
     .rotate()
     .resize(side, side, { fit: "contain", background, withoutEnlargement: false })
     .flatten({ background })

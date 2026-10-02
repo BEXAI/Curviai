@@ -13,6 +13,12 @@ export type WorkspaceResolution = { workspace: WorkspaceSummary } | { response: 
 /** Seconds a client should wait before retrying a 503 from these routes. */
 export const RETRY_AFTER_SECONDS = "60";
 
+/** The response init for a refusal with this status: a 503 also tells the
+ * client when to retry. */
+export function refusalInit(status: number): ResponseInit {
+  return status === 503 ? { status, headers: { "Retry-After": RETRY_AFTER_SECONDS } } : { status };
+}
+
 export interface ResolveWorkspaceOptions {
   /** Use ensureWorkspace, which bootstraps a workspace for a signed in user
    * who has none yet. Routes that start work (a pack, an upload) set it. */

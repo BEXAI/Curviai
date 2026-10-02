@@ -4,12 +4,10 @@ import { useState, useTransition } from "react";
 import { Badge, Button, Input, Label, cn } from "@curvi/ui";
 import { createApiKeyAction, revokeApiKeyAction } from "@/app/app/settings/api/actions";
 import type { ApiKeyView } from "@/lib/api-keys/store";
+import { shortDate } from "@/lib/dates";
 
 function when(iso: string | null): string {
-  if (!iso) {
-    return "Never";
-  }
-  return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  return iso ? (shortDate(iso) ?? "Never") : "Never";
 }
 
 /** Make, list and revoke workspace API keys. A new key shows once, here. */
@@ -59,7 +57,7 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyView[] }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 ph-no-capture ph-mask">
       <form onSubmit={create} className="max-w-sm space-y-3" data-testid="api-key-create">
         <div className="space-y-1.5">
           <Label htmlFor="api-key-name">Key name</Label>

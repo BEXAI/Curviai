@@ -4,11 +4,15 @@ import { notFound } from "next/navigation";
 import type { ChannelSpec } from "@curvi/specs";
 import { buttonVariants } from "@curvi/ui";
 import { JsonLd } from "@/components/json-ld";
+import { ChannelCheckerBlock } from "@/components/marketing/channel-checker-block";
 import { channelPageCopy } from "@/components/marketing/channel-copy";
 import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
+import { SignupLink } from "@/components/marketing/signup-link";
 import { imageSpecs, specDisplayName, specForSlug, specSlug } from "@/components/marketing/spec-slug";
 import { specAvailability } from "@/lib/marketing-facts";
+import { channelChoiceForSpec } from "@/lib/seller-profile";
 import { breadcrumbJsonLd, channelPageSeo, jsonLdGraph, pageMetadata } from "@/lib/seo";
+import { MAIN_IMAGE_CHECKER_PATH, checkerChannelForSpec, checkerPagePath } from "@/lib/tools/checker-rules";
 
 export const dynamicParams = false;
 
@@ -195,8 +199,14 @@ export default async function ChannelRequirementsPage({
   const name = specDisplayName(spec.id);
   const rows = ruleRows(spec);
   const copy = channelPageCopy(spec);
+  // The welcome question "Where do you sell?" starts with this channel (P18-20).
+  const sellerChannel = channelChoiceForSpec(spec.id);
+  const signupExtra = sellerChannel ? { channel: sellerChannel } : undefined;
   const comingSoon = copy.status === "coming_soon";
   const others = imageSpecs().filter((s) => s.id !== spec.id).slice(0, 6);
+  // P18-10: a main spec the checker offers opens it with its channel preset.
+  const checker = checkerChannelForSpec(spec.id);
+  const checkerHref = checker ? checkerPagePath(checker.key) : MAIN_IMAGE_CHECKER_PATH;
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-16">
@@ -243,6 +253,8 @@ export default async function ChannelRequirementsPage({
         ))}
       </div>
 
+      {checker ? <ChannelCheckerBlock href={checkerHref} /> : null}
+
       <div data-testid="channel-cta" className="mt-10 rounded-xl border border-ink-100 bg-ink-50 p-8 text-center">
         <h2 className="text-xl font-semibold text-ink-950">{copy.ctaTitle}</h2>
         <p className="mx-auto mt-2 max-w-lg text-sm text-ink-600">{copy.ctaBody}</p>
@@ -250,22 +262,22 @@ export default async function ChannelRequirementsPage({
           {comingSoon ? (
             <>
               <Link
-                href="/tools/main-image-checker"
+                href={checkerHref}
                 className={buttonVariants({ variant: "secondary", size: "lg" })}
               >
                 Check your current image free
               </Link>
-              <Link href="/signup" className={buttonVariants({ variant: "outline", size: "lg" })}>
+              <SignupLink source="channel" extra={signupExtra} className={buttonVariants({ variant: "outline", size: "lg" })}>
                 Start free
-              </Link>
+              </SignupLink>
             </>
           ) : (
             <>
-              <Link href="/signup" className={buttonVariants({ variant: "secondary", size: "lg" })}>
+              <SignupLink source="channel" extra={signupExtra} className={buttonVariants({ variant: "secondary", size: "lg" })}>
                 Start free
-              </Link>
+              </SignupLink>
               <Link
-                href="/tools/main-image-checker"
+                href={checkerHref}
                 className={buttonVariants({ variant: "outline", size: "lg" })}
               >
                 Check your current image free

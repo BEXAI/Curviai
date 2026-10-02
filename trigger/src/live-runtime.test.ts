@@ -1,3 +1,4 @@
+import { spendCapPolicy as SPEND_CAPS } from "@curvi/pipeline/seed";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ASYNC_JOB_TIMEOUT_MARGIN_MS,
@@ -211,6 +212,29 @@ describe("wireLiveProviders", () => {
     const res = await openai.invoke(landscape);
     expect(bodies[0]).toMatchObject({ quality: "medium", size: "1536x1024" });
     expect(res.costMicros).toBe(41_000);
+  });
+
+  it("meters a timed out OpenAI plate at its size price, as reserved", async () => {
+    const { registry, routing } = freshBase();
+    // A request that hangs until the router aborts it.
+    const fetchFn = ((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      })) as unknown as typeof fetch;
+    wireLiveProviders(registry, routing, (name) => (name === "OPENAI_API_KEY" ? "key" : undefined), fetchFn);
+    const openai = registry.get("openai-image") as CostAwareProvider;
+    const controller = new AbortController();
+    const billed: number[] = [];
+    const landscape = {
+      task: SCENE_PLATE_TASK,
+      input: { prompt: "p", width: 1600, height: 1000 },
+      signal: controller.signal,
+      onBilled: (costMicros: number) => billed.push(costMicros),
+    };
+    const pending = openai.invoke(landscape).catch((e: unknown) => e);
+    controller.abort();
+    expect(await pending).toBeInstanceOf(Error);
+    expect(billed).toEqual([41_000]);
   });
 
   it("registers the fal BiRefNet cutout when its key is set", () => {
@@ -541,7 +565,7 @@ describe("LiveShotGenerator", () => {
   it("reserves spend against the caps before each provider call (5.2)", async () => {
     const scene = new FakeSceneProvider();
     const store = new InMemoryCapStore();
-    const caps = new SpendCaps(store, () => new Date("2026-09-28T12:00:00Z"));
+    const caps = new SpendCaps(store, () => new Date("2026-09-28T12:00:00Z"), SPEND_CAPS);
     const { ai, wiring } = liveDeps(scene, await productCutoutPng(96), caps);
     const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
 
@@ -549,16 +573,38 @@ describe("LiveShotGenerator", () => {
 
     expect(generation.spendReserved).toBe(true);
     // Cutout plus scene plate plus harmonize, reconciled to the actual cost.
-    expect(await store.get("caps:asset:image:shot-1")).toBe(generation.costMicros);
+    expect(await store.get("caps:asset:image:job-1:shot-1")).toBe(generation.costMicros);
     expect(await store.get("caps:pack:job-1")).toBe(generation.costMicros);
     expect(await store.get("caps:global:2026-09-28")).toBe(generation.costMicros);
+  });
+
+  it("keeps each job's per asset cap separate when packs reuse a shot id", async () => {
+    // Planner shot ids repeat in every pack. One shared store, as production
+    // keeps, must not add every job's spend for that id into one counter.
+    const scene = new FakeSceneProvider();
+    const store = new InMemoryCapStore();
+    const caps = new SpendCaps(store, () => new Date("2026-09-28T12:00:00Z"), SPEND_CAPS);
+    const { ai, wiring } = liveDeps(scene, await productCutoutPng(96), caps);
+
+    for (let n = 1; n <= 5; n++) {
+      const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
+      const generation = await generator.generate({
+        shot: { ...compositeShotArgs, sourceMediaId: `ws/ws-${n}/src/photo` },
+        attempt: 1,
+        useFallbackProvider: false,
+        jobId: `job-${n}`,
+        workspaceId: `ws-${n}`,
+      });
+      expect(generation.spendReserved).toBe(true);
+      expect(await store.get(`caps:asset:image:job-${n}:shot-1`)).toBe(generation.costMicros);
+    }
   });
 
   it("stops before spending when the global hard stop would be crossed", async () => {
     const scene = new FakeSceneProvider();
     const store = new InMemoryCapStore();
     // Room for the cutout estimate, not for the scene plate after it.
-    const caps = new SpendCaps(store, () => new Date("2026-09-28T12:00:00Z"), { globalDailyHardStopMicros: 50_000 });
+    const caps = new SpendCaps(store, () => new Date("2026-09-28T12:00:00Z"), { ...SPEND_CAPS, ...{ globalDailyHardStopMicros: 50_000 } });
     const { ai, wiring, cutout } = liveDeps(scene, await productCutoutPng(96), caps);
     const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
 
@@ -570,7 +616,7 @@ describe("LiveShotGenerator", () => {
 
   it("does not call the cutout provider at all when it alone would cross the cap", async () => {
     const scene = new FakeSceneProvider();
-    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date(), { globalDailyHardStopMicros: 10_000 });
+    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date(), { ...SPEND_CAPS, ...{ globalDailyHardStopMicros: 10_000 } });
     const { ai, wiring, cutout } = liveDeps(scene, await productCutoutPng(96), caps);
     const generator = new LiveShotGenerator({ ai, wiring, loadMedia: async () => Buffer.from("source-photo") });
 
@@ -1143,7 +1189,7 @@ describe("live failures keep their spend and plain copy (5.1, 5.4)", () => {
   it("passes the spend alert hook to the cutout and scene calls (5.7)", async () => {
     const capStore = new InMemoryCapStore();
     await capStore.add("caps:global:2026-09-28", 50_000_000);
-    const caps = new SpendCaps(capStore, () => new Date("2026-09-28T12:00:00Z"));
+    const caps = new SpendCaps(capStore, () => new Date("2026-09-28T12:00:00Z"), SPEND_CAPS);
     const { ai, wiring } = bridgedDeps([new FakeGeminiInner("gemini-image", false)], await productCutoutPng(96), caps);
     const alerts: number[] = [];
     ai.onCapAlert = (total) => alerts.push(total);

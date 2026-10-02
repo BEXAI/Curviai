@@ -62,6 +62,8 @@ describe("report only Content Security Policy", () => {
     );
     expect(policy.get("img-src")).toContain("https://*.r2.cloudflarestorage.com");
     expect(policy.get("form-action")).toContain("https://checkout.stripe.com");
+    // PHASE_19 P19-09: the consent action redirects back to ChatGPT.
+    expect(policy.get("form-action")).toContain("https://chatgpt.com");
     expect(policy.get("object-src")).toEqual(["'none'"]);
     expect(policy.get("frame-ancestors")).toEqual(["'none'"]);
   });
@@ -73,5 +75,28 @@ describe("report only Content Security Policy", () => {
     expect(policy.get("connect-src")).toEqual(
       expect.arrayContaining(["https://auth.curvi.ai", "wss://auth.curvi.ai", "https://e.curvi.ai"]),
     );
+  });
+
+  it("enforces only with the explicit flag and keeps stricter app script rules in report mode", async () => {
+    vi.stubEnv("CSP_ENFORCE", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    const rules = (await nextConfig.headers?.()) ?? [];
+    const headers = await allPathHeaders();
+    const enforced = directives(headers.get("content-security-policy") ?? "");
+    expect(headers.has("content-security-policy-report-only")).toBe(false);
+    expect(enforced.get("script-src")).toContain("https://challenges.cloudflare.com");
+    expect(enforced.get("frame-src")).toContain("https://challenges.cloudflare.com");
+    expect(enforced.get("script-src")).not.toContain("'unsafe-eval'");
+    const app = rules.find(rule => rule.source === "/app/:path*");
+    const strict = directives(app?.headers.find(header => header.key === "Content-Security-Policy-Report-Only")?.value ?? "");
+    expect(strict.get("script-src")).not.toContain("'unsafe-inline'");
+    expect(strict.get("style-src")).toContain("'unsafe-inline'");
+  });
+
+  it("prevents staging indexing only when an environment label is configured", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENV_LABEL", "staging");
+    expect((await allPathHeaders()).get("x-robots-tag")).toBe("noindex, nofollow, noarchive");
+    vi.stubEnv("NEXT_PUBLIC_ENV_LABEL", "");
+    expect((await allPathHeaders()).has("x-robots-tag")).toBe(false);
   });
 });

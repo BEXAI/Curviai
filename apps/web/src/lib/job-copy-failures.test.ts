@@ -12,11 +12,22 @@ import {
   MULTIPLE_PRODUCTS_MESSAGE,
   noSellableProductMessage,
   PLAN_FAILED_MESSAGE,
+  restrictedProductMessage,
+  SCREENING_UNAVAILABLE_MESSAGE,
 } from "@curvi/trigger/runner";
 import { IllegalTransitionError } from "@curvi/trigger/state";
 import { SETTLED_JOB_MESSAGES } from "@/lib/jobs/enqueue";
 import { RECONCILED_JOB_ERROR } from "@/lib/services/reconcile";
-import { JOB_ERROR_COPY, jobErrorKind, needsReviewNote, noProductCopy, publicJobError, type JobErrorKind } from "./job-copy";
+import { MCP_COPY } from "@/lib/api-v1/mcp-copy";
+import {
+  JOB_ERROR_COPY,
+  jobErrorKind,
+  jobErrorLineFor,
+  needsReviewNote,
+  noProductCopy,
+  publicJobError,
+  type JobErrorKind,
+} from "./job-copy";
 
 // enqueue.ts schedules inline packs with next/server's after(); only its
 // settled messages are read here.
@@ -193,6 +204,11 @@ const CASES: Array<[string, JobErrorKind]> = [
   [moderationBlockedMessage(["drugs"]), "blockedDrugs"],
   [moderationBlockedMessage(["prohibited goods"]), "blockedProhibited"],
   [moderationBlockedMessage(["a real person as the main subject"]), "blockedPerson"],
+  // PHASE_19 P19-29: the category keys are seed keys, never shown; one
+  // names "drugs", which must not read as the moderation drugs line.
+  [restrictedProductMessage(["tobacco_nicotine"]), "blockedRestricted"],
+  [SCREENING_UNAVAILABLE_MESSAGE, "screeningUnavailable"],
+  [restrictedProductMessage(["prescription_drugs", "self_defense_weapons"]), "blockedRestricted"],
   // Older jobs stored the "manual review" wording; they read the same lines.
   ["This upload was flagged for weapons, adult content and needs a manual review before a pack can run", "blockedAdult"],
   ["This product was flagged for regulated goods and needs a manual review before a pack can run", "flagged"],
@@ -443,8 +459,26 @@ describe("moderation and no product copy (PHASE_14 workstream 2, item 3.3)", () 
     expect(adult).toContain("use a different photo");
   });
 
+  it("tells an assistant its prohibited goods pack stopped with the neutral line, and the page that it can run here (P19-29)", () => {
+    const raw = restrictedProductMessage(["self_defense_weapons"]);
+    expect(publicJobError(raw, "assistant")).toBe(MCP_COPY.restrictedProduct);
+    expect(jobErrorLineFor(publicJobError(raw), "assistant")).toBe(MCP_COPY.restrictedProduct);
+    const page = publicJobError(raw);
+    expect(page).toBe(JOB_ERROR_COPY.blockedRestricted);
+    expect(page).toContain("Nothing was charged");
+    expect(page).not.toContain("self_defense_weapons");
+  });
+
+  it("keeps missing screening distinct from a prohibited product on both surfaces", () => {
+    expect(jobErrorKind(SCREENING_UNAVAILABLE_MESSAGE)).toBe("screeningUnavailable");
+    expect(publicJobError(SCREENING_UNAVAILABLE_MESSAGE)).toBe(MCP_COPY.screeningUnavailable);
+    expect(publicJobError(SCREENING_UNAVAILABLE_MESSAGE, "assistant")).toBe(MCP_COPY.screeningUnavailable);
+    expect(jobErrorLineFor(publicJobError(SCREENING_UNAVAILABLE_MESSAGE), "assistant")).toBe(MCP_COPY.screeningUnavailable);
+    expect(MCP_COPY.screeningUnavailable).not.toMatch(/prohibited|this kind of product|different photo/i);
+  });
+
   it("gives the plain photo tips when intake saw nothing to name", () => {
-    const raw = noSellableProductMessage([{ sellableProduct: false, distinctProducts: 0, sharpEnough: true, addedOverlays: false, flags }]);
+    const raw = noSellableProductMessage([{ sellableProduct: false, distinctProducts: 0, sharpEnough: true, addedOverlays: false, restrictedCategory: null, flags }]);
     const text = publicJobError(raw) ?? "";
     expect(text).toBe(JOB_ERROR_COPY.noProduct);
     expect(text).toContain("one product on a plain background");
@@ -460,6 +494,7 @@ describe("moderation and no product copy (PHASE_14 workstream 2, item 3.3)", () 
         distinctProducts: 0,
         sharpEnough: false,
         addedOverlays: false,
+        restrictedCategory: null,
         flags,
         boundingBoxes: [{ label: "Coffee cup", x: 0, y: 0, width: 1, height: 1 }],
         products: [

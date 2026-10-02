@@ -1,3 +1,4 @@
+import { spendCapPolicy as SPEND_CAPS } from "@curvi/pipeline/seed";
 import { describe, expect, it, vi } from "vitest";
 import {
   AllProvidersFailedError,
@@ -89,6 +90,9 @@ import {
   addedOverlayMediaIds,
   shotFailureOutcome,
   moderationBlockedMessage,
+  RESTRICTED_PRODUCT_PREFIX,
+  SCREENING_UNAVAILABLE_MESSAGE,
+  restrictedProductMessage,
   moderationBlockReasons,
   NO_SELLABLE_PRODUCT_MESSAGE,
   SHOT_EXTRA_ITEMS,
@@ -112,7 +116,8 @@ import {
   withRunDeadline,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
-import { seedRecipe } from "./recipes";
+import { llmModelProviderName, RecipeCatalog, seedRecipe, type ResolvedRecipe } from "./recipes";
+import { noteKey, type PreflightIntake } from "./preflight-intake";
 
 // planShots passes through to the real planner unless a test switches it to
 // fail, to show a planner failure never sinks a valid LLM plan.
@@ -129,7 +134,7 @@ vi.mock("@curvi/pipeline", async (importOriginal) => {
     },
   };
 });
-import { demoAplusCopy, demoProfile, DemoShotGenerator } from "./runtime";
+import { demoAplusCopy, demoProfile, DemoLlmProvider, DemoShotGenerator } from "./runtime";
 import { LiveShotGenerator, PRODUCT_TOUCHING } from "./live-runtime";
 
 const intakeKey = activeRecipe("intake").key;
@@ -674,6 +679,201 @@ describe("runGeneratePack hard failures", () => {
   });
 });
 
+describe("prohibited goods for assistant requests (PHASE_19 P19-29)", () => {
+  const cleanFlags = { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false };
+  const vapeIntake = (restrictedCategory: string | null) =>
+    new MockProvider({
+      name: "mock-intake",
+      tasks: [intakeKey],
+      output: {
+        images: [
+          { sellableProduct: true, distinctProducts: 1, sharpEnough: true, screenshot: false, restrictedCategory, flags: cleanFlags },
+        ],
+      },
+    });
+
+  const approvedIntake = (version = 8): ResolvedRecipe => ({
+    ...seedRecipe("intake"), version, source: "db", recipeId: `approved-intake-${version}`,
+  });
+  function withApprovedIntake(overrides: Partial<PipelineDeps> = {}) {
+    const ai = overrides.ai ?? makeAi();
+    // A real runtime registers one provider per priced model. Route that
+    // model's requests to the existing stage doubles, including later stages
+    // that share the intake model, without making any network calls.
+    ai.registry.register({
+      name: llmModelProviderName(approvedIntake().models[0]),
+      kind: "llm",
+      supports: (task) => ai.registry.get(ai.routing[task]?.[0] ?? "")?.supports(task) ?? false,
+      invoke: <TIn, TOut>(request: ProviderRequest<TIn>) =>
+        ai.registry.get(ai.routing[request.task][0])!.invoke<TIn, TOut>(request),
+    });
+    return makeDeps({
+      recipes: { forJob: async () => ({ intake: approvedIntake() }) },
+      ...overrides,
+      ai,
+    });
+  }
+
+  async function expectUnavailable(overrides: Partial<PipelineDeps> = {}, input: GeneratePackInput = baseInput) {
+    const intake = vapeIntake(null);
+    const ai = overrides.ai ?? makeAi({ intake });
+    const providerCalls = ai.registry.list().map((provider) => vi.spyOn(provider, "invoke"));
+    const loadMedia = vi.fn(async () => Buffer.from("unused"));
+    const retrySleep = vi.fn(async () => {});
+    const deps = makeDeps({ ai, loadMedia, delayedRetry: { sleep: retrySleep }, ...overrides });
+    const generate = vi.spyOn(deps.generator, "generate");
+    const summary = await runGeneratePack({ ...input, audience: "assistant" }, deps);
+    expect(summary).toMatchObject({
+      state: "failed", error: SCREENING_UNAVAILABLE_MESSAGE, plannedShots: 0,
+      chargedCredits: 0, releasedCredits: input.creditBudget, costMicros: 0, pack: null,
+    });
+    expect(summary.error?.startsWith(RESTRICTED_PRODUCT_PREFIX)).toBe(false);
+    expect(loadMedia).not.toHaveBeenCalled();
+    for (const calls of providerCalls) expect(calls).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+    expect(retrySleep).not.toHaveBeenCalled();
+    expect(deps.store.assets).toEqual([]);
+    expect(deps.store.packs).toEqual([]);
+    expect(deps.store.states.map((row) => row.state)).toEqual(["queued", "failed"]);
+    expect(deps.store.ledger.map(({ reason, credits }) => ({ reason, credits }))).toEqual([
+      { reason: "reserve", credits: input.creditBudget },
+      { reason: "release", credits: input.creditBudget },
+    ]);
+  }
+
+  it("stops an assistant's pack at intake when intake names a seeded category, with nothing charged", async () => {
+    const intake = vapeIntake("tobacco_nicotine");
+    const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+    const deps = withApprovedIntake({ ai: makeAi({ intake, analyze }) });
+    const summary = await runGeneratePack({ ...baseInput, audience: "assistant" }, deps);
+
+    expect(seedRecipe("intake").version).toBeGreaterThanOrEqual(8);
+    expect(summary.state).toBe("failed");
+    expect(summary.error).toBe(restrictedProductMessage(["tobacco_nicotine"]));
+    expect(summary.error?.startsWith(RESTRICTED_PRODUCT_PREFIX)).toBe(true);
+    expect(summary.plannedShots).toBe(0);
+    expect(summary.chargedCredits).toBe(0);
+    expect(summary.releasedCredits).toBe(baseInput.creditBudget);
+    // Nothing past the intake call.
+    expect(analyze.calls).toHaveLength(0);
+  });
+
+  it("leaves a web pack of the same product as it is today", async () => {
+    const deps = makeDeps({ ai: makeAi({ intake: vapeIntake("tobacco_nicotine") }) });
+    const summary = await runGeneratePack(baseInput, deps);
+    expect(summary.state).toBe("done");
+    expect(summary.error).toBeUndefined();
+  });
+
+  it("runs an assistant's pack with no category using the approved current recipe", async () => {
+    const clean = await runGeneratePack({ ...baseInput, audience: "assistant" }, withApprovedIntake({ ai: makeAi({ intake: vapeIntake(null) }) }));
+    expect(clean.state).toBe("done");
+  });
+
+  it("refuses an older assignment even when its provider would return no category", async () => {
+    await expectUnavailable({ recipes: { forJob: async () => ({ intake: approvedIntake(7) }) } });
+  });
+
+  it("does not upgrade an older assignment to a registered current seed model", async () => {
+    const ai = makeAi();
+    ai.registry.register(new MockProvider({ name: "openai:gpt-6-luna", tasks: [intakeKey], output: intakeFixture }));
+    await expectUnavailable({
+      ai,
+      recipes: { forJob: async () => ({ intake: { ...approvedIntake(7), models: ["not-configured"] } }) },
+    });
+  });
+
+  it("refuses a supported assignment whose only runnable standby is the older Claude recipe", async () => {
+    const ai = makeAi();
+    ai.registry.register(new MockProvider({ name: "anthropic:claude-opus-5-5", tasks: [intakeKey], output: intakeFixture }));
+    await expectUnavailable({ ai, recipes: { forJob: async () => ({ intake: approvedIntake() }) } });
+  });
+
+  it("refuses an approved current recipe with no registered model before falling through to demo routing", async () => {
+    const ai = makeAi();
+    const demo = new DemoLlmProvider();
+    ai.registry.register(demo);
+    ai.routing[intakeKey] = [demo.name];
+    await expectUnavailable({ ai, recipes: { forJob: async () => ({ intake: approvedIntake() }) } });
+  });
+
+  it.each(["legacy", "older-standby"] as const)("screens again instead of trusting a clean %s cache labeled as the current recipe", async (provenance) => {
+    const intake = vapeIntake("tobacco_nicotine");
+    const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+    const deps = withApprovedIntake({ ai: makeAi({ intake, analyze }) });
+    const preflight: PreflightIntake = {
+      image: { ...intakeFixture.images[0], addedOverlays: false, restrictedCategory: null },
+      recipe: { key: intakeKey, version: 8 }, noteKey: noteKey(undefined), at: new Date().toISOString(),
+      ...(provenance === "older-standby" ? {
+        execution: { recipe: { key: intakeKey, version: 6, recipeId: null, source: "seed" as const }, provider: "anthropic:claude-opus-5-5" },
+      } : {}),
+    };
+    const summary = await runGeneratePack({ ...baseInput, audience: "assistant", images: [{ mediaId: "m1", preflight }] }, deps);
+    expect(summary).toMatchObject({
+      state: "failed", error: restrictedProductMessage(["tobacco_nicotine"]),
+      chargedCredits: 0, releasedCredits: baseInput.creditBudget, plannedShots: 0,
+    });
+    expect(intake.calls).toHaveLength(1);
+    expect(analyze.calls).toHaveLength(0);
+  });
+
+  it("reuses an approved current cache and still rejects its restricted category without a provider call", async () => {
+    const intake = vapeIntake(null);
+    const deps = withApprovedIntake({ ai: makeAi({ intake }) });
+    const recipe = approvedIntake();
+    const summary = await runGeneratePack({
+      ...baseInput, audience: "assistant", images: [{ mediaId: "m1", preflight: {
+        image: { ...intakeFixture.images[0], addedOverlays: false, restrictedCategory: "tobacco_nicotine" },
+        recipe: { key: recipe.key, version: recipe.version }, noteKey: noteKey(undefined), at: new Date().toISOString(),
+        execution: {
+          recipe: { key: recipe.key, version: recipe.version, recipeId: recipe.recipeId, source: recipe.source },
+          provider: llmModelProviderName(recipe.models[0]),
+        },
+      } }],
+    }, deps);
+    expect(summary).toMatchObject({ state: "failed", error: restrictedProductMessage(["tobacco_nicotine"]), chargedCredits: 0, releasedCredits: baseInput.creditBudget });
+    expect(intake.calls).toHaveLength(0);
+  });
+
+  it("refuses compiled screening when no database recipe resolver is present", async () => {
+    await expectUnavailable();
+  });
+
+  it("refuses the compiled fallback when the database recipe catalog is empty or unavailable", async () => {
+    for (const load of [async () => [], async (): Promise<ResolvedRecipe[]> => { throw new Error("database unavailable"); }]) {
+      await expectUnavailable({ recipes: new RecipeCatalog(load, { onError: () => {} }) });
+    }
+  });
+
+  it.each([null, "", "   "])("refuses a claimed database recipe with row identity %j", async (recipeId) => {
+    await expectUnavailable({ recipes: { forJob: async () => ({ intake: { ...approvedIntake(), recipeId } }) } });
+  });
+
+  it("does not reuse an older preflight to bypass unavailable screening", async () => {
+    await expectUnavailable({ recipes: { forJob: async () => ({ intake: approvedIntake(7) }) } }, {
+      ...baseInput,
+      images: [{ mediaId: "ws/ws1/source.jpg", preflight: {
+        image: { ...intakeFixture.images[0], addedOverlays: false, restrictedCategory: null },
+        recipe: { key: intakeKey, version: 7 }, noteKey: noteKey(undefined), at: new Date().toISOString(),
+      } }],
+    });
+  });
+
+  it("leaves ordinary web packs on older database recipes unchanged", async () => {
+    const deps = makeDeps({
+      ai: makeAi({ intake: vapeIntake("self_defense_weapons") }),
+      recipes: { forJob: async () => ({ intake: approvedIntake(7) }) },
+    });
+    expect((await runGeneratePack(baseInput, deps)).state).toBe("done");
+  });
+
+  it("names every category once, in image order", () => {
+    expect(restrictedProductMessage(["self_defense_weapons", "explosives_fireworks"])).toBe(
+      `${RESTRICTED_PRODUCT_PREFIX} self_defense_weapons, explosives_fireworks`,
+    );
+  });
+});
+
 describe("brands and logos are always allowed (PHASE_14 workstream 2)", () => {
   const cleanFlags = { nudity: false, weapons: false, drugs: false, prohibited: false, realPersonMainSubject: false };
   const intakeOf = (image: Record<string, unknown>) =>
@@ -708,7 +908,7 @@ describe("brands and logos are always allowed (PHASE_14 workstream 2)", () => {
   });
 
   it("never blocks on a brand or a logo alone", () => {
-    const intake = { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, flags: cleanFlags }] };
+    const intake = { images: [{ sellableProduct: true, distinctProducts: 1, sharpEnough: true, addedOverlays: false, restrictedCategory: null, flags: cleanFlags }] };
     const profile = { ...demoProfile, preserveLogos: ["ROLEX"], complianceFlags: ["possible_counterfeit" as const] };
     expect(moderationBlockReasons(intake, profile)).toEqual([]);
     const claims = { ...demoProfile, complianceFlags: ["medical_claim" as const, "child_product" as const, "none" as const] };
@@ -1484,7 +1684,7 @@ describe("runShot", () => {
     const generator: ShotGenerator = {
       generate: async (args) => ({ ...(await demo.generate(args)), costMicros: 700_000 }),
     };
-    const ai = { ...makeAi(), caps: new SpendCaps(new InMemoryCapStore()) };
+    const ai = { ...makeAi(), caps: new SpendCaps(new InMemoryCapStore(), () => new Date(), SPEND_CAPS) };
     const deps = makeDeps({ ai, generator });
     const outcome = await runShot(mainShot as Shot, ctx, deps);
     expect(outcome.status).toBe("needs_review");
@@ -1712,7 +1912,7 @@ describe("unavailable shots (2.1)", () => {
     const qc = Object.assign(new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict }), {
       estimateCostMicros: () => 7,
     });
-    const caps = new SpendCaps(store);
+    const caps = new SpendCaps(store, () => new Date(), SPEND_CAPS);
     const globalReads: number[] = [];
     const reserveGlobal = caps.checkAndReserveGlobalDay.bind(caps);
     caps.checkAndReserveGlobalDay = async (micros: number) => {
@@ -1725,7 +1925,7 @@ describe("unavailable shots (2.1)", () => {
     // Over the per asset cap if it were reserved again here; the generator
     // already reserved (and would have been blocked) before spending.
     expect(outcome.status).toBe("passed");
-    expect(await store.get(`caps:asset:image:${(mainShot as Shot).id}`)).toBe(0);
+    expect(await store.get(`caps:asset:image:job1:${(mainShot as Shot).id}`)).toBe(0);
     // Only the judge's own reservation reads the global day; the runner no
     // longer re reads it for the alert (the router's onCapAlert reports it).
     expect(globalReads).toEqual([7]);
@@ -1755,7 +1955,7 @@ describe("reviewer follow ups", () => {
     const qc = Object.assign(new MockProvider({ name: "mock-qc", tasks: [qcKey], output: passVerdict }), {
       estimateCostMicros: () => 5_000,
     });
-    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date(), { globalDailyHardStopMicros: 1_000 });
+    const caps = new SpendCaps(new InMemoryCapStore(), () => new Date(), { ...SPEND_CAPS, ...{ globalDailyHardStopMicros: 1_000 } });
     const ai = { ...makeAi({ qc }), caps };
     const outcome = await runShot(lifestyle(), ctx, makeDeps({ ai }));
     expect(outcome.status).toBe("needs_review");
@@ -2400,7 +2600,7 @@ describe("provider spend of failed attempts stays on the books (5.1)", () => {
     const internal: string[] = [];
     const ai: AiDeps = {
       ...makeAi({ qc }),
-      caps: new SpendCaps(capStore, () => new Date("2026-09-28T12:00:00Z")),
+      caps: new SpendCaps(capStore, () => new Date("2026-09-28T12:00:00Z"), SPEND_CAPS),
       meter: {
         record: () => {
           throw new Error("meter down");
@@ -3491,6 +3691,7 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
           sharpEnough: true,
           screenshot: false,
           addedOverlays,
+          restrictedCategory: null,
           flags: cleanFlags,
           products: [{ label: "blue bottle", box: { x: 0.3, y: 0.2, width: 0.4, height: 0.6 }, matchesIntent: "yes" }],
         },
@@ -3803,9 +4004,12 @@ describe("seller output options in the runner (PHASE_15 items 11 to 15)", () => 
         handoffFileKey("ws1", "job1", "run-1", "o1", "shopify.product", "png"),
       ];
       expect([...objects.keys()]).toEqual(keys);
-      expect(keys.every((key) => key.startsWith("ws/ws1/jobs/job1/"))).toBe(true);
+      expect(keys.every((key) => key.startsWith("tmp/ws/ws1/jobs/job1/"))).toBe(true);
       const back = await deserializeShotOutcome(serialized, ctx, { handoff });
       expect(back.packAssets?.map((a, i) => a.buffer.equals(objects.get(keys[i])!))).toEqual([true, true]);
+      for (const key of keys) objects.set(key.slice(4), objects.get(key)!);
+      const legacy = { ...serialized, files: serialized.files!.map((f) => ({ ...f, objectKey: f.objectKey!.slice(4) })) };
+      expect((await deserializeShotOutcome(legacy, ctx, { handoff })).packAssets).toHaveLength(2);
       // A key outside the job's workspace, or bytes that no longer match the
       // upload, are left out instead of shipped.
       const foreign = { ...serialized, files: serialized.files!.map((f) => ({ ...f, objectKey: "ws/other/x.jpg" })) };

@@ -1,8 +1,12 @@
 import type { Metadata } from "next";
 import { tierByKey } from "@curvi/pipeline/seed";
 import { JsonLd } from "@/components/json-ld";
+import { FoundingOfferBanner } from "@/components/marketing/founding-offer-banner";
+import { studioComparisonLine } from "@/components/marketing/offer-copy";
 import { PricingTiers } from "@/components/marketing/pricing-tiers";
-import { isStripeConfigured } from "@/lib/env";
+import { isCheckoutOpen } from "@/lib/env";
+import { showTaxLine } from "@/lib/billing/renewal-terms";
+import { isStripeTaxEnabled } from "@/lib/billing/stripe";
 import { packsForCredits, typicalPackCredits } from "@/lib/marketing-facts";
 import { breadcrumbJsonLd, jsonLdGraph, pageMetadata, softwareApplicationJsonLd } from "@/lib/seo";
 
@@ -33,14 +37,19 @@ export default function PricingPage() {
           packs a month.
         </p>
         <p className="mt-2 text-sm text-ink-500">Prices are in US dollars. Cancel any time from Billing.</p>
-        {isStripeConfigured() ? null : (
+        {isCheckoutOpen() ? null : (
           <p className="mt-2 text-sm text-ink-500" data-testid="paid-plans-not-open">
             Paid plans open soon. You can start on the free plan today.
           </p>
         )}
+        <p className="mt-2 text-sm text-ink-500" data-testid="studio-comparison">
+          {studioComparisonLine()}
+        </p>
       </div>
+      {/* P18-21: shows only while the founding offer is live (GET /api/offer). */}
+      <FoundingOfferBanner className="mt-8" />
       <div className="mt-12">
-        <PricingTiers />
+        <PricingTiers showTaxLine={isCheckoutOpen() && showTaxLine(isStripeTaxEnabled())} />
       </div>
     </div>
   );

@@ -1,0 +1,104 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "curvi",
+  "version": "1.0.0",
+  "description": "Make marketplace and ad images from a real product photo. The product is never redrawn.",
+  "author": {
+    "name": "SET TO THE VERIFIED DEVELOPER NAME",
+    "email": "hello@curvi.ai",
+    "url": "https://curvi.ai"
+  },
+  "homepage": "https://curvi.ai",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Curvi",
+        "shortDescription": "Listing images from one photo",
+        "longDescription": "Curvi turns one product photo into images that fit each store's rules. Attach a photo of your product and say where you sell or advertise: Amazon, Shopify, Walmart, Etsy, eBay, TikTok Shop, Google Merchant, Meta, Pinterest or TikTok. Curvi cuts the product out and changes only the background, size and surroundings. The product itself is never redrawn. Resizing and color correction can change pixels; fidelity checks measure the result.\n\nPick a plain background such as white or warm white, keep your photo's own background, or add lifestyle scenes in a style you choose. Every image is checked against its channel's size and background rules, and Curvi tells you which images pass. You get preview and download links in the chat for the files you want.\n\nCurvi can also check whether a photo meets Amazon's main image rules.\n\nYou need a Curvi account, and you can create one when you connect.",
+        "developerName": "SET TO THE VERIFIED DEVELOPER NAME",
+        "category": "Creativity",
+        "capabilities": [
+          "Makes marketplace images from your own product photo without redrawing the product",
+          "Sizes images for Amazon, Shopify, Walmart, Etsy, eBay, TikTok Shop and Google Merchant",
+          "Makes ad images for Meta, Pinterest and TikTok placements",
+          "Plain color, kept photo or lifestyle scene backgrounds",
+          "Checks every image against its channel's size and background rules",
+          "Checks a photo against Amazon's main image rules"
+        ],
+        "websiteURL": "https://curvi.ai",
+        "supportURL": "https://curvi.ai/support",
+        "privacyPolicyURL": "https://curvi.ai/privacy",
+        "termsOfServiceURL": "https://curvi.ai/terms",
+        "defaultPrompt": [
+          "Make Amazon and Shopify listing images from this product photo on a white background.",
+          "Does this photo meet Amazon's main image rules?",
+          "Make a Meta feed image for Instagram and a Pinterest pin of this product in a kitchen scene."
+        ],
+        "brandColor": "#EC4899",
+        "brandColorDark": "#EC4899",
+        "composerIcon": "./assets/composer-icon.png",
+        "logo": "./assets/logo.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Check a main image",
+              "prompt": "Is this photo OK as an Amazon main image?",
+              "tools_triggered": "check_main_image",
+              "expected_behavior": "Curvi reports pass or fail for the longest side, the white background and the product fill, with the measured values. No credits are used.",
+              "file_attachment_urls": ["https://curvi.ai/review/sample-product.jpg"]
+            },
+            {
+              "description": "See what Curvi makes",
+              "prompt": "Which marketplaces, sizes and backgrounds can Curvi make for me?",
+              "tools_triggered": "list_channels",
+              "expected_behavior": "Lists channels with sizes, the backgrounds and the scene styles, and which ones this workspace's plan includes."
+            },
+            {
+              "description": "Estimate credits",
+              "prompt": "How many credits would an Amazon main image and a Shopify product image of this take?",
+              "tools_triggered": "estimate_pack",
+              "expected_behavior": "States the credits needed and the workspace balance. Nothing is started.",
+              "file_attachment_urls": ["https://curvi.ai/review/sample-product.jpg"]
+            },
+            {
+              "description": "Make a listing pack",
+              "prompt": "Make an Amazon main image and a Shopify product image of this on white.",
+              "tools_triggered": "estimate_pack, create_pack, get_pack",
+              "expected_behavior": "States the credits and asks to confirm, starts the pack and says it takes a few minutes, then, when asked, shows preview and download links and whether each image passes its channel's rules. The product is not redrawn, and stored fidelity measurements describe any color difference.",
+              "file_attachment_urls": ["https://curvi.ai/review/sample-product.jpg"]
+            },
+            {
+              "description": "Keep the photo's background",
+              "prompt": "Keep this photo's background and size it for Etsy and eBay.",
+              "tools_triggered": "estimate_pack, create_pack, get_pack",
+              "expected_behavior": "Same flow with the original background kept, sized for both channels.",
+              "file_attachment_urls": ["https://curvi.ai/review/sample-product.jpg"]
+            }
+          ],
+          "negative": [
+            {
+              "description": "Curvi makes images and does not write copy, so ChatGPT answers on its own without calling Curvi.",
+              "prompt": "Write a product description for my candle listing."
+            },
+            {
+              "description": "Curvi works only from a real product photo and never draws new images, so no Curvi tool is called and ChatGPT says Curvi needs a product photo.",
+              "prompt": "Draw a cartoon cat wearing a space helmet."
+            },
+            {
+              "description": "Curvi cannot change store listings or prices, so no Curvi tool is called and ChatGPT says this needs the Shopify admin.",
+              "prompt": "Change the price of my product in my Shopify store."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "Uses the credits in an existing Curvi account. Nothing is sold in ChatGPT."
+      },
+      "publication": {
+        "countries": [],
+        "release_notes": "First release. Make marketplace and ad images from a product photo and check Amazon main images."
+      }
+    }
+  }
+}

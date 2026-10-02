@@ -228,4 +228,18 @@ export const costCaps = {
   videoAssetMicros: 3_000_000,
   /** Hard stop for one full pack. */
   packMicros: 8_000_000,
+  workspaceDailyMultiplier: 3,
+  globalDailyAlertMicros: 50_000_000,
+  globalDailyHardStopMicros: 150_000_000,
+  workspaceExpectedDailyMicrosByTier: { free: 500_000, starter: 2_000_000, growth: 3_500_000, pro: 5_000_000, agency: 10_000_000 },
+} as const;
+
+/** Shape injected into the provider package, which has no product prices. */
+export const spendCapPolicy = {
+  perImageAssetMicros: costCaps.imageAssetMicros,
+  perVideoAssetMicros: costCaps.videoAssetMicros,
+  perPackMicros: costCaps.packMicros,
+  workspaceDailyMultiplier: costCaps.workspaceDailyMultiplier,
+  globalDailyAlertMicros: costCaps.globalDailyAlertMicros,
+  globalDailyHardStopMicros: costCaps.globalDailyHardStopMicros,
 } as const;

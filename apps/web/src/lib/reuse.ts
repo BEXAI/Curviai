@@ -12,6 +12,7 @@
  */
 
 import { QUESTION_KINDS, parseSellerAnswers, type QuestionKind, type SellerQuestion } from "@curvi/pipeline/questions";
+import { longDate } from "@/lib/dates";
 import { readStoredOutputOptions } from "@/lib/services/output-options";
 import type { PackMode } from "@/lib/services/types";
 
@@ -126,10 +127,7 @@ export const REUSE_LABEL = "Make this pack again";
 
 /** The notice above a prefilled form. */
 export function reuseNotice(createdAt: string): string {
-  const date = new Date(createdAt);
-  const day = Number.isNaN(date.getTime())
-    ? null
-    : date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+  const day = longDate(createdAt);
   return day
     ? `Filled in from your pack of ${day}. Add a new photo or keep the same one, and change anything you like.`
     : "Filled in from an earlier pack. Add a new photo or keep the same one, and change anything you like.";

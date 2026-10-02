@@ -17,15 +17,12 @@ import {
 import {
   decodeToRgba,
   encodePng,
-  fidelityReport,
-  qcKindForSpec,
   solidCanvas,
   type HarmonizeInput,
   type ImageOutput,
   type Shot,
 } from "@curvi/pipeline";
 import { adsFormats, CUTOUT_TASK, HARMONIZE_TASK, SCENE_PLATE_TASK } from "@curvi/pipeline/seed";
-import { getSpec } from "@curvi/specs";
 import type { CachedCutout, CutoutCacheStore } from "./cutout-cache";
 import { ShotUnavailableError } from "./errors";
 import {
@@ -34,8 +31,9 @@ import {
   carouselSlideContentOf,
   LiveShotGenerator,
 } from "./live-runtime";
-import type { PipelineDeps, ShotGeneration } from "./pipeline-runner";
+import type { PipelineDeps } from "./pipeline-runner";
 import { DemoLlmProvider, demoRoutingTable } from "./runtime";
+import { expectProductKept } from "./testing/rule3";
 
 class FakeCutoutProvider implements Provider {
   readonly name = "fal-birefnet";
@@ -174,18 +172,6 @@ function slide(index: number, count: number, method: Shot["method"]): Shot {
   });
 }
 
-async function expectProductKept(generation: ShotGeneration, specId: string): Promise<void> {
-  const spec = getSpec(specId);
-  expect(generation.image.width).toBe(spec.width);
-  expect(generation.image.height).toBe(spec.height);
-  const shipped = await decodeToRgba(generation.encoded.buffer);
-  expect(shipped.data.equals(generation.image.data)).toBe(true);
-  const opts = { kind: qcKindForSpec(spec), erodePx: generation.fidelityErodePx };
-  const report = await fidelityReport(generation.productReference!, shipped, generation.mask!, opts);
-  expect(report.issues, specId).toEqual([]);
-  expect(report.maskArea).toBeGreaterThan(0);
-}
-
 describe("rule 3 on every live ads output", () => {
   it("keeps the product exact on the pin, every ad placement and every carousel slide", async () => {
     const { generator } = setup(await texturedCutout(), new MemoryStore());
@@ -238,8 +224,8 @@ describe("the carousel scene layer (founder decision 4)", () => {
   });
 
   it("keys the layer under the workspace and the job, with nothing unsafe in the path", () => {
-    expect(carouselPlateKey("ws-1", "job/../x", "c/1")).toBe("ws/ws-1/cache/carousel/jobx/c1.png");
-    expect(carouselPlateKey("ws-1", "job-ads", "c1")).toBe("ws/ws-1/cache/carousel/job-ads/c1.png");
+    expect(carouselPlateKey("ws-1", "job/../x", "c/1")).toBe("tmp/ws/ws-1/cache/carousel/jobx/c1.png");
+    expect(carouselPlateKey("ws-1", "job-ads", "c1")).toBe("tmp/ws/ws-1/cache/carousel/job-ads/c1.png");
   });
 
   it("reads each slide's words and role from its shot", () => {

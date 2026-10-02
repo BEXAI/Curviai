@@ -1,0 +1,24 @@
+{
+  "name": "@curvi/openai-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Curvi plugin ZIP for ChatGPT and Codex (docs/phases/PHASE_19.md, P19-25): the manifest, its checks and the build.",
+  "type": "module",
+  "scripts": {
+    "zip": "tsx src/build.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@curvi/pipeline": "workspace:*",
+    "@curvi/specs": "workspace:*",
+    "archiver": "^7.0.1"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.2",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.2",
+    "vitest": "4.1.11"
+  }
+}

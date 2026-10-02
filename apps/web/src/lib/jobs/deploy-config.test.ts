@@ -1,65 +1,141 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { tiers, topUps, tick } from "@curvi/pipeline/seed";
+import { CRON_JOBS } from "../cron-health";
 import { readInlineRunnerConfig } from "./inline-runner";
 
-// The environment variables batch 1 added must be declared in render.yaml and
-// explained in the launch checklist, so the founder can set them (rule 8).
 const root = new URL("../../../../../", import.meta.url);
-const renderYaml = readFileSync(new URL("render.yaml", root), "utf8");
+// ESLint pins this YAML parser in the lockfile; no production dependency.
+const require = createRequire(import.meta.url);
+const yaml = createRequire(require.resolve("eslint"))("js-yaml") as { load(text: string): Blueprint };
+type Entry = { key?: string; value?: string; sync?: boolean; generateValue?: boolean; fromGroup?: string };
+type Service = { name: string; type: string; schedule?: string; runtime: string; buildCommand?: string; dockerfilePath?: string; dockerCommand?: string; autoDeployTrigger?: string; envVars: Entry[] };
+type Blueprint = { services: Service[]; envVarGroups: Array<{ name: string; envVars: Entry[] }> };
+const blueprint = yaml.load(readFileSync(new URL("render.yaml", root), "utf8"));
 const checklist = readFileSync(new URL("docs/LAUNCH_CHECKLIST.md", root), "utf8");
+const inventory = checklist.slice(checklist.indexOf("## Production environment inventory"));
+const keys = (entries: Entry[]) => entries.flatMap((entry) => entry.key ? [entry.key] : []);
+const service = (name: string) => blueprint.services.find((entry) => entry.name === name)!;
 
-const BATCH_1_ENV = [
-  "STRIPE_TAX_ENABLED",
-  "FOUNDER_ALERT_EMAIL",
-  "FOUNDER_ALERT_FROM",
-  "CURVI_INLINE_PACK_CONCURRENCY",
-  "CURVI_SHUTDOWN_GRACE_MS",
-  "CURVI_INLINE_PACK_MAX_RUN_MS",
-  "UPSTASH_REDIS_REST_URL",
-  "UPSTASH_REDIS_REST_TOKEN",
-];
-
-/** The envVars entry for a key: its own lines up to the next entry. */
-function renderEntry(key: string): string | null {
-  const match = new RegExp(`- key: ${key}\\n((?:\\s+(?!- key:)[^\\n]*\\n)*)`).exec(renderYaml);
-  return match ? match[0] : null;
+/** Finite exceptions, each documented in the inventory. Never a prefix exemption. */
+const EXTERNAL_ENV = new Set([
+  "ALLOW_DEMO_MODE", "APPDATA", "CI", "CURVI_API_KEY", "CURVI_API_URL", "CURVI_CONFIG_DIR",
+  "CURVI_DEMO_ACQUISITION", "CURVI_RSS_TEST", "GITHUB_RUN_ID", "INIT_CWD", "NEXT_MANUAL_SIG_HANDLE",
+  "NEXT_PUBLIC_ENV_LABEL", "NEXT_RUNTIME", "OPS_OPERATOR_EMAIL", "OPS_RELEASE_EMAIL", "OPS_SITE_URL", "PORT", "RENDER_API_KEY",
+  "RENDER_BACKUP_CRON_ID", "RENDER_GIT_COMMIT", "RENDER_SERVICE_ID", "STAGING_DATABASE_URL",
+  "STAGING_SUPABASE_URL", "STRIPE_E2E", "TEST_DATABASE_URL", "TRIGGER_SECRET_KEY", "XDG_CONFIG_HOME",
+  "SMOKE_BASE_URL", "SMOKE_MODE", "SMOKE_API_KEY", "SMOKE_USER_EMAIL", "SMOKE_USER_PASSWORD",
+  "SMOKE_ALLOW_PACKS", "SMOKE_ALLOW_PRODUCTION_PACK", "SMOKE_WORKSPACE_EXCLUDED", "SMOKE_EXPECTED_SHA",
+  "STAGING_OPS_SITE_URL", "STAGING_CRON_SECRET", "STAGING_OPS_RELEASE_TOKEN", "STAGING_OPS_RELEASE_EMAIL",
+  "STAGING_RENDER_API_KEY", "STAGING_RENDER_SERVICE_ID", "STAGING_RENDER_BACKUP_CRON_ID", "BACKUP_TIMESTAMP", "TMPDIR",
+]);
+// Known provider enums/path labels, not environment names. A new uppercase
+// literal must be classified explicitly so injected readers cannot evade CI.
+const NOT_ENV = new Set(["BLOCK_REASON_UNSPECIFIED", "DRINKING_CUP", "ERR_JOSE_GENERIC", "IMAGE_OTHER", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "IMAGE_SAFETY", "IN_PROGRESS", "IN_QUEUE", "PHASE_19", "PROHIBITED_CONTENT"]);
+const VARIABLE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
+function namesIn(text: string, path = "fixture.ts"): Set<string> {
+  const names = new Set<string>();
+  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+  function visit(node: ts.Node) {
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && VARIABLE.test(node.text) && !NOT_ENV.has(node.text)) names.add(node.text);
+    if (ts.isPropertyAccessExpression(node) && /(?:^|\.)env$/.test(node.expression.getText(file)) && /^[A-Z][A-Z0-9_]+$/.test(node.name.text)) names.add(node.name.text);
+    if (ts.isCallExpression(node)) {
+      const call = node.expression.getText(file).split(".").at(-1);
+      const argument = node.arguments[0];
+      if (["optionalEnv", "requireEnv", "readEnv"].includes(call ?? "") && argument && ts.isStringLiteral(argument) && /^[A-Z][A-Z0-9_]*$/.test(argument.text)) names.add(argument.text);
+      const targetKey = node.arguments[1];
+      if (call === "targetValue" && targetKey && ts.isStringLiteral(targetKey)) names.add(`STAGING_${targetKey.text}`);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  return names;
+}
+function sourceFiles(path: string): string[] {
+  return readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
+    if (["node_modules", "dist", "eval", "testing", ".next"].includes(entry.name)) return [];
+    const full = join(path, entry.name);
+    if (entry.isDirectory()) return sourceFiles(full);
+    return /\.(?:[cm]?ts|tsx|js)$/.test(entry.name) && !/\.(?:test|spec)\./.test(entry.name) ? [full] : [];
+  });
+}
+const files = ["apps/web/src", "apps/web/scripts", "trigger/src", "packages", "e2e/smoke"].flatMap((path) => sourceFiles(new URL(path, root).pathname));
+files.push(new URL("apps/web/next.config.ts", root).pathname);
+const discovered = new Set(files.flatMap((path) => [...namesIn(readFileSync(path, "utf8"), path)]));
+// Computed names follow the real seeds, so a new tier/cadence cannot be missed.
+for (const tier of tiers.filter((item) => item.monthlyUsd > 0)) {
+  for (const cadence of ["MONTHLY", "ANNUAL"]) discovered.add(`STRIPE_PRICE_${tier.key.toUpperCase()}_${cadence}`);
+  for (const suffix of ["", "_ANNUAL"]) discovered.add(`STRIPE_PORTAL_UPGRADE_CONFIG_${tier.key.toUpperCase()}${suffix}`);
+}
+for (const topUp of topUps) discovered.add(`STRIPE_PRICE_TOPUP_${topUp.credits}`);
+const BACKUP_ENV = ["BACKUP_DATABASE_URL", "BACKUP_AGE_RECIPIENT", "BACKUP_R2_ACCOUNT_ID", "BACKUP_R2_BUCKET", "BACKUP_R2_ACCESS_KEY_ID", "BACKUP_R2_SECRET_ACCESS_KEY", "HEALTHCHECKS_BACKUP_URL"];
+const SHARED_ENV = ["NEXT_PUBLIC_SITE_URL", "CRON_SECRET", "NODE_ENV"];
+const deploymentNames = new Set([...blueprint.services.flatMap((item) => keys(item.envVars)), ...blueprint.envVarGroups.flatMap((group) => keys(group.envVars))]);
+function missingNames(names: Iterable<string>, declared = deploymentNames): string[] {
+  return [...names].filter((name) => !EXTERNAL_ENV.has(name) && !declared.has(name)).sort();
+}
+function misplacedSecrets(input: Blueprint): string[] {
+  const allowed = { Curviai: new Set([...deploymentNames].filter((key) => !BACKUP_ENV.includes(key) && key !== "HEALTHCHECKS_TICK_URL")), "curvi-backup": new Set(BACKUP_ENV), "curvi-tick": new Set(["HEALTHCHECKS_TICK_URL"]) };
+  return input.services.flatMap((item) => keys(item.envVars).filter((key) => !allowed[item.name as keyof typeof allowed]?.has(key)).map((key) => `${item.name}:${key}`));
 }
 
-describe("batch 1 deploy configuration", () => {
-  it("declares every new variable in render.yaml, secrets without a value", () => {
-    for (const key of BATCH_1_ENV) {
-      const entry = renderEntry(key);
-      expect(entry, key).not.toBeNull();
-      expect(entry, key).toMatch(/sync: false|value: "/);
+describe("production deploy configuration", () => {
+  it("covers direct, injected and dynamically named environment reads", () => {
+    expect([...namesIn('optionalEnv("NEW_SERVICE_TOKEN"); requireEnv("SECOND_API_KEY"); process.env.DIRECT; env.NESTED_SECRET; const KEY = "DYNAMIC_API_KEY"; readEnv(KEY);')].sort()).toEqual(["DIRECT", "DYNAMIC_API_KEY", "NESTED_SECRET", "NEW_SERVICE_TOKEN", "SECOND_API_KEY"]);
+    expect(missingNames(discovered)).toEqual([]);
+    expect(missingNames(["UNDECLARED_API_KEY"])).toEqual(["UNDECLARED_API_KEY"]);
+  });
+  it("documents every source/deployment name and explicit exception", () => {
+    expect(inventory.startsWith("## Production environment inventory")).toBe(true);
+    for (const name of new Set([...discovered, ...deploymentNames, ...EXTERNAL_ENV])) expect(inventory, name).toContain(`| \`${name}\` |`);
+  });
+  it("isolates each cron's credentials from the web service", () => {
+    expect(blueprint.envVarGroups).toHaveLength(1);
+    expect(keys(blueprint.envVarGroups[0].envVars).sort()).toEqual([...SHARED_ENV].sort());
+    expect(blueprint.envVarGroups[0].envVars.find((item) => item.key === "CRON_SECRET")).toEqual({ key: "CRON_SECRET", generateValue: true });
+    expect(keys(service("curvi-backup").envVars).sort()).toEqual([...BACKUP_ENV].sort());
+    expect(keys(service("curvi-tick").envVars)).toEqual(["HEALTHCHECKS_TICK_URL"]);
+    for (const item of blueprint.services) expect(item.envVars.filter((entry) => entry.fromGroup)).toEqual([{ fromGroup: "curvi-common" }]);
+    expect(misplacedSecrets(blueprint)).toEqual([]);
+    const corrupted = structuredClone(blueprint);
+    corrupted.services.find((item) => item.name === "Curviai")!.envVars.push({ key: "BACKUP_R2_SECRET_ACCESS_KEY", sync: false });
+    expect(misplacedSecrets(corrupted)).toContain("Curviai:BACKUP_R2_SECRET_ACCESS_KEY");
+  });
+  it("does not commit secrets or retired Trigger.dev configuration", () => {
+    const publicDefaults = new Set(["NODE_VERSION", "CURVI_INLINE_PACK_CONCURRENCY"]);
+    for (const item of blueprint.services) for (const entry of item.envVars) {
+      if (entry.key && !publicDefaults.has(entry.key)) expect(entry, `${item.name}:${entry.key}`).toEqual({ key: entry.key, sync: false });
     }
-    expect(renderEntry("UPSTASH_REDIS_REST_TOKEN")).toMatch(/sync: false/);
-    expect(renderEntry("UPSTASH_REDIS_REST_TOKEN")).not.toMatch(/value:/);
+    expect(deploymentNames.has("TRIGGER_SECRET_KEY")).toBe(false);
+    expect(service("Curviai").autoDeployTrigger).toBe("checksPass");
+    expect(service("Curviai").buildCommand).toContain("--prod=false");
+    expect([...deploymentNames].filter((name) => EXTERNAL_ENV.has(name))).toEqual([]);
+    expect(new Set(keys(service("Curviai").envVars)).size).toBe(keys(service("Curviai").envVars).length);
   });
-
-  it("explains every new variable in the launch checklist's table", () => {
-    const section = checklist.slice(checklist.indexOf("## Environment variables added in batch 1"));
-    expect(section.startsWith("## Environment variables added in batch 1")).toBe(true);
-    for (const key of BATCH_1_ENV) {
-      expect(section, key).toContain(`| \`${key}\` |`);
-      expect(section, key).toContain(`${key}=`);
+  it("maps the two cron services to registered work and installs their commands", () => {
+    expect(blueprint.services.filter((item) => item.type === "cron").map((item) => item.name).sort()).toEqual(["curvi-backup", "curvi-tick"]);
+    expect(CRON_JOBS.find((job) => job.name === "backup")).toBeDefined();
+    expect(CRON_JOBS.filter((job) => "run" in job).length).toBeGreaterThan(0);
+    expect(service("curvi-backup").schedule).toBe("15 9 * * *");
+    expect(service("curvi-tick").schedule).toBe(`*/${tick.everyMinutes} * * * *`);
+    const docker = readFileSync(new URL("ops/cron/Dockerfile", root), "utf8");
+    for (const name of ["backup", "tick"]) {
+      const item = service(`curvi-${name}`);
+      expect(item.runtime).toBe("docker");
+      expect(item.dockerfilePath).toBe("./ops/cron/Dockerfile");
+      expect(item.dockerCommand).toBe(`/usr/local/bin/curvi-${name}`);
+      expect(docker).toContain(`COPY ops/cron/${name}.sh /usr/local/bin/curvi-${name}`);
     }
   });
-
-  it("puts the seed between the migrations and the push in the deploy order", () => {
-    const order = checklist.slice(checklist.indexOf("## Deploy order for batch 1"), checklist.indexOf("## 1."));
-    const migrate = order.indexOf("apply migrations 0011, 0012 and 0013");
-    const seed = order.indexOf("pnpm db:seed");
-    const push = order.indexOf("push main");
-    const healthPath = order.indexOf("health check path");
-    expect(migrate).toBeGreaterThan(-1);
-    expect(seed).toBeGreaterThan(migrate);
-    expect(push).toBeGreaterThan(seed);
-    expect(healthPath).toBeGreaterThan(push);
+  it("documents founder env-example verification without reading the protected file", () => {
+    expect(inventory).toContain("`.env.example` was not read");
+    expect(inventory).toContain("Founder verification required");
+    expect(files.some((path) => path.split("/").at(-1)?.startsWith(".env"))).toBe(false);
   });
-
-  it("reads the run cap variable the checklist documents", () => {
-    expect(readInlineRunnerConfig((name) => (name === "CURVI_INLINE_PACK_MAX_RUN_MS" ? "120000" : undefined)).maxRunMs).toBe(
-      120_000,
-    );
+  it("reads the documented inline run cap", () => {
+    expect(readInlineRunnerConfig((name) => name === "CURVI_INLINE_PACK_MAX_RUN_MS" ? "120000" : undefined).maxRunMs).toBe(120_000);
   });
 });

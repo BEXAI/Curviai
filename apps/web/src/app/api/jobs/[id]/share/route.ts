@@ -1,8 +1,10 @@
 /**
  * /api/jobs/[id]/share
  * GET: the pack's share page status for the job board.
- * POST { kind, gallery }: publish the pack to /s/{slug}, as a before and
- * after or the whole pack, and optionally opt it into the public gallery.
+ * POST { kind, gallery, proof }: publish the pack to /s/{slug}, as a before
+ * and after or the whole pack, optionally opt it into the public gallery,
+ * and optionally show each image's measured checks (proof, P18-16; left
+ * out, the page keeps its current choice, off for a new page).
  * DELETE: take the share page (and its gallery entry) down.
  *
  * Publishing is a consent decision, so only owners and admins may do it
@@ -12,6 +14,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { recordFunnel } from "@/lib/funnel";
 import { readJsonCapped } from "@/lib/http/json-body";
 import { sameOriginOrRefuse } from "@/lib/http/same-origin";
 import { resolveSignedIn, type SignedInResolution } from "@/lib/http/services";
@@ -24,6 +27,7 @@ export const dynamic = "force-dynamic";
 const PublishRequest = z.object({
   kind: z.enum(["before_after", "pack"] as const satisfies readonly ShareKind[]),
   gallery: z.boolean().default(false),
+  proof: z.boolean().optional(),
 });
 
 type Context = { params: Promise<{ id: string }> };
@@ -83,7 +87,16 @@ export async function POST(request: Request, context: Context): Promise<NextResp
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
-  return actionResponse(await getShareStore().publish(resolved.workspace, id, parsed.data));
+  const result = await getShareStore().publish(resolved.workspace, id, parsed.data);
+  if (result.ok) {
+    // The server side funnel (P18-02).
+    await recordFunnel({
+      workspaceId: resolved.workspace.id,
+      name: "share_published",
+      props: { kind: parsed.data.kind, gallery: parsed.data.gallery },
+    });
+  }
+  return actionResponse(result);
 }
 
 export async function DELETE(request: Request, context: Context): Promise<NextResponse> {

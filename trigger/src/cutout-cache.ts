@@ -18,10 +18,11 @@
  */
 
 import { createHash } from "node:crypto";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import type { Provider, ProviderRegistry, ProviderRequest, ProviderResponse } from "@curvi/ai";
 import { CUTOUT_TASK } from "@curvi/pipeline/seed";
-import { R2_REQUEST_TIMEOUTS } from "./r2";
+import { optionalEnv, type ReadEnv } from "./env";
+import { r2FromEnv } from "./r2";
 
 /** How long a cached cutout is reused: the preflight's own freshness. */
 export const CUTOUT_CACHE_FRESH_MS = 24 * 60 * 60 * 1000;
@@ -42,7 +43,15 @@ export interface CutoutCacheStore {
 export function cutoutCacheKey(workspaceId: string, imageBytes: Uint8Array, format = "png"): string {
   const digest = createHash("sha256").update(imageBytes).digest("hex");
   const ext = /^[a-z0-9]{1,8}$/.test(format) ? format : "png";
-  return `ws/${workspaceId}/cache/cutout/${digest}.${ext}`;
+  return `tmp/ws/${workspaceId}/cache/cutout/${digest}.${ext}`;
+}
+
+/** Read the new temporary location first, then its pre-migration location.
+ * Only builders produce these keys; a missing cache may safely recompute. */
+export async function readTemporaryCache(store: CutoutCacheStore, key: string): Promise<CachedCutout | null> {
+  const current = await store.get(key).catch(() => null);
+  if (current || !key.startsWith("tmp/ws/")) return current;
+  return store.get(key.slice(4)).catch(() => null);
 }
 
 interface CutoutInputShape {
@@ -83,10 +92,7 @@ export function cacheCutouts(
         return inner<TIn, TOut>(req);
       }
       const key = cutoutCacheKey(req.workspaceId, bytes, typeof input?.format === "string" ? input.format : "png");
-      const hit = await store.get(key).catch((err: unknown) => {
-        console.warn(`[cutout-cache] could not read ${key}`, err instanceof Error ? err.message : err);
-        return null;
-      });
+      const hit = await readTemporaryCache(store, key);
       if (hit && now().getTime() - hit.storedAt.getTime() < freshMs) {
         return {
           output: { imageBytes: new Uint8Array(hit.bytes), contentType: hit.contentType } as TOut,
@@ -110,30 +116,13 @@ export function cacheCutouts(
   return wrapped;
 }
 
-type ReadEnv = (name: string) => string | undefined;
-
-const readEnvDefault: ReadEnv = (name) => {
-  const value = process.env[name];
-  return value && value.length > 0 ? value : undefined;
-};
-
 /** The R2 backed store, or null when R2 is not configured. */
-export function r2CutoutCacheStore(readEnv: ReadEnv = readEnvDefault): CutoutCacheStore | null {
-  const accountId = readEnv("R2_ACCOUNT_ID");
-  const accessKeyId = readEnv("R2_ACCESS_KEY_ID");
-  const secretAccessKey = readEnv("R2_SECRET_ACCESS_KEY");
-  if (!accountId || !accessKeyId || !secretAccessKey) {
+export function r2CutoutCacheStore(readEnv: ReadEnv = optionalEnv): CutoutCacheStore | null {
+  const r2 = r2FromEnv(readEnv);
+  if (!r2) {
     return null;
   }
-  const bucket = readEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
-  const client = new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId, secretAccessKey },
-    // A stalled socket to R2 fails instead of hanging the shot, and with it
-    // the process wide queue kept photo shots wait in.
-    requestHandler: R2_REQUEST_TIMEOUTS,
-  });
+  const { client, bucket } = r2;
   return {
     async get(key) {
       try {
@@ -152,11 +141,4 @@ export function r2CutoutCacheStore(readEnv: ReadEnv = readEnvDefault): CutoutCac
       await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes, ContentType: contentType }));
     },
   };
-}
-
-/** Puts the R2 cutout cache in front of the registry's cutout providers when
- * R2 is configured; a no op otherwise. */
-export function installCutoutCache(registry: ProviderRegistry, readEnv: ReadEnv = readEnvDefault): string[] {
-  const store = r2CutoutCacheStore(readEnv);
-  return store ? cacheCutouts(registry, store) : [];
 }

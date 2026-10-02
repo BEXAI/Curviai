@@ -7,10 +7,16 @@
  * lib/marketing-facts (FEATURES), so /pricing and /app/billing can never
  * disagree with the rest of the site: flipping a flag there moves the line
  * here. Counts come from the seed entitlements; only wording lives here.
+ *
+ * docs/phases/PHASE_20.md P20-08: a plan card lists only what runs today
+ * (includedFeatures). Lines that do not run yet are never inside a card;
+ * they go to one "On the way" list under the cards (onTheWay), each with the
+ * smallest plan that will get it.
  */
 
 import { entitlementsFor, type TierKey } from "@curvi/pipeline/seed";
 import { FEATURES, type Availability, type FeatureKey } from "@/lib/marketing-facts";
+import { selfServeTierKeys, tierDisplayName, type PaidTierKey } from "./plans";
 
 export type FeatureStatus = Availability;
 
@@ -51,7 +57,7 @@ const PLAN_LINES: Record<TierKey, PlanLine[]> = {
     { label: "Shopify auto packs for new products", needs: ["shopifyAutoPacks"] },
   ],
   pro: [
-    { label: "Everything in Starter", needs: [] },
+    { label: "Everything in Growth", needs: [] },
     { label: "UGC hook ads", needs: ["ugcAds"] },
     { label: brandKits("pro"), needs: ["multipleBrandKits"] },
     { label: "Priority queue", needs: ["priorityQueue"] },
@@ -84,4 +90,41 @@ export function comingSoonFeatures(tier: TierKey): string[] {
   return planFeatures(tier)
     .filter((feature) => feature.status === "coming_soon")
     .map((feature) => feature.label);
+}
+
+export interface OnTheWayLine {
+  label: string;
+  /** The smallest of the listed plans that will include it. */
+  fromTier: PaidTierKey;
+  /** "Starter and up", or just "Pro" for the largest listed plan. */
+  plans: string;
+}
+
+/**
+ * The one "On the way" list under the plan cards: every line of the listed
+ * plans that does not run yet, once, with the smallest plan that gets it.
+ * Defaults to the plans sold online, so Agency's lines stay off the page.
+ */
+export function onTheWay(tierKeys: readonly PaidTierKey[] = selfServeTierKeys): OnTheWayLine[] {
+  const lines: OnTheWayLine[] = [];
+  const last = tierKeys[tierKeys.length - 1];
+  for (const tier of tierKeys) {
+    for (const label of comingSoonFeatures(tier)) {
+      if (lines.some((line) => line.label === label)) {
+        continue;
+      }
+      lines.push({
+        label,
+        fromTier: tier,
+        plans: tier === last ? tierDisplayName(tier) : `${tierDisplayName(tier)} and up`,
+      });
+    }
+  }
+  return lines;
+}
+
+/** Every site wide feature flag a plan card line reads, for the test that
+ * keeps FEATURES and the seed's featureStatus in step. */
+export function planCardFeatureKeys(): FeatureKey[] {
+  return [...new Set(Object.values(PLAN_LINES).flatMap((lines) => lines.flatMap((line) => line.needs)))];
 }

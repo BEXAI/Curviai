@@ -32,7 +32,6 @@ import {
   InMemoryCostMeter,
   emptyLlmUsageTotals,
   llmProviderFamilyOf,
-  type CapStore,
   type CostMeterEntry,
   type LlmUsageTotals,
   type ProviderQuotaInfo,
@@ -46,12 +45,15 @@ import {
   type LlmCreditWindow,
   type LlmFallbackAlertPolicy,
 } from "@curvi/pipeline/seed";
-import type { FetchLike } from "./digest";
+import { sendAlertReport, type AlertReport } from "./alert-report";
+import { llmFamilyName } from "./digest";
+import type { FetchLike } from "./email-transport";
 import { InMemoryAlertDedupe, sendFounderEmail, type AlertDedupe, type ReadEnv, type SpendAlertEmail } from "./spend-alerts";
+
+export { llmFamilyName } from "./digest";
 
 /** Counter key parts are joined with this; provider names hold colons. */
 const SEP = "|";
-export const LLM_COUNTER_PREFIX = `llm${SEP}`;
 
 /** The token and spend metrics kept per day, recipe and provider. */
 export const LLM_DAY_METRICS = [
@@ -212,18 +214,12 @@ export const LLM_ALERT_EVENT_NAMES: Record<LlmAlertKind, string> = {
   llm_credit_expiry: "llm_credit_expiry_reminder",
 };
 
-const FAMILY_NAMES: Record<string, string> = { openai: "OpenAI", anthropic: "Claude" };
-
-function familyName(family: string): string {
-  return FAMILY_NAMES[family] ?? family;
-}
-
 function pct(share: number): string {
   return `${(share * 100).toFixed(1)} percent`;
 }
 
 export function composeQuotaAlert(family: string, info: ProviderQuotaInfo, hour: string): SpendAlertEmail {
-  const name = familyName(family);
+  const name = llmFamilyName(family);
   return {
     subject: `Curvi: ${name} says the account is out of quota or credit`,
     text: [
@@ -241,8 +237,8 @@ export function composeFallbackAlert(
   fallbackCalls: number,
   policy: LlmFallbackAlertPolicy = llmFallbackAlertPolicy,
 ): SpendAlertEmail {
-  const primary = familyName(policy.primaryFamily);
-  const fallback = familyName(policy.fallbackFamily);
+  const primary = llmFamilyName(policy.primaryFamily);
+  const fallback = llmFamilyName(policy.fallbackFamily);
   return {
     subject: `Curvi: ${fallback} served ${pct(fallbackCalls / primaryCalls)} of ${primary} calls this hour`,
     text: [
@@ -254,7 +250,7 @@ export function composeFallbackAlert(
 }
 
 export function composeCreditExpiryReminder(window: LlmCreditWindow, day: string): SpendAlertEmail {
-  const name = familyName(window.family);
+  const name = llmFamilyName(window.family);
   const days = daysUntil(day, window.expiresOn);
   return {
     subject: `Curvi: the ${name} credits expire on ${window.expiresOn}`,
@@ -280,6 +276,9 @@ export interface LlmAlertNotifierOptions {
   now?: () => Date;
   /** Wait before a failed send is tried again. Default LLM_ALERT_RETRY_MS. */
   retryAfterMs?: number;
+  /** The second channel (PHASE_20 P20-13): the process wide hook the web
+   * app installs (alert-report.ts) unless one is injected. */
+  report?: AlertReport;
 }
 
 export interface LlmAlertResult {
@@ -344,6 +343,7 @@ export class LlmAlertNotifier {
     }
     result.deduped = false;
 
+    sendAlertReport(this.opts.report, email.subject, { alert: kind, period }, kind === "llm_quota" ? "error" : "warning");
     const sent = await sendFounderEmail(email, { readEnv: this.opts.readEnv, fetchImpl: this.opts.fetchImpl });
     this.retryAt.delete(key);
     if (sent.ok) {
@@ -554,13 +554,6 @@ export class LlmMonitorMeter extends InMemoryCostMeter {
     super.record(entry);
     this.monitor.track(this.monitor.observe(entry));
   }
-}
-
-/** PgCapStore and the in memory store both serve as counter stores. */
-export function llmCounterStoreFrom(store: CapStore | LlmCounterStore | undefined): LlmCounterStore | undefined {
-  if (!store) return undefined;
-  if ("addMany" in store && "listByPrefix" in store) return store;
-  return undefined;
 }
 
 const monitorScope = globalThis as typeof globalThis & { __curviLlmMonitor?: LlmMonitor };

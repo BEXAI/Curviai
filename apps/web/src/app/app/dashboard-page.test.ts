@@ -2,6 +2,7 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { JobSummary } from "@/lib/services/types";
+import { stubOpenCheckout } from "@/lib/billing/test-env";
 
 // The dashboard's credit card: a balance a plan change took below zero is
 // explained (what happened, and that a top up or the next renewal lets packs
@@ -58,7 +59,7 @@ describe("dashboard credit card", () => {
     const card = creditCard(await renderDashboard(-12));
     expect(card).toContain('data-testid="negative-balance"');
     expect(card).toContain("12 credits below zero");
-    expect(card).toContain("A move to a smaller plan");
+    expect(card).toContain("A plan change returned money for time you had already been billed for");
     expect(card).toContain("were taken back");
     expect(card).toContain("a top up or your next renewal");
     expect(card).not.toContain("-12");
@@ -86,7 +87,7 @@ describe("dashboard low balance nudge", () => {
   });
 
   it("offers the next plan up from the seed when Stripe is on", async () => {
-    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_paywall");
+    stubOpenCheckout(vi.stubEnv);
     try {
       const html = await renderDashboard(2);
       expect(html).toContain("Upgrade to Growth");
@@ -120,6 +121,48 @@ describe("dashboard recent packs", () => {
       expect(html).toContain("18 credits charged");
       expect(html).toContain("Nothing charged");
       expect(html).not.toContain("credits reserved");
+    } finally {
+      page.jobs = [];
+    }
+  });
+});
+
+describe("dashboard example pack (P18-20)", () => {
+  it("shows the real candle pack files on an empty dashboard, labeled as an example", async () => {
+    const html = await renderDashboard(15);
+    expect(html).toContain('data-testid="example-pack"');
+    expect(html).toContain("Example made by Curvi from one candle photo");
+    expect(html).toContain('src="/home/pack/amazon-main.webp"');
+    expect(html).toContain('src="/home/pack/lifestyle-warm.webp"');
+    const text = html.replace(/<[^>]+>/g, " ");
+    expect(text).not.toMatch(/[–—→←]| - |->|<-/);
+  });
+
+  it("points only at files that ship in public/home/pack", async () => {
+    const { EXAMPLE_PACK_FILES } = await import("@/components/app/example-pack");
+    const { existsSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const dir = fileURLToPath(new URL("../../../public/home/pack/", import.meta.url));
+    expect(EXAMPLE_PACK_FILES.length).toBeGreaterThan(0);
+    for (const file of EXAMPLE_PACK_FILES) {
+      expect(existsSync(`${dir}${file.src}`), file.src).toBe(true);
+      expect(file.alt.length).toBeGreaterThan(10);
+    }
+  });
+
+  it("is gone once the workspace has a pack", async () => {
+    page.jobs = [
+      {
+        id: "00000000-0000-4000-8000-000000000009",
+        productTitle: "Candle",
+        status: "done",
+        creditsReserved: 8,
+        creditsCharged: 8,
+        createdAt: new Date(0).toISOString(),
+      },
+    ];
+    try {
+      expect(await renderDashboard(15)).not.toContain('data-testid="example-pack"');
     } finally {
       page.jobs = [];
     }

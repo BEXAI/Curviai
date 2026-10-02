@@ -1,15 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { QUOTA_OPEN_SECONDS, type RecordedProbe } from "@curvi/ai";
+import { CircuitBreaker, InMemoryBreakerStore, QUOTA_OPEN_SECONDS, type RecordedProbe } from "@curvi/ai";
 import { SHOT_SCENE_PAUSED } from "@curvi/trigger/pipeline-runner";
 import { needsReviewNote, SCENE_PAUSED_NOTE } from "./job-copy";
 import {
-  evaluatePreflight,
   evaluatePreflightDetail,
   PACKS_PAUSED_COPY,
   PACKS_PAUSED_QUOTA_COPY,
   preflightCopy,
   PROBE_FRESH_MS,
-  providerPreflight,
   providerPreflightDetail,
   restoreQuotaTrips,
   SCENES_PAUSED_COPY,
@@ -36,6 +34,11 @@ function deps(open: string[], probes: Record<string, Partial<RecordedProbe>> = {
       probes[name] ? ({ name, ok: false, status: null, latencyMs: 1, at: NOW, ...probes[name] } as RecordedProbe) : null,
     now: () => NOW,
   };
+}
+
+/** The verdict alone, as the banner reads it. */
+async function evaluatePreflight(d: PreflightDeps) {
+  return (await evaluatePreflightDetail(d)).verdict;
 }
 
 describe("evaluatePreflight", () => {
@@ -81,9 +84,11 @@ describe("evaluatePreflight", () => {
     }
   });
 
-  it("providerPreflight accepts injected deps and never throws", async () => {
-    expect(await providerPreflight({ ...deps(["fal-birefnet"]) })).toBe("packs_paused");
-    expect(await providerPreflight({ targets: [], isOpen: async () => true, lastProbe: () => null, now: () => NOW })).toBe("ok");
+  it("providerPreflightDetail accepts injected deps and never throws", async () => {
+    expect((await providerPreflightDetail({ ...deps(["fal-birefnet"]) })).verdict).toBe("packs_paused");
+    expect(
+      (await providerPreflightDetail({ targets: [], isOpen: async () => true, lastProbe: () => null, now: () => NOW })).verdict,
+    ).toBe("ok");
   });
 });
 
@@ -117,6 +122,28 @@ describe("pause cause", () => {
 });
 
 describe("restoreQuotaTrips", () => {
+  it("does not restore an old quota event after a durable pass/reset, but restores a newer failure", async () => {
+    const breaker = new CircuitBreaker(new InMemoryBreakerStore(() => NOW));
+    const name = "fal-birefnet";
+    await breaker.tripForQuota(name);
+    const resolved = new Map([[name, NOW - 1000]]);
+    expect(await restoreQuotaTrips(breaker, TARGETS, async () => new Map([[name, NOW - 2000]]), NOW, resolved)).toEqual([]);
+    expect(await breaker.isOpen(name)).toBe(false);
+    // A new process has no local state; persistent recovery still wins.
+    const restarted = new CircuitBreaker(new InMemoryBreakerStore(() => NOW));
+    await restoreQuotaTrips(restarted, TARGETS, async () => new Map([[name, NOW - 2000]]), NOW, resolved);
+    expect(await restarted.isOpen(name)).toBe(false);
+    await restoreQuotaTrips(restarted, TARGETS, async () => new Map([[name, NOW - 500]]), NOW, resolved);
+    expect(await restarted.openReason(name)).toBe("quota");
+  });
+
+  it("does not clear an unrelated failure breaker because of an older successful canary", async () => {
+    const breaker = new CircuitBreaker(new InMemoryBreakerStore(() => NOW), { failureThreshold: 1 });
+    await breaker.recordFailure("fal-birefnet");
+    await restoreQuotaTrips(breaker, TARGETS, async () => new Map([["fal-birefnet", NOW - 2000]]), NOW, new Map([["fal-birefnet", NOW - 1000]]));
+    expect(await breaker.openReason("fal-birefnet")).toBe("failures");
+  });
+
   const cutoutTargets = TARGETS;
 
   function fakeBreaker(open: string[] = []) {

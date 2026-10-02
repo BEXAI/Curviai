@@ -14,18 +14,17 @@
  * reservations for failed work with release(result.key, micros).
  */
 
-export const SPEND_CAPS = {
-  perImageAssetMicros: 600_000,
-  perVideoAssetMicros: 3_000_000,
-  perPackMicros: 8_000_000,
-  /** Daily workspace ceiling multiplier over the plan's expected daily spend. */
-  workspaceDailyMultiplier: 3,
-  globalDailyAlertMicros: 50_000_000,
-  globalDailyHardStopMicros: 150_000_000,
-} as const;
+export interface SpendCapPolicy {
+  perImageAssetMicros: number;
+  perVideoAssetMicros: number;
+  perPackMicros: number;
+  workspaceDailyMultiplier: number;
+  globalDailyAlertMicros: number;
+  globalDailyHardStopMicros: number | (() => Promise<number>);
+}
 
-export function dailyWorkspaceCeilingMicros(planExpectedDailyMicros: number): number {
-  return planExpectedDailyMicros * SPEND_CAPS.workspaceDailyMultiplier;
+export function dailyWorkspaceCeilingMicros(planExpectedDailyMicros: number, multiplier: number): number {
+  return planExpectedDailyMicros * multiplier;
 }
 
 /** Pluggable running total store. Upstash Redis in production, in memory in
@@ -69,23 +68,12 @@ function dayStamp(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-export interface SpendCapsOverrides {
-  /** Raised hard stop, the plan's "until the founder raises it" knob. Wired
-   * from DAILY_SPEND_HARD_STOP_USD at runtime. */
-  globalDailyHardStopMicros?: number;
-}
-
 export class SpendCaps {
-  private readonly globalDailyHardStopMicros: number;
-
   constructor(
     private readonly store: CapStore,
-    private readonly now: () => Date = () => new Date(),
-    overrides: SpendCapsOverrides = {},
-  ) {
-    this.globalDailyHardStopMicros =
-      overrides.globalDailyHardStopMicros ?? SPEND_CAPS.globalDailyHardStopMicros;
-  }
+    private readonly now: () => Date,
+    private readonly policy: SpendCapPolicy,
+  ) {}
 
   private async reserve(key: string, costMicros: number, capMicros: number): Promise<CapReservation> {
     if (costMicros < 0) throw new Error("costMicros must be non negative");
@@ -122,15 +110,15 @@ export class SpendCaps {
   }
 
   checkAndReserveImageAsset(assetId: string, costMicros: number): Promise<CapReservation> {
-    return this.reserve(`caps:asset:image:${assetId}`, costMicros, SPEND_CAPS.perImageAssetMicros);
+    return this.reserve(`caps:asset:image:${assetId}`, costMicros, this.policy.perImageAssetMicros);
   }
 
   checkAndReserveVideoAsset(assetId: string, costMicros: number): Promise<CapReservation> {
-    return this.reserve(`caps:asset:video:${assetId}`, costMicros, SPEND_CAPS.perVideoAssetMicros);
+    return this.reserve(`caps:asset:video:${assetId}`, costMicros, this.policy.perVideoAssetMicros);
   }
 
   checkAndReservePack(jobId: string, costMicros: number): Promise<CapReservation> {
-    return this.reserve(`caps:pack:${jobId}`, costMicros, SPEND_CAPS.perPackMicros);
+    return this.reserve(`caps:pack:${jobId}`, costMicros, this.policy.perPackMicros);
   }
 
   checkAndReserveWorkspaceDay(
@@ -139,7 +127,7 @@ export class SpendCaps {
     costMicros: number,
   ): Promise<CapReservation> {
     const key = `caps:workspace:${workspaceId}:${dayStamp(this.now())}`;
-    return this.reserve(key, costMicros, dailyWorkspaceCeilingMicros(planExpectedDailyMicros));
+    return this.reserve(key, costMicros, dailyWorkspaceCeilingMicros(planExpectedDailyMicros, this.policy.workspaceDailyMultiplier));
   }
 
   /**
@@ -149,7 +137,7 @@ export class SpendCaps {
    */
   async checkAndReserveGlobalDay(costMicros: number): Promise<CapReservation> {
     const key = `caps:global:${dayStamp(this.now())}`;
-    const result = await this.reserve(key, costMicros, this.globalDailyHardStopMicros);
+    const result = await this.reserve(key, costMicros, typeof this.policy.globalDailyHardStopMicros === "function" ? await this.policy.globalDailyHardStopMicros() : this.policy.globalDailyHardStopMicros);
     if (result.allowed && this.globalDayAlertReached(result.totalMicros)) {
       result.alert = true;
     }
@@ -160,7 +148,7 @@ export class SpendCaps {
    * The router uses it after charging a shortfall (a call that cost more
    * than its reservation), which moves the total without a new reservation. */
   globalDayAlertReached(totalMicros: number): boolean {
-    return totalMicros >= SPEND_CAPS.globalDailyAlertMicros;
+    return totalMicros >= this.policy.globalDailyAlertMicros;
   }
 
   /**

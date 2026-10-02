@@ -11,7 +11,7 @@ import {
 } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, loadChannelSpecs, type Db } from "@curvi/db";
-import { DbShareStore, GALLERY_CACHE_MS } from "./db-store";
+import { clearGalleryCache, DbShareStore, GALLERY_CACHE_MS } from "./db-store";
 import { isShareSlug } from "./pick";
 import type { ShareWorkspace } from "./types";
 
@@ -22,6 +22,11 @@ import type { ShareWorkspace } from "./types";
 let client: Awaited<ReturnType<typeof createTestDb>>["client"];
 let db: TestDb;
 let store: DbShareStore;
+
+async function approveFixture(slug: string): Promise<void> {
+  await db.update(galleryItems).set({ reviewStatus: "approved" }).where(eq(galleryItems.shareSlug, slug));
+  clearGalleryCache(db as unknown as Db);
+}
 
 interface Fixture {
   ws: ShareWorkspace;
@@ -232,7 +237,11 @@ describe("the gallery", () => {
     const shown = await store.publish(f.ws, f.jobId, { kind: "before_after", gallery: true });
     if (!shown.ok) throw new Error("publish failed");
     const slug = shown.status.slug!;
-    expect(shown.status.inGallery).toBe(true);
+    expect(shown.status.inGallery).toBe(false);
+    expect(shown.status).toMatchObject({ galleryRequested: true, galleryReviewStatus: "pending" });
+    expect((await store.getPublic(slug))?.inGallery).toBe(false);
+    expect((await store.listGallery(50)).map((e) => e.slug)).not.toContain(slug);
+    await approveFixture(slug);
     expect((await store.getPublic(slug))?.inGallery).toBe(true);
     expect((await store.listGallery(50)).map((e) => e.slug)).toContain(slug);
     const [item] = await db.select().from(galleryItems).where(eq(galleryItems.shareSlug, slug));
@@ -243,6 +252,8 @@ describe("the gallery", () => {
     expect((await store.listGallery(50)).map((e) => e.slug)).not.toContain(slug);
 
     await store.publish(f.ws, f.jobId, { kind: "before_after", gallery: true });
+    expect((await store.listGallery(50)).map((e) => e.slug)).not.toContain(slug);
+    await approveFixture(slug);
     expect((await store.listGallery(50)).map((e) => e.slug)).toContain(slug);
     await store.unpublish(f.ws, f.jobId);
     expect((await store.listGallery(50)).map((e) => e.slug)).not.toContain(slug);
@@ -260,15 +271,18 @@ describe("the gallery listing's cost", () => {
       const result = await store.publish(f.ws, f.jobId, { kind: "before_after", gallery: true });
       if (!result.ok) throw new Error("publish failed");
       slugs.push(result.status.slug!);
+      await approveFixture(result.status.slug!);
     }
     const query = vi.spyOn(client, "query");
     const entries = await new DbShareStore(db as unknown as Db).listGallery(60);
     const queries = query.mock.calls.length;
     query.mockRestore();
-    // Rows, jobs, assets, then variants, before photos and products: six,
-    // however many rows there are (it was about seven per row).
+    // Rows, jobs, assets, then variants, before photos and products, and
+    // the consented quotes (P18-14): seven, however many rows there are (it
+    // was about seven per row). The operator lookup reads nothing without
+    // OPS_EMAILS.
     expect(queries).toBeGreaterThan(0);
-    expect(queries).toBeLessThanOrEqual(6);
+    expect(queries).toBeLessThanOrEqual(7);
     for (const slug of slugs) {
       const entry = entries.find((e) => e.slug === slug);
       const page = await store.getPublic(slug);
@@ -278,6 +292,8 @@ describe("the gallery listing's cost", () => {
         category: page?.category,
         before: page?.before,
         after: page?.after,
+        madeByTeam: false,
+        quote: null,
       });
       expect(entry?.category).toBe("home_kitchen");
       expect(entry?.before?.src).toBe(`/s/${slug}/image/before`);
@@ -290,6 +306,7 @@ describe("the gallery listing's cost", () => {
     if (!result.ok) throw new Error("publish failed");
     const slug = result.status.slug!;
     const start = Date.now();
+    await approveFixture(slug);
     const clock = vi.spyOn(Date, "now").mockReturnValue(start);
     try {
       expect((await store.listGallery(50)).map((e) => e.slug)).toContain(slug);

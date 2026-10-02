@@ -44,7 +44,11 @@ describe.each(backends)("rate limits on the %s backend", (_name, makeStore) => {
 
   it.each(policies)("%s allows the per user limit, then blocks with a retry time", async (policy) => {
     const store = makeStore();
-    const { limit } = RATE_LIMIT_POLICIES[policy].user;
+    const { limit, windowSeconds } = RATE_LIMIT_POLICIES[policy].user;
+    // Hour windows end 55 minutes after T0; a day window (preview.create)
+    // ends at the next UTC midnight.
+    const windowMs = windowSeconds * 1000;
+    const windowEnd = (Math.floor(T0 / windowMs) + 1) * windowMs;
     for (let i = 0; i < limit; i += 1) {
       const decision = await checkRateLimit(policy, "user", "user:a", { store, nowMs: T0 });
       expect(decision.allowed).toBe(true);
@@ -52,14 +56,14 @@ describe.each(backends)("rate limits on the %s backend", (_name, makeStore) => {
     const blocked = await checkRateLimit(policy, "user", "user:a", { store, nowMs: T0 });
     expect(blocked.allowed).toBe(false);
     expect(blocked.remaining).toBe(0);
-    expect(blocked.retryAfterSeconds).toBe(55 * 60);
+    expect(blocked.retryAfterSeconds).toBe(Math.ceil((windowEnd - T0) / 1000));
 
     // Another user, the IP scope and another policy keep their own budgets.
     expect((await checkRateLimit(policy, "user", "user:b", { store, nowMs: T0 })).allowed).toBe(true);
     expect((await checkRateLimit(policy, "ip", "ip:1.2.3.4", { store, nowMs: T0 })).allowed).toBe(true);
 
     // The next window starts fresh.
-    const later = await checkRateLimit(policy, "user", "user:a", { store, nowMs: T0 + HOUR_MS });
+    const later = await checkRateLimit(policy, "user", "user:a", { store, nowMs: T0 + windowMs });
     expect(later.allowed).toBe(true);
   });
 
@@ -181,12 +185,12 @@ describe("createRateLimitStore", () => {
 });
 
 describe("clientIp", () => {
-  it("prefers the edge headers, then the first forwarded address", () => {
+  it("uses the last trusted forwarded hop and ignores unproved edge headers", () => {
     expect(clientIp(new Headers({ "cf-connecting-ip": "198.51.100.7", "x-forwarded-for": "1.1.1.1" }))).toBe(
-      "198.51.100.7",
+      "1.1.1.1",
     );
-    expect(clientIp(new Headers({ "true-client-ip": "198.51.100.8" }))).toBe("198.51.100.8");
-    expect(clientIp(new Headers({ "x-forwarded-for": " 203.0.113.9 , 10.0.0.1" }))).toBe("203.0.113.9");
+    expect(clientIp(new Headers({ "true-client-ip": "198.51.100.8" }))).toBe("unknown");
+    expect(clientIp(new Headers({ "x-forwarded-for": " 203.0.113.9 , 10.0.0.1" }))).toBe("10.0.0.1");
     expect(clientIp(new Headers())).toBe("unknown");
   });
 });

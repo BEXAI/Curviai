@@ -33,7 +33,7 @@ function runOf(overrides: Partial<UploadPreflightRun> = {}): UploadPreflightRun 
     missing: false,
     photo: { width: 3000, height: 4000 },
     intake: {
-      image: { sellableProduct: true, distinctProducts: 2, sharpEnough: true, screenshot: false, addedOverlays: false, flags },
+      image: { sellableProduct: true, distinctProducts: 2, sharpEnough: true, screenshot: false, addedOverlays: false, restrictedCategory: null, flags },
       noteKey: "set by the test",
       recipe: { key: "intake_normalizer", version: 3 },
       at: new Date().toISOString(),
@@ -125,8 +125,8 @@ describe("DbService.preflightUpload cutout preview", () => {
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.preflight.status).toBe("ready");
-    expect(putObject).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`^ws/${ws}/cache/preview/`)), single.preview, "image/png");
-    expect(first.preflight.previewUrl).toMatch(new RegExp(`^https://r2\\.example/ws/${ws}/cache/preview/.+\\.png$`));
+    expect(putObject).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`^tmp/ws/${ws}/cache/preview/`)), single.preview, "image/png");
+    expect(first.preflight.previewUrl).toMatch(new RegExp(`^https://r2\\.example/tmp/ws/${ws}/cache/preview/.+\\.png$`));
     const [row] = await db.select().from(uploadPreflights).where(eq(uploadPreflights.r2Key, key));
     expect(JSON.stringify(row.result)).not.toContain("https://");
     expect((row.result as { previewKey?: string }).previewKey).toMatch(/cache\/preview/);
@@ -161,7 +161,7 @@ describe("DbService.preflightUpload", () => {
     expect(first.preflight.items.map((i) => i.label)).toEqual(["silver watch", "white sneakers"]);
     // Thumbnails live under the workspace prefix and come back signed.
     expect(putObject).toHaveBeenCalledTimes(2);
-    expect(first.preflight.items[0].thumbUrl).toMatch(new RegExp(`^https://r2\\.example/ws/${ws}/preflight/`));
+    expect(first.preflight.items[0].thumbUrl).toMatch(new RegExp(`^https://r2\\.example/tmp/ws/${ws}/preflight/`));
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: ws, mediaKey: key }));
 
     // The same photo and note again: served from the row, no provider call.

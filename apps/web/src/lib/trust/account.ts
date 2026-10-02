@@ -6,7 +6,8 @@
  * variants, pack files, brand kit, credit ledger, subscriptions rows, share
  * links, gallery items, integrations, events, churn scores), every object
  * under that workspace's storage prefix, the user's memberships in other
- * workspaces, and the user's terms acceptance records.
+ * workspaces, the user's terms acceptance records, and the user's assistant
+ * connections (mcp_connections, PHASE_19) in other workspaces.
  *
  * What stays: the signup_grants row, which holds the user id, a hash of the
  * normalized email and the credits paid, so deleting an account and signing
@@ -40,11 +41,11 @@
  */
 
 import type Stripe from "stripe";
-import { eq, members, sql, termsAcceptances, workspaces, type Db } from "@curvi/db";
+import { eq, mcpConnections, members, sql, termsAcceptances, workspaces, type Db } from "@curvi/db";
 import { cancelStateFromRows } from "@/lib/billing/cancel-store";
 import { getStripe, isStripeMissingResource } from "@/lib/billing/stripe";
 import { isOpenSubscription, TERMINAL_SUBSCRIPTION_STATUSES } from "@/lib/billing/subscription-status";
-import { isStripeConfigured } from "@/lib/env";
+import { hasStripeApiKey } from "@/lib/env";
 import { reconcileStaleJobs } from "@/lib/services/reconcile";
 import type { TrustStorage } from "./storage";
 
@@ -179,7 +180,7 @@ export async function deleteAccountData({
   if (!userId) {
     return refuse("not_signed_in");
   }
-  const stripe = stripeDep === undefined ? (isStripeConfigured() ? getStripe() : null) : stripeDep;
+  const stripe = stripeDep === undefined ? (hasStripeApiKey() ? getStripe() : null) : stripeDep;
   const memberships = await db.query.members.findMany({ where: (t, { eq }) => eq(t.userId, userId) });
 
   // Workspaces this user owns: deleted whole when the user is the only
@@ -226,6 +227,10 @@ export async function deleteAccountData({
       // Seats in workspaces the user does not own go; the workspace stays.
       await tx.delete(members).where(eq(members.userId, userId));
       await tx.delete(termsAcceptances).where(eq(termsAcceptances.userId, userId));
+      // Assistant connections in workspaces the user does not own (owned
+      // ones went with their workspace): PHASE_19 keeps them only until the
+      // seller disconnects or closes the account.
+      await tx.delete(mcpConnections).where(eq(mcpConnections.userId, userId));
     });
   } catch (err) {
     if (err instanceof PackStartedError) {
@@ -260,20 +265,21 @@ export async function deleteAccountData({
   let objectsFailed = 0;
   if (storage) {
     for (const workspaceId of owned) {
-      const prefix = `ws/${workspaceId}/`;
-      try {
-        const objects = await storage.list(prefix, MAX_OBJECTS_PER_WORKSPACE);
-        const failed = await storage.deleteMany(objects.map((o) => o.key));
-        objectsDeleted += objects.length - failed.length;
-        objectsFailed += failed.length;
-        if (failed.length > 0 || objects.length >= MAX_OBJECTS_PER_WORKSPACE) {
-          console.error(
-            `[account] ${failed.length} objects under ${prefix} were not deleted for deleted user ${userId}; delete the prefix by hand`,
-          );
+      for (const prefix of [`ws/${workspaceId}/`, `tmp/ws/${workspaceId}/`]) {
+        try {
+          const objects = await storage.list(prefix, MAX_OBJECTS_PER_WORKSPACE);
+          const failed = await storage.deleteMany(objects.map((o) => o.key));
+          objectsDeleted += objects.length - failed.length;
+          objectsFailed += failed.length;
+          if (failed.length > 0 || objects.length >= MAX_OBJECTS_PER_WORKSPACE) {
+            console.error(
+              `[account] ${failed.length} objects under ${prefix} were not deleted for deleted user ${userId}; delete the prefix by hand`,
+            );
+          }
+        } catch (err) {
+          objectsFailed += 1;
+          console.error(`[account] could not clean ${prefix} for deleted user ${userId}; delete the prefix by hand`, err);
         }
-      } catch (err) {
-        objectsFailed += 1;
-        console.error(`[account] could not clean ${prefix} for deleted user ${userId}; delete the prefix by hand`, err);
       }
     }
   }

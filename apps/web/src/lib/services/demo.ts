@@ -33,8 +33,16 @@ import {
 import { checkChannelEntitlements } from "@/lib/entitlements";
 import { CONCEPT_MODE_AVAILABLE, outputOptionsAvailable } from "@/lib/features";
 import { outputOptionsSummary } from "@/lib/job-copy";
+import { estimatedSpecCoverage, type EstimateSellerInputs } from "@/lib/pack-estimate";
 import { demoPreflight } from "@/lib/preflight/demo";
 import type { PreflightOutcome } from "@/lib/preflight/types";
+import {
+  answerSaysSomething,
+  readSellerProfile,
+  sellerProfileJson,
+  type SellerAnswer,
+  type SellerProfile,
+} from "@/lib/seller-profile";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import { planDemoShots } from "./demo-plan";
 import { outputDefaultsFor } from "./output-defaults";
@@ -46,13 +54,17 @@ import {
   type OutputPhoto,
 } from "./output-options";
 import { cancelNotice } from "./shot-ops";
+import { INSUFFICIENT_CREDITS_MESSAGE, overMaxCreditsRejection } from "./errors";
 import type {
   AddShotPhotoInput,
   BrandKitView,
   CancelJobResult,
   CreateJobInput,
+  CreateJobRejection,
   CreateJobResult,
   CreateProductInput,
+  EstimateJobInput,
+  EstimateJobResult,
   IntegrationView,
   JobFileDownload,
   JobFilesView,
@@ -80,6 +92,7 @@ import { expandVariations } from "@curvi/pipeline/variations";
 import type { GalleryFilters } from "@/lib/library";
 import { reuseOutputOptions, type ReusePrefill } from "@/lib/reuse";
 import { shotVersionsOf, VERSION_COPY } from "@/lib/variation-picks";
+import { AMAZON_NOT_CONNECTED, SHOPIFY_NOT_CONNECTED } from "@/lib/integration-copy";
 
 export const DEMO_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
 export const DEMO_WORKSPACE_NAME = "Demo Workspace";
@@ -138,8 +151,8 @@ const DEMO_MEMBERS: MemberView[] = [
 ];
 
 const DEMO_INTEGRATIONS: IntegrationView[] = [
-  { kind: "shopify", status: "not_connected", detail: "Connect a store to get auto packs for new products." },
-  { kind: "amazon", status: "not_connected", detail: "Amazon publishing arrives after launch. Packs download to convention names today." },
+  { kind: "shopify", status: "not_connected", ...SHOPIFY_NOT_CONNECTED },
+  { kind: "amazon", status: "not_connected", ...AMAZON_NOT_CONNECTED },
 ];
 
 interface DemoJobRecord {
@@ -180,6 +193,8 @@ export class DemoStore {
   readonly photoCounts = new Map<string, number>();
   /** Rename override for the demo workspace; null keeps the default name. */
   workspaceName: string | null = null;
+  /** The first run answers (P18-20); null until answered. */
+  sellerProfile: SellerProfile | null = null;
   private counter = 0;
 
   nextJobId(): string {
@@ -347,6 +362,34 @@ function projectJob(record: DemoJobRecord, productTitle: string): JobView {
 const DEMO_FOLLOW_UP_MESSAGE =
   "Demo packs cannot run shots again. Connect a database and storage to use this on a real pack.";
 
+/** What the demo's hold reads from a pack request (createJob's or
+ * estimateJob's). */
+type DemoHoldRequest = Pick<
+  CreateJobInput,
+  "productId" | "channels" | "mode" | "outputOptions" | "sku" | "boxContents" | "comparisonFacts" | "endorsements"
+> & {
+  uploads?: ReadonlyArray<{
+    key: string;
+    kind: "image" | "video";
+    angle?: string;
+    background?: NonNullable<CreateJobInput["uploads"]>[number]["background"];
+  }>;
+};
+
+/** The demo's hold for a request and what createJob records from it. */
+interface DemoHold {
+  existingProduct: ProductSummary | null;
+  sellerInputs: { sku: string | null; boxContents: string[]; comparisonFacts: string[]; endorsements: string[] };
+  /** This request's photos (the stored ones are not counted again). */
+  photoCount: number;
+  packPhotos: OutputPhoto[];
+  output: ResolvedOutputOptions;
+  shots: Shot[];
+  creditsReserved: number;
+  /** The estimate inputs the plan was made from. */
+  estimateInputs: EstimateSellerInputs;
+}
+
 export class DemoService implements Services {
   readonly mode = "demo" as const;
 
@@ -388,6 +431,19 @@ export class DemoService implements Services {
     }
     this.store.workspaceName = trimmed;
     return { ok: true, notice: "Workspace name saved for this demo session." };
+  }
+
+  async getSellerProfile(_workspaceId: string): Promise<SellerProfile | null> {
+    return this.store.sellerProfile ?? null;
+  }
+
+  /** The demo keeps the first run answers for this process (P18-20); an
+   * answer with nothing in it clears them. */
+  async saveSellerProfile(_workspaceId: string, answer: SellerAnswer): Promise<SaveResult> {
+    this.store.sellerProfile = answerSaysSomething(answer)
+      ? readSellerProfile(sellerProfileJson(answer, this.now()))
+      : null;
+    return { ok: true, notice: "Saved. Your first pack starts with these channels." };
   }
 
   /** Every product with the seller inputs demo packs saved on it. */
@@ -498,6 +554,7 @@ export class DemoService implements Services {
           bytes: null,
           url: demoShotImage(shot.type, specId, record.output),
           downloadUrl: null,
+          shotId: shot.id,
         });
       });
     }
@@ -618,6 +675,10 @@ export class DemoService implements Services {
       : { outcome: "rejected", reason: "not_found", message: "This pack does not exist in your workspace." };
   }
 
+  async regenerateShot(workspaceId: string, jobId: string, shotId: string): Promise<ShotOpResult> {
+    return this.retryShot(workspaceId, jobId, shotId);
+  }
+
   async addShotPhoto(
     _workspaceId: string,
     jobId: string,
@@ -627,44 +688,31 @@ export class DemoService implements Services {
     return this.retryShot(_workspaceId, jobId, _shotId);
   }
 
-  async createJob(_workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
-    // A replay must match the body as sent: "new" stays "new" in the hash,
-    // so a retry of a new product pack replays instead of making another.
-    let bodyHash: string;
-    try {
-      bodyHash = hashBody(input);
-    } catch {
-      return { outcome: "rejected", reason: "invalid_options", message: INVALID_OPTIONS_MESSAGE };
-    }
-    const existingId = this.store.jobIdByIdempotencyKey.get(input.idempotencyKey);
-    if (existingId) {
-      const existing = this.store.jobs.get(existingId);
-      if (existing && existing.bodyHash === bodyHash) {
-        return { outcome: "replayed", job: projectJob(existing, this.productTitle(existing.productId)) };
-      }
-      return { outcome: "conflict", existingJobId: existingId };
-    }
-
+  /**
+   * The demo's checks and hold for a pack request, in createJob's order:
+   * mode, the seed entitlements, the product, the seller inputs, the output
+   * options and the demo plan. Shared with estimateJob (PHASE_19 P19-16), so
+   * the demo's estimate is its hold. Writes nothing.
+   */
+  private demoHold(input: DemoHoldRequest): { ok: false; rejection: CreateJobRejection } | ({ ok: true } & DemoHold) {
+    const reject = (reason: CreateJobRejection["reason"], message: string) =>
+      ({ ok: false, rejection: { outcome: "rejected", reason, message } }) as const;
     if (input.mode === "concept" && !CONCEPT_MODE_AVAILABLE) {
-      return {
-        outcome: "rejected",
-        reason: "mode_unavailable",
-        message: "Concept Mode is not available yet. Start a Listing Mode pack from a real photo.",
-      };
+      return reject("mode_unavailable", "Concept Mode is not available yet. Start a Listing Mode pack from a real photo.");
     }
 
     // The same seed entitlement check as db mode, so the demo never starts a
     // pack production would refuse (video channels while video is coming soon).
     const entitled = checkChannelEntitlements(input.channels, DEMO_TIER);
     if (!entitled.ok) {
-      return { outcome: "rejected", reason: entitled.reason, message: entitled.message };
+      return reject(entitled.reason, entitled.message);
     }
 
     // Products made through /api/products live in extraProducts (Update.md 6.7).
     const existingProduct =
       input.productId === "new" ? null : (this.allProducts().find((p) => p.id === input.productId) ?? null);
     if (input.productId !== "new" && !existingProduct) {
-      return { outcome: "rejected", reason: "unknown_product", message: "That product does not exist in this workspace." };
+      return reject("unknown_product", "That product does not exist in this workspace.");
     }
 
     // The seller inputs the product will hold after this pack, as in db mode:
@@ -702,26 +750,117 @@ export class DemoService implements Services {
       photoBackgrounds: photoBackgroundsOf(photos),
     });
     if (!output.ok) {
-      return { outcome: "rejected", reason: output.reason, message: output.message };
+      return reject(output.reason, output.message);
     }
 
-    const balance = this.balance();
-    const shots = planDemoShots(input.channels, DEMO_TIER, input.mode, {
+    const seller = {
       angles: photos.flatMap((u) => (isAngleRole(u.angle) ? [u.angle] : [])),
       boxContents: sellerInputs.boxContents,
       comparisonFacts: sellerInputs.comparisonFacts,
       endorsements: sellerInputs.endorsements,
       output: outputEstimateInputs(output.resolved, packPhotos),
-    });
+    };
+    const shots = planDemoShots(input.channels, DEMO_TIER, input.mode, seller);
     const creditsReserved = Math.ceil(shots.reduce((sum, shot) => sum + shot.credits, 0));
-    if (creditsReserved <= 0 || creditsReserved > balance) {
+    if (creditsReserved <= 0) {
+      return reject("insufficient_credits", "This selection plans no shots. Pick at least one channel.");
+    }
+    return {
+      ok: true,
+      existingProduct,
+      sellerInputs,
+      photoCount: photos.length,
+      packPhotos,
+      output: output.resolved,
+      shots,
+      creditsReserved,
+      estimateInputs: {
+        angles: seller.angles,
+        hasBoxContents: seller.boxContents.length > 0,
+        hasComparisonFacts: seller.comparisonFacts.length > 0,
+        hasEndorsements: seller.endorsements.length > 0,
+        ...seller.output,
+      },
+    };
+  }
+
+  /** estimate_pack in the demo (PHASE_19 P19-16): the demo's own hold for
+   * the request, its balance and the channels left out. Writes nothing. */
+  async estimateJob(_workspaceId: string, input: EstimateJobInput): Promise<EstimateJobResult> {
+    const hold = this.demoHold(input);
+    if (!hold.ok) {
+      return hold.rejection;
+    }
+    const coverage = estimatedSpecCoverage(input.channels, input.mode, DEMO_TIER, hold.estimateInputs);
+    return {
+      outcome: "estimated",
+      creditsNeeded: hold.creditsReserved,
+      creditsAvailable: this.balance(),
+      channels: coverage.made,
+      leftOut: [
+        ...coverage.comingSoon.map((specId) => ({ specId, reason: "coming_soon" as const })),
+        ...coverage.notMade.map((specId) => ({ specId, reason: "not_made" as const })),
+      ],
+    };
+  }
+
+  async workspaceBalance(workspaceId: string): Promise<number | null> {
+    return workspaceId === DEMO_WORKSPACE_ID ? this.balance() : null;
+  }
+
+  /** The demo job a key already made with this body, as createJob answers
+   * it, or null when the key is new. */
+  private demoReplay(key: string, bodyHash: string): CreateJobResult | null {
+    const existingId = this.store.jobIdByIdempotencyKey.get(key);
+    if (!existingId) {
+      return null;
+    }
+    const existing = this.store.jobs.get(existingId);
+    if (existing && existing.bodyHash === bodyHash) {
+      return { outcome: "replayed", job: projectJob(existing, this.productTitle(existing.productId)) };
+    }
+    return { outcome: "conflict", existingJobId: existingId };
+  }
+
+  async createJob(_workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
+    // A replay must match the body as sent: "new" stays "new" in the hash,
+    // so a retry of a new product pack replays instead of making another.
+    let bodyHash: string;
+    try {
+      bodyHash = hashBody(input);
+    } catch {
+      return { outcome: "rejected", reason: "invalid_options", message: INVALID_OPTIONS_MESSAGE };
+    }
+    // A replay under a previous key answers first; a conflict there is not
+    // this request's (PHASE_19 P19-16), as in db mode.
+    for (const key of input.previousIdempotencyKeys ?? []) {
+      const earlier = key === input.idempotencyKey ? null : this.demoReplay(key, bodyHash);
+      if (earlier?.outcome === "replayed") {
+        return earlier;
+      }
+    }
+    const replay = this.demoReplay(input.idempotencyKey, bodyHash);
+    if (replay) {
+      return replay;
+    }
+
+    const hold = this.demoHold(input);
+    if (!hold.ok) {
+      return hold.rejection;
+    }
+    const { existingProduct, sellerInputs, packPhotos, shots, creditsReserved } = hold;
+    if (creditsReserved <= 0) return { outcome: "rejected", reason: "empty_plan", message: "This set has nothing to make for the channels you picked. Pick a bigger set or add a marketplace." };
+    if (input.maxCredits !== undefined && creditsReserved > input.maxCredits) {
+      return overMaxCreditsRejection(creditsReserved, input.maxCredits);
+    }
+    const balance = this.balance();
+    if (creditsReserved > balance) {
       return {
         outcome: "rejected",
         reason: "insufficient_credits",
-        message:
-          creditsReserved <= 0
-            ? "This selection plans no shots. Pick at least one channel."
-            : "Not enough credits for this pack. Top up or pick fewer channels.",
+        message: INSUFFICIENT_CREDITS_MESSAGE,
+        creditsNeeded: creditsReserved,
+        creditsAvailable: balance,
       };
     }
 
@@ -735,8 +874,8 @@ export class DemoService implements Services {
     // The choice is remembered on the product for the form's prefill, as in db mode.
     const remembered = outputDefaultsFor(input) ?? this.store.productEdits.get(product.id)?.outputDefaults;
     this.store.productEdits.set(product.id, { ...sellerInputs, ...(remembered ? { outputDefaults: remembered } : {}) });
-    if (photos.length > 0) {
-      this.store.photoCounts.set(product.id, (this.store.photoCounts.get(product.id) ?? 0) + photos.length);
+    if (hold.photoCount > 0) {
+      this.store.photoCounts.set(product.id, (this.store.photoCounts.get(product.id) ?? 0) + hold.photoCount);
     }
 
     const record: DemoJobRecord = {
@@ -751,7 +890,7 @@ export class DemoService implements Services {
       // Each scene runs in its versions, as the runner runs them; the credits
       // held above already count every version.
       shots: expandVariations(shots),
-      output: output.resolved,
+      output: hold.output,
       photoCount: packPhotos.length,
       polls: 0,
     };
@@ -845,7 +984,7 @@ function tryGetSpec(specId: string): ReturnType<typeof getSpec> | null {
 }
 
 /** A demo file's id: the shot's first channel keeps the plain id. */
-function demoFileId(shotId: string, index: number): string {
+export function demoFileId(shotId: string, index: number): string {
   return index === 0 ? `demo_${shotId}` : `demo_${shotId}_${index}`;
 }
 

@@ -14,7 +14,10 @@
  * reason are kept in memory for the metrics.
  *
  * Sentry is not installed yet (docs/verification.md, Sentry row), so the
- * default sink writes one JSON line to the console.
+ * default sink writes one JSON line to the console. PHASE_20 P20-13 installs
+ * Sentry; it registers a sink with addMcpLogSink to send each redacted entry
+ * as an event by reason (O7, the security checklist), since its console
+ * integration reads only console.error and most of these entries are warn.
  */
 
 export type McpLogEvent =
@@ -90,12 +93,24 @@ const consoleSink: McpLogSink = (entry) => {
 };
 
 let sink: McpLogSink = consoleSink;
+const extraSinks = new Set<McpLogSink>();
 const counts = new Map<string, number>();
 
 /** Replaces the sink in tests; null restores the console. */
 export function setMcpLogSinkForTests(next: McpLogSink | null): void {
   sink = next ?? consoleSink;
+  extraSinks.clear();
   counts.clear();
+}
+
+/** Adds a sink beside the console, such as an error tracker (PHASE_20
+ * P20-13). It receives the same redacted entries; a sink that throws is
+ * ignored. Returns the function that removes it. */
+export function addMcpLogSink(extra: McpLogSink): () => void {
+  extraSinks.add(extra);
+  return () => {
+    extraSinks.delete(extra);
+  };
 }
 
 /** Entries logged since start (or the last setMcpLogSinkForTests), by
@@ -131,6 +146,13 @@ export function logMcpEvent(
     const key = typeof kept.reason === "string" ? `${event}:${kept.reason}` : event;
     counts.set(key, (counts.get(key) ?? 0) + 1);
     sink(entry);
+    for (const extra of extraSinks) {
+      try {
+        extra(entry);
+      } catch {
+        // One failing tracker must not stop the others or the request.
+      }
+    }
   } catch {
     // Logging must never break a request.
   }

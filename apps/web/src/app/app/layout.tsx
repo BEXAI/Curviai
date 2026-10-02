@@ -1,7 +1,9 @@
+import { isOperator } from "@/lib/ops";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { BrowserErrors } from "@/components/app/browser-errors";
 import { AppNav } from "@/components/app/app-nav";
 import { PastDueBanner } from "@/components/app/billing-actions";
 import { PackReadyNotice } from "@/components/app/pack-ready-notice";
@@ -48,19 +50,22 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   ]);
   return (
     <div className="theme-dark flex min-h-screen flex-col bg-night text-ink-900">
+      <a href="#app-content" className="sr-only z-50 rounded-lg bg-white px-4 py-3 text-black focus:not-sr-only focus:fixed focus:left-3 focus:top-3">Skip to content</a>
+      <BrowserErrors />
       <header className="sticky top-0 z-40 border-b border-ink-100 bg-night/70 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-3">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-6 py-3">
           <Link href="/" aria-label="Curvi home page">
             <Wordmark />
           </Link>
-          <div className="flex flex-wrap items-center gap-4">
-            <AppNav />
+          <div className="flex items-center gap-2">
+
             {creditBalance !== null ? (
               <HeaderCreditBalance creditBalance={creditBalance} lowThreshold={lowBalanceThreshold()} />
             ) : null}
+            <AppNav signedIn={Boolean(user)} operator={isOperator(user)} />
             {user ? (
-              <div className="flex items-center gap-3 border-l border-ink-100 pl-4">
-                <span className="hidden max-w-48 truncate text-xs text-ink-500 sm:block" title={user.email ?? ""}>
+              <div className="hidden items-center gap-3 border-l md:flex border-ink-100 pl-4">
+                <span className="hidden max-w-48 truncate text-xs text-ink-500 xl:block" title={user.email ?? ""}>
                   {user.email}
                 </span>
                 <form action="/auth/signout" method="post">
@@ -85,7 +90,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         </div>
       ) : null}
       {pastDue ? <PastDueBanner message={pastDue} /> : null}
-      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">{children}</main>
+      <main id="app-content" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">{children}</main>
       <SiteFooter />
       {demo || user ? <PackReadyNotice /> : null}
     </div>

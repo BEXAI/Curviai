@@ -1371,7 +1371,7 @@ export function lifestyleScenesFor(profile: ProductProfile, n: number = sceneCou
       }
       break;
     case "jewelry":
-      required.push("detail macro", "scale on hand");
+      required.push("detail macro", "scale next to a familiar object");
       break;
     case "food_beverage":
       required.push("serving scene");

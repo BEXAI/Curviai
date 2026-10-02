@@ -1,5 +1,5 @@
 import type Stripe from "stripe";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { workspaces } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, type Db } from "@curvi/db";
@@ -184,6 +184,16 @@ describe("one customer per workspace", () => {
 });
 
 describe("one open tier checkout at a time", () => {
+  // The plan change compares the current and the chosen price (P20-06).
+  beforeEach(() => {
+    vi.stubEnv("STRIPE_PRICE_STARTER_MONTHLY", "price_starter_monthly");
+    vi.stubEnv("STRIPE_PRICE_GROWTH_MONTHLY", "price_growth_monthly");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   for (const status of ["active", "trialing", "past_due", "incomplete", "unpaid"]) {
     it(`sends a customer with a ${status} subscription in Stripe to the plan change portal, before our row exists`, async () => {
       const { stripe, asStripe, calls } = fakeStripe({ subscriptions: [{ id: "sub_live", status }] });
@@ -193,7 +203,7 @@ describe("one open tier checkout at a time", () => {
         returnUrl: "https://curvi.ai/app/billing",
         params: tierParams,
       });
-      expect(result).toEqual({ via: "portal", url: "https://billing.stripe.test/portal" });
+      expect(result).toMatchObject({ via: "portal", url: "https://billing.stripe.test/portal" });
       expect(stripe.subscriptions.list.mock.calls[0]?.[0]).toEqual({ customer: "cus_1", status: "all", limit: 20 });
       expect(calls).not.toContain("sessions.create");
       expect(stripe.billingPortal.sessions.create.mock.calls[0]?.[0]).toMatchObject({
@@ -202,6 +212,22 @@ describe("one open tier checkout at a time", () => {
       });
     });
   }
+
+  it("asks a subscriber who picks a smaller plan to email us, and opens nothing (P20-06)", async () => {
+    const { stripe, asStripe, calls } = fakeStripe({ subscriptions: [{ id: "sub_live", status: "active" }] });
+    stripe.subscriptions.retrieve.mockResolvedValueOnce({
+      items: { data: [{ id: "si_1", price: { id: "price_growth_monthly" } }] },
+    });
+    const result = await openTierCheckout(asStripe, {
+      customerId: "cus_1",
+      priceId: "price_starter_monthly",
+      returnUrl: "https://curvi.ai/app/billing",
+      params: tierParams,
+    });
+    expect(result).toMatchObject({ via: "downgrade_by_email" });
+    expect(calls).not.toContain("portal.create");
+    expect(calls).not.toContain("sessions.create");
+  });
 
   it("ignores canceled and expired subscriptions", async () => {
     const { asStripe } = fakeStripe({
@@ -246,7 +272,7 @@ describe("one open tier checkout at a time", () => {
     const input = { customerId: "cus_1", priceId: "price_growth_monthly", returnUrl: "https://curvi.ai/app/billing", params: tierParams };
     const first = await openTierCheckout(asStripe, input);
     const second = await openTierCheckout(asStripe, input);
-    expect(first.url).not.toBe(second.url);
+    expect("url" in first && first.url).not.toBe("url" in second && second.url);
     expect(sessions.filter((session) => session.status === "open").map((session) => session.id)).toEqual(["cs_2"]);
     expect(sessions.find((session) => session.id === "cs_1")?.status).toBe("expired");
   });

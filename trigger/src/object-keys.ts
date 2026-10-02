@@ -18,3 +18,9 @@ export function isWorkspaceObjectKey(workspaceId: string, key: string | null | u
     !key.includes("\\")
   );
 }
+
+/** Temporary storage is isolated from source and delivered-file guards. */
+export function isWorkspaceTmpKey(workspaceId: string, key: string | null | undefined): key is string {
+  return typeof key === "string" && workspaceId.length > 0 &&
+    key.startsWith(`tmp/ws/${workspaceId}/`) && !key.includes("..") && !key.includes("\\");
+}

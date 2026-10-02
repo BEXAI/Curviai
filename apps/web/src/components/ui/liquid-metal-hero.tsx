@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { Badge, Card, buttonVariants, cn } from "@curvi/ui";
+import type { SignupSourceKey } from "@curvi/pipeline/seed";
+import { AcquisitionCta } from "@/components/marketing/acquisition-cta";
+import { SignupLink } from "@/components/marketing/signup-link";
 import { LiquidMetalBackdrop, LiquidMetalMotionToggle } from "./liquid-metal-backdrop";
 
 /**
@@ -20,7 +23,9 @@ import { LiquidMetalBackdrop, LiquidMetalMotionToggle } from "./liquid-metal-bac
  *
  * The calls to action are links. The original's click handlers are gone: a
  * server component cannot pass them, and a call to action without a target
- * would be a control that does nothing.
+ * would be a control that does nothing. The primary one is wrapped in the
+ * acquisition gate's AcquisitionCta (docs/phases/PHASE_18.md P18-03): while
+ * packs are paused it becomes "Get notified when packs are back".
  */
 
 export interface LiquidMetalHeroFeature {
@@ -38,6 +43,10 @@ export type LiquidMetalHeroProps = {
   subtitle: ReactNode;
   primaryCtaLabel: string;
   primaryCtaHref: string;
+  /** When set, the primary call to action is the signup link for this
+   * seeded source (docs/phases/PHASE_18.md P18-01), which carries the
+   * visitor's landing params; primaryCtaHref is then its server href. */
+  primaryCtaSource?: SignupSourceKey;
   /** Small line under the calls to action. */
   note?: ReactNode;
   features?: readonly (string | LiquidMetalHeroFeature)[];
@@ -83,6 +92,7 @@ export function LiquidMetalHero({
   subtitle,
   primaryCtaLabel,
   primaryCtaHref,
+  primaryCtaSource,
   secondaryCtaLabel,
   secondaryCtaHref,
   note,
@@ -146,9 +156,18 @@ export function LiquidMetalHero({
             "motion-safe:[animation-delay:240ms]",
           )}
         >
-          <Link href={primaryCtaHref} className={primaryCtaClass}>
-            {primaryCtaLabel}
-          </Link>
+          {primaryCtaSource ? (
+            // SignupLink is waitlist aware by default (AcquisitionCta inside).
+            <SignupLink source={primaryCtaSource} className={primaryCtaClass}>
+              {primaryCtaLabel}
+            </SignupLink>
+          ) : (
+            <AcquisitionCta className={primaryCtaClass}>
+              <Link href={primaryCtaHref} className={primaryCtaClass}>
+                {primaryCtaLabel}
+              </Link>
+            </AcquisitionCta>
+          )}
           {secondaryCtaLabel ? (
             <Link href={secondaryCtaHref} className={secondaryCtaClass}>
               {secondaryCtaLabel}

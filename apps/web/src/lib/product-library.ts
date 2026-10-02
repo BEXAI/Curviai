@@ -4,6 +4,7 @@
  * share it.
  */
 
+import { shortDate } from "@/lib/dates";
 import { channelName, familyOf } from "@/lib/marketing-facts";
 import type { JobStatus, ProductPackView } from "@/lib/services/types";
 
@@ -41,12 +42,7 @@ export function packCreditsLine(pack: Pick<ProductPackView, "status" | "creditsR
 
 /** "Sep 28, 2026", the same on the server and in every time zone. */
 export function packDateLine(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  });
+  return shortDate(iso) ?? "";
 }
 
 /** "3 photos, SKU MUG-12" under a product's name. */

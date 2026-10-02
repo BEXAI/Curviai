@@ -69,6 +69,54 @@ const GOLDEN_PLAN_OPTIONS: PlanOptions = {
   primaryMediaId: "golden/front.jpg",
 };
 
+const MARKETPLACE_CHANNELS = ["etsy.listing", "ebay.listing", "walmart.main", "tiktokshop.main", "pinterest.pin"];
+
+/** These are input/output contract checks, not a visual quality score. */
+function planShots(answer: unknown): Array<Record<string, unknown>> {
+  if (!answer || typeof answer !== "object" || !("shots" in answer) || !Array.isArray(answer.shots)) return [];
+  return answer.shots.filter((shot): shot is Record<string, unknown> => !!shot && typeof shot === "object");
+}
+
+function sourceIssues(shots: Array<Record<string, unknown>>): string[] {
+  return shots.some((shot) => shot.sourceMediaId !== GOLDEN_PLAN_OPTIONS.primaryMediaId)
+    ? ["Plan uses an unsupplied source photo."] : [];
+}
+
+export function jewelryPlanIssues(answer: unknown): string[] {
+  const shots = planShots(answer);
+  if (shots.length === 0) return ["Plan has no shots."];
+  const scenes = shots.map((shot) => String(shot.scene ?? "").toLowerCase());
+  const issues = sourceIssues(shots);
+  if (!scenes.some((scene) => /detail|macro/.test(scene))) issues.push("Jewelry detail scene missing.");
+  if (!scenes.some((scene) => /scale/.test(scene) && /object/.test(scene))) issues.push("Object scale scene missing.");
+  if (scenes.some((scene) => /scale on (?:a |the )?hand|worn on|on (?:a |the )?(?:hand|finger|ear)\b/.test(scene))) {
+    issues.push("Jewelry plan adds an unphotographed body scene.");
+  }
+  return issues;
+}
+
+export function marketplacePlanIssues(answer: unknown): string[] {
+  const shots = planShots(answer);
+  if (shots.length === 0) return ["Plan has no shots."];
+  const issues = sourceIssues(shots);
+  const channels = (shot: Record<string, unknown>): string[] => Array.isArray(shot.channels) ? shot.channels.map(String) : [];
+  for (const channel of MARKETPLACE_CHANNELS) {
+    if (!shots.some((shot) => channels(shot).includes(channel))) issues.push(`Missing selected channel ${channel}.`);
+  }
+  if (shots.some((shot) => channels(shot).some((channel) => !MARKETPLACE_CHANNELS.includes(channel)))) {
+    issues.push("Plan adds an unselected or unknown channel.");
+  }
+  for (const channel of ["walmart.main", "tiktokshop.main"]) {
+    if (shots.some((shot) => channels(shot).includes(channel) && shot.method !== "deterministic")) {
+      issues.push(`${channel} must use the deterministic supplied product image.`);
+    }
+  }
+  if (shots.some((shot) => channels(shot).includes("pinterest.pin") && shot.type !== "social_2x3")) {
+    issues.push("Pinterest must use the registered social_2x3 format.");
+  }
+  return issues;
+}
+
 const COPY_SHOTS: Pick<Shot, "type" | "channels">[] = [
   { type: "aplus_features", channels: ["amazon.aplus.basic_header"] },
   { type: "aplus_pain_points", channels: ["amazon.aplus.basic_header"] },
@@ -215,6 +263,30 @@ export async function goldenCases(): Promise<GoldenCase[]> {
     description: "a mug for Amazon on a small budget",
     blocks: [],
     payload: () => ({ profile: GOLDEN_PROFILE, options: { ...GOLDEN_PLAN_OPTIONS, channels: ["amazon"], creditBudget: 8 } }),
+  });
+  cases.push({
+    id: "plan_jewelry_object_scale",
+    stage: "plan",
+    minRecipeVersion: 4,
+    description: "a ring photographed alone, with object scale rather than a generated hand",
+    blocks: [],
+    payload: () => ({
+      profile: { ...GOLDEN_PROFILE, category: "jewelry", name: "Gold ring", formFactor: "ring", materials: ["gold"], dimensions: null,
+        preserveText: [], preserveLogos: [], features: [], benefits: [], targetBuyer: "jewelry shoppers", useContexts: [],
+        photographedAngles: ["front"], missingAnglesNeeded: [], surface: { reflective: true, transparent: false, textured: false } },
+      options: { ...GOLDEN_PLAN_OPTIONS, channels: ["shopify.product"], creditBudget: 30 },
+    }),
+    violations: jewelryPlanIssues,
+  });
+  cases.push({
+    id: "plan_mug_five_marketplaces",
+    stage: "plan",
+    minRecipeVersion: 5,
+    description: "a supplied mug photo for Etsy, eBay, Walmart, TikTok Shop and Pinterest",
+    blocks: [],
+    payload: () => ({ profile: { ...GOLDEN_PROFILE, photographedAngles: ["front"] },
+      options: { ...GOLDEN_PLAN_OPTIONS, channels: MARKETPLACE_CHANNELS, creditBudget: 40 } }),
+    violations: marketplacePlanIssues,
   });
 
   // Copy: schema only (the claims guard runs after it in the runner).

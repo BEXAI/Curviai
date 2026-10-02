@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPageNavigation, packZipEntries, packZipRefusalCopy, packZipRefusalPath } from "./pack-zip";
+import { isPageNavigation, packZipEntries, packZipAdsCsv, zipAssetMetadata, packZipRefusalCopy, packZipRefusalPath } from "./pack-zip";
 
 describe("packZipEntries (Update.md 6.5)", () => {
   it("names every entry exactly as stored, in one folder per channel, with the report at the root", () => {
@@ -53,6 +53,25 @@ describe("packZipEntries (Update.md 6.5)", () => {
       "meta/carousel/02.jpg",
       "tiktok/ads/ad_9x16/v1.jpg",
     ]);
+  });
+});
+
+describe("picked versions and ad copy", () => {
+  it("keeps both picked version names without adding a filename suffix", () => {
+    const variants = [
+      { r2Key: "v2", filename: "MUG.PT01.jpg", channelSpecId: "amazon.secondary", shotId: "scene.v2" },
+      { r2Key: "v1", filename: "MUG.PT01.jpg", channelSpecId: "amazon.secondary", shotId: "scene" },
+    ];
+    expect(packZipEntries(variants, null).map((e) => e.name)).toEqual([
+      "amazon/MUG.PT01.jpg", "amazon/versions/scene.v2/MUG.PT01.jpg",
+    ]);
+    expect(packZipEntries([variants[0]], null)[0].name).toBe("amazon/MUG.PT01.jpg");
+  });
+  it("builds the ads CSV from selected files with exact ZIP paths and escaped copy", () => {
+    const metadata = zipAssetMetadata({ shotId: "ad1", shot: { type: "ad_variant", headline: "=bad()", cta: "Buy, now" } });
+    const variants = [{ r2Key: "ad", filename: "ads/feed_4x5/v1.jpg", channelSpecId: "meta.feed_4x5", ...metadata }];
+    expect(packZipAdsCsv(variants, packZipEntries(variants, null))).toContain('meta.feed_4x5,meta/ads/feed_4x5/v1.jpg,\'=bad(),"Buy, now"');
+    expect(packZipAdsCsv([], [])).toBeNull();
   });
 });
 

@@ -60,15 +60,11 @@ function loadFontByKey(key: TemplateFontKey): opentype.Font | null {
 }
 
 /**
- * Absolute path of the default template font, or null when it cannot be found.
- * Resolution order: the env override, module resolution from this file, then
- * a walk up from the working directory through likely node_modules layouts.
+ * Absolute path of a catalog font's TTF, or null when it cannot be found. The
+ * default font also honors the env override; every font then tries module
+ * resolution from this file and a walk up from the working directory through
+ * likely node_modules layouts.
  */
-export function resolveTemplateFontFile(): string | null {
-  return resolveFontFile(DEFAULT_TEMPLATE_FONT);
-}
-
-/** Absolute path of a catalog font's TTF, or null when it cannot be found. */
 export function resolveFontFile(key: TemplateFontKey): string | null {
   if (!resolvedFiles.has(key)) {
     resolvedFiles.set(key, findFontFile(key));

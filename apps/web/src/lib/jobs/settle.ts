@@ -85,10 +85,13 @@ export async function deliveredCharges(db: Db | Tx, job: { jobId: string; worksp
  */
 export async function settleInterruptedJob(
   db: Db,
-  job: { jobId: string; workspaceId: string },
+  job: { jobId: string; workspaceId: string; runKey?: string },
   error: string,
 ): Promise<SettleOutcome> {
-  const { status } = await settleJob(db, job, { undelivered: "failed", error });
+  const { status } = await settleJob(db, job, {
+    undelivered: "failed", error,
+    onlyIf: job.runKey ? eq(generationJobs.runKey, job.runKey) : undefined,
+  });
   return status === "done" || status === "failed" ? status : "already_final";
 }
 
@@ -124,6 +127,10 @@ export async function settleJob(
         // the job back to generating under a key of its own (0019).
         runKey: sql`gen_random_uuid()::text`,
         updatedAt: opts.now ?? new Date(),
+        finishedAt: opts.now ?? new Date(),
+        runnerId: null,
+        heartbeatAt: null,
+        restartPayload: opts.undelivered === "failed" ? sql`case when ${delivered} then null else ${generationJobs.restartPayload} end` : null,
       })
       .where(
         and(

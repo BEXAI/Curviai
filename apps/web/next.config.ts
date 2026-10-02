@@ -1,4 +1,5 @@
 import path from "node:path";
+import { withSentryConfig } from "@sentry/nextjs/config";
 import type { NextConfig } from "next";
 
 /**
@@ -7,9 +8,8 @@ import type { NextConfig } from "next";
  * unaffected); no MIME sniffing; no framing, which blocks clickjacking of the
  * billing and brand pages; referrers trimmed to the origin cross site; and the
  * powerful browser features the app never uses turned off. The Content
- * Security Policy below is report only: browsers send violations to
- * /api/csp-report and block nothing, so the policy can be tuned against real
- * traffic before it is enforced.
+ * Security Policy defaults to report only. CSP_ENFORCE enables blocking
+ * after the operator reviews production reports and verifies staging.
  */
 const securityHeaders = [
   { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
@@ -51,7 +51,7 @@ function contentSecurityPolicy(env: Record<string, string | undefined> = process
     [...new Set(values.filter((v): v is string => Boolean(v)))].join(" ");
   const directives: Array<[string, string]> = [
     ["default-src", "'self'"],
-    ["script-src", unique(["'self'", "'unsafe-inline'", dev && "'unsafe-eval'", "https://*.posthog.com", posthog, "https://bzrcdn.openai.com"])],
+    ["script-src", unique(["'self'", "'unsafe-inline'", dev && "'unsafe-eval'", "https://*.posthog.com", posthog, "https://bzrcdn.openai.com", "https://challenges.cloudflare.com"])],
     ["style-src", "'self' 'unsafe-inline'"],
     ["img-src", unique(["'self'", "data:", "blob:", r2])],
     ["font-src", "'self' data:"],
@@ -66,15 +66,19 @@ function contentSecurityPolicy(env: Record<string, string | undefined> = process
         "https://*.posthog.com",
         posthog,
         "https://*.openai.com",
+        "https://challenges.cloudflare.com",
         r2,
       ]),
     ],
     ["media-src", unique(["'self'", "blob:", r2])],
     ["worker-src", "'self' blob:"],
-    ["frame-src", "'self'"],
+    ["frame-src", "'self' https://challenges.cloudflare.com"],
     ["object-src", "'none'"],
     ["base-uri", "'self'"],
-    ["form-action", "'self' https://checkout.stripe.com https://billing.stripe.com"],
+    // chatgpt.com: the OAuth consent action (PHASE_19 P19-09) sends the
+    // browser back to ChatGPT, and Chrome applies form-action to the
+    // redirect after a form post (MDN, docs/verification.md).
+    ["form-action", "'self' https://checkout.stripe.com https://billing.stripe.com https://chatgpt.com"],
     ["frame-ancestors", "'none'"],
     ["report-uri", CSP_REPORT_PATH],
     ["report-to", CSP_REPORT_GROUP],
@@ -97,15 +101,21 @@ const nextConfig: NextConfig = {
         source: "/:path*",
         headers: [
           ...securityHeaders,
-          { key: "Content-Security-Policy-Report-Only", value: contentSecurityPolicy() },
+          // Enable only after reviewing seven days of production reports.
+          { key: process.env.CSP_ENFORCE === "1" ? "Content-Security-Policy" : "Content-Security-Policy-Report-Only", value: contentSecurityPolicy() },
           { key: "Reporting-Endpoints", value: reportingEndpoints() },
+          ...(process.env.NEXT_PUBLIC_ENV_LABEL ? [{ key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" }] : []),
         ],
       },
+      ...(process.env.CSP_ENFORCE === "1" ? [{
+        source: "/app/:path*",
+        headers: [{ key: "Content-Security-Policy-Report-Only", value: contentSecurityPolicy().replace("'self' 'unsafe-inline'", "'self'") }],
+      }] : []),
     ];
   },
   outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
-  transpilePackages: ["@curvi/ui", "@curvi/specs", "@curvi/db", "@curvi/pipeline", "@curvi/ai", "@curvi/trigger"],
-  serverExternalPackages: ["sharp", "exiftool-vendored", "archiver", "postgres", "@trigger.dev/sdk"],
+  transpilePackages: ["@curvi/ui", "@curvi/specs", "@curvi/db", "@curvi/pipeline", "@curvi/ai", "@curvi/trigger", "@curvi/email"],
+  serverExternalPackages: ["sharp", "exiftool-vendored", "archiver", "postgres"],
   webpack: (config, { isServer }) => {
     if (isServer) {
       // serverExternalPackages only externalizes imports issued from
@@ -119,7 +129,6 @@ const nextConfig: NextConfig = {
           "exiftool-vendored": "commonjs exiftool-vendored",
           archiver: "commonjs archiver",
           postgres: "commonjs postgres",
-          "@trigger.dev/sdk/v3": "commonjs @trigger.dev/sdk/v3",
           "@aws-sdk/client-s3": "commonjs @aws-sdk/client-s3",
         },
       ];
@@ -132,4 +141,25 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+/**
+ * Sentry's build step (docs/phases/PHASE_20.md P20-13; the options were
+ * checked against Sentry's Next.js docs on 2026-10-01, docs/verification.md).
+ * Source maps upload only on `next build` with SENTRY_AUTH_TOKEN set, under
+ * the deploy's commit as the release (the name the server SDK reports);
+ * without the token the build still succeeds and stack traces stay
+ * minified. Client maps are deleted after upload by default. The build
+ * plugin's own usage telemetry to Sentry is off.
+ *
+ * The browser SDK uses our bounded /monitoring route, which checks the
+ * configured DSN, accepts only error events and scrubs them again. Keep
+ * the generic tunnelRoute unset so it cannot replace those safeguards.
+ */
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  release: { name: process.env.RENDER_GIT_COMMIT },
+  silent: !process.env.CI,
+  telemetry: false,
+  widenClientFileUpload: true,
+});

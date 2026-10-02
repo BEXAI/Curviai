@@ -144,6 +144,9 @@ describe("Anthropic request bodies (phase 17 workstream 1)", () => {
       // (intake v6, copy v3, qc v1, picker v1, brand v1, questions v1) moved
       // to Sonnet 5 then Opus 5.5 with a stated effort and budget, a
       // deliberate change to their hashes; every other hash is unchanged.
+      // PHASE_19 P19-29 added the required restrictedCategory to the intake
+      // tool schema, which every intake version sends, so every intake hash
+      // changed again (the same pattern as addedOverlays in version 5).
       if (llmModelProviders[row.model] !== "anthropic") continue;
       const recipe = recipeFromRow({
         id: `${row.key}-v${row.version}`,

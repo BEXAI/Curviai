@@ -1,0 +1,22 @@
+{
+  "Rules": [
+    {
+      "ID": "daily-copies-35-days",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "daily/" },
+      "Expiration": { "Days": 35 }
+    },
+    {
+      "ID": "monthly-copies-180-days",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "monthly/" },
+      "Expiration": { "Days": 180 }
+    },
+    {
+      "ID": "abort-multipart-1-day",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
+    }
+  ]
+}

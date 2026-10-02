@@ -12,12 +12,12 @@
 
 import type Stripe from "stripe";
 import type { NewCancelFlow } from "@curvi/db";
+import { retentionOffers } from "@curvi/pipeline/seed";
 import { isStripeMissingResource } from "./stripe";
 import type { PriceTable } from "./price-table";
 import {
   buildCancelParams,
   buildDiscountParams,
-  buildDowngradeParams,
   buildPauseParams,
   CANCEL_REASONS,
   eligibleOffers,
@@ -31,6 +31,13 @@ import {
   type SaveOfferKind,
 } from "./cancel-flow";
 import { isPaidTierKey, type BillingCadence, type PaidTierKey } from "./plans";
+import {
+  cancelFlowReleaseNotice,
+  describeScheduledChange,
+  releasedThenFailedNotice,
+  type OnScheduleReleased,
+  type ScheduledChange,
+} from "./schedule-release";
 import type { BillingAccount } from "./account";
 import { isOpenSubscription } from "./subscription-status";
 
@@ -45,11 +52,18 @@ export interface CancelState {
 export interface CancelDeps {
   /** Null when Stripe has no keys. */
   stripe: Stripe | null;
+  /** Shows the smaller plan offer; defaults to the seed's
+   * retentionOffers.smallerPlanOffer (off until P20-06's P1 part). */
+  smallerPlanOffer?: boolean;
+  scheduleChange?: (input: { workspaceId: string; subscriptionId: string; customerId: string; tier: PaidTierKey; cadence: BillingCadence; priceId: string }) => Promise<Date>;
   priceTable: PriceTable;
   priceIdFor(tier: PaidTierKey, cadence: BillingCadence): string | undefined;
   now(): Date;
   loadState(workspaceId: string): Promise<CancelState>;
   record(row: NewCancelFlow): Promise<void>;
+  /** Records and emails a released schedule (schedule-release.ts); never
+   * throws. */
+  onScheduleReleased?: OnScheduleReleased;
 }
 
 export interface CancelWorkspace {
@@ -66,6 +80,9 @@ export interface SubscriptionFacts {
   cancelAtPeriodEnd: boolean;
   paused: boolean;
   periodEnd: Date | null;
+  /** A subscription schedule attached to the subscription, for example a
+   * downgrade the founder scheduled in the Dashboard (P20-06 stopgap). */
+  scheduleId: string | null;
 }
 
 export interface CancelOptions {
@@ -75,6 +92,9 @@ export interface CancelOptions {
   /** False when the choice is only recorded (no Stripe subscription to change). */
   live: boolean;
   periodEnd: string | null;
+  /** Said at the top of the flow while a change the founder scheduled is
+   * attached: any choice here cancels it (P20-06 stopgap). */
+  scheduledChange: string | null;
 }
 
 export type CancelResult =
@@ -127,6 +147,7 @@ export async function readSubscriptionFacts(
     cancelAtPeriodEnd: subscription.cancel_at_period_end === true || typeof subscription.cancel_at === "number",
     paused: subscription.pause_collection !== null && subscription.pause_collection !== undefined,
     periodEnd: item?.current_period_end ? new Date(item.current_period_end * 1000) : null,
+    scheduleId: typeof subscription.schedule === "string" ? subscription.schedule : (subscription.schedule?.id ?? null),
   };
 }
 
@@ -144,6 +165,10 @@ interface Resolved {
   facts: SubscriptionFacts | null;
   state: CancelState;
   offers: SaveOffer[];
+  /** The change an attached schedule would make, when one is attached. */
+  scheduled: ScheduledChange | null;
+  /** Billing is paused: cancel is still offered, the save offers are not. */
+  paused: boolean;
 }
 
 async function resolve(
@@ -168,30 +193,34 @@ async function resolve(
     if (facts?.cancelAtPeriodEnd) {
       return fail(409, "already_pending", "Your plan is already set to end. Open the customer portal to renew it.");
     }
-    if (facts?.paused) {
-      return fail(409, "already_pending", "Billing is already paused. It starts again on its own.");
-    }
   }
+  // A paused subscriber can still cancel (California: cancel must stay as
+  // easy as it was to buy; law and copy review 12), but gets no offers.
+  let paused = facts?.paused === true;
   // Stripe's own facts win when we have them: a seller who renewed in the
   // customer portal still has an old pending cancel_flows row, which must
   // not block the flow. Only without Stripe facts does the recorded pass
   // stand in for them.
   if (!facts && state.pending) {
-    return fail(
-      409,
-      "already_pending",
-      state.pending.outcome === "canceled"
-        ? "Your plan is already set to end. Open the customer portal to renew it."
-        : "Billing is already paused. It starts again on its own.",
-    );
+    if (state.pending.outcome === "canceled") {
+      return fail(409, "already_pending", "Your plan is already set to end. Open the customer portal to renew it.");
+    }
+    paused = true;
   }
-  const offers = eligibleOffers({
-    tier,
-    cadence: facts?.cadence ?? null,
-    usedOffers: state.usedOffers,
-    hasDiscount: facts?.hasDiscount ?? false,
-  });
-  return { tier, facts, state, offers };
+  const offers = paused
+    ? []
+    : eligibleOffers({
+        tier,
+        cadence: facts?.cadence ?? null,
+        usedOffers: state.usedOffers,
+        hasDiscount: facts?.hasDiscount ?? false,
+        smallerPlanOffer: deps.smallerPlanOffer ?? (Boolean(deps.scheduleChange) && retentionOffers.smallerPlanOffer),
+      });
+  const scheduled =
+    deps.stripe && facts?.scheduleId
+      ? await describeScheduledChange(deps.stripe, facts.scheduleId, deps.priceTable, deps.now())
+      : null;
+  return { tier, facts, state, offers, scheduled, paused };
 }
 
 export async function cancelOptions(
@@ -211,6 +240,7 @@ export async function cancelOptions(
       offers: resolved.offers,
       live: resolved.facts !== null,
       periodEnd: resolved.facts?.periodEnd?.toISOString() ?? account.subscription?.periodEnd ?? null,
+      scheduledChange: resolved.scheduled ? cancelFlowReleaseNotice(resolved.scheduled, resolved.tier) : null,
     },
   };
 }
@@ -248,7 +278,8 @@ export interface CancelChoiceInput {
   workspace: CancelWorkspace;
   account: BillingAccount;
   userId: string | null;
-  reason: CancelReason;
+  /** Optional (P20-07, Minnesota): null when the subscriber gave none. */
+  reason: CancelReason | null;
   detail: string | null;
   choice: CancelChoice;
 }
@@ -260,7 +291,10 @@ export async function applyCancelChoice(deps: CancelDeps, input: CancelChoiceInp
   if ("status" in resolved) {
     return resolved;
   }
-  const { tier, facts, offers } = resolved;
+  const { tier, facts, offers, scheduled, paused } = resolved;
+  if (paused && choice !== "cancel" && choice !== "keep") {
+    return fail(409, "already_pending", "Billing is already paused. It starts again on its own. You can still cancel.");
+  }
   const offer = offers.find((o) => o.kind === choice);
   if ((choice === "pause" || choice === "downgrade" || choice === "discount") && !offer) {
     return fail(409, "offer_unavailable", "That offer is not available for your plan. Pick another option.");
@@ -285,6 +319,25 @@ export async function applyCancelChoice(deps: CancelDeps, input: CancelChoiceInp
   if (deps.stripe && facts && choice !== "keep") {
     const stripe = deps.stripe;
     try {
+      if (choice === "downgrade" && facts.scheduleId) {
+        return fail(409, "scheduled_change_pending", "Keep your current plan in Billing before choosing another scheduled change.");
+      }
+      if (facts.scheduleId) {
+        // With a schedule attached, Stripe asks that changes go through the
+        // Schedule API and the portal can neither update nor cancel. A
+        // downgrade the founder scheduled by hand is released first, so
+        // pause, discount and cancel work online. The flow said so before
+        // any choice (cancelOptions scheduledChange); the record keeps the
+        // released schedule, and the founder gets an email (P20-06 stopgap).
+        await stripe.subscriptionSchedules.release(facts.scheduleId, {}, STRIPE_OPTIONS);
+        row.releasedScheduleId = facts.scheduleId;
+        await deps.onScheduleReleased?.({
+          workspaceId: workspace.id,
+          subscriptionId: facts.subscriptionId,
+          change: scheduled ?? { scheduleId: facts.scheduleId, tier: null, cadence: null, startsAt: null },
+          path: choice === "cancel" ? "cancel" : choice === "pause" ? "pause" : "discount",
+        });
+      }
       switch (choice) {
         case "pause": {
           const { params, resumesAt } = buildPauseParams(now);
@@ -294,15 +347,12 @@ export async function applyCancelChoice(deps: CancelDeps, input: CancelChoiceInp
         }
         case "downgrade": {
           const priceId = toTier ? deps.priceIdFor(toTier, facts.cadence ?? "monthly") : undefined;
-          if (!toTier || !priceId || !facts.itemId) {
+          if (!toTier || !priceId || !facts.itemId || !account.stripeCustomerId || !deps.scheduleChange) {
             await safeRecord(deps, { ...row, error: "downgrade price or subscription item missing" });
             return fail(503, "plan_unavailable", "That plan cannot be picked online right now. Email hello@curvi.ai and we will switch it for you.");
           }
-          await stripe.subscriptions.update(
-            facts.subscriptionId,
-            buildDowngradeParams({ itemId: facts.itemId, priceId, toTier }),
-            STRIPE_OPTIONS,
-          );
+          row.effectiveAt = await deps.scheduleChange({ workspaceId: workspace.id, subscriptionId: facts.subscriptionId,
+            customerId: account.stripeCustomerId, tier: toTier, cadence: facts.cadence ?? "monthly", priceId });
           break;
         }
         case "discount": {
@@ -327,6 +377,12 @@ export async function applyCancelChoice(deps: CancelDeps, input: CancelChoiceInp
         JSON.stringify({ msg: "billing: cancel flow update failed", workspaceId: workspace.id, choice, error: String(error) }),
       );
       await safeRecord(deps, { ...row, error: String(error).slice(0, 500) });
+      if (row.releasedScheduleId) {
+        // The release went through before the update failed, so something
+        // did change: say so.
+        const released = scheduled ?? { scheduleId: row.releasedScheduleId, tier: null, cadence: null, startsAt: null };
+        return fail(502, "stripe_error", releasedThenFailedNotice(released, tier));
+      }
       return fail(502, "stripe_error", "Stripe could not make that change just now. Nothing changed. Try again in a minute.");
     }
   } else if (choice === "cancel") {

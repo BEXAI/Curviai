@@ -1,0 +1,60 @@
+{
+  "id": "{{EVENT_ID}}",
+  "object": "event",
+  "api_version": "2025-08-27.basil",
+  "created": "{{CREATED}}",
+  "data": {
+    "object": {
+      "id": "{{SUBSCRIPTION_ID}}",
+      "object": "subscription",
+      "billing_cycle_anchor": "{{PERIOD_START}}",
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "collection_method": "charge_automatically",
+      "created": "{{PERIOD_START}}",
+      "currency": "usd",
+      "customer": "{{CUSTOMER_ID}}",
+      "discounts": [],
+      "ended_at": null,
+      "items": {
+        "object": "list",
+        "data": [
+          {
+            "id": "si_FixtureItem",
+            "object": "subscription_item",
+            "created": "{{PERIOD_START}}",
+            "current_period_end": "{{PERIOD_END}}",
+            "current_period_start": "{{PERIOD_START}}",
+            "metadata": {},
+            "price": {
+              "id": "{{PRICE_ID}}",
+              "object": "price",
+              "active": true,
+              "currency": "usd",
+              "product": "prod_FixtureTier",
+              "recurring": { "interval": "{{INTERVAL}}", "interval_count": 1, "usage_type": "licensed" },
+              "type": "recurring",
+              "unit_amount": "{{AMOUNT}}"
+            },
+            "quantity": 1,
+            "subscription": "{{SUBSCRIPTION_ID}}"
+          }
+        ],
+        "has_more": false,
+        "url": "/v1/subscription_items?subscription={{SUBSCRIPTION_ID}}"
+      },
+      "latest_invoice": "{{INVOICE_ID}}",
+      "livemode": false,
+      "metadata": { "workspaceId": "{{WORKSPACE_ID}}", "plan": "{{PLAN}}", "cadence": "{{CADENCE}}", "source": "billing" },
+      "pause_collection": null,
+      "schedule": null,
+      "start_date": "{{PERIOD_START}}",
+      "status": "{{STATUS}}"
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "{{TYPE}}"
+}

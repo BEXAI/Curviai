@@ -9,6 +9,7 @@ import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
 import { EmailCapture } from "@/components/marketing/email-capture";
 import { pillarPages } from "@/components/marketing/pillar-copy";
+import { SignupLink } from "@/components/marketing/signup-link";
 import { freeCredits, freeCreditsReach } from "@/lib/marketing-facts";
 import { breadcrumbJsonLd, categoryPageSeo, jsonLdGraph, pageMetadata } from "@/lib/seo";
 
@@ -59,12 +60,13 @@ export default async function CategoryPage({
           <p className="mt-4 text-lg text-ink-600">{page.intro}</p>
           <p className="mt-4 text-sm font-medium text-ink-800">{page.proofLine}</p>
           <div className="mt-8 flex flex-wrap gap-3">
-            <Link
-              href="/signup"
+            <SignupLink
+              source="category"
+              extra={{ category: page.slug }}
               className={buttonVariants({ variant: "secondary", size: "lg" })}
             >
               Start free
-            </Link>
+            </SignupLink>
             <Link
               href="/pricing"
               className={buttonVariants({ variant: "outline", size: "lg" })}

@@ -25,7 +25,6 @@ import {
   fidelityReport,
   makeOriginalFit,
   planShots,
-  qcKindForSpec,
   rawToSharp,
   solidCanvas,
   type HarmonizeInput,
@@ -50,9 +49,10 @@ import { renderDeterministicShot, renderOnBackground } from "./live-deterministi
 import { ORIGINAL_DRIFTED, renderOriginalShot } from "./live-original";
 import type { LiveProduct } from "./live-product";
 import { alphaMask, LiveShotGenerator, upscaleErodePx } from "./live-runtime";
-import { InMemoryJobStore, runShot, systemClock, type PipelineDeps, type ShotGeneration } from "./pipeline-runner";
+import { InMemoryJobStore, runShot, systemClock, type PipelineDeps } from "./pipeline-runner";
 import { DemoLlmProvider, demoProfile, demoRoutingTable } from "./runtime";
 import { encodeMaskPng, maskArea, QC_EDGE_MARGIN_PX } from "./shot-outputs";
+import { expectProductKept } from "./testing/rule3";
 
 class FakeCutoutProvider implements Provider {
   readonly name = "fal-birefnet";
@@ -197,46 +197,6 @@ const argsFor = (shot: Shot, attempt = 1) => ({
   workspaceId: "ws-1",
   brandColors: ["#1A7F3C"],
 });
-
-function tintInsideMask(image: RawImage, mask: RawMask, amount: number): RawImage {
-  const data = Buffer.from(image.data);
-  for (let i = 0; i < mask.data.length; i++) {
-    if (mask.data[i] === 0) continue;
-    data[i * 4] = Math.min(255, data[i * 4] + amount);
-  }
-  return { ...image, data };
-}
-
-/**
- * The rule 3 invariant for one shipped file: decoded bytes equal the image
- * the runner checks, the product reference matches inside the eroded mask
- * (byte for byte when the file is lossless), and a tint inside the product
- * fails the same check.
- */
-async function expectProductKept(generation: ShotGeneration, specId: string): Promise<void> {
-  const spec = getSpec(specId);
-  if (spec.width) expect(generation.image.width).toBe(spec.width);
-  if (spec.height) expect(generation.image.height).toBe(spec.height);
-  const shipped = await decodeToRgba(generation.encoded.buffer);
-  expect(shipped.data.equals(generation.image.data)).toBe(true);
-  if (!generation.mask || !generation.productReference) {
-    throw new Error("a live output must carry its mask and product reference");
-  }
-  const opts = { kind: qcKindForSpec(spec), erodePx: generation.fidelityErodePx };
-  const report = await fidelityReport(generation.productReference, shipped, generation.mask, opts);
-  expect(report.issues, specId).toEqual([]);
-  expect(report.maskArea).toBeGreaterThan(0);
-  if (generation.encoded.format === "png") {
-    expect(report.exactByteShare, specId).toBe(1);
-  }
-  const tinted = await fidelityReport(
-    generation.productReference,
-    tintInsideMask(shipped, generation.mask, 30),
-    generation.mask,
-    opts,
-  );
-  expect(tinted.pass).toBe(false);
-}
 
 describe("rule 3 on every live output", () => {
   const cases: Array<{ shot: Shot }> = [

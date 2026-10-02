@@ -24,16 +24,30 @@ export function apiSourceKey(workspaceId: string, sha256: string): string {
   return `ws/${workspaceId}/src/api-${sha256}`;
 }
 
+const r2Scope = globalThis as typeof globalThis & { __curviR2Client?: { id: string; client: S3Client } };
+
+/** One S3 client per process, so presigns and object reads reuse its config
+ * and its kept alive connections. Rebuilt when the R2 credentials change. */
 export function r2Client(): S3Client {
   const accountId = requireEnv("R2_ACCOUNT_ID");
-  return new S3Client({
+  const accessKeyId = requireEnv("R2_ACCESS_KEY_ID");
+  const secretAccessKey = requireEnv("R2_SECRET_ACCESS_KEY");
+  const id = `${accountId}\n${accessKeyId}\n${secretAccessKey}`;
+  const cached = r2Scope.__curviR2Client;
+  if (cached?.id === id) {
+    return cached.client;
+  }
+  const client = new S3Client({
     region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: {
-      accessKeyId: requireEnv("R2_ACCESS_KEY_ID"),
-      secretAccessKey: requireEnv("R2_SECRET_ACCESS_KEY"),
-    },
+    credentials: { accessKeyId, secretAccessKey },
+    // Connecting to R2 may take at most 10 s, as in the worker. No idle
+    // request timeout here: the pack zip route streams objects to the
+    // browser, and a slow or paused download must not be cut off.
+    requestHandler: { connectionTimeout: 10_000 },
   });
+  r2Scope.__curviR2Client = { id, client };
+  return client;
 }
 
 export interface PresignedUpload {
@@ -48,7 +62,7 @@ export async function presignSourceUpload(
   contentType: string,
   contentLength: number,
 ): Promise<PresignedUpload> {
-  const bucket = optionalEnv("R2_BUCKET_PRIVATE") ?? "curvi-private";
+  const bucket = privateBucket();
   const key = sourceUploadKey(workspaceId);
   const command = new PutObjectCommand({
     Bucket: bucket,

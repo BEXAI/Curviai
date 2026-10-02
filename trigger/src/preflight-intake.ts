@@ -9,10 +9,17 @@
 
 import { createHash } from "node:crypto";
 import { IntakeImageResult, SellerIntent, type IntakeResult } from "@curvi/pipeline/schemas";
-import { addedOverlaysIntake } from "@curvi/pipeline/seed";
+import { addedOverlaysIntake, restrictedGoodsIntake, type RestrictedGoodsKey } from "@curvi/pipeline/seed";
 
 /** How long a preflight answer is reused. */
 export const PREFLIGHT_FRESH_MS = 24 * 60 * 60 * 1000;
+
+/** The recipe and provider that actually returned the answer, after standby
+ * selection and provider failover. Absent on legacy cached answers. */
+export interface RecipeExecution {
+  recipe: { key: string; version: number; recipeId: string | null; source: "db" | "seed" };
+  provider: string;
+}
 
 export interface PreflightIntake {
   /** Intake's answer for this one photo. */
@@ -23,6 +30,7 @@ export interface PreflightIntake {
   noteKey: string;
   /** The intake recipe the answer came from. */
   recipe: { key: string; version: number };
+  execution?: RecipeExecution;
   /** When the preflight asked, ISO 8601. */
   at: string;
 }
@@ -33,18 +41,47 @@ export function intakeAsksAddedOverlays(recipe: { key: string; version: number }
   return recipe.key === addedOverlaysIntake.key && recipe.version >= addedOverlaysIntake.minVersion;
 }
 
+/** True when this intake recipe's prompt asks for restrictedCategory
+ * (restrictedGoodsIntake, PHASE_19 P19-29). */
+export function intakeAsksRestrictedGoods(recipe: { key: string; version: number }): boolean {
+  return recipe.key === restrictedGoodsIntake.key && recipe.version >= restrictedGoodsIntake.minVersion;
+}
+
 /**
- * The intake answer with addedOverlays kept only when the recipe asked for
- * it. Strict tool use makes every recipe version answer the field, so under
- * an older prompt the model guesses, and a guessed true would leave a clean
- * kept photo out of eBay and Google. Pure: returns the answer untouched when
- * the recipe asked or nothing is flagged.
+ * The intake answer with addedOverlays and restrictedCategory kept only when
+ * the recipe asked for them. Strict tool use makes every recipe version
+ * answer both fields, so under an older prompt the model guesses: a guessed
+ * true would leave a clean kept photo out of eBay and Google, and a guessed
+ * category would stop an assistant's pack. Pure: returns the answer
+ * untouched when the recipe asked or nothing is set.
  */
 export function trustedIntakeAnswer(intake: IntakeResult, recipe: { key: string; version: number }): IntakeResult {
-  if (intakeAsksAddedOverlays(recipe) || !intake.images.some((image) => image.addedOverlays === true)) {
+  const dropOverlays = !intakeAsksAddedOverlays(recipe) && intake.images.some((image) => image.addedOverlays === true);
+  const dropRestricted =
+    !intakeAsksRestrictedGoods(recipe) && intake.images.some((image) => image.restrictedCategory !== null);
+  if (!dropOverlays && !dropRestricted) {
     return intake;
   }
-  return { ...intake, images: intake.images.map((image) => ({ ...image, addedOverlays: false })) };
+  return {
+    ...intake,
+    images: intake.images.map((image) => ({
+      ...image,
+      ...(dropOverlays ? { addedOverlays: false } : {}),
+      ...(dropRestricted ? { restrictedCategory: null } : {}),
+    })),
+  };
+}
+
+/** The prohibited goods categories intake named in a trusted answer
+ * (trustedIntakeAnswer), each once, in image order. */
+export function restrictedCategoriesOf(intake: IntakeResult): RestrictedGoodsKey[] {
+  const found: RestrictedGoodsKey[] = [];
+  for (const image of intake.images) {
+    if (image.restrictedCategory && !found.includes(image.restrictedCategory)) {
+      found.push(image.restrictedCategory);
+    }
+  }
+  return found;
 }
 
 /** A stable key for the seller's note: a sha256 of the trimmed text, so an
@@ -80,6 +117,7 @@ export function reusablePreflightIntake(
   note: string | null | undefined,
   recipe: { key: string; version: number },
   now: Date,
+  screening?: { recipeId: string | null; providers: readonly string[] },
 ): IntakeResult | null {
   if (judged.length === 0) {
     return null;
@@ -97,6 +135,24 @@ export function reusablePreflightIntake(
       !preflightFresh(preflight.at, now)
     ) {
       return null;
+    }
+    if (screening) {
+      const executed = preflight.execution;
+      // Old caches recorded the assigned version even when a different
+      // standby ran. Assistant screening requires affirmative provenance;
+      // ordinary web packs retain the legacy cache behavior.
+      if (
+        !intakeAsksRestrictedGoods(recipe) ||
+        !screening.recipeId?.trim() ||
+        !executed ||
+        executed.recipe?.source !== "db" ||
+        executed.recipe.recipeId !== screening.recipeId ||
+        executed.recipe.key !== recipe.key ||
+        executed.recipe.version !== recipe.version ||
+        !screening.providers.includes(executed.provider)
+      ) {
+        return null;
+      }
     }
     const image = IntakeImageResult.safeParse(preflight.image);
     if (!image.success) {

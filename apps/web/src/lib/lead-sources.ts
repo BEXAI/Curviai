@@ -10,6 +10,13 @@ export const LEAD_SOURCES = [
   "marketplace-resizer",
   "share-page",
   "gallery",
+  // Phase 18 (docs/phases/PHASE_18.md, contract commit).
+  // P18-03: "Get notified when packs are back" while acquisition is waitlisted.
+  "packs-paused",
+  // P18-12: the full size file of a free white main image preview.
+  "free-preview",
+  // P18-18: the per product table of the store image audit.
+  "store-audit",
 ] as const;
 
 export type LeadSource = (typeof LEAD_SOURCES)[number];

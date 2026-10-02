@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { loadRecipes, type Db } from "@curvi/db";
+import { loadRecipes, sql, type Db } from "@curvi/db";
 import { createTestDb } from "@curvi/db/testing";
 import { recipeSeedRows } from "@curvi/pipeline/seed";
 import { liveProviderTargets } from "@curvi/trigger/provider-probes";
@@ -10,12 +10,12 @@ import {
   readMemoryLimit,
   type ConfigReportDeps,
 } from "./config-health";
-import { recordCronSuccess } from "./cron-health";
+import { CRON_JOBS, recordCronSuccess, type CronJobDefinition } from "./cron-health";
 import { PgCapStore } from "@curvi/trigger/cap-store";
 import { LlmMonitor } from "@curvi/trigger/llm-monitor";
 
 const NOW = new Date("2026-09-28T12:00:00Z");
-const ALL_KEYS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "FAL_KEY"];
+const ALL_KEYS = ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BFL_API_KEY", "OPENAI_API_KEY", "FAL_KEY", "FAL_ADMIN_KEY"];
 const GIB = 1024 ** 3;
 
 function envOf(values: Record<string, string>): (name: string) => string | undefined {
@@ -142,15 +142,20 @@ describe("buildConfigReport with the database", () => {
   it("warns on recipe drift and crons that never ran, then clears once seeded and run", async () => {
     const before = await buildConfigReport(baseDeps({ mode: "db", databaseOk: true, db: () => db }));
     expect(before.warnings.map((w) => w.code)).toEqual([
-      "recipe_drift",
-      "cron_never_ran:stale-jobs",
-      "cron_never_ran:purge-source-media",
+      "recipe_drift", ...CRON_JOBS.filter((job: CronJobDefinition) => !job.monitor || job.monitor()).map((job) => `cron_never_ran:${job.name}`), "restore_drill_overdue",
     ]);
     expect(before.recipes?.drift.every((d) => d.issue === "missing")).toBe(true);
 
     await loadRecipes(db as unknown as Db, recipeSeedRows);
+    for (const job of CRON_JOBS) await recordCronSuccess(db as unknown as Db, job.name, NOW);
     await recordCronSuccess(db as unknown as Db, "stale-jobs", new Date(NOW.getTime() - 5 * 60_000));
+    await recordCronSuccess(db as unknown as Db, "backup", new Date(NOW.getTime() - 60 * 60_000));
+    await recordCronSuccess(db as unknown as Db, "restore-drill", new Date(NOW.getTime() - 3 * 24 * 60 * 60_000));
     await recordCronSuccess(db as unknown as Db, "purge-source-media", new Date(NOW.getTime() - 3 * 24 * 60 * 60_000));
+    await recordCronSuccess(db as unknown as Db, "funnel-digest", new Date(NOW.getTime() - 60 * 60_000));
+    await recordCronSuccess(db as unknown as Db, "provider-balance", new Date(NOW.getTime() - 5 * 60_000));
+    await recordCronSuccess(db as unknown as Db, "lifecycle", new Date(NOW.getTime() - 5 * 60_000));
+    await recordCronSuccess(db as unknown as Db, "billing-reconcile", new Date(NOW.getTime() - 5 * 60_000));
     const after = await buildConfigReport(baseDeps({ mode: "db", databaseOk: true, db: () => db }));
     expect(after.recipes).toEqual({ drift: [] });
     expect(after.warnings.map((w) => w.code)).toEqual(["cron_overdue:purge-source-media"]);
@@ -176,7 +181,8 @@ describe("buildConfigReport with the database", () => {
     );
     expect(failing.warnings.map((w) => w.code)).toEqual(["recipe_check_failed", "cron_check_failed"]);
     expect(JSON.stringify(failing)).not.toContain("relation does not exist");
-    expect(warn).toHaveBeenCalledTimes(2);
+    // Recipes, crons and the database size (P20-15, logged, no warning).
+    expect(warn).toHaveBeenCalledTimes(4);
 
     // The LLM spend read only runs for the detailed report, and a failure
     // there is logged and reported as null, never as a warning.
@@ -192,7 +198,48 @@ describe("buildConfigReport with the database", () => {
     );
     expect(detailed.warnings.map((w) => w.code)).toEqual(["recipe_check_failed", "cron_check_failed"]);
     expect(detailed.llmSpend).toBeNull();
-    expect(detailedWarn).toHaveBeenCalledTimes(3);
+    // Recipes, crons, LLM spend, the database size (P20-15) and the fal
+    // balances (PHASE_18 P18-03).
+    expect(detailed.falBalances).toBeNull();
+    expect(detailedWarn).toHaveBeenCalledTimes(5);
+  });
+
+  it("reports a low fal balance publicly as a code while keeping amounts in protected details", async () => {
+    const key = "fal_balance:test-health-account";
+    await db.execute(sql`insert into platform_settings (key, value) values (${key}, '{"provider":"test-health-account","ok":true,"balanceUsd":0.01}'::jsonb)`);
+    try {
+      const publicReport = await buildConfigReport(baseDeps({ mode: "db", databaseOk: true, db: () => db }));
+      expect(publicReport.warnings.map(w => w.code)).toContain("fal_balance_low");
+      expect(publicReport.falBalances).toBeNull();
+      const privateReport = await buildConfigReport(baseDeps({ mode: "db", databaseOk: true, db: () => db, includeLlmSpend: true }));
+      expect(privateReport.falBalances).toContainEqual(expect.objectContaining({ provider: "test-health-account", balanceUsd: 0.01 }));
+    } finally {
+      await db.execute(sql`delete from platform_settings where key = ${key}`);
+    }
+  });
+
+  it("runs the billing signals, recipe, cron and size reads at once, not one after another (security review 5)", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const execute = async () => {
+      inFlight += 1;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      inFlight -= 1;
+      return [];
+    };
+    await buildConfigReport(
+      baseDeps({
+        mode: "db",
+        databaseOk: true,
+        db: () => ({ execute }),
+        // A Stripe key, so the billing signals are read too.
+        readEnv: (name) => (name === "STRIPE_SECRET_KEY" ? "sk_test_alone" : keysEnv(ALL_KEYS)(name)),
+        logger: { warn: () => undefined },
+      }),
+    );
+    // Billing signals, recipes, crons and the database size.
+    expect(most).toBe(5);
   });
 
   it("reports LLM spend per provider for the last 7 days from the monitor's counters (PHASE_17 workstream 6)", async () => {

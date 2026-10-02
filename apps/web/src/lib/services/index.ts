@@ -15,9 +15,8 @@ import { assertDemoModeAllowed } from "./demo-mode";
 import { DbService, getDb } from "./db";
 import type { Services } from "./types";
 
-export type { Services } from "./types";
 export * from "./types";
-export { DEMO_MODE_REFUSED_MESSAGE, DemoModeRefusedError, demoModeAllowed } from "./demo-mode";
+export { DemoModeRefusedError } from "./demo-mode";
 
 export function isDbMode(): boolean {
   return Boolean(optionalEnv("DATABASE_URL")) && isSupabaseConfigured();

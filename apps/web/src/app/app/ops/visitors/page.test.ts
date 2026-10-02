@@ -18,7 +18,12 @@ const state = vi.hoisted(() => ({
   statsError: false,
 }));
 
-vi.mock("@/lib/supabase/server", () => ({ getSessionUser: async () => state.user }));
+vi.mock("@/lib/supabase/server", () => ({
+  createSupabaseServerClient: async () => ({ auth: {
+    getUser: async () => ({ data: { user: state.user && { ...state.user, id: "operator" } } }),
+    getClaims: async () => ({ data: { claims: { sub: "operator", aal: "aal2" } } }),
+  } }),
+}));
 vi.mock("@/lib/services", () => ({ isDbMode: () => state.dbMode }));
 vi.mock("@/lib/services/db", () => ({ getDb: () => ({}) }));
 const deleteSalts = vi.hoisted(() => vi.fn(async () => undefined));

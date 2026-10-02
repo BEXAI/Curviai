@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { packBundles, tiers, type TierDefinition } from "@curvi/pipeline/seed";
-import { isStripeConfigured, siteUrl } from "@/lib/env";
+import { isCheckoutOpen, siteUrl } from "@/lib/env";
 import { amazonMainRules, isLive, joinList, liveChannelNames, type Availability } from "@/lib/marketing-facts";
+import { checkerChannels } from "@/lib/tools/checker-rules";
 
 /**
  * Search, answer engine and generative engine metadata for the marketing
@@ -74,7 +75,7 @@ export const SITE_FEATURES = [
   "Your first brand kit color used for the brand color background shot in packs",
   "A whole listing pack compiled from one product photo in one run",
   "Files that still fail their channel checks are marked for review and not charged",
-  "Free browser tools: an Amazon main image checker, a white background fixer and a marketplace image resizer",
+  `Free browser tools: a main image checker for ${joinList(checkerChannels().map((channel) => channel.name))}, a white background fixer and a marketplace image resizer`,
   // PHASE_16 formats, each worded only while its flag says live.
   ...(isLive("packBundles")
     ? [`Pack sets that choose how much a pack makes: ${joinList(Object.values(packBundles).map((bundle) => bundle.label))}`]
@@ -86,6 +87,10 @@ export const SITE_FEATURES = [
     ? [
         "Moodboard pins, social carousels that read as one story across the swipe, and static ad packs in several versions with a sheet of headlines and calls to action",
       ]
+    : []),
+  // P18-11, worded only while the urlImport flag says live.
+  ...(isLive("urlImport")
+    ? ["Start a pack from a Shopify or Amazon product link: the name and notes fill in, and you pick the photo"]
     : []),
 ];
 
@@ -294,10 +299,10 @@ function tierOffer(tier: TierDefinition): JsonLdNode {
 /**
  * Plans that can be bought today. Paid tiers are listed only once Stripe is
  * configured, so answer engines are never told a plan is for sale when
- * checkout cannot take payment.
+ * checkout cannot take payment, and never a tier set up by email (P20-08).
  */
 export function purchasableTiers(): TierDefinition[] {
-  return tiers.filter((tier) => tier.monthlyUsd === 0 || isStripeConfigured());
+  return tiers.filter((tier) => tier.monthlyUsd === 0 || (tier.selfServe && isCheckoutOpen()));
 }
 
 /** The product itself, with one offer per purchasable plan from the tier seed. */
