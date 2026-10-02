@@ -1,6 +1,6 @@
 # Phase 21 implementation checkpoint
 
-Updated 2026-10-02 15:40 UTC. Resume this task after context recovery; inspect Git and active agents before duplicating work.
+Updated 2026-10-02 15:45 UTC. Resume this task after context recovery; inspect Git and active agents before duplicating work.
 
 ## Authority and current state
 
@@ -64,3 +64,12 @@ Phase 22 read-only owners: `p22_connection`, `p22_chat_assets`, `p22_submission`
 ## Recontextualization prompt
 
 Continue the authorized Curvi release from `/tmp/curvi-phase-21` and its Git status, this checkpoint, Phase 21 handoffs and the latest Phase 22 plan. Preserve the original checkout. Poll active final test sessions/logs, publish reviewable Phase 21 commits, and require hosted PostgreSQL 17 races before live SQL. PR #6 now includes analytics correction `1f855cc`; recheck exact-head checks. Never dismiss alerts 4, 7, 11, 18, 19, 20 or 21 without the outstanding explicit approval, and never bypass the gate. Restore authorized browser access before Supabase operations. Continue Phase 22 with existing Phase 19 infrastructure, official OpenAI references, isolated UI/submission lanes and real ChatGPT acceptance. Phase 23 proposals remain planning only. Keep credentials out of chat/Git and report external approval honestly.
+
+
+## Final local gate and publication at 15:45 UTC
+
+Final full lint and typechecking exit zero. The complete unit suite passes **6,800 tests**, with 15 explicit skips: 14 real-PostgreSQL tests requiring the hosted test database, plus the unavailable-ffmpeg diagnostic (ffmpeg is available and its real tests run). The production build and all **195 browser tests** passed before the final privacy sentence; the rebuilt two affected suites then passed **all nine tests**. No source changed after this final correction. Gitleaks 8.30.1 scanned 1,758 source/doc files, excluding environment files, and found no leaks. Evidence: `/tmp/curvi-phase21-unit-final.log`, `-lint-final.log`, `-types-final.log`, `/tmp/curvi-phase21-e2e.log`, `/tmp/curvi-phase21-privacy-e2e-final.log`, `/tmp/curvi-phase21-gitleaks.log`.
+
+Saved feature commits: `1004a93` database/contracts, then `72941b2` application/worker/privacy/browser implementation. The next commit records this final evidence. Root is publishing a dependent draft PR against `codex/phase18-20-release` so PostgreSQL 17 concurrency can run; publication is not a main merge, deployment or SQL execution. PR #6 head `1f855cc` has passing analysis/demo but its separate CodeQL gate still fails and full hosted CI remains running. No alert was dismissed. Public production at 15:44:36 UTC remains healthy at `dae0fb0`, schema0044.
+
+Phase 22 implementation is isolated in `/tmp/curvi-phase-22`, branch `codex/phase22-chatgpt-launch`, starting at `72941b2`. Owners: viewer lifecycle (`p22_chat_assets`), authorized `show_pack` tool (`p22_connection`), strict submission package checks (`p22_submission`), browser fixtures (`p21_privacy_qa`), independent security/claims review (`p21_review_docs`). Its complete plan and three readiness handoffs exist there; Phase23 remains planning only. Parent has already surfaced the required identity/access/sample/spend questions. Do not duplicate them or treat general account approval as password/MFA mutation permission; those probes require exact action-time scope and secure credential entry.
