@@ -184,6 +184,7 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
   const loadOnce = async () => bytes;
   const blocks = await visionBlocks({ loadMedia: loadOnce }, [{ mediaId: mediaKey }], workspaceId, 1);
   let intake: IntakeResult | null = null;
+  let execution: PreflightIntake["execution"];
   try {
     const answer = await llmJson<IntakeResult>(
       deps.ai,
@@ -195,12 +196,13 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
       IntakeToolResult,
     );
     run.costMicros += answer.costMicros;
-    intake = answer.value && answer.value.images.length === 1 ? trustedIntakeAnswer(answer.value, recipe) : null;
+    execution = answer.execution;
+    intake = answer.value && answer.value.images.length === 1 ? trustedIntakeAnswer(answer.value, execution.recipe) : null;
   } catch (err) {
     run.costMicros += failureSpendMicros(err);
     console.warn(`[preflight] intake failed for ${preflightId}`, err instanceof Error ? err.message : err);
   }
-  if (!intake) {
+  if (!intake || !execution) {
     return run;
   }
   const image = intake.images[0];
@@ -208,7 +210,8 @@ export async function runUploadPreflight(deps: PipelineDeps, args: UploadPreflig
     image,
     ...(intake.sellerIntent ? { sellerIntent: intake.sellerIntent } : {}),
     noteKey: noteKey(args.note),
-    recipe: { key: recipe.key, version: recipe.version },
+    recipe: { key: execution.recipe.key, version: execution.recipe.version },
+    execution,
     at: (args.now ?? new Date()).toISOString(),
   };
 

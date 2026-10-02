@@ -156,7 +156,10 @@ export class CurviClient {
       throw new Error("An API key is required.");
     }
     this.apiKey = options.apiKey;
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
+    let end = baseUrl.length;
+    while (end > 0 && baseUrl.charCodeAt(end - 1) === 47) end--;
+    this.baseUrl = baseUrl.slice(0, end);
     this.fetchImpl = options.fetch ?? ((input, init) => fetch(input, init));
     this.userAgent = options.userAgent;
     this.sleep = options.sleep ?? defaultSleep;

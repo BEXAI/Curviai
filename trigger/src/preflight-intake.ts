@@ -14,6 +14,13 @@ import { addedOverlaysIntake, restrictedGoodsIntake, type RestrictedGoodsKey } f
 /** How long a preflight answer is reused. */
 export const PREFLIGHT_FRESH_MS = 24 * 60 * 60 * 1000;
 
+/** The recipe and provider that actually returned the answer, after standby
+ * selection and provider failover. Absent on legacy cached answers. */
+export interface RecipeExecution {
+  recipe: { key: string; version: number; recipeId: string | null; source: "db" | "seed" };
+  provider: string;
+}
+
 export interface PreflightIntake {
   /** Intake's answer for this one photo. */
   image: IntakeImageResult;
@@ -23,6 +30,7 @@ export interface PreflightIntake {
   noteKey: string;
   /** The intake recipe the answer came from. */
   recipe: { key: string; version: number };
+  execution?: RecipeExecution;
   /** When the preflight asked, ISO 8601. */
   at: string;
 }
@@ -109,6 +117,7 @@ export function reusablePreflightIntake(
   note: string | null | undefined,
   recipe: { key: string; version: number },
   now: Date,
+  screening?: { recipeId: string | null; providers: readonly string[] },
 ): IntakeResult | null {
   if (judged.length === 0) {
     return null;
@@ -126,6 +135,24 @@ export function reusablePreflightIntake(
       !preflightFresh(preflight.at, now)
     ) {
       return null;
+    }
+    if (screening) {
+      const executed = preflight.execution;
+      // Old caches recorded the assigned version even when a different
+      // standby ran. Assistant screening requires affirmative provenance;
+      // ordinary web packs retain the legacy cache behavior.
+      if (
+        !intakeAsksRestrictedGoods(recipe) ||
+        !screening.recipeId?.trim() ||
+        !executed ||
+        executed.recipe?.source !== "db" ||
+        executed.recipe.recipeId !== screening.recipeId ||
+        executed.recipe.key !== recipe.key ||
+        executed.recipe.version !== recipe.version ||
+        !screening.providers.includes(executed.provider)
+      ) {
+        return null;
+      }
     }
     const image = IntakeImageResult.safeParse(preflight.image);
     if (!image.success) {

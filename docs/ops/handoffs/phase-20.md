@@ -91,3 +91,38 @@ pnpm --filter @curvi/web exec vitest run src/lib/billing/renewal-notices.test.ts
 ```
 
 **49 passed**, including 25 notice tests. Independent review found that a future phase starting before the current period end can reset the billing anchor. Such transitions now fail closed: the October 2 / October 20 transition / November 11 old-boundary regression records one failure and sends nothing. Web TypeScript, owned ESLint and `git diff --check` passed for the final guard. The earlier 6,598-test integration result predates this narrow repair; only its affected checks were repeated by this lane.
+
+### P20-52 hosted security settings and CodeQL triage — 2026-10-02
+
+Parent-authorized, free/reversible settings were enabled on the existing public `BEXAI/Curviai` repository through GitHub's REST API and read back:
+
+| Setting | Verified result |
+| --- | --- |
+| Dependabot alerts | Enabled; `GET /repos/BEXAI/Curviai/vulnerability-alerts` returned 204. |
+| Dependabot security updates | Enabled, `paused: false`; no auto-merge enabled and no Dependabot PR merged. |
+| Private vulnerability reporting | Enabled; readback `enabled: true`. |
+| CodeQL default setup | Configured for `actions` and `javascript-typescript`, default query suite, standard GitHub-hosted runners and weekly scheduling. |
+
+Existing secret scanning and push protection remained enabled. Non-provider patterns and validity checks remained disabled, and repository `allow_auto_merge` remained false. No credentials, paid options, unrelated settings or workflow source files were changed by this setup.
+
+[Setup run 37012185268](https://github.com/BEXAI/Curviai/actions/runs/37012185268) succeeded on source main `b4893d19f6a715395f204d56a7e156a5001d8dd1`, completing at 2026-10-02 13:22:11 UTC. Actions analysis `1881028480` reported zero findings; JavaScript/TypeScript analysis `1881036729` reported **11 findings**, both with empty analysis error fields. The triage compared that main revision with feature candidate `c9799aad5f614e0e48b38c868609728db3d46eb3`; the corrected final candidate is pending its final push and matching CodeQL analysis. These results do not establish a clean CodeQL run. None of the 11 findings is removed merely by retiring Trigger orchestration, and no alert was dismissed.
+
+The locations below are the original main/SARIF locations, so later edits can move the lines. All 11 carried high security severity; none was critical. Alert numbers link to the repository's durable records.
+
+| Alert / rule | Original location | Triage and disposition |
+| --- | --- | --- |
+| [#1](https://github.com/BEXAI/Curviai/security/code-scanning/1) `js/polynomial-redos` | `packages/ai/src/llm.ts:132` | Real quadratic parsing risk from provider text containing an unterminated fence and long whitespace. Shared candidate replaces the overlapping fence regex with linear fixed-delimiter searches. Await matching analysis. |
+| [#2](https://github.com/BEXAI/Curviai/security/code-scanning/2) `js/polynomial-redos` | `packages/cli/src/client.ts:158` | Real quadratic trailing-slash trim, reached through locally supplied CLI/client base URL rather than an exposed server input. Shared candidate hardens it with a backwards character scan. Await matching analysis. |
+| [#3](https://github.com/BEXAI/Curviai/security/code-scanning/3) `js/polynomial-redos` | `packages/pipeline/src/deterministic/original.ts:966` | Real risk in uploaded ICC description parsing. Shared candidate replaces both `desc` and `mluc` trailing-NUL regex trims with a linear scan. Await matching analysis. |
+| [#4](https://github.com/BEXAI/Curviai/security/code-scanning/4) `js/polynomial-redos` | `packages/pipeline/src/planner/deterministic.ts:173` | Benign in this flow: line 166 first collapses every whitespace run to one space and trims it. The flagged expression cannot receive the overlapping long whitespace run; its parenthetical body excludes parentheses. |
+| [#5](https://github.com/BEXAI/Curviai/security/code-scanning/5) `js/xss-through-dom` | `apps/web/src/components/app/brand-kit-form.tsx:210` | Selected `File` becomes a `URL.createObjectURL` blob URL used as an image `src`. It is not inserted as HTML or executed as a script. |
+| [#6](https://github.com/BEXAI/Curviai/security/code-scanning/6) `js/bad-tag-filter` | `apps/web/src/components/ui/liquid-metal-hero.test.ts:26` | Private test-only `visibleText` helper extracts text for assertions; it is not an HTML sanitizer or production rendering path. |
+| [#7](https://github.com/BEXAI/Curviai/security/code-scanning/7) `js/bad-tag-filter` | `apps/web/src/lib/billing/billing-render.test.ts:67` | Private test-only `textOf` helper feeds text assertions, with no production HTML sink. |
+| [#8](https://github.com/BEXAI/Curviai/security/code-scanning/8) `js/bad-tag-filter` | `packages/pipeline/src/copy-lint.ts:13` | Typography/copy cleanup, including ASCII arrow text, feeds font-glyph/raster composition. It is not relied on to sanitize content for an HTML sink. |
+| [#9](https://github.com/BEXAI/Curviai/security/code-scanning/9) `js/incomplete-sanitization` | `apps/web/src/lib/services/db-reveal.test.ts:117` | Replacement of a fixed `used.jpg` fixture appears only inside an expected test assertion; it is not a security boundary for external input. |
+| [#10](https://github.com/BEXAI/Curviai/security/code-scanning/10) `js/insufficient-password-hash` | `apps/web/src/lib/api-keys/format.ts:45` | SHA-256 hashes server-generated bearer keys containing 32 cryptographically random bytes, not human passwords. The database backend also rejects the fixed demo-key prefix. |
+| [#11](https://github.com/BEXAI/Curviai/security/code-scanning/11) `js/biased-cryptographic-random` | `apps/web/src/lib/shares/pick.ts:20` | The alphabet has exactly 32 symbols and bytes have 256 values. Each symbol has exactly eight byte preimages under modulo 32, so this mapping is unbiased. |
+
+The full dependency audit also exposed development-tool advisories beyond the earlier production-only audit. Root updated Vitest to exact `4.1.11` and added the scoped `@esbuild-kit/core-utils>esbuild` override to exact `0.25.12`. `/tmp/curvi-final-all-audit.json` now records **zero advisories across 788 total dependencies** (all severity counts zero). This is an audit snapshot, not a claim that all code is secure. The scoped override passed six transform cases, DB source typechecking and 19 migration/snapshot/PGlite tests. Drizzle generation used copied schema/snapshots with an explicit credential-free temporary config and reported no schema changes; all 88 migration/snapshot files remained unchanged. Logs are under `/tmp/curvi-esbuild-offline-6fqHFx/`. Root owns final candidate validation and matching CodeQL readback.
+
+Official advisory references checked 2026-10-02: [Vitest fixed versions and scope](https://github.com/advisories/GHSA-82fw-gwwq-j7x9), [esbuild development-server advisory](https://github.com/advisories/GHSA-67mh-4wv8-2f99). Neither audit presence alone proves an exposed production exploit; these dependency updates remove the affected versions and passed compatibility checks.

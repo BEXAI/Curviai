@@ -225,6 +225,7 @@ import {
   reusablePreflightIntake,
   trustedIntakeAnswer,
   type PreflightIntake,
+  type RecipeExecution,
 } from "./preflight-intake";
 
 export type { JobState } from "./state";
@@ -1920,6 +1921,7 @@ export interface LlmCall<T> {
   raw: unknown;
   /** The delivering call plus any billed failed attempts before it. */
   costMicros: number;
+  execution?: RecipeExecution;
 }
 
 /** The answer in a provider's output: an adapter's LlmResult json, or the
@@ -1995,7 +1997,7 @@ export async function llmJson<T>(
   ctx: { jobId: string; workspaceId: string; stepId: string },
   contentBlocks?: LlmContentBlock[],
   outputSchema?: z.ZodType,
-): Promise<LlmCall<T>> {
+): Promise<LlmCall<T> & { execution: RecipeExecution }> {
   recipe = runnableRecipe(ai, recipe);
   const text = JSON.stringify(payload);
   const input: LlmRequest = {
@@ -2105,6 +2107,10 @@ export async function llmJson<T>(
     value: parsed.success ? (parsed.data as T) : null,
     raw,
     costMicros: result.costMicros + result.billedFailureMicros + strictFailureMicros,
+    execution: {
+      recipe: { key: recipe.key, version: recipe.version, recipeId: recipe.recipeId, source: recipe.source },
+      provider: result.provider,
+    },
   };
 }
 
@@ -4182,7 +4188,9 @@ export async function runGeneratePack(
     if (input.audience === "assistant") {
       if (!approvedScreeningRecipe(assignedIntake)) throw new Error(SCREENING_UNAVAILABLE_MESSAGE);
       intakeRecipe = runnableRecipe(deps.ai, assignedIntake);
-      if (!approvedScreeningRecipe(intakeRecipe)) throw new Error(SCREENING_UNAVAILABLE_MESSAGE);
+      if (!approvedScreeningRecipe(intakeRecipe) || recipeChain(deps.ai, intakeRecipe).length === 0) {
+        throw new Error(SCREENING_UNAVAILABLE_MESSAGE);
+      }
     }
     // The seller's output options, parsed with the shared schema before any
     // provider call or charge (PHASE_15 item 11). Anything the schema
@@ -4208,7 +4216,12 @@ export async function runGeneratePack(
     // The preflight at upload already asked intake about these photos with
     // this note and this recipe version: its answer is reused, so the
     // seller's photo is never judged (or paid for) twice.
-    const preflightIntake = reusablePreflightIntake(judgedImages, input.userDescription, intakeRecipe, clock.now());
+    const preflightIntake = reusablePreflightIntake(
+      judgedImages, input.userDescription, intakeRecipe, clock.now(),
+      input.audience === "assistant"
+        ? { recipeId: intakeRecipe.recipeId, providers: recipeChain(deps.ai, intakeRecipe) }
+        : undefined,
+    );
     if (preflightIntake) {
       console.info(`[runner] job ${input.jobId} reused the preflight intake answer`);
     }

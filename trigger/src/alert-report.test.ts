@@ -18,8 +18,8 @@ function fetchWith(status: number): (url: string, init?: RequestInit) => Promise
   return async () => new Response(status === 200 ? "{}" : "nope", { status });
 }
 
-function quietLog(): { error: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> } {
-  return { error: vi.fn(), warn: vi.fn() };
+function quietLog() {
+  return { error: vi.fn<Console["error"]>(), warn: vi.fn<Console["warn"]>() };
 }
 
 type Reported = { message: string; tags: Record<string, string>; level?: string };

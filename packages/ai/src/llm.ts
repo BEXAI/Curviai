@@ -129,9 +129,17 @@ export function llmProviderFamilyOf(providerName: string): string | null {
  */
 export function jsonFromText(text: string): unknown {
   const candidates = [text];
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) {
-    candidates.push(fenced[1]);
+  // Fixed-delimiter searches stay linear even when an opening fence is
+  // followed by a long whitespace run and no closing fence. An overlapping
+  // whitespace/content regex can retry that entire suffix for each space.
+  const fenceStart = text.indexOf("```");
+  if (fenceStart >= 0) {
+    const afterFence = fenceStart + 3;
+    const contentStart = text.startsWith("json", afterFence) ? afterFence + 4 : afterFence;
+    const fenceEnd = text.indexOf("```", contentStart);
+    if (fenceEnd >= 0) {
+      candidates.push(text.slice(contentStart, fenceEnd).trimStart());
+    }
   }
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");

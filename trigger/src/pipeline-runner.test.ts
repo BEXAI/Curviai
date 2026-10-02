@@ -116,8 +116,8 @@ import {
   withRunDeadline,
 } from "./pipeline-runner";
 import type { JobState } from "./state";
-import { RecipeCatalog, seedRecipe, type ResolvedRecipe } from "./recipes";
-import { noteKey } from "./preflight-intake";
+import { llmModelProviderName, RecipeCatalog, seedRecipe, type ResolvedRecipe } from "./recipes";
+import { noteKey, type PreflightIntake } from "./preflight-intake";
 
 // planShots passes through to the real planner unless a test switches it to
 // fail, to show a planner failure never sinks a valid LLM plan.
@@ -134,7 +134,7 @@ vi.mock("@curvi/pipeline", async (importOriginal) => {
     },
   };
 });
-import { demoAplusCopy, demoProfile, DemoShotGenerator } from "./runtime";
+import { demoAplusCopy, demoProfile, DemoLlmProvider, DemoShotGenerator } from "./runtime";
 import { LiveShotGenerator, PRODUCT_TOUCHING } from "./live-runtime";
 
 const intakeKey = activeRecipe("intake").key;
@@ -695,10 +695,24 @@ describe("prohibited goods for assistant requests (PHASE_19 P19-29)", () => {
   const approvedIntake = (version = 8): ResolvedRecipe => ({
     ...seedRecipe("intake"), version, source: "db", recipeId: `approved-intake-${version}`,
   });
-  const withApprovedIntake = (overrides: Partial<PipelineDeps> = {}) => makeDeps({
-    recipes: { forJob: async () => ({ intake: approvedIntake() }) },
-    ...overrides,
-  });
+  function withApprovedIntake(overrides: Partial<PipelineDeps> = {}) {
+    const ai = overrides.ai ?? makeAi();
+    // A real runtime registers one provider per priced model. Route that
+    // model's requests to the existing stage doubles, including later stages
+    // that share the intake model, without making any network calls.
+    ai.registry.register({
+      name: llmModelProviderName(approvedIntake().models[0]),
+      kind: "llm",
+      supports: (task) => ai.registry.get(ai.routing[task]?.[0] ?? "")?.supports(task) ?? false,
+      invoke: <TIn, TOut>(request: ProviderRequest<TIn>) =>
+        ai.registry.get(ai.routing[request.task][0])!.invoke<TIn, TOut>(request),
+    });
+    return makeDeps({
+      recipes: { forJob: async () => ({ intake: approvedIntake() }) },
+      ...overrides,
+      ai,
+    });
+  }
 
   async function expectUnavailable(overrides: Partial<PipelineDeps> = {}, input: GeneratePackInput = baseInput) {
     const intake = vapeIntake(null);
@@ -773,6 +787,52 @@ describe("prohibited goods for assistant requests (PHASE_19 P19-29)", () => {
     const ai = makeAi();
     ai.registry.register(new MockProvider({ name: "anthropic:claude-opus-5-5", tasks: [intakeKey], output: intakeFixture }));
     await expectUnavailable({ ai, recipes: { forJob: async () => ({ intake: approvedIntake() }) } });
+  });
+
+  it("refuses an approved current recipe with no registered model before falling through to demo routing", async () => {
+    const ai = makeAi();
+    const demo = new DemoLlmProvider();
+    ai.registry.register(demo);
+    ai.routing[intakeKey] = [demo.name];
+    await expectUnavailable({ ai, recipes: { forJob: async () => ({ intake: approvedIntake() }) } });
+  });
+
+  it.each(["legacy", "older-standby"] as const)("screens again instead of trusting a clean %s cache labeled as the current recipe", async (provenance) => {
+    const intake = vapeIntake("tobacco_nicotine");
+    const analyze = new MockProvider({ name: "mock-analyze", tasks: [analyzeKey], output: demoProfile });
+    const deps = withApprovedIntake({ ai: makeAi({ intake, analyze }) });
+    const preflight: PreflightIntake = {
+      image: { ...intakeFixture.images[0], addedOverlays: false, restrictedCategory: null },
+      recipe: { key: intakeKey, version: 8 }, noteKey: noteKey(undefined), at: new Date().toISOString(),
+      ...(provenance === "older-standby" ? {
+        execution: { recipe: { key: intakeKey, version: 6, recipeId: null, source: "seed" as const }, provider: "anthropic:claude-opus-5-5" },
+      } : {}),
+    };
+    const summary = await runGeneratePack({ ...baseInput, audience: "assistant", images: [{ mediaId: "m1", preflight }] }, deps);
+    expect(summary).toMatchObject({
+      state: "failed", error: restrictedProductMessage(["tobacco_nicotine"]),
+      chargedCredits: 0, releasedCredits: baseInput.creditBudget, plannedShots: 0,
+    });
+    expect(intake.calls).toHaveLength(1);
+    expect(analyze.calls).toHaveLength(0);
+  });
+
+  it("reuses an approved current cache and still rejects its restricted category without a provider call", async () => {
+    const intake = vapeIntake(null);
+    const deps = withApprovedIntake({ ai: makeAi({ intake }) });
+    const recipe = approvedIntake();
+    const summary = await runGeneratePack({
+      ...baseInput, audience: "assistant", images: [{ mediaId: "m1", preflight: {
+        image: { ...intakeFixture.images[0], addedOverlays: false, restrictedCategory: "tobacco_nicotine" },
+        recipe: { key: recipe.key, version: recipe.version }, noteKey: noteKey(undefined), at: new Date().toISOString(),
+        execution: {
+          recipe: { key: recipe.key, version: recipe.version, recipeId: recipe.recipeId, source: recipe.source },
+          provider: llmModelProviderName(recipe.models[0]),
+        },
+      } }],
+    }, deps);
+    expect(summary).toMatchObject({ state: "failed", error: restrictedProductMessage(["tobacco_nicotine"]), chargedCredits: 0, releasedCredits: baseInput.creditBudget });
+    expect(intake.calls).toHaveLength(0);
   });
 
   it("refuses compiled screening when no database recipe resolver is present", async () => {

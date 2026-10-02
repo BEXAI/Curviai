@@ -35,8 +35,8 @@ function env(values: Record<string, string>): ReadEnv {
 
 const MAIL_ENV = { RESEND_API_KEY: "re_test", FOUNDER_ALERT_EMAIL: "founder@example.com" };
 
-function quietLog(): { error: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> } {
-  return { error: vi.fn(), warn: vi.fn() };
+function quietLog() {
+  return { error: vi.fn<Console["error"]>(), warn: vi.fn<Console["warn"]>() };
 }
 
 describe("SpendAlertNotifier", () => {

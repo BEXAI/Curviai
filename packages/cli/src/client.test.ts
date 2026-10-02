@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CurviApiError, CurviClient, CurviNetworkError, DEFAULT_BASE_URL } from "./client.ts";
+import { CurviApiError, CurviClient, CurviNetworkError, DEFAULT_BASE_URL, type FetchLike } from "./client.ts";
 
 const KEY = "curvi_test_0123456789abcdef";
 
@@ -29,7 +29,7 @@ const PACK = {
 };
 const PACK_BODY = { pack: PACK };
 
-function client(fetchImpl: ReturnType<typeof vi.fn>, sleep = vi.fn(async () => {})) {
+function client(fetchImpl: FetchLike, sleep = vi.fn(async () => {})) {
   return new CurviClient({ apiKey: KEY, fetch: fetchImpl, sleep, userAgent: "curvi-cli/test" });
 }
 
@@ -40,6 +40,12 @@ describe("CurviClient", () => {
     expect(new CurviClient({ apiKey: KEY, baseUrl: "http://localhost:3000/api/v1/" }).baseUrl).toBe(
       "http://localhost:3000/api/v1",
     );
+  });
+
+  it("trims only the trailing slashes even after a long internal slash run", () => {
+    const baseUrl = `https://example.com/${"/".repeat(200_000)}api/v1`;
+    expect(new CurviClient({ apiKey: KEY, baseUrl: `${baseUrl}///` }).baseUrl).toBe(baseUrl);
+    expect(new CurviClient({ apiKey: KEY, baseUrl }).baseUrl).toBe(baseUrl);
   });
 
   it("gets a pack and its files with the bearer key", async () => {

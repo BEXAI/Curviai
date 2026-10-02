@@ -33,7 +33,9 @@ import {
   reusablePreflightIntake,
   trustedIntakeAnswer,
   type PreflightIntake,
+  type RecipeExecution,
 } from "./preflight-intake";
+import { llmModelProviderName, seedRecipe, standbySeedRecipes, type ResolvedRecipe } from "./recipes";
 import { demoProfile, DemoShotGenerator } from "./runtime";
 
 // docs/phases/PHASE_14.md workstream 4 and item 3.2, runner side.
@@ -242,6 +244,62 @@ describe("reusablePreflightIntake", () => {
     const flagged = { preflight: preflightOf({ ...twoProductsImage, addedOverlays: true }) };
     expect(reusablePreflightIntake([flagged], undefined, recipe, now)?.images[0].addedOverlays).toBe(true);
   });
+
+  const screeningRecipe = { key: intakeKey, version: 8 };
+  const screening = {
+    recipeId: "approved-intake-8",
+    providers: [llmModelProviderName(seedRecipe("intake").models[0])],
+  };
+  const execution: RecipeExecution = {
+    recipe: { ...screeningRecipe, recipeId: screening.recipeId, source: "db" },
+    provider: screening.providers[0],
+  };
+
+  it("requires execution provenance for assistant screening while preserving legacy web reuse", () => {
+    const legacy = { preflight: preflightOf(twoProductsImage, { recipe: screeningRecipe }) };
+    expect(reusablePreflightIntake([legacy], undefined, screeningRecipe, now)?.images).toEqual([twoProductsImage]);
+    expect(reusablePreflightIntake([legacy], undefined, screeningRecipe, now, screening)).toBeNull();
+  });
+
+  it("accepts an approved database answer from a provider in the current live chain", () => {
+    const screened = {
+      preflight: preflightOf(twoProductsImage, { recipe: screeningRecipe, execution }),
+    };
+    expect(reusablePreflightIntake([screened], undefined, screeningRecipe, now, screening)?.images).toEqual([
+      twoProductsImage,
+    ]);
+    expect(reusablePreflightIntake([screened], undefined, screeningRecipe, now, { ...screening, recipeId: null })).toBeNull();
+    expect(reusablePreflightIntake([screened], undefined, screeningRecipe, now, { ...screening, providers: [] })).toBeNull();
+  });
+
+  it("rejects seed, mismatched and retired provider provenance on any screened photo", () => {
+    const valid = { preflight: preflightOf(twoProductsImage, { recipe: screeningRecipe, execution }) };
+    const invalid: Array<[string, RecipeExecution]> = [
+      ["seed fallback", { ...execution, recipe: { ...execution.recipe, recipeId: null, source: "seed" } }],
+      ["seed origin with a claimed database row", { ...execution, recipe: { ...execution.recipe, source: "seed" } }],
+      ["another database row", { ...execution, recipe: { ...execution.recipe, recipeId: "replaced-intake-8" } }],
+      ["missing database row", { ...execution, recipe: { ...execution.recipe, recipeId: null } }],
+      ["another recipe key", { ...execution, recipe: { ...execution.recipe, key: analyzeKey } }],
+      ["older execution relabeled as version 8", { ...execution, recipe: { ...execution.recipe, version: 6 } }],
+      ["provider outside the live chain", { ...execution, provider: "retired-intake-provider" }],
+    ];
+    for (const [reason, recorded] of invalid) {
+      const invalidPhoto = { preflight: preflightOf(twoProductsImage, { recipe: screeningRecipe, execution: recorded }) };
+      expect(reusablePreflightIntake([valid, invalidPhoto], undefined, screeningRecipe, now, screening), reason).toBeNull();
+    }
+  });
+
+  it("rejects an older prompt for screening even when its database provenance matches", () => {
+    const olderRecipe = { ...screeningRecipe, version: 7 };
+    const older = {
+      preflight: preflightOf(twoProductsImage, {
+        recipe: olderRecipe,
+        execution: { ...execution, recipe: { ...execution.recipe, version: olderRecipe.version } },
+      }),
+    };
+    expect(reusablePreflightIntake([older], undefined, olderRecipe, now, screening)).toBeNull();
+    expect(reusablePreflightIntake([older], undefined, olderRecipe, now)?.images).toEqual([twoProductsImage]);
+  });
 });
 
 describe("trustedIntakeAnswer", () => {
@@ -445,6 +503,78 @@ describe("runUploadPreflight", () => {
     const clean = preflightDeps({ images: [older] }, generator(twoBottles()));
     const oldRun = await runUploadPreflight(clean.deps, { preflightId: "pf-old", workspaceId: WS, mediaKey: KEY, note: "" });
     expect(oldRun.intake?.image.addedOverlays).toBe(false);
+  });
+
+  it("records the older standby that actually answered and discards its guessed restricted category", async () => {
+    const assigned: ResolvedRecipe = {
+      ...seedRecipe("intake"), version: 8, recipeId: "approved-intake-8", source: "db",
+    };
+    const standby = standbySeedRecipes(assigned).find((candidate) =>
+      candidate.version < 8 && candidate.models.some((model) => !assigned.models.includes(model)),
+    );
+    if (!standby) throw new Error("Expected an older active intake standby with its own model");
+    const standbyModel = standby.models.find((model) => !assigned.models.includes(model))!;
+    const guessed = { ...twoProductsImage, restrictedCategory: "tobacco_nicotine" as const };
+    const { deps, intake } = preflightDeps({ images: [guessed] }, generator(null, 0));
+    const provider = new MockProvider({
+      name: llmModelProviderName(standbyModel), tasks: [intakeKey], output: { images: [guessed] }, costMicros: 800,
+    });
+    deps.ai.registry.register(provider);
+    deps.recipes = { forJob: async () => ({ intake: assigned }) };
+    const now = new Date();
+
+    const run = await runUploadPreflight(deps, { preflightId: "pf-standby", workspaceId: WS, mediaKey: KEY, now });
+
+    expect(provider.invocations).toBe(1);
+    expect(intake.invocations).toBe(0);
+    expect(provider.calls[0].input).toMatchObject({ system: standby.system });
+    expect(run.intake).toMatchObject({
+      recipe: { key: standby.key, version: standby.version },
+      execution: {
+        recipe: { key: standby.key, version: standby.version, recipeId: null, source: "seed" },
+        provider: provider.name,
+      },
+      image: { restrictedCategory: null },
+    });
+    expect(run.costMicros).toBe(800);
+    if (!run.intake) throw new Error("Expected the successful standby intake answer");
+    const photo = { preflight: run.intake };
+    expect(reusablePreflightIntake([photo], undefined, standby, now)).not.toBeNull();
+    expect(reusablePreflightIntake([photo], undefined, assigned, now, {
+      recipeId: assigned.recipeId,
+      providers: assigned.models.map(llmModelProviderName),
+    })).toBeNull();
+  });
+
+  it("records approved database execution so the current live provider's answer can screen a later pack", async () => {
+    const assigned: ResolvedRecipe = {
+      ...seedRecipe("intake"), version: 8, recipeId: "approved-intake-8", source: "db",
+    };
+    const restricted = { ...twoProductsImage, restrictedCategory: "tobacco_nicotine" as const };
+    const { deps, intake } = preflightDeps({ images: [restricted] }, generator(null, 0));
+    const provider = new MockProvider({
+      name: llmModelProviderName(assigned.models[0]), tasks: [intakeKey], output: { images: [restricted] },
+    });
+    deps.ai.registry.register(provider);
+    deps.recipes = { forJob: async () => ({ intake: assigned }) };
+    const now = new Date();
+
+    const run = await runUploadPreflight(deps, { preflightId: "pf-approved", workspaceId: WS, mediaKey: KEY, now });
+
+    expect(provider.invocations).toBe(1);
+    expect(intake.invocations).toBe(0);
+    expect(run.intake).toMatchObject({
+      recipe: { key: assigned.key, version: assigned.version },
+      execution: {
+        recipe: { key: assigned.key, version: assigned.version, recipeId: assigned.recipeId, source: "db" },
+        provider: provider.name,
+      },
+      image: { restrictedCategory: "tobacco_nicotine" },
+    });
+    if (!run.intake) throw new Error("Expected the approved database intake answer");
+    expect(reusablePreflightIntake([{ preflight: run.intake }], undefined, assigned, now, {
+      recipeId: assigned.recipeId, providers: [provider.name],
+    })?.images[0].restrictedCategory).toBe("tobacco_nicotine");
   });
 
   it("preselects the piece the note decides", async () => {

@@ -916,6 +916,15 @@ function specFormat(format: string | undefined): string {
   }
 }
 
+/** ICC text may contain embedded NULs. Remove only its trailing padding in
+ * one backward scan; an unanchored NUL regex can retry a long interior run
+ * at every offset when an uploaded profile ends in a non-NUL character. */
+function trimTrailingNuls(text: string): string {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 0) end--;
+  return text.slice(0, end);
+}
+
 /**
  * The description of an ICC profile: the v2 textDescriptionType ("desc") or
  * the v4 multiLocalizedUnicodeType ("mluc", English record first, else the
@@ -944,7 +953,7 @@ export function iccProfileDescription(icc: Buffer): string | null {
       if (type === "desc") {
         const count = icc.readUInt32BE(offset + 8);
         const end = Math.min(offset + 12 + count, offset + size);
-        return icc.toString("latin1", offset + 12, end).replace(/\0+$/, "");
+        return trimTrailingNuls(icc.toString("latin1", offset + 12, end));
       }
       if (type === "mluc") {
         const records = icc.readUInt32BE(offset + 8);
@@ -971,7 +980,7 @@ export function iccProfileDescription(icc: Buffer): string | null {
         for (let k = 0; k + 1 < chosen.length; k += 2) {
           text += String.fromCharCode(icc.readUInt16BE(chosen.at + k));
         }
-        return text.replace(/\0+$/, "");
+        return trimTrailingNuls(text);
       }
       return null;
     }

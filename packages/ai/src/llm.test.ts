@@ -1,3 +1,4 @@
+import { Worker } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import { isLlmResult, jsonFromText, llmEffortFor, llmProviderFamilyOf, type LlmResult } from "./llm";
 
@@ -26,6 +27,41 @@ describe("neutral LLM contract helpers", () => {
     expect(jsonFromText("no json here")).toBeNull();
     expect(jsonFromText("")).toBeNull();
   });
+
+  it.each([
+    ['"a ``` marker"', "a ``` marker"],
+    ['```\n[1,2]\n```', [1, 2]],
+    ['```json\uFEFF\u00a0\n{"a":2}\n```', { a: 2 }],
+    ['```jsontrue```', true],
+    ['```python\n{"a":3}\n```', { a: 3 }],
+    ['```json\nnot JSON``` then {"a":4}', { a: 4 }],
+    ['```json\n{"a":5}', { a: 5 }],
+    ['```not JSON``` then ```[1,2]```', null],
+  ])("preserves whole-text, first-fence and outer-object precedence for %s", (text, expected) => {
+    expect(jsonFromText(text)).toEqual(expected);
+  });
+
+  it.each(["```", "```json"])("finishes a large whitespace response after %s with no closing fence", async (fence) => {
+    // Isolate the adversarial input so a backtracking regression is killed
+    // instead of blocking the test runner's own timeout indefinitely.
+    const worker = new Worker(`
+      const { parentPort, workerData } = require("node:worker_threads");
+      const parse = (${jsonFromText.toString()});
+      parentPort.postMessage(parse(workerData));
+    `, { eval: true, workerData: fence + " \t\n".repeat(400_000) + "not JSON" });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await new Promise<unknown>((resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("Incomplete fence parsing did not finish")), 5_000);
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+      expect(result).toBeNull();
+    } finally {
+      clearTimeout(timeout);
+      await worker.terminate();
+    }
+  }, 10_000);
 
   it("takes the model's own effort first, then the request effort, else none", () => {
     const request = { effort: "low" as const, modelOptions: { m1: { effort: "high" as const }, m2: {} } };
