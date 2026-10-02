@@ -6,10 +6,12 @@
  * same key with another body is a 409. Credits are held, channels checked
  * against the plan and requests rate limited exactly as the web form does
  * (lib/api-v1/actions). The key is checked before the capped body is read.
+ * Photos attached in ChatGPT (images) are an MCP tool field only (PHASE_19
+ * P19-15), so this route refuses the field as it always did.
  */
 
 import type { NextResponse } from "next/server";
-import { createPack } from "@/lib/api-v1/actions";
+import { chatFileRefused, createPack } from "@/lib/api-v1/actions";
 import { API_PHOTO_BODY_MAX_BYTES, apiResponse, authorize } from "@/lib/api-v1/http";
 import { readJsonCapped } from "@/lib/http/json-body";
 
@@ -24,6 +26,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   const body = await readJsonCapped(request, API_PHOTO_BODY_MAX_BYTES);
   if (!body.ok) {
     return body.response;
+  }
+  const refused = chatFileRefused(body.data, "images");
+  if (refused) {
+    return apiResponse(refused);
   }
   const result = await createPack(
     { caller: auth.caller, headers: request.headers },

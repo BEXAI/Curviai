@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Badge, Button } from "@curvi/ui";
 import type { PackActionResult } from "@/components/app/pack-actions";
+import { announcePackFilesChanged } from "@/components/app/pack-downloads";
 import type { JobView, ShotVersionView } from "@/lib/services/types";
 import { VERSION_COPY } from "@/lib/variation-picks";
 
@@ -38,6 +39,8 @@ export function VersionPick({
       const data = (await response.json().catch(() => null)) as { job?: JobView; error?: string } | null;
       if (response.ok && data?.job) {
         onDone({ job: data.job, notice: VERSION_COPY.saved(next), error: null });
+        // A pick changes which files ship and drops the channel zips.
+        announcePackFilesChanged(jobId);
       } else {
         onDone({ job: null, notice: null, error: data?.error ?? VERSION_COPY.failed });
       }

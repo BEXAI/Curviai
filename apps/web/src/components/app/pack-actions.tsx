@@ -277,3 +277,16 @@ export function AddPhotoButton({
     </div>
   );
 }
+
+export function RegenerateShotButton({ jobId, shot, onDone }: { jobId: string; shot: JobShotView; onDone: (result: PackActionResult) => void }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (!shot.regenerate) return null;
+  async function generate() {
+    setBusy(true);
+    try { const { status, data } = await postJson(`/api/jobs/${jobId}/shots/${encodeURIComponent(shot.shotId)}/regenerate`); onDone(resultOf(status, data, "Making another version. Your current version stays picked.")); }
+    catch { onDone({ job: null, notice: null, error: NETWORK_ERROR }); }
+    finally { setBusy(false); setAsking(false); }
+  }
+  return <div className="mt-3">{asking ? <Confirm question={`Make another version for ${shot.regenerate.credits} credits? Credits are held while it runs and charged only if it passes. Your current version stays picked.`} confirmLabel="Yes, make another version" cancelLabel="Not now" busy={busy} onConfirm={() => void generate()} onCancel={() => setAsking(false)} testId="regenerate-confirm" /> : <Button size="sm" variant="outline" onClick={() => setAsking(true)} data-testid="regenerate-shot">Make another version</Button>}</div>;
+}

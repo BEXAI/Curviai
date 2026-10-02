@@ -11,7 +11,7 @@ import {
   liveFilesPhrase,
   typicalPackChannelNames,
   typicalPackCredits,
-  UNUSED_CREDITS_SENTENCE,
+  CREDIT_TERMS_SENTENCE,
   type Availability,
 } from "@/lib/marketing-facts";
 import { answerFaqs } from "./pillar-copy";
@@ -38,7 +38,9 @@ export const homeHero = {
  * claims test reads as plain strings.
  */
 export const homeHeroCtas = {
-  primary: { label: "Start free", href: "/signup" },
+  // href is signupHref({ source: "home" }); the page renders it through
+  // SignupLink, which adds the visitor's landing params (P18-01).
+  primary: { label: "Start free", href: "/signup?source=home", source: "home" as const },
   secondary: { label: "Test your main image free", href: "/tools/main-image-checker" },
 };
 
@@ -110,7 +112,7 @@ export const homePricing = {
   freeTitle: "Free",
   freeBody: `${freeCredits()} credits once, ${freeCreditsReach()}.`,
   noCard: "No card needed.",
-  unusedCredits: UNUSED_CREDITS_SENTENCE,
+  unusedCredits: CREDIT_TERMS_SENTENCE,
   fullPricing: "See full pricing",
 };
 
@@ -149,7 +151,7 @@ export const homeTools = [
 export const homeSteps = [
   {
     title: "Upload one photo",
-    body: "A phone photo of your product is enough. Curvi masks the product so its pixels are locked before anything else happens.",
+    body: "A phone photo of your product is enough. Curvi masks the product first, so the product itself is never redrawn.",
   },
   {
     title: "Curvi builds the pack",

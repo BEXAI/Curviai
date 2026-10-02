@@ -350,7 +350,7 @@ describe("InlinePackRunner run cap", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     const shutdown = h.runner.shutdown("SIGTERM");
     await vi.advanceTimersByTimeAsync(4_000);
-    await expect(shutdown).resolves.toEqual({ notStarted: 0, finished: 0, interrupted: 0, timedOut: 1 });
+    await expect(shutdown).resolves.toEqual({ notStarted: 0, finished: 0, interrupted: 0, timedOut: 1, requeued: 0 });
     expect(h.settled).toEqual([{ jobId: "a", reason: "timed_out" }]);
   });
 
@@ -402,7 +402,7 @@ describe("InlinePackRunner shutdown", () => {
     // The running pack finishes inside the grace window: nothing to settle.
     h.gate("a").resolve();
     await a;
-    await expect(shutdown).resolves.toEqual({ notStarted: 1, finished: 1, interrupted: 0, timedOut: 0 });
+    await expect(shutdown).resolves.toEqual({ notStarted: 1, finished: 1, interrupted: 0, timedOut: 0, requeued: 0 });
     expect(h.started).toEqual(["a"]);
     expect(h.settled).toEqual([{ jobId: "b", reason: "not_started" }]);
   });
@@ -415,7 +415,7 @@ describe("InlinePackRunner shutdown", () => {
 
     const report = await h.runner.shutdown("SIGTERM");
 
-    expect(report).toEqual({ notStarted: 0, finished: 0, interrupted: 2, timedOut: 0 });
+    expect(report).toEqual({ notStarted: 0, finished: 0, interrupted: 2, timedOut: 0, requeued: 0 });
     expect(h.settled).toEqual([
       { jobId: "a", reason: "interrupted" },
       { jobId: "b", reason: "interrupted" },
@@ -450,7 +450,7 @@ describe("InlinePackRunner shutdown", () => {
     const h = harness({ concurrency: 1, shutdownGraceMs: 0 });
     h.runner.submit(h.job("a"));
     await flush();
-    await expect(h.runner.shutdown()).resolves.toEqual({ notStarted: 0, finished: 0, interrupted: 1, timedOut: 0 });
+    await expect(h.runner.shutdown()).resolves.toEqual({ notStarted: 0, finished: 0, interrupted: 1, timedOut: 0, requeued: 0 });
     expect(h.settled).toEqual([{ jobId: "a", reason: "interrupted" }]);
   });
 });
@@ -484,5 +484,32 @@ describe("installInlinePackRunner", () => {
     // Both hooks come off after the first signal.
     expect(process.listenerCount("SIGTERM")).toBe(beforeTerm);
     expect(process.listenerCount("SIGINT")).toBe(beforeInt);
+  });
+});
+
+describe("start admission and running heartbeat", () => {
+  it("keeps a job waiting while admission is closed and starts after the bounded recheck", async () => {
+    vi.useFakeTimers();
+    let allowed = false;
+    const gate = deferred();
+    const started: string[] = [];
+    const beats: string[] = [];
+    const runner = new InlinePackRunner<InlinePackJob>(
+      { concurrency: 1, shutdownGraceMs: 0, heartbeatMs: 1_000, startRetryMs: 5_000 },
+      { canStart: () => allowed, runPack: async (p) => { started.push(p.jobId); await gate.promise; },
+        settle: async () => undefined, heartbeatRunning: async (jobs) => { beats.push(...jobs.map((p) => p.jobId)); }, logger: quietLogger },
+    );
+    const done = runner.submit({ jobId: "queued", workspaceId: "ws" });
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(started).toEqual([]);
+    allowed = true;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(started).toEqual(["queued"]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(beats).toContain("queued");
+    gate.resolve(); await done;
+    const count = beats.length;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(beats).toHaveLength(count);
   });
 });

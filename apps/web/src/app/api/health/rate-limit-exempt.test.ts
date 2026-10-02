@@ -25,7 +25,7 @@ function exhaustedStore(): RateLimitStore & { calls: number } {
 }
 
 function request(path: string): Request {
-  return new Request(`https://curvi.ai${path}`, { headers: { "cf-connecting-ip": "203.0.113.9" } });
+  return new Request(`https://curvi.ai${path}`, { headers: { "x-forwarded-for": "203.0.113.9" } });
 }
 
 /** Whether a Next.js middleware matcher entry covers a path. Only the forms

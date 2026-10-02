@@ -8,13 +8,23 @@
  * The public page gets images through /s/{slug}/image/{ref}, which re-encodes
  * each one without metadata, so the seller's photo never leaves with its
  * EXIF, and no signed bucket url or row id is ever put on a public page.
+ *
+ * With show_proof on (P18-16), each public image also carries its measured
+ * proof, built only from the numbers and check rows on its asset row
+ * (lib/proof-view.ts), never a key, id or file name.
  */
 
 import { type Db, galleryItems, shareLinks, sql, eq, and } from "@curvi/db";
+import { consentedQuotesForJobs } from "@/lib/feedback/db-store";
+import { operatorWorkspaceIds } from "@/lib/funnel-report";
+import { opsEmails } from "@/lib/ops";
+import { isProspectJob } from "@/lib/prospects/store";
 import { isWorkspaceKey, isWorkspaceSourceKey } from "@/lib/r2";
+import { proofForFile } from "@/lib/proof-view";
 import { isUuid } from "@/lib/validation/ids";
 import { allHeroCandidatesOriginal } from "./hero";
 import { isShareSlug, newShareSlug, pickDisplayVariant, pickHeroAsset, shotLabel } from "./pick";
+import { clearShareSitemapCache } from "./sitemap";
 import {
   canPublishShares,
   sharePath,
@@ -31,7 +41,7 @@ import {
 } from "./types";
 
 type JobRow = { id: string; workspaceId: string; productId: string; status: string; creditsCharged: number; createdAt: Date };
-type AssetRow = { id: string; shotType: string; createdAt: Date };
+type AssetRow = { id: string; shotType: string; createdAt: Date; qc?: Record<string, unknown> | null };
 type VariantRow = { id: string; assetId: string; channelSpecId: string; r2Key: string; width: number | null; height: number | null; createdAt: Date };
 
 /** Mirrors DbService's servesFiles: a finished pack, or one that charged for
@@ -61,13 +71,20 @@ function pickShotFiles(
   return files.sort((a, b) => (a.asset === hero ? -1 : b.asset === hero ? 1 : 0));
 }
 
-/** The public image of one shot file on a share page. */
-function shareImage(slug: string, title: string, file: { asset: AssetRow; variant: VariantRow }): PublicShareImage {
+/** The public image of one shot file on a share page, with its measured
+ * proof when the owner turned proof on (P18-16). */
+function shareImage(
+  slug: string,
+  title: string,
+  file: { asset: AssetRow; variant: VariantRow },
+  withProof = false,
+): PublicShareImage {
   return {
     ref: `v_${file.variant.id}`,
     src: shareImagePath(slug, `v_${file.variant.id}`),
     alt: `${title}, ${shotLabel(file.asset.shotType).toLowerCase()}`,
     specId: file.variant.channelSpecId,
+    ...(withProof ? { proof: proofForFile(file.asset.qc, file.variant.channelSpecId) } : {}),
   };
 }
 
@@ -83,6 +100,12 @@ const MAX_GALLERY_ROWS = 60;
 
 type GalleryCache = Map<number, { at: number; entries: Promise<GalleryEntry[]> }>;
 const galleryCaches = new WeakMap<Db, GalleryCache>();
+
+/** The approval queue uses this after its transaction commits. */
+export function clearGalleryCache(db: Db): void {
+  galleryCaches.delete(db);
+  clearShareSitemapCache();
+}
 
 function galleryCacheFor(db: Db): GalleryCache {
   let cache = galleryCaches.get(db);
@@ -171,9 +194,12 @@ export class DbShareStore implements ShareStore {
       slug: share?.slug ?? null,
       path: published && share ? sharePath(share.slug) : null,
       kind: share?.kind ?? "before_after",
-      inGallery: published && gallery?.published === true,
+      inGallery: published && gallery?.published === true && gallery.reviewStatus === "approved",
+      galleryRequested: published && gallery?.published === true,
+      galleryReviewStatus: published && gallery?.published === true ? gallery.reviewStatus : null,
       hasBefore,
       views: share?.views ?? 0,
+      showProof: share?.showProof === true,
     };
   }
 
@@ -217,6 +243,9 @@ export class DbShareStore implements ShareStore {
       assetId: hero.asset.id,
       beforeMediaId: before?.id ?? null,
       isPublic: true,
+      // Proof stays as the page had it unless the caller says (P18-16); a
+      // new page starts with it off (founder decision 9).
+      showProof: input.proof ?? existing?.showProof ?? false,
       publishedAt: now,
       updatedAt: now,
     };
@@ -249,15 +278,17 @@ export class DbShareStore implements ShareStore {
     }
     const publishedSlug: string = slug;
 
-    if (input.gallery) {
+    // A prospect pack (P18-04) carries a third party brand, so its page is
+    // never listed in the gallery, whatever the share panel asks.
+    if (input.gallery && !(await isProspectJob(this.db, job.id))) {
       // Publishing to the gallery is the owner's consent, recorded now.
       await this.db
         .insert(galleryItems)
-        .values({ workspaceId: workspace.id, shareSlug: publishedSlug, category, published: true, consentAt: now })
+        .values({ workspaceId: workspace.id, shareSlug: publishedSlug, category, published: true, consentAt: now, reviewStatus: "pending" })
         .onConflictDoUpdate({
           target: galleryItems.shareSlug,
           targetWhere: sql`share_slug is not null`,
-          set: { published: true, consentAt: now, category },
+          set: { published: true, consentAt: now, category, reviewStatus: "pending", reviewedAt: null, reviewedBy: null },
         });
     } else {
       await this.db
@@ -334,14 +365,15 @@ export class DbShareStore implements ShareStore {
       return null;
     }
     const title = share.title ?? DEFAULT_SHARE_TITLE;
-    const image = (file: { asset: AssetRow; variant: VariantRow }): PublicShareImage => shareImage(slug, title, file);
+    const image = (file: { asset: AssetRow; variant: VariantRow }): PublicShareImage =>
+      shareImage(slug, title, file, share.showProof);
     // A kept photo hero would show the same photo as its before (PHASE_15
     // item 34), so such a page shows the result alone.
     const sizedForChannels = allHeroCandidatesOriginal([heroFile.asset]);
     const hasBefore = !sizedForChannels && (await this.beforeKey(share)) !== null;
     const [gallery, product] = await Promise.all([
       this.db.query.galleryItems.findFirst({
-        where: (t, { and, eq }) => and(eq(t.shareSlug, share.slug), eq(t.published, true)),
+        where: (t, { and, eq }) => and(eq(t.shareSlug, share.slug), eq(t.published, true), eq(t.reviewStatus, "approved")),
       }),
       this.db.query.products.findFirst({
         where: (t, { and, eq }) => and(eq(t.id, job.productId), eq(t.workspaceId, job.workspaceId)),
@@ -358,6 +390,7 @@ export class DbShareStore implements ShareStore {
       inGallery: gallery !== undefined,
       illustration: false,
       sizedForChannels,
+      proof: share.showProof,
     };
   }
 
@@ -406,7 +439,7 @@ export class DbShareStore implements ShareStore {
 
   /** Forgets the cached gallery listing, after a publish or a take down. */
   private clearGalleryCache(): void {
-    galleryCaches.delete(this.db);
+    clearGalleryCache(this.db);
   }
 
   /**
@@ -428,7 +461,7 @@ export class DbShareStore implements ShareStore {
       })
       .from(galleryItems)
       .innerJoin(shareLinks, eq(galleryItems.shareSlug, shareLinks.slug))
-      .where(and(eq(galleryItems.published, true), eq(shareLinks.isPublic, true)))
+      .where(and(eq(galleryItems.published, true), eq(galleryItems.reviewStatus, "approved"), eq(shareLinks.isPublic, true)))
       .orderBy(sql`${galleryItems.consentAt} desc`)
       .limit(size);
     const shares = rows.filter(
@@ -478,6 +511,16 @@ export class DbShareStore implements ShareStore {
     ]);
     const media = new Map(mediaRows.map((m) => [m.id, m]));
     const productsById = new Map(productRows.map((p) => [p.id, p]));
+    // P18-14: who made each pack, and the seller's consented quote (P18-05).
+    // Either read failing leaves the entries as they were.
+    const [operatorIds, quotes] = await Promise.all([
+      operatorWorkspaceIds(this.db, opsEmails()).catch((): string[] => []),
+      consentedQuotesForJobs(
+        this.db,
+        live.map((s) => ({ jobId: s.jobId, workspaceId: s.workspaceId })),
+      ).catch(() => new Map<string, { text: string; name: string | null }>()),
+    ]);
+    const operators = new Set(operatorIds);
 
     const entries: GalleryEntry[] = [];
     for (const share of live) {
@@ -510,6 +553,8 @@ export class DbShareStore implements ShareStore {
           ? { ref: "before", src: shareImagePath(share.slug, "before"), alt: `${title}, the original photo` }
           : null,
         after: shareImage(share.slug, title, heroFile),
+        madeByTeam: operators.has(share.workspaceId),
+        quote: operators.has(share.workspaceId) ? null : (quotes.get(share.jobId) ?? null),
       });
     }
     return entries;

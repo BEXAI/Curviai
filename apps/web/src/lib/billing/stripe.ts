@@ -11,7 +11,7 @@ import type { DuplicateRefund, StripeBillingActions, StripeLookup, StripeSubscri
 
 export const STRIPE_API_VERSION = "2025-08-27.basil" as const;
 
-/** Throws when STRIPE_SECRET_KEY is unset; callers check isStripeConfigured first. */
+/** Throws when STRIPE_SECRET_KEY is unset; callers check hasStripeApiKey or isCheckoutOpen first. */
 export function getStripe(): Stripe {
   const key = optionalEnv("STRIPE_SECRET_KEY");
   if (!key) {

@@ -5,6 +5,7 @@ import { Card, CardContent, buttonVariants, cn } from "@curvi/ui";
 import { OutputPreview } from "@/components/app/output-preview";
 import { aspectRatioCss, mayBeTransparentFile, previewAspect } from "@/lib/output-preview";
 import { PACK_ZIP_REFUSAL_PARAM, packZipRefusalCopy } from "@/lib/pack-zip";
+import { familyName } from "@/lib/preflight/copy";
 import { track } from "@/lib/track";
 import type { JobFilesView, JobFileView } from "@/lib/services/types";
 
@@ -13,21 +14,27 @@ import type { JobFilesView, JobFileView } from "@/lib/services/types";
  * open page never shows broken previews. Downloads always sign on click. */
 const REFRESH_MS = 40 * 60 * 1000;
 
-function channelTitle(channel: string): string {
-  return channel.charAt(0).toUpperCase() + channel.slice(1);
+/** Sent when an action on the job page changes the pack's files (a version
+ * pick deletes the touched channel zips), so the list reloads at once. */
+export const PACK_FILES_CHANGED_EVENT = "curvi:pack-files-changed";
+
+export function announcePackFilesChanged(jobId: string): void {
+  window.dispatchEvent(new CustomEvent(PACK_FILES_CHANGED_EVENT, { detail: { jobId } }));
 }
 
+/** Decimal units, like spec maxBytes and the compliance report's file size,
+ * so one file shows the same size everywhere on the job page. */
 function formatBytes(bytes: number | null): string | null {
   if (bytes === null || bytes <= 0) {
     return null;
   }
-  if (bytes < 1024) {
+  if (bytes < 1000) {
     return `${bytes} B`;
   }
-  if (bytes < 1024 * 1024) {
-    return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1_000_000) {
+    return `${Math.max(1, Math.round(bytes / 1000))} KB`;
   }
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.round((bytes / 1_000_000) * 10) / 10} MB`;
 }
 
 function trackDownload(jobId: string, file: Pick<JobFileView, "channel" | "kind">): void {
@@ -127,15 +134,24 @@ export function PackDownloads({ jobId, packDone }: { jobId: string; packDone: bo
         void load();
       }
     }
+    function onFilesChanged(event: Event) {
+      if ((event as CustomEvent<{ jobId?: string } | null>).detail?.jobId === jobId) {
+        void load();
+      }
+    }
     void load();
     const interval = setInterval(() => void load(), REFRESH_MS);
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener(PACK_FILES_CHANGED_EVENT, onFilesChanged);
     return () => {
       cancelled = true;
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener(PACK_FILES_CHANGED_EVENT, onFilesChanged);
     };
-  }, [jobId]);
+    // packDone is a dependency on purpose: a finished follow up deletes and
+    // adds files, so the list reloads when the pack is done again.
+  }, [jobId, packDone]);
 
   if (failed && !view) {
     return (
@@ -249,7 +265,7 @@ export function PackDownloads({ jobId, packDone }: { jobId: string; packDone: bo
                       : "border-ink-200 bg-white text-ink-700 hover:border-ink-400",
                   )}
                 >
-                  {channelTitle(channel)}
+                  {familyName(channel)}
                 </button>
               );
             })}
@@ -258,7 +274,7 @@ export function PackDownloads({ jobId, packDone }: { jobId: string; packDone: bo
           <div role="tabpanel" id={panelId(active)} aria-labelledby={tabId(active)} tabIndex={0} className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm text-ink-500">
-                {channelFiles.length} {channelFiles.length === 1 ? "file" : "files"} named for {channelTitle(active)}.
+                {channelFiles.length} {channelFiles.length === 1 ? "file" : "files"} named for {familyName(active)}.
               </p>
               {zip?.downloadUrl ? (
                 <a

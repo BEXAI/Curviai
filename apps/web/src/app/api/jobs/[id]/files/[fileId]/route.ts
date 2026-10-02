@@ -9,6 +9,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { recordFunnel } from "@/lib/funnel";
 import { resolveSignedIn } from "@/lib/http/services";
 import { isUuid } from "@/lib/validation/ids";
 
@@ -33,6 +34,8 @@ export async function GET(
   if (!download) {
     return NextResponse.json({ error: NOT_FOUND }, { status: 404 });
   }
+  // The server side funnel (P18-02): a download, and the workspace's first.
+  await recordFunnel({ workspaceId: resolved.workspace.id, name: "download", first: true, props: { kind: "file" } });
   const response = NextResponse.redirect(download.url, 302);
   response.headers.set("Cache-Control", "no-store");
   return response;

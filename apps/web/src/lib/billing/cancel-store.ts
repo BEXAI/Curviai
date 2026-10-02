@@ -5,13 +5,15 @@
  */
 
 import { cancelFlows, type CancelFlow, type NewCancelFlow } from "@curvi/db";
-import { isStripeConfigured } from "@/lib/env";
+import { hasStripeApiKey } from "@/lib/env";
 import { isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
 import type { SaveOfferKind } from "./cancel-flow";
 import type { CancelDeps, CancelState } from "./cancel-service";
 import { buildPriceTable, priceIdForTier } from "./price-table";
+import { liveScheduleReleaseNotifier } from "./schedule-release";
 import { getStripe } from "./stripe";
+import { scheduleWorkspaceDowngrade } from "./scheduled-change";
 
 const OFFER_FOR_OUTCOME: Partial<Record<string, SaveOfferKind>> = {
   paused: "pause",
@@ -75,12 +77,20 @@ export async function recordCancelFlow(row: NewCancelFlow): Promise<void> {
 }
 
 export function liveCancelDeps(): CancelDeps {
+  const stripe = hasStripeApiKey() ? getStripe() : null;
   return {
-    stripe: isStripeConfigured() ? getStripe() : null,
+    stripe,
+    scheduleChange: isDbMode() && stripe ? async (input) => {
+      const change = await scheduleWorkspaceDowngrade(getDb(), stripe, {
+        ...input, targetPriceId: input.priceId, target: { tier: input.tier, cadence: input.cadence }, prices: buildPriceTable(),
+      });
+      return change.startsAt;
+    } : undefined,
     priceTable: buildPriceTable(),
     priceIdFor: (tier, cadence) => priceIdForTier(tier, cadence),
     now: () => new Date(),
     loadState: (workspaceId) => loadCancelState(workspaceId),
     record: recordCancelFlow,
+    onScheduleReleased: liveScheduleReleaseNotifier({ db: isDbMode() ? getDb() : null }),
   };
 }

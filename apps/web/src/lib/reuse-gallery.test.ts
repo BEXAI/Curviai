@@ -22,7 +22,6 @@ import {
   itemAspect,
   parseGalleryFilters,
   shotTypeLabel,
-  versionLabel,
   type GalleryItem,
 } from "@/lib/library";
 import {
@@ -225,8 +224,6 @@ describe("picking versions", () => {
     expect(versions.get("s05.v3")).toEqual({ number: 3, sceneShotId: "s05", picked: true });
     expect(versions.has("s01")).toBe(false);
     expect(versions.has("s06")).toBe(false);
-    expect(versionLabel("s05.v2")).toBe("Version 2 of this scene");
-    expect(versionLabel("s05")).toBeNull();
   });
 
   it("refuses a pick that would pass a channel's file limit", () => {

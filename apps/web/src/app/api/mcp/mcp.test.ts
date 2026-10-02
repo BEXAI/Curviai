@@ -11,12 +11,14 @@ import {
   preAuthenticate,
   withScope,
 } from "@/lib/api-v1/mcp";
+import { PackChat } from "@/lib/api-v1/chat-views";
+import { MCP_COPY } from "@/lib/api-v1/mcp-copy";
 import { MCP_TOOLS } from "@/lib/api-v1/mcp-tools";
-import { MainImageCheckResponse, PackResponse } from "@/lib/api-v1/schemas";
+import { MainImageCheckResponse } from "@/lib/api-v1/schemas";
 import { DEMO_KEY_ID, demoApiFixture, mainImagePng, type DemoApiFixture } from "@/lib/api-v1/test-fixtures";
 import { MemoryRateLimitStore, setRateLimitStoreForTests } from "@/lib/rate-limit";
 import { DEMO_WORKSPACE_ID } from "@/lib/services/demo";
-import { DELETE, GET, POST } from "./route";
+import { DELETE, GET, OPTIONS, POST } from "./route";
 
 // The hosted MCP server (docs/phases/PHASE_16.md workstream 5) over the
 // demo services: Streamable HTTP 2026-07-28 request metadata and header
@@ -83,8 +85,8 @@ afterEach(() => {
 
 describe("transport", () => {
   it("answers GET and DELETE with 405 and a notification with 202", async () => {
-    expect((await GET()).status).toBe(405);
-    expect((await DELETE()).status).toBe(405);
+    expect((await GET(new Request("https://curvi.ai/api/mcp"))).status).toBe(405);
+    expect((await DELETE(new Request("https://curvi.ai/api/mcp", { method: "DELETE" }))).status).toBe(405);
     const note = await POST(
       new Request("https://curvi.ai/api/mcp", {
         method: "POST",
@@ -96,6 +98,8 @@ describe("transport", () => {
   });
 
   it("refuses a cross site Origin, bad JSON and a batch", async () => {
+    // PHASE_19 P19-20: an unknown site is still refused; ChatGPT's origin
+    // passes ("Origin and CORS" below).
     expect((await POST(rpc("tools/list", {}, { headers: { origin: "https://evil.example", host: "curvi.ai" } }))).status).toBe(403);
     const bad = await POST(new Request("https://curvi.ai/api/mcp", { method: "POST", body: "{nope" }));
     expect(bad.status).toBe(400);
@@ -182,9 +186,12 @@ describe("transport", () => {
     expect(authenticate).toHaveBeenCalledWith(expect.any(Headers), null);
 
     const denied = await handleMcpPost(rpc("tools/call", { name: "get_pack", arguments: { pack_id: "x" } }), { authenticate });
-    const body = (await denied.json()) as { result: { isError: boolean; structuredContent: { reason: string } } };
+    const body = (await denied.json()) as {
+      result: { isError: boolean; structuredContent?: unknown; content: Array<{ text: string }> };
+    };
     expect(body.result.isError).toBe(true);
-    expect(body.result.structuredContent.reason).toBe("insufficient_scope");
+    expect(body.result.structuredContent).toBeUndefined();
+    expect(body.result.content[0]?.text).toBe(MCP_COPY.insufficientScope);
     expect(withScope(checksOnly, "packs:write")).toMatchObject({ ok: false, error: { status: 403 } });
     expect(withScope(checksOnly, "checks")).toBe(checksOnly);
   });
@@ -218,7 +225,7 @@ describe("transport", () => {
     expect(await response.json()).toMatchObject({
       error: { code: JSONRPC.unsupportedVersion, data: { supported: SUPPORTED_PROTOCOL_VERSIONS, requested: "1900-01-01" } },
     });
-    const unknown = await POST(rpc("resources/list"));
+    const unknown = await POST(rpc("prompts/list"));
     expect(unknown.status).toBe(404);
     expect(((await unknown.json()) as { error: { code: number } }).error.code).toBe(JSONRPC.methodNotFound);
   });
@@ -239,10 +246,18 @@ describe("discovery", () => {
     const list = (await (await POST(rpc("tools/list", {}, { key: null }))).json()) as {
       result: { tools: Array<{ name: string; inputSchema: { type: string; required?: string[] } }> };
     };
-    expect(list.result.tools.map((t) => t.name)).toEqual(["create_pack", "get_pack", "check_main_image", "list_channels"]);
+    expect(list.result.tools.map((t) => t.name)).toEqual([
+      "list_channels",
+      "estimate_pack",
+      "create_pack",
+      "get_pack",
+      "check_main_image",
+    ]);
     const create = list.result.tools.find((t) => t.name === "create_pack");
     expect(create?.inputSchema.type).toBe("object");
-    expect(create?.inputSchema.required).toEqual(expect.arrayContaining(["channels", "idempotency_key"]));
+    // The replay key is derived on the server (P19-16), so only the channels
+    // are required; the quote is enforced at run time for OAuth callers.
+    expect(create?.inputSchema.required).toEqual(["channels"]);
     expect(await (await POST(rpc("ping", {}, { key: null }))).json()).toMatchObject({ result: { resultType: "complete" } });
   });
 
@@ -278,23 +293,26 @@ describe("tools against the demo services", () => {
     const created = await call("create_pack", args);
     expect(created.response.status).toBe(200);
     expect(created.body.result?.isError).toBe(false);
-    const pack = PackResponse.parse(created.body.result?.structuredContent).pack;
-    expect(pack.productTitle).toBe("Desk lamp");
+    const pack = PackChat.parse(created.body.result?.structuredContent);
+    expect(pack.product).toBe("Desk lamp");
+    expect(pack.message).toBe(`${MCP_COPY.packStarted(pack.credits.held)} ${MCP_COPY.packTakesMinutes}`);
     expect(JSON.parse(created.body.result?.content[0]?.text ?? "{}")).toEqual(created.body.result?.structuredContent);
+    expect(created.body.result?.content[1]?.text).toBe(pack.message);
 
     const retry = await call("create_pack", args);
-    expect(retry.body.result?.structuredContent).toMatchObject({ replayed: true, pack: { id: pack.id } });
+    expect(retry.body.result?.structuredContent).toMatchObject({ replayed: true, pack_id: pack.pack_id });
 
     let finished = false;
-    let last: Record<string, unknown> = {};
+    let last: PackChat | null = null;
     for (let i = 0; i < 20 && !finished; i += 1) {
-      const got = await call("get_pack", { pack_id: pack.id, include_files: true });
+      const got = await call("get_pack", { pack_id: pack.pack_id });
       expect(got.body.result?.isError).toBe(false);
-      last = got.body.result?.structuredContent ?? {};
-      finished = (last.pack as { finished: boolean }).finished;
+      last = PackChat.parse(got.body.result?.structuredContent);
+      finished = last.finished;
     }
     expect(finished).toBe(true);
-    expect(Array.isArray(last.files) && last.files.length > 0).toBe(true);
+    expect(last?.images?.some((image) => image.kind === "image")).toBe(true);
+    expect(last?.message).toMatch(/^The pack is ready: \d+ of \d+ images passed their channel checks\.$/);
   });
 
   it("create_pack takes the bundle and look shortcuts next to partial output options", async () => {
@@ -313,12 +331,16 @@ describe("tools against the demo services", () => {
     vi.unstubAllEnvs();
   });
 
-  it("returns refusals as tool errors the model can read", async () => {
+  it("returns refusals as text only tool errors the model can read", async () => {
     const missing = await call("get_pack", { pack_id: "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d" });
-    expect(missing.body.result).toMatchObject({ isError: true, structuredContent: { reason: "not_found" } });
-    const invalid = await call("create_pack", { channels: ["amazon.main"] });
-    expect(invalid.body.result).toMatchObject({ isError: true, structuredContent: { reason: "invalid_request" } });
+    expect(missing.body.result).toMatchObject({ isError: true, content: [{ type: "text", text: "This pack does not exist in your workspace." }] });
+    expect(missing.body.result?.structuredContent).toBeUndefined();
+    const invalid = await call("create_pack", { channels: ["amazon.main"], idempotency_key: "" });
+    expect(invalid.body.result).toMatchObject({ isError: true });
+    expect(invalid.body.result?.structuredContent).toBeUndefined();
     expect(invalid.body.result?.content[0]?.text).toContain("idempotency_key");
+    const unknownChannel = await call("create_pack", { channels: ["myspace"] });
+    expect(unknownChannel.body.result?.content[0]?.text).toBe(MCP_COPY.unknownChannels(["myspace"]));
     const unknownTool = await call("delete_everything", {});
     expect(unknownTool.body.error?.code).toBe(JSONRPC.invalidParams);
   });
@@ -334,12 +356,128 @@ describe("tools against the demo services", () => {
     expect(content.channels.some((c) => c.id === "amazon.main")).toBe(true);
   });
 
+  it("check_main_image applies the requested marketplace's rules and refuses unknown ones", async () => {
+    const png = (await mainImagePng(600, 0.8)).toString("base64");
+    const amazon = await call("check_main_image", { data: png });
+    const google = await call("check_main_image", { data: png, channel: "google.merchant.main" });
+    expect(MainImageCheckResponse.parse(amazon.body.result?.structuredContent)).toMatchObject({ channel: "amazon", pass: false });
+    expect(MainImageCheckResponse.parse(google.body.result?.structuredContent)).toMatchObject({ channel: "google", pass: true });
+    const unknown = await call("check_main_image", { data: png, channel: "amazon.secondary" });
+    expect(unknown.body.result?.isError).toBe(true);
+  });
+
   it("names a tool for every public action with a scope that matches the API", () => {
     expect(Object.fromEntries(MCP_TOOLS.map((t) => [t.name, t.scope]))).toEqual({
+      estimate_pack: "packs:write",
       create_pack: "packs:write",
       get_pack: "packs:read",
       check_main_image: "checks",
       list_channels: null,
+      // Offered to OAuth callers only (PHASE_19 P19-11, mcp-oauth.test.ts).
+      get_profile: null,
     });
+  });
+});
+
+describe("Origin and CORS (PHASE_19 P19-20)", () => {
+  const OPENAI_ORIGINS = ["https://chatgpt.com", "https://platform.openai.com"];
+
+  function preflight(origin: string): Promise<Response> {
+    return OPTIONS(
+      new Request("https://curvi.ai/api/mcp", {
+        method: "OPTIONS",
+        headers: {
+          origin,
+          host: "curvi.ai",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "authorization, content-type, mcp-protocol-version, mcp-method, mcp-name",
+        },
+      }),
+    );
+  }
+
+  it("lets ChatGPT's and the OpenAI platform's origins call, with the CORS headers", async () => {
+    for (const origin of OPENAI_ORIGINS) {
+      const response = await POST(rpc("tools/list", {}, { headers: { origin, host: "curvi.ai" } }));
+      expect(response.status, origin).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(response.headers.get("access-control-expose-headers")).toBe("WWW-Authenticate");
+      expect(response.headers.get("vary")).toContain("Origin");
+      expect(response.headers.get("access-control-allow-credentials")).toBeNull();
+    }
+  });
+
+  it("still refuses every other site, a lookalike, plain http and a sandboxed frame, with no CORS headers", async () => {
+    const refused = ["https://evil.example", "https://chatgpt.com.evil.example", "http://chatgpt.com", "https://chat.openai.com", "null"];
+    for (const origin of refused) {
+      const response = await POST(rpc("tools/list", {}, { headers: { origin, host: "curvi.ai" } }));
+      expect(response.status, origin).toBe(403);
+      expect(response.headers.get("access-control-allow-origin"), origin).toBeNull();
+    }
+  });
+
+  it("serves no Origin and the site's own origin as before", async () => {
+    const none = await POST(rpc("tools/list"));
+    expect(none.status).toBe(200);
+    expect(none.headers.get("access-control-allow-origin")).toBeNull();
+    const own = await POST(rpc("tools/list", {}, { headers: { origin: "https://curvi.ai", host: "curvi.ai" } }));
+    expect(own.status).toBe(200);
+  });
+
+  it("answers the preflight of an allowed origin with the methods and the MCP headers", async () => {
+    for (const origin of OPENAI_ORIGINS) {
+      const response = await preflight(origin);
+      expect(response.status, origin).toBe(204);
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(response.headers.get("access-control-allow-methods")).toContain("POST");
+      const allowed = (response.headers.get("access-control-allow-headers") ?? "").toLowerCase().split(/,\s*/);
+      for (const header of ["authorization", "content-type", "mcp-protocol-version", "mcp-method", "mcp-name"]) {
+        expect(allowed).toContain(header);
+      }
+      expect(response.headers.get("access-control-max-age")).toBe("600");
+      expect(response.headers.get("vary")).toBe("Origin");
+      expect(response.headers.get("access-control-allow-credentials")).toBeNull();
+    }
+  });
+
+  it("refuses the preflight of any other origin", async () => {
+    const response = await preflight("https://evil.example");
+    expect(response.status).toBe(403);
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("exposes the sign in answer to ChatGPT's origin on a 401", async () => {
+    const response = await POST(
+      rpc("tools/call", { name: "list_channels", arguments: {} }, { key: null, headers: { origin: "https://chatgpt.com", host: "curvi.ai" } }),
+    );
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toBeTruthy();
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://chatgpt.com");
+    expect(response.headers.get("access-control-expose-headers")).toBe("WWW-Authenticate");
+  });
+
+  it("with the OAuth path on, ChatGPT's origin can read the resource_metadata challenge of initialize", async () => {
+    vi.stubEnv("MCP_OAUTH_ENABLED", "1");
+    try {
+      const response = await POST(
+        rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } }, {
+          key: null,
+          modern: false,
+          headers: { origin: "https://chatgpt.com", host: "curvi.ai" },
+        }),
+      );
+      expect(response.status).toBe(401);
+      expect(response.headers.get("www-authenticate")).toContain("resource_metadata=");
+      expect(response.headers.get("access-control-allow-origin")).toBe("https://chatgpt.com");
+      expect(response.headers.get("access-control-expose-headers")).toBe("WWW-Authenticate");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("adds the CORS headers to the 405 of GET for an allowed origin", async () => {
+    const response = await GET(new Request("https://curvi.ai/api/mcp", { headers: { origin: "https://chatgpt.com", host: "curvi.ai" } }));
+    expect(response.status).toBe(405);
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://chatgpt.com");
   });
 });

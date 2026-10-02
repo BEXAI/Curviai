@@ -5,8 +5,8 @@
  *
  * - intake could not answer (or the photo could not be loaded): unavailable,
  *   and the pack may still start, since it checks again when it runs;
- * - a moderation flag, a screenshot, or no sellable product: blocked, with
- *   the specific fix;
+ * - a moderation flag or no sellable product: blocked, with the specific
+ *   fix (screenshots are accepted, founder decision 2026-09-29);
  * - 2 to 6 pieces and at most one featured by the rules: choose, with the
  *   rules' pick preselected (a product in several parts is never split by a
  *   tap, so it stays ready);

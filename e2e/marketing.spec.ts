@@ -16,12 +16,13 @@ test("home renders headline and nav", async ({ page }) => {
   await expect(header.getByRole("link", { name: "Open app" })).toHaveCount(0);
 });
 
-test("pricing shows all four tier prices", async ({ page }) => {
+test("pricing shows the three plans sold online and the larger plan line", async ({ page }) => {
   await page.goto("/pricing");
   await expect(page.getByTestId("price-starter")).toHaveText("$29");
   await expect(page.getByTestId("price-growth")).toHaveText("$79");
   await expect(page.getByTestId("price-pro")).toHaveText("$149");
-  await expect(page.getByTestId("price-agency")).toHaveText("$349");
+  await expect(page.getByTestId("price-agency")).toHaveCount(0);
+  await expect(page.getByTestId("larger-plan")).toBeVisible();
 });
 
 test("main image checker renders the file input", async ({ page }) => {

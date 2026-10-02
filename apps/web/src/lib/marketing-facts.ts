@@ -1,5 +1,12 @@
 import { getSpec, listSpecs } from "@curvi/specs";
-import { tierByKey, tiers, topUps, type TierKey } from "@curvi/pipeline/seed";
+import {
+  isEntitled,
+  lowestTierWith,
+  tierByKey,
+  tiers,
+  type TierFeature,
+  type TierKey,
+} from "@curvi/pipeline/seed";
 import { estimatePackCredits, type EstimateLine } from "@/lib/pack-estimate";
 
 /**
@@ -70,9 +77,10 @@ export function tierDisplayName(key: string): string {
   return key.charAt(0).toUpperCase() + key.slice(1);
 }
 
-/** Paid plans, in seed order. */
+/** Paid plans sold online, in seed order. Agency is set up by email
+ * (docs/phases/PHASE_20.md P20-08), so marketing copy never prices it. */
 export function paidTiers() {
-  return tiers.filter((tier) => tier.monthlyUsd > 0);
+  return tiers.filter((tier) => tier.monthlyUsd > 0 && tier.selfServe);
 }
 
 /**
@@ -95,20 +103,17 @@ export function annualSavingsPhrase(): string {
   return min === max ? `${min} percent` : `${min} to ${max} percent`;
 }
 
-/** Months a bought top up stays usable (the shortest across top up packs). */
-export function topUpMonths(): number {
-  return Math.min(...topUps.map((topUp) => topUp.expiresMonths));
-}
-
 /**
- * What happens to credits a plan does not use, the one line /pricing,
- * /app/billing and help all show. Subscription grants never expire (the
- * webhook writes them with no expiry), so there is no cap to state. The seed
- * rolloverPolicy is not enforced anywhere; promise a cap only in the change
- * that enforces it, capped by months paid so annual plans keep their year.
+ * The one sentence about how long credits last (docs/phases/PHASE_20.md
+ * P20-05, founder decision 10): /pricing, the /app/billing top ups, the help
+ * article, the paywall and the terms all show it, and no other copy states a
+ * credit lifetime. It follows the seed's creditExpiry ("none"): plans, top
+ * ups and grants all write their credits with no expiry. It never uses the
+ * word "expire", so PHASE_18's email lint (no "expire" next to "credits")
+ * passes unchanged.
  */
-export const UNUSED_CREDITS_SENTENCE =
-  "Credits you do not use stay in your balance from one billing period to the next.";
+export const CREDIT_TERMS_SENTENCE =
+  "Credits you do not use stay in your balance from one month to the next, for as long as your account is open.";
 
 /** "enough for a full listing pack of stills", computed from the seeds. */
 export function freeCreditsReach(): string {
@@ -212,6 +217,12 @@ export const FEATURES = {
     status: "live",
     mentions: /share (pages?|links?)|share this makeover/i,
   },
+  // P18-11: the Shopify and Amazon product link import in the new pack form.
+  // The copy that says "paste the product's link" is built and shows only
+  // while this is live. Flip it to live in its own commit after one
+  // production import each of a Shopify and an Amazon product works, with
+  // both recorded in docs/verification.md (docs/PENDING.md, Phase 18 founder
+  // steps); if either stops working later, set it back to coming_soon.
   urlImport: {
     label: "Import a product from its URL",
     status: "coming_soon",
@@ -234,16 +245,46 @@ export const FEATURES = {
     status: "coming_soon",
     mentions: /command line|\bCLI\b|agent skill|Curvi skill/i,
   },
+  // PHASE_19 P19-24: Curvi in ChatGPT and Codex from OpenAI's plugin
+  // directory, signed in with a Curvi account instead of an API key. Flip it
+  // only after OpenAI approves the plugin and it is published (PHASE_19
+  // runbook E8), together with CHATGPT_LISTING_URL in help-articles.ts.
+  chatgptPlugin: {
+    label: "Curvi in ChatGPT and Codex, signed in with your Curvi account",
+    status: "coming_soon",
+    mentions: /\bin ChatGPT\b|ChatGPT (plugin|app)/i,
+  },
 } as const satisfies Record<string, Feature>;
 
 export type FeatureKey = keyof typeof FEATURES;
+
+/**
+ * Feature statuses to assume instead of the flags, so a test can check copy
+ * written for both sides of a flip before the flip happens.
+ */
+export type AssumedStatuses = Partial<Record<FeatureKey, Availability>>;
 
 export function isLive(key: FeatureKey): boolean {
   return FEATURES[key].status === "live";
 }
 
-export function comingSoonFeatures(): Feature[] {
-  return Object.values(FEATURES as Record<string, Feature>).filter((feature) => feature.status === "coming_soon");
+export function comingSoonFeatures(assume: AssumedStatuses = {}): Feature[] {
+  return (Object.entries(FEATURES) as [FeatureKey, Feature][])
+    .filter(([key, feature]) => (assume[key] ?? feature.status) === "coming_soon")
+    .map(([, feature]) => feature);
+}
+
+/**
+ * Which plans include a seed tier feature, in words: "every Curvi plan, the
+ * free plan included" when every tier has it, else "the Growth plan and up"
+ * from the cheapest tier that has it.
+ */
+export function plansWithPhrase(feature: TierFeature): string {
+  if (tiers.every((tier) => isEntitled(tier.key, feature))) {
+    return "every Curvi plan, the free plan included";
+  }
+  const lowest = lowestTierWith(feature);
+  return lowest ? `the ${tierDisplayName(lowest.key)} plan and up` : "no plan yet";
 }
 
 // Channels
@@ -282,6 +323,27 @@ const CHANNEL_NAMES: readonly { family: string; name: string }[] = [
   { family: "pinterest", name: "Pinterest" },
   { family: "tiktok", name: "TikTok" },
 ];
+
+/**
+ * Other names sellers and assistants use for a channel (PHASE_19 P19-18).
+ * Instagram and Facebook placements are Meta specs in the registry, so a
+ * pack asked for "instagram" makes the live Meta specs. create_pack and
+ * estimate_pack accept these names, and list_channels lists them.
+ */
+export const CHANNEL_ALIASES: readonly { alias: string; family: string }[] = [
+  { alias: "instagram", family: "meta" },
+  { alias: "facebook", family: "meta" },
+];
+
+/** The registry family a channel name or alias stands for, or null. Case
+ * and surrounding space do not matter. */
+export function channelFamilyOf(name: string): string | null {
+  const key = name.trim().toLowerCase();
+  if (CHANNEL_NAMES.some((channel) => channel.family === key)) {
+    return key;
+  }
+  return CHANNEL_ALIASES.find((entry) => entry.alias === key)?.family ?? null;
+}
 
 /**
  * Which channel specs a pack makes files for today, spec by spec. The spec
@@ -479,10 +541,11 @@ export function joinList(items: readonly string[]): string {
 /**
  * Sentences that mention a feature, channel or channel file which is not
  * live, without saying it is coming soon. Copy that sells only what runs
- * returns [].
+ * returns []. assume overrides feature flags, for tests of copy that is
+ * worded from a flag.
  */
-export function unqualifiedClaims(text: string): string[] {
-  const patterns = comingSoonFeatures()
+export function unqualifiedClaims(text: string, assume: AssumedStatuses = {}): string[] {
+  const patterns = comingSoonFeatures(assume)
     .map((feature) => feature.mentions)
     .filter((pattern): pattern is RegExp => pattern !== undefined);
   patterns.push(...comingSoonChannelPatterns());
@@ -499,9 +562,10 @@ export function unqualifiedClaims(text: string): string[] {
 /**
  * Words that say a product, label or pixel came out exactly as photographed.
  * "exactly" before a number ("exactly 2000 x 2000") is a size, not a claim.
+ * "locked" pixels promise the same thing ("its pixels are locked").
  */
 const IDENTITY_WORDS =
-  /\b(?:exactly(?! \d)|identical(?:ly)?|byte for byte|pixel for pixel|pixel perfect|untouched|unchanged)\b|\b100 ?(?:%|percent) of (?:your |the )?(?:original )?product/i;
+  /\b(?:exactly(?! \d)|identical(?:ly)?|byte for byte|pixel for pixel|pixel perfect|untouched|unchanged|locked)\b|\b100 ?(?:%|percent) of (?:your |the )?(?:original )?product/i;
 
 /** What such a sentence is about. Background and edge pixels are not the product. */
 const PRODUCT_SUBJECT =

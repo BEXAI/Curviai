@@ -4,20 +4,31 @@ import { notFound } from "next/navigation";
 import { cache } from "react";
 import { buttonVariants } from "@curvi/ui";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
+import { ShareProofPanel } from "@/components/marketing/share-proof-panel";
 import { OutputPreview } from "@/components/app/output-preview";
 import { previewAspect } from "@/lib/output-preview";
 import { fitDescription, pageMetadata } from "@/lib/seo";
 import { getShareStore, type PublicShare } from "@/lib/shares";
 import { shareDescription, shareIntro, shareOgAlt, sharePackHeading, shareTitle } from "@/lib/shares/page-copy";
 import { ILLUSTRATION_LABEL } from "@/components/marketing/demo-images";
+import { SignupLink } from "@/components/marketing/signup-link";
+import { ProspectClaimCta, ProspectFooter } from "@/components/marketing/prospect-claim";
+import { prospectShareTitle } from "@/lib/prospects/copy";
+import { loadProspectShareView } from "@/lib/prospects/runtime";
 
 // Published and unpublished at any moment by the owner, so never cached.
 export const dynamic = "force-dynamic";
 
-type Params = { params: Promise<{ slug: string }> };
+type Params = {
+  params: Promise<{ slug: string }>;
+  /** ?claim= from a prospect's claim link (P18-04). */
+  searchParams?: Promise<{ claim?: string | string[] }>;
+};
 
 /** One read per request, shared by the metadata and the page. */
 const loadShare = cache(async (slug: string): Promise<PublicShare | null> => getShareStore().getPublic(slug));
+/** A prospect pack's store and claim (P18-04), or null for any other page. */
+const loadProspect = cache(async (slug: string, claim: unknown) => loadProspectShareView(slug, claim));
 
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { slug } = await params;
@@ -26,8 +37,9 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
     return { title: "Share page not found", robots: { index: false, follow: false } };
   }
   const path = `/s/${share.slug}`;
+  const prospect = await loadProspect(share.slug, null);
   return pageMetadata({
-    title: shareTitle(share),
+    title: prospect ? prospectShareTitle(prospect.store) : shareTitle(share),
     description: fitDescription(shareDescription(share)),
     path,
     // Only makeovers the owner put in the public gallery are offered to
@@ -39,12 +51,13 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   });
 }
 
-export default async function SharePage({ params }: Params) {
+export default async function SharePage({ params, searchParams }: Params) {
   const { slug } = await params;
   const share = await loadShare(slug);
   if (!share || !share.after) {
     notFound();
   }
+  const prospect = await loadProspect(share.slug, (await searchParams)?.claim ?? null);
   if (!share.illustration) {
     await getShareStore().recordView(share.slug);
   }
@@ -53,7 +66,7 @@ export default async function SharePage({ params }: Params) {
     <div className="mx-auto max-w-3xl px-6 py-16">
       <p className="text-center text-sm font-medium text-accent-600">Made with Curvi</p>
       <h1 data-testid="share-title" className="mt-2 text-center text-3xl font-bold tracking-tight text-ink-950">
-        {share.title}
+        {prospect ? prospectShareTitle(prospect.store) : share.title}
       </h1>
       <p className="mx-auto mt-3 max-w-xl text-center text-ink-600">
         {shareIntro(share)}
@@ -99,24 +112,36 @@ export default async function SharePage({ params }: Params) {
         </section>
       ) : null}
 
-      <div className="mt-12 rounded-xl bg-ink-950 p-8 text-center">
-        <h2 className="text-xl font-bold text-white">Want this for your product?</h2>
-        <p className="mx-auto mt-2 max-w-md text-sm text-ink-300">
-          Upload one photo and get a compliant main image, lifestyle scenes and channel sized exports.
-          Free to try, no card needed.
-        </p>
-        <div className="mt-6 flex flex-wrap justify-center gap-3">
-          <Link href="/signup" className={buttonVariants({ variant: "secondary", size: "lg" })}>
-            Make mine
-          </Link>
-          <Link
-            href="/gallery"
-            className="inline-flex h-11 items-center justify-center rounded-lg border border-ink-700 px-6 text-sm font-medium text-white transition-colors hover:bg-ink-800"
-          >
-            See more makeovers
-          </Link>
+      <ShareProofPanel share={share} />
+
+      {/* A prospect's live claim link offers "Make it yours" (P18-04). */}
+      {prospect?.claimToken ? (
+        <ProspectClaimCta store={prospect.store} token={prospect.claimToken} />
+      ) : (
+        <div className="mt-12 rounded-xl bg-ink-950 p-8 text-center">
+          <h2 className="text-xl font-bold text-white">Want this for your product?</h2>
+          <p className="mx-auto mt-2 max-w-md text-sm text-ink-300">
+            Upload one photo and get a compliant main image, lifestyle scenes and channel sized exports.
+            Free to try, no card needed.
+          </p>
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <SignupLink
+              source="share"
+              extra={{ s: share.slug }}
+              className={buttonVariants({ variant: "secondary", size: "lg" })}
+            >
+              Make mine
+            </SignupLink>
+            <Link
+              href="/gallery"
+              className="inline-flex h-11 items-center justify-center rounded-lg border border-ink-700 px-6 text-sm font-medium text-white transition-colors hover:bg-ink-800"
+            >
+              See more makeovers
+            </Link>
+          </div>
         </div>
-      </div>
+      )}
+      {prospect ? <ProspectFooter token={prospect.takedownToken} /> : null}
     </div>
   );
 }

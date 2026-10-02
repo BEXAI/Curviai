@@ -6,10 +6,15 @@
  * so the naming is unit tested.
  */
 
+import { adsCsv } from "@curvi/pipeline/csv";
+import { parseVariationShotId } from "@curvi/pipeline/variations";
+
 export interface ZipVariant {
   r2Key: string;
   filename: string;
   channelSpecId: string;
+  shotId?: string;
+  ad?: { headline: string; cta: string };
 }
 
 export interface ZipReport {
@@ -51,12 +56,22 @@ export function packZipEntries(variants: ZipVariant[], report: ZipReport | null)
   const used = new Set<string>();
   const entries: ZipEntry[] = [];
   const sorted = [...variants].sort(
-    (a, b) => a.channelSpecId.localeCompare(b.channelSpecId) || a.filename.localeCompare(b.filename),
+    (a, b) => a.channelSpecId.localeCompare(b.channelSpecId) || a.filename.localeCompare(b.filename) ||
+      (parseVariationShotId(a.shotId ?? "")?.variation ?? 1) - (parseVariationShotId(b.shotId ?? "")?.variation ?? 1),
   );
   for (const variant of sorted) {
     const folder = safeSegment(channelOfSpec(variant.channelSpecId));
     const base = safePath(variant.filename);
     let name = `${folder}/${base}`;
+    // Picking several versions must preserve their stored channel names.
+    // Put a colliding scene version in a named folder rather than inventing
+    // a photo-2.jpg filename. Other collisions retain the legacy behavior.
+    const version = variant.shotId ? parseVariationShotId(variant.shotId) : null;
+    if (used.has(name) && version) {
+      const versionFolder = `${folder}/versions/${safeSegment(variant.shotId!)}`;
+      name = `${versionFolder}/${base}`;
+      for (let n = 2; used.has(name); n++) name = `${versionFolder}/${n}/${base}`;
+    }
     // Two specs of one channel can share a file name; never overwrite.
     for (let n = 2; used.has(name); n += 1) {
       const dot = base.lastIndexOf(".");
@@ -69,6 +84,27 @@ export function packZipEntries(variants: ZipVariant[], report: ZipReport | null)
     entries.push({ r2Key: report.r2Key, name: safeSegment(report.filename) });
   }
   return entries;
+}
+
+/** Ads copy points at the exact entries in this ZIP, including safe names. */
+export function packZipAdsCsv(variants: readonly ZipVariant[], entries: readonly ZipEntry[]): string | null {
+  const rows = entries.flatMap((entry) => {
+    const variant = variants.find((v) => v.r2Key === entry.r2Key);
+    return variant?.ad ? [{ specId: variant.channelSpecId, file: entry.name, ...variant.ad }] : [];
+  });
+  return rows.length ? adsCsv(rows) : null;
+}
+
+export function zipAssetMetadata(qc: Record<string, unknown> | null): Pick<ZipVariant, "shotId" | "ad"> {
+  const shot = qc?.shot;
+  const value = shot && typeof shot === "object" && !Array.isArray(shot) ? shot as Record<string, unknown> : null;
+  return {
+    ...(typeof qc?.shotId === "string" ? { shotId: qc.shotId } : {}),
+    ...(value?.type === "ad_variant" ? { ad: {
+      headline: typeof value.headline === "string" ? value.headline : "",
+      cta: typeof value.cta === "string" ? value.cta : "",
+    } } : {}),
+  };
 }
 
 /**

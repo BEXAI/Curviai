@@ -4,6 +4,7 @@ import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from 
 import { JsonLd } from "@/components/json-ld";
 import { breadcrumbJsonLd, faqPageJsonLd, jsonLdGraph, pageMetadata, webPageJsonLd } from "@/lib/seo";
 import type { PillarPage } from "./pillar-copy";
+import { SignupLink } from "./signup-link";
 
 /** Metadata for a guide page: canonical, social card and keywords. */
 export function pillarMetadata(page: PillarPage, keywords?: string[]): Metadata {
@@ -13,6 +14,12 @@ export function pillarMetadata(page: PillarPage, keywords?: string[]): Metadata 
     path: page.path,
     ...(keywords ? { keywords } : {}),
   });
+}
+
+/** The signup source key of a guide page's Start free links (P18-01):
+ * comparison pages count apart from the other guides. */
+export function signupSourceFor(page: Pick<PillarPage, "path">): "compare" | "pillar" {
+  return page.path.startsWith("/compare/") ? "compare" : "pillar";
 }
 
 /** Home, then the page. */
@@ -66,9 +73,9 @@ export function PillarPageView({ page }: { page: PillarPage }) {
         {page.summary}
       </p>
       <div className="mt-8 flex flex-wrap gap-3">
-        <Link href="/signup" className={buttonVariants({ variant: "secondary", size: "lg" })}>
+        <SignupLink source={signupSourceFor(page)} className={buttonVariants({ variant: "secondary", size: "lg" })}>
           Start free
-        </Link>
+        </SignupLink>
         <Link href="/pricing" className={buttonVariants({ variant: "outline", size: "lg" })}>
           See pricing
         </Link>
@@ -169,9 +176,12 @@ export function PillarPageView({ page }: { page: PillarPage }) {
       <section className="mt-14 rounded-xl border border-ink-100 bg-ink-50 p-8 text-center">
         <h2 className="text-xl font-semibold text-ink-950">{page.ctaTitle}</h2>
         <p className="mx-auto mt-2 max-w-lg text-sm text-ink-600">{page.ctaBody}</p>
-        <Link href="/signup" className={buttonVariants({ variant: "secondary", size: "lg", className: "mt-6" })}>
+        <SignupLink
+          source={signupSourceFor(page)}
+          className={buttonVariants({ variant: "secondary", size: "lg", className: "mt-6" })}
+        >
           Start free
-        </Link>
+        </SignupLink>
       </section>
 
       <nav aria-label="Related guides" className="mt-12">

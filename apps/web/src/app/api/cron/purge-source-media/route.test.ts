@@ -41,6 +41,11 @@ afterEach(() => {
 });
 
 describe("POST /api/cron/purge-source-media run record", () => {
+  it("does not advance freshness when object deletion partially fails", async () => {
+    purge.mockResolvedValueOnce({ rowsMatched: 2, objectsFailed: 1 });
+    expect((await POST(request())).status).toBe(503);
+    expect(recordRun).not.toHaveBeenCalled();
+  });
   it("records a successful real run for the health endpoint", async () => {
     purge.mockResolvedValueOnce({ rowsMatched: 0 });
     expect((await POST(request())).status).toBe(200);

@@ -48,7 +48,6 @@ import {
   isPhotoBackground,
   isScenePresetChoice,
   keepBackgroundHint,
-  keptPhotoIds,
   moreOptionsVisibility,
   noteAsksToKeepBackground,
   p1OutputFields,
@@ -702,13 +701,6 @@ describe("background per photo", () => {
     { id: "front", angle: "front" as const },
     { id: "back", angle: "back" as const },
   ];
-
-  it("lets a photo's own background win over the switch", () => {
-    expect(keptPhotoIds(photos, "remove")).toEqual([]);
-    expect(keptPhotoIds(photos, "keep")).toEqual(["front", "back"]);
-    expect(keptPhotoIds(photos, "remove", { back: "keep" })).toEqual(["back"]);
-    expect(keptPhotoIds(photos, "keep", { front: "remove", back: "pack" })).toEqual(["back"]);
-  });
 
   it("resolves the kept photos and plans a mixed pack", () => {
     const mixed = resolveFormOutput({

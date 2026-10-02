@@ -20,7 +20,8 @@
 
 import type Stripe from "stripe";
 import { sql, type Db } from "@curvi/db";
-import { createPlanChangePortalSession } from "./checkout";
+import { createPlanChangePortalSession, type PlanChangeResult } from "./checkout";
+import type { ScheduledChange } from "./schedule-release";
 import { STRIPE_LOOKUP_TIMEOUT_MS } from "./stripe";
 
 /**
@@ -131,9 +132,20 @@ export interface TierCheckoutInput {
   /** Where the portal returns to. */
   returnUrl: string;
   params: Stripe.Checkout.SessionCreateParams;
+  /** Passed to createPlanChangePortalSession for an existing subscriber. */
+  releaseScheduledChange?: boolean;
+  onScheduleReleased?: (change: ScheduledChange, subscriptionId: string) => Promise<void>;
 }
 
-export type TierCheckoutResult = { via: "portal"; url: string } | { via: "checkout"; url: string | null };
+export type TierCheckoutResult =
+  /** The plan change portal; `change` is what createPlanChangePortalSession
+   * opened, for the consent record. */
+  | { via: "portal"; url: string; change?: Extract<PlanChangeResult, { kind: "portal" }> }
+  | { via: "checkout"; url: string | null }
+  /** A downgrade for an existing subscriber: by email until P20-06's P1 part. */
+  | { via: "downgrade_by_email"; line: string }
+  /** An upgrade that would cancel a scheduled change: confirm first. */
+  | { via: "scheduled_change"; notice: string };
 
 /**
  * Opens a tier purchase for a customer that Stripe says has no
@@ -147,13 +159,23 @@ export async function openTierCheckout(stripe: Stripe, input: TierCheckoutInput)
   );
   const existing = subscriptions.data.find((subscription) => CHECKOUT_BLOCKING_STATUSES.has(subscription.status));
   if (existing) {
-    const url = await createPlanChangePortalSession(stripe, {
-      customerId: input.customerId,
-      subscriptionId: existing.id,
-      priceId: input.priceId,
-      returnUrl: input.returnUrl,
-    });
-    return { via: "portal", url };
+    const change = await createPlanChangePortalSession(
+      stripe,
+      {
+        customerId: input.customerId,
+        subscriptionId: existing.id,
+        priceId: input.priceId,
+        returnUrl: input.returnUrl,
+        releaseScheduledChange: input.releaseScheduledChange,
+      },
+      { onScheduleReleased: input.onScheduleReleased ? (released) => input.onScheduleReleased!(released, existing.id) : undefined },
+    );
+    if (change.kind === "portal") {
+      return { via: "portal", url: change.url, change };
+    }
+    return change.kind === "scheduled_change"
+      ? { via: "scheduled_change", notice: change.notice }
+      : { via: "downgrade_by_email", line: change.line };
   }
 
   const open = await stripe.checkout.sessions.list(

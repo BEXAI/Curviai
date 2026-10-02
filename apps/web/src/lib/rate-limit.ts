@@ -3,6 +3,10 @@
  * upload signing and completion, job creation and product creation (plan 4.1
  * and 4.5). Each route is limited twice, by client IP before any auth work
  * and by the signed in user after it, and answers 429 with Retry-After.
+ * The MCP server's reads and its lasting links have their own policies
+ * (PHASE_19 P19-21), and callers that arrive through an assistant's shared
+ * addresses are counted per user and per workspace instead of per IP
+ * (overLimit in lib/api-v1/actions).
  *
  * Backend (Phase 10 decision 5): Upstash Redis when UPSTASH_REDIS_REST_URL
  * and UPSTASH_REDIS_REST_TOKEN are set, so every instance shares one counter;
@@ -15,9 +19,13 @@
  */
 
 import { Redis } from "@upstash/redis";
+import { freePreview, customerSupport, errorReporting } from "@curvi/pipeline/seed";
 import { NextResponse } from "next/server";
+import { storeAudit } from "@curvi/pipeline/seed";
 import { optionalEnv } from "@/lib/env";
 import { getSessionUser } from "@/lib/supabase/server";
+import { clientIp, requestHostAllowed } from "@/lib/http/client-ip";
+export { clientIp } from "@/lib/http/client-ip";
 
 export interface RateLimitRule {
   limit: number;
@@ -29,15 +37,26 @@ export interface RateLimitPolicy {
   user: RateLimitRule;
   /** Per client IP, checked before authentication. */
   ip: RateLimitRule;
+  /**
+   * Per workspace, in place of the IP rule for callers exempt from it
+   * (PHASE_19 P19-21: OAuth callers from ChatGPT, whose calls all arrive
+   * from OpenAI's shared egress addresses). Defaults to the IP rule's
+   * numbers: a workspace's members share it the way an office shares an
+   * address.
+   */
+  workspace?: RateLimitRule;
 }
 
 const HOUR = 3600;
+const DAY = 24 * HOUR;
 
 /**
  * Named policies. The IP limits are looser than the user limits because a
  * team, an agency office or a mobile carrier can share one address.
  */
 export const RATE_LIMIT_POLICIES = {
+  "telemetry.error": { user: { limit: errorReporting.maxEventsPerHour, windowSeconds: HOUR }, ip: { limit: errorReporting.maxEventsPerHour, windowSeconds: HOUR } },
+  "support.contact": { user: { limit: customerSupport.perUserPerHour, windowSeconds: HOUR }, ip: { limit: customerSupport.perIpPerHour, windowSeconds: HOUR } },
   "uploads.sign": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },
   "uploads.complete": { user: { limit: 200, windowSeconds: HOUR }, ip: { limit: 400, windowSeconds: HOUR } },
   // The preflight at upload: one per photo, again when the note changes.
@@ -62,12 +81,31 @@ export const RATE_LIMIT_POLICIES = {
   // Favorites and picking scene versions (PHASE_16 workstream 6): one small
   // row write each, tapped through a gallery. Generous, but bounded.
   "assets.write": { user: { limit: 600, windowSeconds: HOUR }, ip: { limit: 1200, windowSeconds: HOUR } },
+  // The first run answers on /welcome (Phase 18 P18-20): one small
+  // row write, asked once.
+  "workspace.profile": { user: { limit: 30, windowSeconds: HOUR }, ip: { limit: 60, windowSeconds: HOUR } },
+  // The free white main image before signup (Phase 18 P18-12, decision 6):
+  // previews per client IP per UTC day, from the seed (the window is a UTC
+  // day because windows start at the epoch). IP only; there is no user.
+  "preview.create": {
+    user: { limit: freePreview.perIpPerDay, windowSeconds: DAY },
+    ip: { limit: freePreview.perIpPerDay, windowSeconds: DAY },
+  },
   // Publishing and unpublishing a share page.
   "shares.write": { user: { limit: 60, windowSeconds: HOUR }, ip: { limit: 120, windowSeconds: HOUR } },
   // Public share page images: each one is a storage read plus a re-encode on
   // a cache miss, so one IP cannot loop on them. A page shows a handful and
   // the gallery a few dozen, far below this.
   "shares.image": { user: { limit: 600, windowSeconds: HOUR }, ip: { limit: 600, windowSeconds: HOUR } },
+  // MCP reads (PHASE_19 P19-21): get_pack, list_channels and get_profile. An
+  // assistant polls get_pack while a pack runs (the pack viewer every 5
+  // seconds, 720 an hour), so one user can follow a pack and a half at once.
+  "mcp.read": { user: { limit: 1200, windowSeconds: HOUR }, ip: { limit: 2400, windowSeconds: HOUR } },
+  // The lasting preview and download links an assistant shares (P19-17): per
+  // IP, and per connection or API key (the "user" rule, subject conn:<id> or
+  // key:<id>), never per workspace, so a link copied out of one chat cannot
+  // use up the links of the workspace's other connections.
+  "mcp.links": { user: { limit: 600, windowSeconds: HOUR }, ip: { limit: 600, windowSeconds: HOUR } },
   // The cookieless visitor count's beacon (/api/visits), IP only since there
   // is no sign in (the user rules are unused). visits.record: every page view
   // from one address; a person opens a few pages a minute at most and a
@@ -77,10 +115,49 @@ export const RATE_LIMIT_POLICIES = {
   // Over either limit the page view is not counted; the beacon still gets 204.
   "visits.record": { user: { limit: 300, windowSeconds: HOUR }, ip: { limit: 300, windowSeconds: HOUR } },
   "visits.newVisitor": { user: { limit: 30, windowSeconds: HOUR }, ip: { limit: 30, windowSeconds: HOUR } },
+  // The store image audit (P18-18), anonymous, so IP only (the user rule is
+  // unused). Each audit makes the server fetch a store's product list and
+  // up to storeAudit.maxProducts images, so the number is seeded
+  // (growth.ts). The site wide daily cap is its own counter in
+  // lib/store-audit/daily-cap.ts.
+  "tools.storeAudit": {
+    user: { limit: storeAudit.auditsPerIpPerHour, windowSeconds: HOUR },
+    ip: { limit: storeAudit.auditsPerIpPerHour, windowSeconds: HOUR },
+  },
+  // Pack feedback (P18-05): one small row per pack and person, from the
+  // pack page or a signed email link. A person answers a few packs a day.
+  "feedback.write": { user: { limit: 30, windowSeconds: HOUR }, ip: { limit: 60, windowSeconds: HOUR } },
+  // The operator's prospect tool (P18-04): adding credits and making claim
+  // links. Operators only, so generous; a pack itself goes through jobs.create.
+  "ops.prospects": { user: { limit: 120, windowSeconds: HOUR }, ip: { limit: 240, windowSeconds: HOUR } },
+  // Taking a prospect page down from its claim link (P18-04), anonymous, so
+  // IP only. A person takes a page down once; a few retries fit.
+  "claims.takedown": { user: { limit: 10, windowSeconds: HOUR }, ip: { limit: 10, windowSeconds: HOUR } },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitPolicyName = keyof typeof RATE_LIMIT_POLICIES;
 export type RateLimitScope = keyof RateLimitPolicy;
+
+/** The rule a policy applies to a scope; the workspace rule falls back to the
+ * IP rule's numbers. */
+export function rateLimitRule(policy: RateLimitPolicyName, scope: RateLimitScope): RateLimitRule {
+  const entry: RateLimitPolicy = RATE_LIMIT_POLICIES[policy];
+  return scope === "workspace" ? (entry.workspace ?? entry.ip) : entry[scope];
+}
+
+/**
+ * The policy an MCP tool call meets before its action runs (PHASE_19
+ * P19-21), by tool name. create_pack and check_main_image are absent: their
+ * actions count jobs.create, imports.photo and uploads.preflight themselves.
+ * estimate_pack reads the photos it is given, so it counts against
+ * imports.photo per user, as a photo link import does.
+ */
+export const MCP_TOOL_RATE_POLICIES: Readonly<Record<string, RateLimitPolicyName>> = {
+  get_pack: "mcp.read",
+  list_channels: "mcp.read",
+  get_profile: "mcp.read",
+  estimate_pack: "imports.photo",
+};
 
 export interface RateLimitStore {
   /** Adds one hit to the counter at key and returns the count after the hit.
@@ -224,7 +301,7 @@ export async function checkRateLimit(
   subject: string,
   options: { store?: RateLimitStore; nowMs?: number } = {},
 ): Promise<RateLimitDecision> {
-  const rule = RATE_LIMIT_POLICIES[policy][scope];
+  const rule = rateLimitRule(policy, scope);
   const windowMs = rule.windowSeconds * 1000;
   const nowMs = options.nowMs ?? Date.now();
   const windowIndex = Math.floor(nowMs / windowMs);
@@ -267,22 +344,6 @@ export function rateLimitedResponse(decision: RateLimitDecision): NextResponse {
 }
 
 /**
- * The client IP. A Cloudflare edge in front of the app sets cf-connecting-ip
- * and true-client-ip from the TCP peer and overwrites any value the client
- * sent, so those win. The first X-Forwarded-For entry comes next. Without such
- * an edge these headers can be forged, which is why the IP limit is only the
- * coarse outer check and the per user limit is the one that holds.
- */
-export function clientIp(headers: Headers): string {
-  const direct = headers.get("cf-connecting-ip") ?? headers.get("true-client-ip") ?? headers.get("x-real-ip");
-  if (direct?.trim()) {
-    return direct.trim().slice(0, 64);
-  }
-  const forwarded = headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return forwarded ? forwarded.slice(0, 64) : "unknown";
-}
-
-/**
  * Paths no limiter may ever answer with 429. Render polls /api/health every
  * few seconds and counts anything but a 2xx or 3xx as a failure: after 15
  * seconds it stops routing traffic and after 60 seconds it restarts the
@@ -319,6 +380,9 @@ export async function limitByIp(
   const pathname = requestPathname(request);
   if (pathname !== null && isRateLimitExempt(pathname)) {
     return null;
+  }
+  if (!requestHostAllowed(request)) {
+    return NextResponse.json({ error: "Use the configured Curvi address." }, { status: 403 });
   }
   const ip = clientIp(request.headers);
   if (ip === "unknown") {

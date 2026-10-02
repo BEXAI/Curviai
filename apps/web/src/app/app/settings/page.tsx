@@ -2,9 +2,18 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
 import { DeleteAccountForm } from "@/components/app/delete-account-form";
+import { ChangeEmailCard } from "@/components/app/change-email-card";
+import { EmailPreferencesForm } from "@/components/app/email-preferences-form";
 import { WorkspaceNameForm } from "@/components/app/workspace-name-form";
-import { getServices } from "@/lib/services";
+import { referralOfferText, REFERRALS_SETTINGS_LINK } from "@/components/app/referral-copy";
+import { EMAIL_SETTINGS_TITLE } from "@/lib/email/copy";
+import { marketingAllowed } from "@/lib/email/preferences";
+import { CONNECTED_APPS_COPY } from "@/lib/mcp-auth/consent-copy";
+import { referralsOn } from "@/lib/referrals/switch";
+import { getServices, isDbMode } from "@/lib/services";
 import { getSessionUser } from "@/lib/supabase/server";
+import { LEGAL_FACTS } from "@/lib/legal/facts";
+import { uploadRetentionSummary } from "@/lib/legal/retention";
 
 export const metadata: Metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
@@ -24,6 +33,10 @@ export default async function SettingsPage() {
     services.listIntegrations(workspace.id),
     getSessionUser(),
   ]);
+  // P18-06: whether this address gets tips and offers (a read failure shows it as off).
+  const marketingOn = user ? await marketingAllowed(user.email).catch(() => false) : false;
+  // P18-24: the invite card shows only while referrals are on.
+  const canInvite = (workspace.role === "owner" || workspace.role === "admin") && isDbMode() && (await referralsOn());
 
   return (
     <div className="max-w-3xl space-y-8">
@@ -62,6 +75,17 @@ export default async function SettingsPage() {
         </CardContent>
       </Card>
 
+      {user ? (
+        <Card data-testid="email-settings">
+          <CardHeader>
+            <CardTitle>{EMAIL_SETTINGS_TITLE}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <EmailPreferencesForm initialAllowed={marketingOn} />
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>Members</CardTitle>
@@ -76,7 +100,7 @@ export default async function SettingsPage() {
             ))}
           </ul>
           <p className="mt-3 text-xs text-ink-400">
-            Need another seat? Email hello@curvi.ai and we will add your teammate to this workspace.
+            Need another seat? <Link href="/support?topic=account" className="underline">Contact {LEGAL_FACTS.support.email}</Link> and we will help with your workspace.
           </p>
         </CardContent>
       </Card>
@@ -91,7 +115,17 @@ export default async function SettingsPage() {
               <li key={integration.kind} className="flex items-start justify-between gap-4 py-3">
                 <div>
                   <p className="text-sm font-medium capitalize text-ink-900">{integration.kind}</p>
-                  <p className="mt-0.5 text-xs text-ink-500">{integration.detail}</p>
+                  <p className="mt-0.5 text-xs text-ink-500" data-testid={`integration-${integration.kind}`}>
+                    {integration.detail}
+                    {integration.link ? (
+                      <>
+                        {" "}
+                        <Link href={integration.link.href} className="font-medium text-accent-700 underline underline-offset-2">
+                          {integration.link.label}
+                        </Link>
+                      </>
+                    ) : null}
+                  </p>
                 </div>
                 {integration.status === "connected" ? (
                   <Badge variant="success">Connected</Badge>
@@ -118,6 +152,33 @@ export default async function SettingsPage() {
         </CardContent>
       </Card>
 
+      <Card data-testid="connected-apps-link">
+        <CardHeader>
+          <CardTitle>{CONNECTED_APPS_COPY.title}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-ink-500">{CONNECTED_APPS_COPY.settingsCard}</p>
+          <Link href="/app/settings/connections" className={buttonVariants({ variant: "outline", size: "sm" })}>
+            {CONNECTED_APPS_COPY.settingsLink}
+          </Link>
+        </CardContent>
+      </Card>
+
+      {canInvite ? (
+        <Card data-testid="referrals-link">
+          <CardHeader>
+            <CardTitle>{REFERRALS_SETTINGS_LINK}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-ink-500">{referralOfferText()}</p>
+            <Link href="/app/settings/referrals" className={buttonVariants({ variant: "outline", size: "sm" })}>
+              {REFERRALS_SETTINGS_LINK}
+            </Link>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      <ChangeEmailCard email={user?.email ?? null} />
       <Card data-testid="your-data">
         <CardHeader>
           <CardTitle>Your data</CardTitle>
@@ -144,9 +205,11 @@ export default async function SettingsPage() {
           </div>
           <div className="space-y-2">
             <p className="text-sm font-medium text-ink-900">How long we keep your uploads</p>
-            <p className="text-sm text-ink-500">
-              We delete original photos and videos once they are 30 days old and no pack from the last 30 days used
-              them. Finished pack files stay in your account.
+            <p className="text-sm text-ink-500" data-testid="upload-retention">
+              {uploadRetentionSummary(LEGAL_FACTS)}{" "}
+              <Link href="/privacy#retention" className="font-medium text-ink-900 underline">
+                How long we keep everything
+              </Link>
             </p>
           </div>
           <div className="space-y-2">

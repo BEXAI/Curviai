@@ -17,6 +17,7 @@ import {
   skuSchema,
 } from "@/lib/validation/seller-inputs";
 import { productIdSchema } from "@/lib/validation/ids";
+import { checkerChannels } from "@/lib/tools/checker-rules";
 
 /** Longest base64 photo string a request may carry (a 25 MB photo). */
 export const MAX_PHOTO_BASE64_CHARS = 34_000_000;
@@ -61,9 +62,18 @@ export const OpenAIFileObject = z.object({
 export type OpenAIFileObject = z.infer<typeof OpenAIFileObject>;
 
 /** Request fields that carry chat attachments. The REST document leaves them
- * out (the public API v1 is unchanged by PHASE_19), and the actions refuse
- * them until P19-15 wires their fetch. */
+ * out and the REST routes refuse them (the public API v1 is unchanged by
+ * PHASE_19); only the MCP tools take them (P19-15). */
 export const CHAT_FILE_FIELDS = ["images", "image"] as const;
+
+/**
+ * Whether the MCP tools take chat attachments (PHASE_19 P19-15). On since
+ * the attachment fetch landed (lib/api-v1/photos.ts): the tool arguments,
+ * the inputSchema fields and _meta["openai/fileParams"] carry images and
+ * image. False puts back the earlier state, where tools/list leaves the
+ * fields out and tools/call refuses them as unknown keys.
+ */
+export const CHAT_FILES_WIRED: boolean = true;
 
 /** Seed option values as a zod enum (rule 2: the choices live in the seed). */
 function seedEnum(values: readonly string[]) {
@@ -124,10 +134,24 @@ export type CreatePackRequest = z.input<typeof CreatePackRequest>;
  * document describes, and the create_pack arguments until P19-15. */
 export const CreatePackRequestNoFiles = CreatePackRequest.omit({ images: true });
 
+/** The color inside the product measured on the shot's file (P18-08):
+ * CIEDE2000 inside the product mask of the delivered bytes. */
+export const ShotFidelity = z.object({
+  meanDeltaE: z.number().describe("Average color difference inside the product, to 2 decimals."),
+  maxDeltaE: z.number().describe("Largest single pixel color difference inside the product, to 1 decimal."),
+  exactByteShare: z.number().describe("Share of compared pixels whose bytes match the product reference, 0 to 1."),
+  maskArea: z.number().describe("Pixels compared."),
+  threshold: z.number().describe("The average the file had to stay under: 3 for main images, 5 for the rest."),
+  maxDeltaELimit: z.number().describe("The single pixel ceiling the file had to stay under."),
+  kind: z.enum(["main", "other"]),
+  exact: z.boolean().describe("True only when the file is the seller's upload byte for byte."),
+});
+
 export const ShotCompliance = z.object({
   pass: z.boolean(),
   fillPct: z.number().nullable(),
   background: z.array(z.number()).nullable(),
+  fidelity: ShotFidelity.nullable().describe("Null when the shot's file was not measured against the product."),
 });
 
 export const PackShot = z.object({
@@ -197,6 +221,13 @@ const mainImageSourceFields = {
 
 const MAIN_IMAGE_ONE_SOURCE = "Send a url or data, not both.";
 
+/** Only channels with verified checker rules are advertised or accepted.
+ * Omitted channel retains the existing Amazon default. */
+const mainImageChannel = z
+  .enum(checkerChannels().flatMap((channel) => [channel.key, channel.specId]))
+  .optional()
+  .describe("The marketplace or main image spec to check, from the verified choices. Omit for Amazon.");
+
 /** Exactly one image source: url, data or (PHASE_19) an attached image. */
 function oneMainImageSource(body: { url?: unknown; data?: unknown; image?: unknown }): boolean {
   return [body.url, body.data, body.image].filter((source) => source !== undefined).length === 1;
@@ -205,6 +236,7 @@ function oneMainImageSource(body: { url?: unknown; data?: unknown; image?: unkno
 export const MainImageCheckRequest = z
   .object({
     ...mainImageSourceFields,
+    channel: mainImageChannel,
     image: OpenAIFileObject.optional().describe("The image attached in the chat. Send url, data or image, only one."),
   })
   .strict()
@@ -213,11 +245,13 @@ export const MainImageCheckRequest = z
 /** The check request without the chat attachment field: the body the REST
  * document describes, and the check_main_image arguments until P19-15. */
 export const MainImageCheckRequestNoFiles = z
-  .object(mainImageSourceFields)
+  .object({ ...mainImageSourceFields, channel: mainImageChannel })
   .strict()
   .refine(oneMainImageSource, MAIN_IMAGE_ONE_SOURCE);
 
 export const MainImageCheckResponse = z.object({
+  channel: z.string().describe("The marketplace whose rules were checked."),
+  spec_id: z.string().describe("The verified channel specification used for this check."),
   pass: z.boolean(),
   summary: z.string(),
   width: z.number(),
@@ -230,7 +264,14 @@ export const MainImageCheckResponse = z.object({
       measured: z.string(),
     }),
   ),
-  rules: z.object({ minLongSide: z.number(), fillMinPercent: z.number(), fillMaxPercent: z.number() }),
+  rules: z.object({
+    minLongSide: z.number(),
+    minWidth: z.number().optional(),
+    minHeight: z.number().optional(),
+    fillMinPercent: z.number().nullable(),
+    fillMaxPercent: z.number().nullable(),
+    background: z.enum(["white", "white_or_transparent"]).optional(),
+  }),
 });
 
 export const Channel = z.object({
@@ -247,6 +288,8 @@ export const ChannelsResponse = z.object({
   channels: z.array(Channel),
   bundles: z.array(z.object({ key: z.string(), label: z.string() })),
 });
+
+export const SmokeContextResponse = z.object({ workspaceId: z.uuid(), excluded: z.literal(true) });
 
 export const ErrorResponse = z.object({
   error: z.string(),
@@ -266,5 +309,6 @@ export const COMPONENT_SCHEMAS = {
   MainImageCheckRequest: MainImageCheckRequestNoFiles,
   MainImageCheckResponse,
   ChannelsResponse,
+  SmokeContextResponse,
   Error: ErrorResponse,
 } as const;

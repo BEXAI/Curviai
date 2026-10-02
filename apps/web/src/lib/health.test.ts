@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CircuitBreaker, InMemoryBreakerStore } from "@curvi/ai";
+import { cutoutModelSeedRows } from "@curvi/pipeline/seed";
 import { DEFAULT_PROVIDER_ENTRIES, HealthRegistry } from "./health";
 
 function envOf(names: string[]): (name: string) => string | undefined {
@@ -20,6 +21,13 @@ describe("DEFAULT_PROVIDER_ENTRIES (docs/phases/PHASE_17.md workstream 3)", () =
     ]);
   });
 
+  it("lists each cutout row under the key env the seed gives it, so FAL_KEY_BACKUP is named", () => {
+    expect(DEFAULT_PROVIDER_ENTRIES.filter((entry) => entry.kind === "cutout")).toEqual(
+      cutoutModelSeedRows.map((row) => ({ name: row.providerName, kind: "cutout", envVar: row.keyEnv })),
+    );
+    expect(DEFAULT_PROVIDER_ENTRIES).toContainEqual({ name: "fal-birefnet-backup", kind: "cutout", envVar: "FAL_KEY_BACKUP" });
+  });
+
   it.each([
     [[], false, false],
     [["OPENAI_API_KEY"], true, false],
@@ -32,5 +40,22 @@ describe("DEFAULT_PROVIDER_ENTRIES (docs/phases/PHASE_17.md workstream 3)", () =
       { name: "anthropic", kind: "llm", configured: anthropic, breaker: "closed" },
     ]);
     expect(JSON.stringify(entries)).not.toContain("secret-");
+  });
+});
+
+describe("HealthRegistry services", () => {
+  it("reports each service by presence only, never a secret value", async () => {
+    const registry = new HealthRegistry(
+      DEFAULT_PROVIDER_ENTRIES,
+      new CircuitBreaker(new InMemoryBreakerStore()),
+      envOf(["DATABASE_URL", "SHOPIFY_API_SECRET"]),
+    );
+    const { services } = await registry.report("demo");
+    expect(services.map((service) => service.name)).toEqual(
+      expect.arrayContaining(["supabase", "database", "r2", "stripe", "shopify"]),
+    );
+    expect(services.find((service) => service.name === "database")?.configured).toBe(true);
+    expect(services.find((service) => service.name === "shopify")?.configured).toBe(true);
+    expect(JSON.stringify(services)).not.toContain("secret-");
   });
 });

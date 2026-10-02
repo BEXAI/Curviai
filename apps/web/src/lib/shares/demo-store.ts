@@ -7,7 +7,10 @@
  */
 
 import { afterDemoImage, beforeDemoImage } from "@/components/marketing/demo-images";
-import type { Services } from "@/lib/services/types";
+import { DemoFeedbackStore } from "@/lib/feedback/demo-store";
+import { demoProofView } from "@/lib/proof-view";
+import { demoFileId } from "@/lib/services/demo";
+import type { JobView, Services } from "@/lib/services/types";
 import { isShareSlug, newShareSlug } from "./pick";
 import {
   canPublishShares,
@@ -34,6 +37,8 @@ interface DemoShareRecord {
   images: PublicShareImage[];
   isPublic: boolean;
   inGallery: boolean;
+  /** The measured checks on the public page (P18-16). */
+  showProof: boolean;
   views: number;
   publishedAt: number;
 }
@@ -67,6 +72,21 @@ function exampleShare(): PublicShare {
   };
 }
 
+/**
+ * Each demo image with the checks its spec holds it to and nothing measured
+ * (demo packs store no files), plus the scene caption when the shot is a
+ * composited scene, found by the demo file id of each shot's channels.
+ */
+function withDemoProofs(images: PublicShareImage[], job: JobView | null): PublicShareImage[] {
+  const composite = new Map<string, boolean>();
+  for (const shot of job?.shots ?? []) {
+    shot.channels.forEach((_, index) => composite.set(demoFileId(shot.shotId, index), shot.providerStage === "image model"));
+  }
+  return images.map((image) =>
+    image.specId ? { ...image, proof: demoProofView(image.specId, composite.get(image.ref) === true) } : image,
+  );
+}
+
 export class DemoShareStore implements ShareStore {
   constructor(
     private readonly services: Pick<Services, "getJob" | "listJobFiles">,
@@ -87,6 +107,7 @@ export class DemoShareStore implements ShareStore {
       inGallery: published && record?.inGallery === true,
       hasBefore: true,
       views: record?.views ?? 0,
+      showProof: record?.showProof === true,
     };
   }
 
@@ -124,9 +145,10 @@ export class DemoShareStore implements ShareStore {
       jobId,
       kind: input.kind,
       title: job?.productTitle ?? "A product photo makeover",
-      images,
+      images: withDemoProofs(images, job),
       isPublic: true,
       inGallery: input.gallery,
+      showProof: input.proof ?? existing?.showProof ?? false,
       views: existing?.views ?? 0,
       publishedAt: Date.now(),
     });
@@ -169,7 +191,9 @@ export class DemoShareStore implements ShareStore {
     if (!record) {
       return null;
     }
-    const [after] = record.images;
+    // Proof shows only when the owner turned it on (P18-16).
+    const images = record.showProof ? record.images : record.images.map(({ proof: _proof, ...image }) => image);
+    const [after] = images;
     return {
       slug,
       kind: record.kind,
@@ -177,10 +201,11 @@ export class DemoShareStore implements ShareStore {
       category: null,
       before: { ref: "before", src: beforeDemoImage, alt: `${record.title}, the original photo` },
       after,
-      images: record.kind === "pack" ? record.images : [],
+      images: record.kind === "pack" ? images : [],
       inGallery: record.inGallery,
       illustration: true,
       sizedForChannels: false,
+      proof: record.showProof,
     };
   }
 
@@ -198,7 +223,16 @@ export class DemoShareStore implements ShareStore {
     for (const record of records) {
       const share = await this.getPublic(record.slug);
       if (share?.after) {
-        entries.push({ slug: share.slug, title: share.title, category: null, before: share.before, after: share.after });
+        entries.push({
+          slug: share.slug,
+          title: share.title,
+          category: null,
+          before: share.before,
+          after: share.after,
+          // Demo mode has no operator; a consented quote shows as in production.
+          madeByTeam: false,
+          quote: new DemoFeedbackStore(this.services).quoteFor(record.jobId),
+        });
       }
     }
     return entries;

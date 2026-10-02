@@ -79,13 +79,14 @@ export interface CheckoutIntent {
 }
 
 /** Paid tiers from the seed; the free tier never needs a checkout. */
+/** A paid tier sold online; Agency is set up by email (P20-08). */
 function paidTier(plan: string) {
-  return tiers.find((tier) => tier.key === plan && tier.monthlyUsd > 0) ?? null;
+  return tiers.find((tier) => tier.key === plan && tier.monthlyUsd > 0 && tier.selfServe) ?? null;
 }
 
 /**
  * Validates a plan and cadence pair from the pricing page against the tiers
- * seed. The plan must be a paid tier. A missing cadence means monthly; an
+ * seed. The plan must be a paid tier sold online. A missing cadence means monthly; an
  * unknown cadence, or annual on a tier with no annual price, is rejected so
  * the buyer never lands on a checkout for something they did not pick.
  */
@@ -155,8 +156,11 @@ export function postAuthParamsFrom(search: URLSearchParams): PostAuthParams {
  * login page.
  */
 export const AUTH_ERROR_MESSAGES = {
-  link_invalid: "That sign in link has expired or was already used. Log in, or request a new link.",
+  link_invalid: "That sign in link has expired or was already used. Log in, or send the link again below.",
   unavailable: "Sign in is not available right now. Please try again in a few minutes.",
+  // Google sign in (P18-13) came back without a code: the person canceled
+  // at Google, or Google or Supabase refused the request.
+  oauth_failed: "Google sign in did not finish. Try again, or use your email and a password.",
 } as const;
 
 export type AuthErrorCode = keyof typeof AUTH_ERROR_MESSAGES;
@@ -194,9 +198,9 @@ export function planIntentNote(mode: "signup" | "login", intent: CheckoutIntent)
 }
 
 /** The message after signup when the email still needs confirming. */
-export function confirmationSentMessage(intent: CheckoutIntent | null): string {
+export function confirmationSentMessage(intent: CheckoutIntent | null, email?: string): string {
   const next = intent
     ? `we will take you to the ${planLabel(intent.plan)} plan on your billing page`
     : "your workspace will be ready";
-  return `Almost there. We sent a confirmation link to your inbox. Open it on this device and ${next}. Check spam if it does not arrive in a minute.`;
+  return `Almost there. We sent a confirmation link to ${email || "your inbox"}. Open it on any device and ${next}. If it does not arrive in a minute, check spam or send it again.`;
 }

@@ -9,6 +9,10 @@ test("health endpoint returns ok", async ({ request }) => {
   expect(res.headers()["cache-control"] ?? "").toContain("no-store");
   const body = await res.json();
   expect(body.ok).toBe(true);
+  // P20-15: the second uptime monitor matches "status":"ok" in the body.
+  expect(body.status).toBe("ok");
+  expect(body.degradedBy).toEqual([]);
+  expect(await res.text()).toContain('"status":"ok"');
   expect(body.mode).toBe("demo");
   expect(body.checks.database).toBe("skipped");
   expect(typeof body.migrations.expected).toBe("string");

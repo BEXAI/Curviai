@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { HEX } from "@curvi/pipeline/output-options";
 import { Button, Card, CardContent, Input, Label, Select, cn } from "@curvi/ui";
 import { brandKitCopy } from "@/components/marketing/brand-kit-copy";
 import { BrandPaletteSuggestion } from "@/components/app/brand-palette-suggestion";
@@ -27,8 +28,6 @@ interface BrandKitFormProps {
 }
 
 const MIN_COLOR_SLOTS = 3;
-
-const HEX_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 
 /** The logo picker's accept list, checked again for dropped files. */
 const LOGO_CONTENT_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
@@ -117,12 +116,12 @@ export function BrandKitForm({
     });
   }
 
-  const invalidColors = kit.colors.filter((c) => c.length > 0 && !HEX_PATTERN.test(c));
+  const invalidColors = kit.colors.filter((c) => c.length > 0 && !HEX.test(c));
 
   function submit() {
     setResult(null);
     startTransition(async () => {
-      const outcome = await save({ ...kit, colors: kit.colors.filter((c) => HEX_PATTERN.test(c)) });
+      const outcome = await save({ ...kit, colors: kit.colors.filter((c) => HEX.test(c)) });
       setResult(outcome);
     });
   }
@@ -149,7 +148,7 @@ export function BrandKitForm({
                   aria-hidden="true"
                   className="h-8 w-8 shrink-0 rounded-lg border border-ink-200"
                   style={{
-                    backgroundColor: HEX_PATTERN.test(kit.colors[index] ?? "") ? kit.colors[index] : "#ffffff",
+                    backgroundColor: HEX.test(kit.colors[index] ?? "") ? kit.colors[index] : "#ffffff",
                   }}
                 />
                 <Input

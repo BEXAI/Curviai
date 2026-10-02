@@ -15,9 +15,22 @@ import {
   TREATMENT_NOTES,
   type PackAssetTreatment,
 } from "@curvi/pipeline/treatment";
+import {
+  PRODUCT_UNCHANGED_CHECK,
+  readStoredFidelity,
+  type StoredFidelity,
+} from "@curvi/pipeline/fidelity-record";
 import { dimensionBounds, getSpec, hasSpec, type ChannelSpec } from "@curvi/specs";
 import { specDisplayName } from "@/components/marketing/spec-slug";
 import { FORCED_WHITE_NOTE } from "@/lib/output-options-copy";
+import {
+  fidelityNote,
+  PRODUCT_NOT_REDRAWN_LABEL,
+  productUnchangedMeasured,
+  productUnchangedMeasuredMean,
+  productUnchangedRequired,
+  productUnchangedRequiredMean,
+} from "@/lib/proof-copy";
 
 // The stored report, read leniently: fields the view does not use may change
 // without breaking the page.
@@ -35,8 +48,11 @@ const StoredFile = z.object({
   digitalSource: z.string().optional(),
   notes: z.array(z.string()).optional(),
   checks: z.array(StoredCheck).default([]),
+  // The fidelity numbers QC measured on the file (report version 2, P18-08).
+  // Read leniently: a malformed entry shows no fidelity row, never an error.
+  fidelity: z.unknown().optional(),
   pass: z.boolean(),
-});
+}).passthrough();
 
 const StoredDropped = z.object({
   file: z.string(),
@@ -52,6 +68,60 @@ export const StoredComplianceReport = z.object({
 });
 
 export type StoredComplianceReport = z.infer<typeof StoredComplianceReport>;
+
+export interface ComplianceVariant {
+  workspaceId: string;
+  jobId: string;
+  assetId: string;
+  r2Key: string;
+  filename: string;
+  channelSpecId: string;
+  picked: boolean;
+}
+
+/** Read checks only for the exact delivered object. Old reports describe
+ * the original keys; a same-named followup must never inherit their proof. */
+export function complianceForVariant(
+  raw: unknown,
+  variant: Pick<ComplianceVariant, "workspaceId" | "jobId" | "r2Key" | "filename" | "channelSpecId">,
+  qc?: Record<string, unknown> | null,
+): z.infer<typeof StoredFile> | null {
+  if (!variant.r2Key.startsWith(`ws/${variant.workspaceId}/jobs/${variant.jobId}/`)) return null;
+  const channel = variant.channelSpecId.split(".")[0];
+  const matches = (file: z.infer<typeof StoredFile>) =>
+    file.file === variant.filename && file.channel === channel && file.specId === variant.channelSpecId;
+  const reports = qc?.fileReports;
+  if (reports && typeof reports === "object" && !Array.isArray(reports)) {
+    const exact = StoredFile.safeParse((reports as Record<string, unknown>)[variant.r2Key]);
+    if (exact.success && matches(exact.data)) return exact.data;
+  }
+  const originalKey = `ws/${variant.workspaceId}/jobs/${variant.jobId}/files/${channel}/${variant.filename}`;
+  if (variant.r2Key !== originalKey) return null;
+  const parsed = StoredComplianceReport.safeParse(raw);
+  if (!parsed.success) return null;
+  const files = parsed.data.files.filter(matches);
+  return files.length === 1 ? files[0] : null;
+}
+
+/** Rebuild on every read so picks and followups immediately reach JSON and
+ * PDF. Older versions without exact saved checks are shown as unmeasured. */
+export function pickedComplianceReport(
+  raw: unknown,
+  variants: readonly ComplianceVariant[],
+  assets: readonly { id: string; qc: Record<string, unknown> | null }[],
+): StoredComplianceReport | null {
+  const original = StoredComplianceReport.safeParse(raw);
+  const qcByAsset = new Map(assets.map((asset) => [asset.id, asset.qc]));
+  let exactCount = 0;
+  const files = variants.filter((v) => v.picked).map((variant) => {
+    const file = complianceForVariant(raw, variant, qcByAsset.get(variant.assetId));
+    if (file) { exactCount++; return file; }
+    return { file: variant.filename, channel: variant.channelSpecId.split(".")[0], specId: variant.channelSpecId,
+      checks: [{ name: "checksUnavailable", pass: false }], pass: false };
+  });
+  if (!original.success && exactCount === 0) return null;
+  return { ...(original.success ? original.data : {}), files };
+}
 
 export interface ComplianceCheckView {
   /** The packager's check name, for tests and analytics. */
@@ -245,6 +315,8 @@ function whiteOrClearLabel(specId: string | undefined): string {
 export function describeCheck(check: z.infer<typeof StoredCheck>, specId?: string): ComplianceCheckView {
   const { name, pass, measured, limit } = check;
   switch (name) {
+    case "checksUnavailable":
+      return { key: name, label: "Saved checks", pass: false, measured: NOT_MEASURED, required: "Checks were not saved for this version." };
     case WHITE_OR_CLEAR_CHECK: {
       const min = limitNumber(limit);
       return {
@@ -321,6 +393,18 @@ export function describeCheck(check: z.infer<typeof StoredCheck>, specId?: strin
         required: max === null ? "no limit" : `at most ${megabytes(max)}`,
       };
     }
+    case PRODUCT_UNCHANGED_CHECK: {
+      // The row as the check alone states it; a report file with its
+      // fidelity entry is described by describeFidelity instead.
+      const max = limitNumber(limit);
+      return {
+        key: name,
+        label: PRODUCT_NOT_REDRAWN_LABEL,
+        pass,
+        measured: measuredText(measured, productUnchangedMeasuredMean),
+        required: max === null ? (limit ?? "") : productUnchangedRequiredMean(max),
+      };
+    }
     case "format":
       return {
         key: name,
@@ -338,6 +422,27 @@ export function describeCheck(check: z.infer<typeof StoredCheck>, specId?: strin
         required: limit ?? "",
       };
   }
+}
+
+/** The "Product not redrawn" row from a file's fidelity numbers (P18-08). */
+export function describeFidelity(fidelity: StoredFidelity, pass: boolean): ComplianceCheckView {
+  return {
+    key: PRODUCT_UNCHANGED_CHECK,
+    label: PRODUCT_NOT_REDRAWN_LABEL,
+    pass,
+    measured: productUnchangedMeasured(fidelity),
+    required: productUnchangedRequired(fidelity),
+  };
+}
+
+/** A stored file's check rows, with the fidelity row read from its numbers
+ * when the file carries them. */
+function describeFileChecks(file: z.infer<typeof StoredFile>, fidelity: StoredFidelity | null): ComplianceCheckView[] {
+  return file.checks.map((check) =>
+    check.name === PRODUCT_UNCHANGED_CHECK && fidelity
+      ? describeFidelity(fidelity, check.pass)
+      : describeCheck(check, file.specId),
+  );
 }
 
 /**
@@ -492,15 +597,22 @@ export function buildComplianceReportView(
   }
   const report = parsed.data;
   const channels = groupByChannel(
-    report.files.map((file) => ({
-      channel: file.channel,
-      file: file.file,
-      specId: file.specId,
-      specLabel: specDisplayName(file.specId),
-      pass: file.pass,
-      checks: file.checks.map((check) => describeCheck(check, file.specId)),
-      notes: describeNotes(file.notes, file.digitalSource, opts),
-    })),
+    report.files.map((file) => {
+      const fidelity = readStoredFidelity(file.fidelity);
+      const hasRow = fidelity !== null && file.checks.some((check) => check.name === PRODUCT_UNCHANGED_CHECK);
+      return {
+        channel: file.channel,
+        file: file.file,
+        specId: file.specId,
+        specLabel: specDisplayName(file.specId),
+        pass: file.pass,
+        checks: describeFileChecks(file, fidelity),
+        notes: [
+          ...describeNotes(file.notes, file.digitalSource, opts),
+          ...(hasRow && fidelity ? [fidelityNote(fidelity)] : []),
+        ],
+      };
+    }),
   );
   const dropped = (report.dropped ?? []).map((entry) => ({
     file: entry.file,

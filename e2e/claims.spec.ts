@@ -30,9 +30,10 @@ test("home labels features on the way and drawings as illustrations", async ({ p
   }
 });
 
-test("help marks the Fresh Creative Drop as coming soon", async ({ page }) => {
+test("help keeps the Fresh Creative Drop gated", async ({ page, request }) => {
   await page.goto("/help");
-  await expect(page.locator("#what-is-the-fresh-creative-drop").getByTestId("coming-soon")).toBeVisible();
+  await expect(page.locator("#what-is-the-fresh-creative-drop")).toHaveCount(0);
+  expect((await request.get("/help/what-is-the-fresh-creative-drop")).status()).toBe(404);
   await expect(page.locator("body")).not.toContainText("text policy");
   await expect(page.locator("body")).not.toContainText("40 to 60");
 });

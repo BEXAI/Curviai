@@ -56,6 +56,7 @@ import { getSpec, hasSpec, requiresWhiteBackground } from "@curvi/specs";
 import { specDisplayName } from "@/components/marketing/spec-slug";
 import { enlargeLimitClause, EXTRA_FAMILY_NAMES } from "@/lib/output-options-copy";
 import { familyName } from "@/lib/preflight/copy";
+import { MCP_COPY } from "@/lib/api-v1/mcp-copy";
 
 export interface SkippedCopy {
   /** Chip text on the card. */
@@ -457,6 +458,10 @@ export const JOB_ERROR_COPY = {
   blockedProhibited: `Curvi does not make images of goods that are banned from sale or recalled, so we did not make a pack from this photo. ${NOTHING_CHARGED} ${WRONG_CALL}`,
   blockedPerson: `This photo shows a person as the main subject, and Curvi makes images of products. ${NOTHING_CHARGED} Use a photo where the product is the main subject and start a new pack. A product worn on a wrist or held in a hand is fine.`,
   flagged: `We could not make a pack from this photo because of what it shows. ${NOTHING_CHARGED} ${WRONG_CALL}`,
+  // A pack an assistant started for one of OpenAI's prohibited goods
+  // (PHASE_19 P19-29). The web never screens for them, so the page says
+  // the pack can be made here.
+  blockedRestricted: `This pack was started from an AI assistant, and Curvi does not make images of this kind of product for assistants, so it stopped. ${NOTHING_CHARGED} You can start the same pack here on curvi.ai.`,
   contentBlocked: `The image service would not make images from this photo under its content rules, so this pack stopped. ${NOTHING_CHARGED} Try a different photo of the product.`,
   // Limits and credits.
   credits: `There were not enough credits to start this pack. ${NOTHING_CHARGED} Top up or pick fewer channels.`,
@@ -465,6 +470,7 @@ export const JOB_ERROR_COPY = {
   globalDayCap: `We reached our daily safety limit for making images, so this pack stopped. ${NOTHING_CHARGED} Try again tomorrow.`,
   noShotsPlanned: `We could not plan any shots for the channels you picked, so nothing was charged. Try other channels, or ${CONTACT} if it keeps happening.`,
   // Our side.
+  screeningUnavailable: MCP_COPY.screeningUnavailable,
   interrupted: `The run was interrupted before it finished. ${HELD_RETURNED}`,
   notStarted: `Our server restarted before this pack could start. ${HELD_RUN_AGAIN}`,
   restarted: `Our server restarted while this pack was running. ${HELD_RUN_AGAIN}`,
@@ -518,15 +524,25 @@ function isModeration(r: string): boolean {
 /** pipeline-runner.ts NO_SELLABLE_PRODUCT_MESSAGE, lowercased. */
 const NO_PRODUCT_START = "intake found no sellable product";
 
+/** pipeline-runner.ts RESTRICTED_PRODUCT_PREFIX, lowercased (PHASE_19
+ * P19-29). */
+const RESTRICTED_PRODUCT_START = "assistant screening stopped this pack";
+
 /**
  * Ordered: the first match wins. Our own plain messages come first, then
  * photo and content problems, limits, and last the provider and runtime
  * failures, whose raw text can name anything.
  */
 const RULES: readonly Rule[] = [
+  // Missing assistant screening is a service readiness failure, not a
+  // judgment about the product. Match before any content-category rules.
+  ["screeningUnavailable", (r) => r.startsWith("assistant screening is temporarily unavailable.")],
   // The runner's no product message carries intake's labels, which are
   // model text, so it is matched on its fixed start before anything else.
   ["noProduct", (r) => r.startsWith(NO_PRODUCT_START)],
+  // pipeline-runner.ts RESTRICTED_PRODUCT_PREFIX (PHASE_19 P19-29): the
+  // category keys after it are seed keys, never shown.
+  ["blockedRestricted", (r) => r.startsWith(RESTRICTED_PRODUCT_START)],
   ["screenshot", has("screenshot", "screen capture")],
   // pipeline-runner.ts MULTIPLE_PRODUCTS_MESSAGE: several products and no
   // single match to the seller's note.
@@ -656,13 +672,47 @@ export function jobErrorKind(raw: string | null | undefined): JobErrorKind | nul
  * The output is always one of JOB_ERROR_COPY, so provider names, HTTP
  * statuses and response bodies never reach the page; the raw detail stays in
  * the database and the server logs.
+ *
+ * The audience (PHASE_19 P19-14): "web" is the page's line; "assistant" is
+ * the line ChatGPT or another assistant reads through the MCP server, which
+ * may never point at a top up or a plan (OpenAI's plugin guidelines), so the
+ * few lines that do are swapped for the neutral MCP copy.
  */
-export function publicJobError(raw: string | null | undefined): string | null {
+export function publicJobError(raw: string | null | undefined, audience: JobErrorAudience = "web"): string | null {
   const kind = jobErrorKind(raw);
   if (kind === "noProduct") {
     return noProductCopy(raw ?? "");
   }
-  return kind === null ? null : JOB_ERROR_COPY[kind];
+  if (kind === null) {
+    return null;
+  }
+  return audience === "assistant" ? (ASSISTANT_JOB_ERROR_COPY[kind] ?? JOB_ERROR_COPY[kind]) : JOB_ERROR_COPY[kind];
+}
+
+/** Who reads a pack's failure line. */
+export type JobErrorAudience = "web" | "assistant";
+
+/** The failure lines an assistant reads instead of the web's. */
+const ASSISTANT_JOB_ERROR_COPY: Partial<Record<JobErrorKind, string>> = {
+  credits: MCP_COPY.packStoppedForCredits,
+  blockedRestricted: MCP_COPY.restrictedProduct,
+};
+
+/**
+ * The line an audience reads for a failure line publicJobError already gave
+ * the web (JobView.error is stored that way). Every web line is one of
+ * JOB_ERROR_COPY or a no product line, so the kind is found exactly; any
+ * other text passes through unchanged.
+ */
+export function jobErrorLineFor(webLine: string | null | undefined, audience: JobErrorAudience): string | null {
+  if (webLine === null || webLine === undefined) {
+    return null;
+  }
+  if (audience === "web") {
+    return webLine;
+  }
+  const kind = (Object.keys(JOB_ERROR_COPY) as JobErrorKind[]).find((key) => JOB_ERROR_COPY[key] === webLine);
+  return kind ? (ASSISTANT_JOB_ERROR_COPY[kind] ?? webLine) : webLine;
 }
 
 /** A label from intake reduced to plain words: letters, spaces and

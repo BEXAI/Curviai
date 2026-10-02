@@ -6,14 +6,14 @@
  * price and credit amount comes from the seed through plans.ts and
  * marketing-facts.ts (CLAUDE.md rule 2), and only wording lives here.
  *
- * With Stripe off (isStripeConfigured false) nothing links to checkout: the
+ * With checkout closed (isCheckoutOpen false) nothing links to checkout: the
  * copy says credits are limited during early access and points at
  * /app/billing, where a plan or top up can be requested.
  */
 
 import { tiers, topUps, type TierDefinition, type TopUp } from "@curvi/pipeline/seed";
 import { tierKeyOf } from "@/lib/entitlements";
-import { topUpMonths, typicalPackCredits } from "@/lib/marketing-facts";
+import { CREDIT_TERMS_SENTENCE, typicalPackCredits } from "@/lib/marketing-facts";
 import { billingCheckoutHref } from "./intent";
 import { formatCredits, formatUsd, isPaidTierKey, tierDisplayName } from "./plans";
 
@@ -24,7 +24,7 @@ export interface PaywallContext {
   /** The workspace plan key. */
   plan: string;
   creditBalance: number;
-  /** isStripeConfigured() on the server. */
+  /** isCheckoutOpen() on the server. */
   stripeLive: boolean;
   /** canManageBilling(role): client seats get no billing links. */
   canBill: boolean;
@@ -54,12 +54,13 @@ export function isLowBalance(creditBalance: number, threshold: number = lowBalan
 }
 
 /**
- * The plan to offer: the first paid plan above the current one whose monthly
- * credits cover `needed`, else the next plan up. Null on the top plan.
+ * The plan to offer: the first paid plan sold online above the current one
+ * whose monthly credits cover `needed`, else the next plan up. Null on the
+ * top plan sold online (Agency is set up by email, P20-08).
  */
 export function suggestedTier(plan: string, needed: number): TierDefinition | null {
   const current = tiers.findIndex((tier) => tier.key === tierKeyOf(plan));
-  const above = tiers.slice(current + 1).filter((tier) => isPaidTierKey(tier.key));
+  const above = tiers.slice(current + 1).filter((tier) => isPaidTierKey(tier.key) && tier.selfServe);
   return above.find((tier) => tier.creditsPerMonth >= needed) ?? above[0] ?? null;
 }
 
@@ -95,7 +96,7 @@ function purchaseOffer(plan: string, needed: number, shortfall: number): Pick<Pa
   }
   if (topUp) {
     paragraphs.push(
-      `${tier ? "Or buy" : "Buy"} ${formatCredits(topUp.credits)} once for ${formatUsd(topUp.usd)}. Top up credits stay usable for ${topUpMonths()} months.`,
+      `${tier ? "Or buy" : "Buy"} ${formatCredits(topUp.credits)} once for ${formatUsd(topUp.usd)}. ${CREDIT_TERMS_SENTENCE}`,
     );
     actions.push({ label: "Buy credits", href: TOP_UPS_HREF, primary: actions.length === 0 });
   }

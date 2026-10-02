@@ -6,14 +6,14 @@ import { Card, CardContent, CardHeader, CardTitle, cn } from "@curvi/ui";
 import { creditCosts, topUps } from "@curvi/pipeline/seed";
 import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
 import { trackBillingEvent } from "@/lib/billing/analytics";
-import { billingCheckoutHref, signupHref } from "@/lib/billing/intent";
-import { comingSoonFeatures, includedFeatures } from "@/lib/billing/plan-features";
+import { billingCheckoutHref } from "@/lib/billing/intent";
+import { includedFeatures } from "@/lib/billing/plan-features";
 import {
   annualSavingsUsd,
   formatCredits,
   formatUsd,
-  paidTiers,
   priceForCadence,
+  selfServeTiers,
   tierDisplayName,
   type BillingCadence,
   type PaidTierKey,
@@ -25,12 +25,18 @@ import {
   freeCredits,
   freeCreditsReach,
   packsForCredits,
-  topUpMonths,
   typicalPackCredits,
-  UNUSED_CREDITS_SENTENCE,
+  CREDIT_TERMS_SENTENCE,
   type Availability,
 } from "@/lib/marketing-facts";
+import { perPackUsd } from "@/lib/offer/per-pack";
+import { TAX_LINE } from "@/lib/billing/renewal-terms";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { AcquisitionCta } from "./acquisition-cta";
+import { OnTheWay } from "./on-the-way";
+import { perPackLine } from "./offer-copy";
+import { RenewalTerms } from "./renewal-terms";
+import { SignupLink } from "./signup-link";
 
 // Prices, credit amounts and savings come from the seed (CLAUDE.md rule 2),
 // and pack sizes, savings and feature availability come from the same
@@ -105,16 +111,25 @@ function useSignedIn(): boolean {
   return signedIn;
 }
 
-export function PricingTiers() {
+const PLAN_CTA_CLASS =
+  "mt-6 inline-flex h-10 items-center justify-center rounded-lg bg-ink-900 px-4 text-sm font-medium text-white transition-colors hover:bg-ink-800";
+const FREE_CTA_CLASS =
+  "inline-flex h-10 shrink-0 items-center justify-center rounded-lg border border-ink-200 px-4 text-sm font-medium text-ink-900 transition-colors hover:bg-ink-50";
+const TOP_UP_LINK_CLASS = "font-medium text-accent-700 underline underline-offset-2 hover:text-accent-800";
+
+/**
+ * The /pricing calls to action (P18-01, P18-03). Signed out, every one is
+ * the shared SignupLink with source pricing: it carries the page's landing
+ * parameters and, while packs are paused, turns into the waitlist button. A
+ * signed in plan button goes to checkout, so it sits in AcquisitionCta and
+ * never opens Stripe Checkout while packs cannot run. The renewal terms sit
+ * beside every plan button (P20-07), and lines that do not run yet are in
+ * the On the way list under the cards (P20-08).
+ */
+export function PricingTiers({ showTaxLine = false }: { showTaxLine?: boolean } = {}) {
   const [cadence, setCadence] = useState<BillingCadence>("monthly");
   const signedIn = useSignedIn();
   const annual = cadence === "annual";
-
-  function ctaHref(tier: PaidTierKey): string {
-    return signedIn
-      ? billingCheckoutHref({ tier, cadence })
-      : signupHref({ plan: tier, cadence, source: "pricing" });
-  }
 
   return (
     <div>
@@ -140,13 +155,13 @@ export function PricingTiers() {
         </span>
       </div>
 
-      <div className="mt-8 grid gap-6 md:grid-cols-2 xl:grid-cols-4">
-        {paidTiers.map((seedTier) => {
+      <div className="mt-8 grid gap-6 md:grid-cols-3">
+        {selfServeTiers.map((seedTier) => {
           const key = seedTier.key as PaidTierKey;
           const name = tierDisplayName(key);
           const price = priceForCadence(seedTier, cadence);
           const included = includedFeatures(key);
-          const comingSoon = comingSoonFeatures(key);
+          const perPack = perPackUsd(price.perMonthUsd, seedTier.creditsPerMonth);
           return (
             <Card key={key} className="flex flex-col" data-testid={`tier-${key}`}>
               <CardHeader>
@@ -172,6 +187,11 @@ export function PricingTiers() {
                 <p className="mt-1 text-xs text-ink-500" data-testid={`packs-${key}`}>
                   About {packsForCredits(seedTier.creditsPerMonth).toLocaleString("en-US")} listing packs a month
                 </p>
+                {perPack !== null ? (
+                  <p className="mt-1 text-xs font-medium text-ink-700" data-testid={`per-pack-${key}`}>
+                    {perPackLine(perPack)}
+                  </p>
+                ) : null}
                 <ul className="mt-4 space-y-2">
                   {included.map((item) => (
                     <li key={item} className="flex gap-2 text-sm text-ink-600">
@@ -180,33 +200,44 @@ export function PricingTiers() {
                     </li>
                   ))}
                 </ul>
-                {comingSoon.length > 0 ? (
-                  <div className="mt-4 flex-1">
-                    <ComingSoonBadge />
-                    <ul className="mt-2 space-y-1" data-testid={`coming-soon-${key}`}>
-                      {comingSoon.map((item) => (
-                        <li key={item} className="text-sm text-ink-400">
-                          {item}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                <div className="flex-1" />
+                {signedIn ? (
+                  <AcquisitionCta className={PLAN_CTA_CLASS}>
+                    <Link
+                      href={billingCheckoutHref({ tier: key, cadence })}
+                      onClick={() => trackBillingEvent("pricing_cta_clicked", { tier: key, cadence, signedIn })}
+                      data-testid={`cta-${key}`}
+                      className={PLAN_CTA_CLASS}
+                    >
+                      Start with {name}
+                    </Link>
+                  </AcquisitionCta>
                 ) : (
-                  <div className="flex-1" />
+                  <SignupLink
+                    plan={key}
+                    cadence={cadence}
+                    source="pricing"
+                    onClick={() => trackBillingEvent("pricing_cta_clicked", { tier: key, cadence, signedIn })}
+                    data-testid={`cta-${key}`}
+                    className={PLAN_CTA_CLASS}
+                  >
+                    Start with {name}
+                  </SignupLink>
                 )}
-                <Link
-                  href={ctaHref(key)}
-                  onClick={() => trackBillingEvent("pricing_cta_clicked", { tier: key, cadence, signedIn })}
-                  data-testid={`cta-${key}`}
-                  className="mt-6 inline-flex h-10 items-center justify-center rounded-lg bg-ink-900 px-4 text-sm font-medium text-white transition-colors hover:bg-ink-800"
-                >
-                  Start with {name}
-                </Link>
+                <RenewalTerms tier={key} cadence={cadence} />
               </CardContent>
             </Card>
           );
         })}
       </div>
+
+      {showTaxLine ? (
+        <p className="mt-4 text-center text-sm text-ink-500" data-testid="tax-line">
+          {TAX_LINE}
+        </p>
+      ) : null}
+
+      <OnTheWay className="mt-8" />
 
       <div className="mx-auto mt-8 flex max-w-4xl flex-col items-start justify-between gap-4 rounded-xl border border-ink-100 p-6 sm:flex-row sm:items-center">
         <div>
@@ -215,14 +246,25 @@ export function PricingTiers() {
             {formatCredits(freeCredits())} once, no card needed, {freeCreditsReach()}.
           </p>
         </div>
-        <Link
-          href={signedIn ? "/app" : signupHref({ source: "pricing" })}
-          onClick={() => trackBillingEvent("pricing_cta_clicked", { tier: "free", cadence: null, signedIn })}
-          data-testid="cta-free"
-          className="inline-flex h-10 shrink-0 items-center justify-center rounded-lg border border-ink-200 px-4 text-sm font-medium text-ink-900 transition-colors hover:bg-ink-50"
-        >
-          Start free
-        </Link>
+        {signedIn ? (
+          <Link
+            href="/app"
+            onClick={() => trackBillingEvent("pricing_cta_clicked", { tier: "free", cadence: null, signedIn })}
+            data-testid="cta-free"
+            className={FREE_CTA_CLASS}
+          >
+            Start free
+          </Link>
+        ) : (
+          <SignupLink
+            source="pricing"
+            onClick={() => trackBillingEvent("pricing_cta_clicked", { tier: "free", cadence: null, signedIn })}
+            data-testid="cta-free"
+            className={FREE_CTA_CLASS}
+          >
+            Start free
+          </SignupLink>
+        )}
       </div>
 
       <div className="mt-16 grid gap-10 lg:grid-cols-2">
@@ -263,15 +305,18 @@ export function PricingTiers() {
           <ul className="mt-4 space-y-3 text-sm text-ink-700" data-testid="credit-terms">
             <li className="rounded-lg border border-ink-100 p-4">
               {topUps.map((t) => `${formatCredits(t.credits)} for ${formatUsd(t.usd)}.`).join(" ")} Top up credits
-              stay usable for {topUpMonths()} months and work on any plan, including Free.{" "}
-              <Link
-                href={signedIn ? "/app/billing#top-ups" : signupHref({ source: "pricing" })}
-                className="font-medium text-accent-700 underline underline-offset-2 hover:text-accent-800"
-              >
-                Buy credits
-              </Link>
+              work on any plan, including Free.{" "}
+              {signedIn ? (
+                <Link href="/app/billing#top-ups" className={TOP_UP_LINK_CLASS}>
+                  Buy credits
+                </Link>
+              ) : (
+                <SignupLink source="pricing" className={TOP_UP_LINK_CLASS}>
+                  Buy credits
+                </SignupLink>
+              )}
             </li>
-            <li className="rounded-lg border border-ink-100 p-4">{UNUSED_CREDITS_SENTENCE}</li>
+            <li className="rounded-lg border border-ink-100 p-4">{CREDIT_TERMS_SENTENCE}</li>
             <li className="rounded-lg border border-ink-100 p-4">
               Annual plans add the whole year of credits when the annual invoice is paid.
             </li>

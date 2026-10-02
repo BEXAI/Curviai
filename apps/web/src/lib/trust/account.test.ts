@@ -4,6 +4,7 @@ import {
   cancelFlows,
   creditLedger,
   generationJobs,
+  mcpConnections,
   members,
   products,
   signupGrants,
@@ -67,9 +68,11 @@ describe("deleteAccountData", () => {
     const storage = new MemoryTrustStorage();
     const me = await account(storage);
     const other = await account(storage);
+    storage.seed(`tmp/ws/${me.ws}/cache/cutout/a`, Buffer.from("temporary"));
+    storage.seed(`tmp/ws/${other.ws}/cache/cutout/a`, Buffer.from("other temporary"));
 
     const result = await deleteAccountData({ db: db as unknown as Db, userId: me.user, storage });
-    expect(result).toEqual({ ok: true, workspacesDeleted: [me.ws], objectsDeleted: 2, objectsFailed: 0 });
+    expect(result).toEqual({ ok: true, workspacesDeleted: [me.ws], objectsDeleted: 3, objectsFailed: 0 });
 
     expect(await db.select().from(workspaces).where(eq(workspaces.id, me.ws))).toHaveLength(0);
     for (const table of [products, sourceMedia, generationJobs, creditLedger]) {
@@ -78,6 +81,8 @@ describe("deleteAccountData", () => {
     expect(await db.select().from(members).where(eq(members.userId, me.user))).toHaveLength(0);
     expect(await db.select().from(termsAcceptances).where(eq(termsAcceptances.userId, me.user))).toHaveLength(0);
     expect([...storage.objects.keys()].some((k) => k.startsWith(`ws/${me.ws}/`))).toBe(false);
+    expect(storage.objects.has(`tmp/ws/${me.ws}/cache/cutout/a`)).toBe(false);
+    expect(storage.objects.has(`tmp/ws/${other.ws}/cache/cutout/a`)).toBe(true);
 
     // The grant record stays, so a new signup cannot farm another grant.
     const [grant] = await db.select().from(signupGrants).where(eq(signupGrants.userId, me.user));
@@ -237,10 +242,21 @@ describe("deleteAccountData", () => {
     const owner = await account();
     const editor = nextUser();
     await db.insert(members).values({ workspaceId: owner.ws, userId: editor, role: "editor" });
+    const connection = (profileId: string, userId: string) => ({
+      workspaceId: owner.ws,
+      userId,
+      oauthClientId: "chatgpt-client",
+      clientName: "ChatGPT",
+      profileId,
+    });
+    await db.insert(mcpConnections).values([connection("EditorProfileId0000001", editor), connection("OwnerProfileId00000001", owner.user)]);
     const result = await deleteAccountData({ db: db as unknown as Db, userId: editor, storage: null });
     expect(result).toMatchObject({ ok: true, workspacesDeleted: [] });
     expect(await db.select().from(workspaces).where(eq(workspaces.id, owner.ws))).toHaveLength(1);
     expect(await db.select().from(members).where(eq(members.workspaceId, owner.ws))).toHaveLength(1);
+    // The editor's ChatGPT connection goes with the account; the owner's stays.
+    const left = await db.select().from(mcpConnections).where(eq(mcpConnections.workspaceId, owner.ws));
+    expect(left.map((row) => row.userId)).toEqual([owner.user]);
   });
 
   it("reports objects it could not delete without undoing the deletion", async () => {

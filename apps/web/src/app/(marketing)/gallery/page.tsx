@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Badge, buttonVariants } from "@curvi/ui";
 import { ILLUSTRATION_LABEL, galleryCases, isIllustrationSrc } from "@/components/marketing/demo-images";
+import { SignupLink } from "@/components/marketing/signup-link";
 import { pageMetadata } from "@/lib/seo";
 import { getShareStore, type GalleryEntry } from "@/lib/shares";
+import { quoteAttribution, SELLER_GALLERY_LABEL, TEAM_GALLERY_LABEL } from "@/lib/shares/loop-copy";
 
 // Makeovers join and leave the gallery whenever their owners choose.
 export const dynamic = "force-dynamic";
@@ -28,14 +30,14 @@ function MakeoverCard({ entry }: { entry: GalleryEntry }) {
           {entry.before ? (
             <figure className="relative">
               <img src={entry.before.src} alt={entry.before.alt} loading="lazy" className="aspect-square w-full object-cover" />
-              <figcaption className="absolute left-2 top-2 rounded-full bg-ink-900/80 px-2 py-0.5 text-[10px] font-medium text-white">
+              <figcaption className="absolute left-2 top-2 rounded-full bg-ink-900/80 px-2 py-0.5 text-xs font-medium text-white">
                 Before
               </figcaption>
             </figure>
           ) : null}
           <figure className={entry.before ? "relative border-l border-ink-100" : "relative"}>
             <img src={entry.after.src} alt={entry.after.alt} loading="lazy" className="aspect-square w-full object-cover" />
-            <figcaption className="absolute right-2 top-2 rounded-full bg-emerald-600/90 px-2 py-0.5 text-[10px] font-medium text-white">
+            <figcaption className="absolute right-2 top-2 rounded-full bg-emerald-600/90 px-2 py-0.5 text-xs font-medium text-white">
               After
             </figcaption>
           </figure>
@@ -43,7 +45,10 @@ function MakeoverCard({ entry }: { entry: GalleryEntry }) {
         <div className="flex items-center justify-between gap-3 p-4">
           <div>
             <h3 className="text-sm font-semibold text-ink-900">{entry.title}</h3>
-            <p className="text-xs text-ink-500">Shared by the seller</p>
+            {/* P18-14: a pack the Curvi team made says so (founder decision 15). */}
+            <p className="text-xs text-ink-500" data-testid="gallery-made-by">
+              {entry.madeByTeam ? TEAM_GALLERY_LABEL : SELLER_GALLERY_LABEL}
+            </p>
           </div>
           {/* Demo mode packs are drawn, and say so. */}
           {isIllustrationSrc(entry.after.src) ? (
@@ -53,6 +58,14 @@ function MakeoverCard({ entry }: { entry: GalleryEntry }) {
           ) : null}
         </div>
       </Link>
+      {entry.quote && !entry.madeByTeam ? (
+        <figure className="border-t border-ink-100 px-4 pb-4 pt-3" data-testid="gallery-quote">
+          <blockquote className="text-sm text-ink-700">&ldquo;{entry.quote.text}&rdquo;</blockquote>
+          {quoteAttribution(entry.quote.name) ? (
+            <figcaption className="mt-1 text-xs text-ink-500">{quoteAttribution(entry.quote.name)}</figcaption>
+          ) : null}
+        </figure>
+      ) : null}
     </article>
   );
 }
@@ -108,13 +121,13 @@ export default async function GalleryPage() {
               <div className="grid grid-cols-2">
                 <figure className="relative">
                   <img src={item.before} alt={alt("before")} className="aspect-square w-full object-cover" />
-                  <figcaption className="absolute left-2 top-2 rounded-full bg-ink-900/80 px-2 py-0.5 text-[10px] font-medium text-white">
+                  <figcaption className="absolute left-2 top-2 rounded-full bg-ink-900/80 px-2 py-0.5 text-xs font-medium text-white">
                     Before
                   </figcaption>
                 </figure>
                 <figure className="relative border-l border-ink-100">
                   <img src={item.after} alt={alt("after")} className="aspect-square w-full object-cover" />
-                  <figcaption className="absolute right-2 top-2 rounded-full bg-emerald-600/90 px-2 py-0.5 text-[10px] font-medium text-white">
+                  <figcaption className="absolute right-2 top-2 rounded-full bg-emerald-600/90 px-2 py-0.5 text-xs font-medium text-white">
                     After
                   </figcaption>
                 </figure>
@@ -135,7 +148,7 @@ export default async function GalleryPage() {
         })}
       </div>
 
-      <div className="mt-14 rounded-xl bg-ink-950 p-10 text-center">
+      <div className="theme-base mt-14 rounded-xl bg-ink-950 p-10 text-center">
         <h2 className="text-2xl font-bold text-white">
           {makeovers.length > 0 ? "Put your product in the gallery" : "Your product could be the first real case here"}
         </h2>
@@ -144,12 +157,12 @@ export default async function GalleryPage() {
           page and choose to show it here. Featuring is always your call, and you can take it down
           any time.
         </p>
-        <Link
-          href="/signup"
+        <SignupLink
+          source="gallery"
           className={buttonVariants({ variant: "secondary", size: "lg", className: "mt-6" })}
         >
           Start free
-        </Link>
+        </SignupLink>
       </div>
     </div>
   );

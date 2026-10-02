@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setApiKeyBackendForTests } from "@/lib/api-keys/backend";
 import { JSONRPC, PROTOCOL_VERSION_META, handleMcpPost, type McpResourceProvider } from "@/lib/api-v1/mcp";
+import { MCP_COPY } from "@/lib/api-v1/mcp-copy";
 import { GET_PROFILE_TOOL, MCP_TOOLS, toolList } from "@/lib/api-v1/mcp-tools";
 import { buildOpenApiDocument } from "@/lib/api-v1/openapi";
 import { CHAT_FILE_FIELDS, CreatePackRequest, MainImageCheckRequest, OpenAIFileObject } from "@/lib/api-v1/schemas";
@@ -55,10 +56,12 @@ afterEach(() => {
 
 describe("resources seam (P19-19)", () => {
   it("advertises no resources and answers Method not found while none are served", async () => {
-    const discover = await json(await POST(rpc("server/discover")));
+    // null is what PACK_VIEWER_LIVE false gives, the state until the first
+    // publication (decision 6); mcp-viewer.test.ts serves the viewer.
+    const discover = await json(await handleMcpPost(rpc("server/discover"), { resources: null }));
     expect(discover.result.capabilities).toEqual({ tools: {} });
     for (const method of ["resources/list", "resources/read", "resources/templates/list"]) {
-      const response = await handleMcpPost(rpc(method, { uri: "ui://curvi/x" }, { "mcp-name": "ui://curvi/x" }));
+      const response = await handleMcpPost(rpc(method, { uri: "ui://curvi/x" }, { "mcp-name": "ui://curvi/x" }), { resources: null });
       expect(response.status, method).toBe(404);
       expect((await json(response)).error.code).toBe(JSONRPC.methodNotFound);
     }
@@ -91,14 +94,18 @@ describe("resources seam (P19-19)", () => {
 });
 
 describe("get_profile seam (P19-11)", () => {
-  it("is defined with read only annotations but not listed or callable yet", async () => {
+  it("is defined with read only annotations and offered to OAuth callers only", async () => {
     expect(GET_PROFILE_TOOL.annotations).toEqual({
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     });
-    expect(MCP_TOOLS.map((tool) => tool.name)).not.toContain("get_profile");
+    // Listed since P19-11; an API key caller (and anyone while
+    // MCP_OAUTH_ENABLED is off) still neither sees nor calls it.
+    expect(MCP_TOOLS.map((tool) => tool.name)).toContain("get_profile");
+    const listed = await json(await POST(rpc("tools/list")));
+    expect(listed.result.tools.map((tool: { name: string }) => tool.name)).not.toContain("get_profile");
     const called = await json(await POST(rpc("tools/call", { name: "get_profile", arguments: {} }, { "mcp-name": "get_profile" })));
     expect(called.error.code).toBe(JSONRPC.invalidParams);
   });
@@ -120,16 +127,26 @@ describe("chat attachment fields (P19-15)", () => {
     expect(MainImageCheckRequest.safeParse({ image: file, url: "https://shop.example/a.png" }).success).toBe(false);
   });
 
-  it("keeps the fields out of tools/list and the REST document until they are wired", () => {
+  it("lists the fields in tools/list now they are wired, and keeps them out of the REST document", () => {
     const schemas = (buildOpenApiDocument().components as { schemas: Record<string, { properties: object }> }).schemas;
-    const propertyNames = [
-      ...toolList().flatMap((tool) => Object.keys((tool.inputSchema as { properties: object }).properties)),
-      ...Object.keys(schemas.CreatePackRequest!.properties),
-      ...Object.keys(schemas.MainImageCheckRequest!.properties),
-    ];
-    expect(propertyNames).toEqual(expect.arrayContaining(["channels", "photos", "url", "data"]));
+    const restNames = [...Object.keys(schemas.CreatePackRequest!.properties), ...Object.keys(schemas.MainImageCheckRequest!.properties)];
+    expect(restNames).toEqual(expect.arrayContaining(["channels", "photos", "url", "data"]));
     for (const field of CHAT_FILE_FIELDS) {
-      expect(propertyNames).not.toContain(field);
+      expect(restNames).not.toContain(field);
+    }
+    const toolNames = toolList().flatMap((tool) => Object.keys((tool.inputSchema as { properties: object }).properties));
+    expect(toolNames).toEqual(expect.arrayContaining([...CHAT_FILE_FIELDS]));
+  });
+
+  it("answers a placeholder in place of the attached file with the attach line, not a schema error", async () => {
+    const calls = [
+      { name: "create_pack", arguments: { channels: ["amazon.main"], images: "product.jpg" } },
+      { name: "estimate_pack", arguments: { channels: ["amazon.main"], images: [] } },
+      { name: "check_main_image", arguments: { image: { file_id: "file-abc" } } },
+    ];
+    for (const params of calls) {
+      const answer = await json(await POST(rpc("tools/call", params, { "mcp-name": params.name })));
+      expect(answer.result, params.name).toMatchObject({ isError: true, content: [{ type: "text", text: MCP_COPY.noAttachment }] });
     }
   });
 

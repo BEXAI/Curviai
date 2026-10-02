@@ -225,7 +225,7 @@ describe("recordVisit with the database store", () => {
     };
     expect(await visit(store, { path: "/" }, now, beaconHeaders(), { allowNewVisitor })).toEqual({ stored: true });
     expect(await visit(store, { path: "/pricing" }, now, beaconHeaders(), { allowNewVisitor })).toEqual({ stored: true });
-    expect(asked).toEqual([IP]);
+    expect(asked).toEqual(["10.0.0.1"]);
     allow = false;
     const rotated = beaconHeaders({ "user-agent": `${USER_AGENT} r=1` });
     expect(await visit(store, { path: "/" }, now, rotated, { allowNewVisitor })).toEqual({
@@ -234,7 +234,7 @@ describe("recordVisit with the database store", () => {
     });
     // A visitor already counted today keeps counting.
     expect(await visit(store, { path: "/help" }, now, beaconHeaders(), { allowNewVisitor })).toEqual({ stored: true });
-    expect(asked).toEqual([IP, IP]);
+    expect(asked).toEqual(["10.0.0.1", "10.0.0.1"]);
     expect(await db.select().from(siteVisits)).toHaveLength(3);
   });
 

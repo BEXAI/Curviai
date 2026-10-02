@@ -8,16 +8,6 @@
 
 import type { JobShotView, JobView } from "@/lib/services/types";
 
-/**
- * Whether the reveal's "Copy link" copies a public page. Public pages are
- * live, but they sit at /s/{slug} for a slug the owner publishes from the
- * "Share this makeover" panel under the board (lib/shares), not at the job
- * id. So the reveal's Copy link stays on the pack page, which opens only for
- * members of the workspace, and its note points the seller at that panel for
- * a public link.
- */
-export const PUBLIC_SHARE_PAGES_LIVE = false;
-
 /** The reveal's note under a workspace only Copy link. */
 export const PACK_WORKSPACE_LINK_COPY =
   "The link opens this pack for people in your workspace. To share it with anyone, publish a share page in Share this makeover below.";
@@ -66,12 +56,16 @@ export interface ShareLink {
   audience: "public" | "workspace";
 }
 
-/** The link "Copy link" puts on the clipboard. */
-export function makeoverShareLink(origin: string, jobId: string, publicPages = PUBLIC_SHARE_PAGES_LIVE): ShareLink {
+/**
+ * The link "Copy link" puts on the clipboard: the pack page, which opens only
+ * for members of the workspace. Public pages sit at /s/{slug} for a slug the
+ * owner publishes from the "Share this makeover" panel under the board
+ * (lib/shares), not at the job id, so the reveal's note points the seller at
+ * that panel for a public link.
+ */
+export function makeoverShareLink(origin: string, jobId: string): ShareLink {
   const base = origin.replace(/\/+$/, "");
-  return publicPages
-    ? { url: `${base}/s/${encodeURIComponent(jobId)}`, audience: "public" }
-    : { url: `${base}/app/jobs/${encodeURIComponent(jobId)}`, audience: "workspace" };
+  return { url: `${base}/app/jobs/${encodeURIComponent(jobId)}`, audience: "workspace" };
 }
 
 /** Same origin route that renders the side by side image for one shot. */

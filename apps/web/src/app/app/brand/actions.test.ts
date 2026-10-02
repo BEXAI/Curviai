@@ -127,4 +127,20 @@ describe("suggestBrandPaletteAction (PHASE_16 workstream 7)", () => {
     expect(await suggestBrandPaletteAction(key)).toMatchObject({ ok: false, reason: "rate_limited" });
     expect(services.suggestBrandPalette).toHaveBeenCalledTimes(limit);
   });
+
+  it("refuses a client seat before counting, so it cannot use up the workspace budget", async () => {
+    const limit = RATE_LIMIT_POLICIES["brand.palette"].user.limit;
+    services = createFakeServices("client");
+    for (let i = 0; i <= limit; i++) {
+      expect(await suggestBrandPaletteAction(key)).toEqual({
+        ok: false,
+        reason: "forbidden",
+        notice: "Only owners, admins and editors can change the brand kit.",
+      });
+    }
+    expect(services.suggestBrandPalette).not.toHaveBeenCalled();
+    services = createFakeServices("owner");
+    expect(await suggestBrandPaletteAction(key)).not.toMatchObject({ reason: "rate_limited" });
+    expect(services.suggestBrandPalette).toHaveBeenCalledTimes(1);
+  });
 });

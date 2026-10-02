@@ -10,6 +10,7 @@ import {
   type CancelReason,
   type SaveOffer,
 } from "@/lib/billing/cancel-flow";
+import { longDate } from "@/lib/dates";
 import { track } from "@/lib/track";
 
 interface CancelOptionsResponse {
@@ -18,6 +19,8 @@ interface CancelOptionsResponse {
   offers: SaveOffer[];
   live: boolean;
   periodEnd: string | null;
+  /** A change the founder scheduled that any choice here cancels. */
+  scheduledChange?: string | null;
   error?: string;
   notice?: string;
 }
@@ -32,23 +35,31 @@ interface CancelChoiceResponse {
 type Step =
   | { name: "idle" }
   | { name: "reason"; options: CancelOptionsResponse }
+  | { name: "ask"; options: CancelOptionsResponse }
   | { name: "offers"; options: CancelOptionsResponse }
   | { name: "confirm"; options: CancelOptionsResponse }
   | { name: "done"; notice: string };
 
+/** What canceling keeps, said before the click. */
+function keepUntil(periodEnd: string | null): string {
+  return periodEnd
+    ? `If you cancel, you keep your plan until ${periodEnd}. After that your workspace moves to the Free plan.`
+    : "If you cancel, you keep your plan until the end of the period you paid for. After that your workspace moves to the Free plan.";
+}
+
 function formatDate(iso: string | null): string | null {
-  if (!iso) {
-    return null;
-  }
-  return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  return iso ? longDate(iso) : null;
 }
 
 /**
- * The cancel flow on /app/billing: Cancel plan, then a reason, then the save
- * offers that fit it (pause, a smaller plan, a discount), then a final
- * confirmation. Every exit that follows a reason is recorded, including
- * keeping the plan. The server decides which offers apply and whether the
- * choice reaches Stripe.
+ * The cancel flow on /app/billing (docs/phases/PHASE_20.md P20-07, the state
+ * automatic renewal rules): Cancel plan, then an optional reason, then one
+ * question per attempt, "Want to see other options first?" (Minnesota asks
+ * for permission before any offer). "No, cancel my plan" cancels in one
+ * click; "Show me" lists the save offers with a working "Cancel my plan"
+ * button beside them at all times (California). Every exit is recorded,
+ * including keeping the plan. The server decides which offers apply and
+ * whether the choice reaches Stripe.
  */
 export function CancelFlow({ planName }: { planName: string }) {
   const router = useRouter();
@@ -79,9 +90,6 @@ export function CancelFlow({ planName }: { planName: string }) {
   }
 
   async function choose(choice: CancelChoice) {
-    if (!reason) {
-      return;
-    }
     setBusy(true);
     setNotice(null);
     try {
@@ -143,10 +151,15 @@ export function CancelFlow({ planName }: { planName: string }) {
   return (
     <Card data-testid="cancel-flow">
       <CardContent className="space-y-5 p-5">
+        {options.scheduledChange ? (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" role="status" data-testid="cancel-scheduled-change">
+            {options.scheduledChange}
+          </p>
+        ) : null}
         {step.name === "reason" ? (
           <fieldset>
             <legend className="text-base font-semibold text-ink-950">Why do you want to cancel?</legend>
-            <p className="mt-1 text-sm text-ink-500">Your answer helps us fix what is not working.</p>
+            <p className="mt-1 text-sm text-ink-500">This is optional. Your answer helps us fix what is not working.</p>
             <div className="mt-3 space-y-2">
               {options.reasons.map((r) => (
                 <label
@@ -180,9 +193,8 @@ export function CancelFlow({ planName }: { planName: string }) {
             </div>
             <div className="mt-4 flex flex-wrap gap-3">
               <Button
-                disabled={!reason}
                 onClick={() =>
-                  setStep(options.offers.length > 0 ? { name: "offers", options } : { name: "confirm", options })
+                  setStep(options.offers.length > 0 ? { name: "ask", options } : { name: "confirm", options })
                 }
                 data-testid="cancel-continue"
               >
@@ -195,10 +207,25 @@ export function CancelFlow({ planName }: { planName: string }) {
           </fieldset>
         ) : null}
 
-        {step.name === "offers" && reason ? (
+        {step.name === "ask" ? (
+          <div data-testid="cancel-ask">
+            <h3 className="text-base font-semibold text-ink-950">Want to see other options first?</h3>
+            <p className="mt-1 text-sm text-ink-600">{keepUntil(periodEnd)}</p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <Button variant="outline" disabled={busy} onClick={() => setStep({ name: "offers", options })} data-testid="cancel-show-offers">
+                Show me
+              </Button>
+              <Button variant="danger" disabled={busy} onClick={() => void choose("cancel")} data-testid="cancel-now">
+                {busy ? "Canceling" : "No, cancel my plan"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {step.name === "offers" ? (
           <div>
             <h3 className="text-base font-semibold text-ink-950">Before you go</h3>
-            <p className="mt-1 text-sm text-ink-500">One of these might fit better than canceling.</p>
+            <p className="mt-1 text-sm text-ink-500">One of these might fit better than canceling. You can still cancel right here.</p>
             <ul className="mt-3 grid gap-3 md:grid-cols-3">
               {offersForReason(options.offers, reason).map((offer) => (
                 <li key={offer.kind} className="flex flex-col rounded-xl border border-ink-200 p-4" data-testid={`cancel-offer-${offer.kind}`}>
@@ -211,24 +238,21 @@ export function CancelFlow({ planName }: { planName: string }) {
               ))}
             </ul>
             <div className="mt-4 flex flex-wrap gap-3">
-              <Button variant="primary" disabled={busy} onClick={() => void choose("keep")} data-testid="cancel-keep">
+              <Button variant="danger" disabled={busy} onClick={() => void choose("cancel")} data-testid="cancel-offers-cancel">
+                {busy ? "Canceling" : "Cancel my plan"}
+              </Button>
+              <Button variant="outline" disabled={busy} onClick={() => void choose("keep")} data-testid="cancel-keep">
                 Keep my plan
               </Button>
-              <Button variant="ghost" disabled={busy} onClick={() => setStep({ name: "confirm", options })} data-testid="cancel-no-thanks">
-                No thanks, continue to cancel
-              </Button>
             </div>
+            <p className="mt-2 text-xs text-ink-500">{keepUntil(periodEnd)}</p>
           </div>
         ) : null}
 
         {step.name === "confirm" ? (
           <div>
             <h3 className="text-base font-semibold text-ink-950">Cancel your {planName} plan?</h3>
-            <p className="mt-1 text-sm text-ink-600">
-              {periodEnd
-                ? `Your plan stays active until ${periodEnd}. After that your workspace moves to the Free plan.`
-                : "Your plan stays active until the end of the period you paid for. After that your workspace moves to the Free plan."}
-            </p>
+            <p className="mt-1 text-sm text-ink-600">{keepUntil(periodEnd)}</p>
             <div className="mt-4 flex flex-wrap gap-3">
               <Button variant="danger" disabled={busy} onClick={() => void choose("cancel")} data-testid="cancel-confirm">
                 {busy ? "Canceling" : "Cancel my plan"}

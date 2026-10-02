@@ -48,6 +48,9 @@ export type EntitlementCheck =
       spec?: string;
       /** The cheapest plan that includes the feature, when one does. */
       upgradeTo: TierKey | null;
+      /** The feature's plain name for copy ("Video"), when a plan feature is
+       * at fault. An assistant's neutral line names it (PHASE_19 P19-14). */
+      featureName?: string;
       message: string;
     };
 
@@ -112,6 +115,7 @@ export function checkChannelEntitlements(
         reason: "upgrade_required",
         feature: live[0],
         upgradeTo: cheapest?.key ?? null,
+        featureName: name,
         message: cheapest
           ? `${name} comes with the ${tierName(cheapest.key)} plan and above. Upgrade, or remove the ${name.toLowerCase()} channels to start this pack.`
           : `${name} is not part of your plan. Remove the ${name.toLowerCase()} channels to start this pack.`,

@@ -58,7 +58,6 @@ export interface CreditGrant {
   stripeCustomerId: string | null;
   credits: number;
   reason: "grant" | "topup";
-  expiresMonths: number | null;
   /** What paid for the grant, so a later refund or dispute can find it. */
   payment?: GrantPaymentRef;
   /** Breakdown kept on the audit row. */
@@ -78,6 +77,9 @@ export interface SubscriptionState {
    * live instead.
    */
   cancelAtPeriodEnd?: boolean;
+  /** "monthly" or "annual", from the price's interval (P20-07); kept when an
+   * event does not say. */
+  cadence?: BillingCadence | null;
 }
 
 export interface SubscriptionUpdate extends SubscriptionState {
@@ -178,10 +180,42 @@ export interface DuplicateSubscriptionRecord {
   refundIds: string[];
 }
 
+/**
+ * The renewal consent a completed plan Checkout recorded (P20-07): the
+ * disclosure version and hash come from the session metadata the checkout
+ * route set, never from the current wording, so a replay after a change
+ * still records what the buyer saw.
+ */
+export interface BillingConsent {
+  workspaceId: string | null;
+  stripeCustomerId: string | null;
+  userId: string | null;
+  email: string | null;
+  checkoutSessionId: string;
+  tier: TierKey;
+  cadence: BillingCadence;
+  amountUsd: number | null;
+  disclosureVersion: string;
+  disclosureSha256: string;
+  /** The exact text the session showed (custom_text submit, a newline, then
+   * the checkbox), copied from the session; null when it carried none. */
+  disclosureText: string | null;
+  acceptedAt: Date;
+}
+
+/** Sends the plan activation email for a first paid subscription invoice,
+ * and the plan change acknowledgment for a paid upgrade (P20-07). Never
+ * throws; it deduplicates by invoice itself. */
+export interface PlanActivationSender {
+  planActivated(invoice: Stripe.Invoice, plan: InvoiceGrantPlan): Promise<void>;
+  planChanged?(invoice: Stripe.Invoice, plan: InvoiceGrantPlan): Promise<void>;
+}
+
 /** events.name of a DuplicateSubscriptionRecord. */
 export const DUPLICATE_SUBSCRIPTION_EVENT = "billing_duplicate_subscription_refunded";
 
 export interface BillingStore {
+  clearScheduledChange?(scheduleId: string): Promise<void>;
   /** Writes the grant unless key was already processed. Returns true when written. */
   recordGrantOnce(key: string, grant: CreditGrant): Promise<boolean>;
   upsertSubscription(update: SubscriptionUpdate): Promise<SubscriptionSyncOutcome>;
@@ -205,6 +239,9 @@ export interface BillingStore {
   debitOnce(key: string, debit: CreditDebit): Promise<DebitOutcome>;
   /** Records a billing signal such as a failed renewal, once per event. */
   noteOnce(eventId: string, note: BillingNote): Promise<void>;
+  /** Records the renewal consent of a completed plan Checkout, once per
+   * session. Returns true when written. */
+  recordConsentOnce(consent: BillingConsent): Promise<boolean>;
 }
 
 /**
@@ -343,6 +380,7 @@ export class InMemoryBillingStore implements BillingStore {
       status: incoming.status,
       periodEnd: incoming.periodEnd ?? current?.periodEnd ?? null,
       cancelAtPeriodEnd: incoming.cancelAtPeriodEnd ?? current?.cancelAtPeriodEnd ?? false,
+      cadence: incoming.cadence ?? current?.cadence ?? null,
     });
     return { status: "applied", subscriptionStatus: incoming.status };
   }
@@ -463,6 +501,16 @@ export class InMemoryBillingStore implements BillingStore {
     this.processed.add(key);
     this.notes.push({ eventId, note });
   }
+
+  readonly consents: BillingConsent[] = [];
+
+  async recordConsentOnce(consent: BillingConsent): Promise<boolean> {
+    if (this.consents.some((entry) => entry.checkoutSessionId === consent.checkoutSessionId)) {
+      return false;
+    }
+    this.consents.push({ ...consent, workspaceId: this.resolveWorkspace(consent.workspaceId, consent.stripeCustomerId) });
+    return true;
+  }
 }
 
 const globalScope = globalThis as typeof globalThis & { __curviBillingStore?: InMemoryBillingStore };
@@ -495,6 +543,9 @@ export const HANDLED_STRIPE_EVENTS = [
   "customer.subscription.created",
   "customer.subscription.updated",
   "customer.subscription.deleted",
+  "subscription_schedule.released",
+  "subscription_schedule.canceled",
+  "subscription_schedule.completed",
   "charge.refunded",
   "charge.dispute.funds_withdrawn",
   "charge.dispute.funds_reinstated",
@@ -540,6 +591,9 @@ export interface StripeBillingActions {
 
 export interface StripeProcessDeps {
   lookup?: StripeLookup;
+  /** Sends the activation email on a first paid subscription invoice
+   * (P20-07). The webhook and a real reconcile pass it; a dry run does not. */
+  activation?: PlanActivationSender;
   /** Set only when Stripe is configured; without it the webhook works from
    * the payload alone and cannot retire duplicates. */
   actions?: StripeBillingActions;
@@ -827,6 +881,49 @@ function checkoutIsPaid(session: Stripe.Checkout.Session): boolean {
   return session.payment_status === "paid" || session.payment_status === "no_payment_required";
 }
 
+/**
+ * The renewal consent of a completed plan Checkout (P20-07): only when the
+ * buyer accepted the terms checkbox and the session carries the disclosure
+ * the checkout route showed. Older sessions without it record nothing.
+ */
+function consentFromSession(session: Stripe.Checkout.Session, table: PriceTable, acceptedAt: Date): BillingConsent | null {
+  if (session.mode !== "subscription" || session.consent?.terms_of_service !== "accepted") {
+    return null;
+  }
+  const version = metadataValue(session.metadata, "disclosure_version");
+  const sha256 = metadataValue(session.metadata, "disclosure_sha256");
+  const mapping = tierMapping(table, metadataValue(session.metadata, "priceId"));
+  const metaTier = metadataValue(session.metadata, "plan");
+  const metaCadence = metadataValue(session.metadata, "cadence");
+  const tier = mapping?.tier ?? (metaTier as TierKey | null);
+  const cadence = mapping?.cadence ?? (metaCadence === "monthly" || metaCadence === "annual" ? metaCadence : null);
+  if (!version || !sha256 || !tier || !cadence) {
+    return null;
+  }
+  return {
+    workspaceId: metadataValue(session.metadata, "workspaceId") ?? session.client_reference_id,
+    stripeCustomerId: idOf(session.customer),
+    userId: metadataValue(session.metadata, "userId"),
+    email: session.customer_details?.email ?? null,
+    checkoutSessionId: session.id,
+    tier,
+    cadence,
+    amountUsd: typeof session.amount_total === "number" ? session.amount_total / 100 : null,
+    disclosureVersion: version,
+    disclosureSha256: sha256,
+    disclosureText: shownDisclosure(session),
+    acceptedAt,
+  };
+}
+
+/** What Checkout showed beside the pay button and as the checkbox, joined
+ * as checkoutDisclosure hashes it, so sha256(text) is disclosure_sha256. */
+function shownDisclosure(session: Stripe.Checkout.Session): string | null {
+  const submit = session.custom_text?.submit?.message;
+  const acceptance = session.custom_text?.terms_of_service_acceptance?.message;
+  return submit && acceptance ? `${submit}\n${acceptance}` : null;
+}
+
 async function grantTopUp(
   session: Stripe.Checkout.Session,
   table: PriceTable,
@@ -845,7 +942,6 @@ async function grantTopUp(
     stripeCustomerId: idOf(session.customer),
     credits: mapping.credits,
     reason: "topup",
-    expiresMonths: mapping.expiresMonths,
     payment: {
       checkoutSessionId: session.id,
       paymentIntentId: idOf(session.payment_intent),
@@ -890,8 +986,10 @@ function subscriptionState(
 ): SubscriptionState {
   const item = subscription.items?.data?.[0];
   const mapping = tierMapping(table, item?.price?.id ?? null);
+  const interval = item?.price?.recurring?.interval;
   return {
     tier: mapping ? mapping.tier : null,
+    cadence: interval === "year" ? "annual" : interval === "month" ? "monthly" : (mapping?.cadence ?? null),
     status: deleted ? "canceled" : subscription.status,
     periodEnd: item?.current_period_end ? new Date(item.current_period_end * 1000).toISOString() : null,
     cancelAtPeriodEnd:
@@ -1000,6 +1098,11 @@ export async function processStripeEvent(
       if (checkoutWorkspaceId && checkoutCustomerId) {
         await store.linkCustomer(checkoutWorkspaceId, checkoutCustomerId);
       }
+      const consent = consentFromSession(session, table, new Date(event.created * 1000));
+      if (consent) {
+        const written = await store.recordConsentOnce(consent);
+        return { handled: true, action: "consent_recorded", duplicate: !written };
+      }
       return (await grantTopUp(session, table, store)) ?? { handled: true, action: "checkout_noted" };
     }
 
@@ -1050,10 +1153,18 @@ export async function processStripeEvent(
         stripeCustomerId: idOf(invoice.customer),
         credits: plan.credits,
         reason: "grant",
-        expiresMonths: null,
         payment: { invoiceId: invoice.id },
         detail,
       });
+      if (plan.billingReason === "subscription_create" && deps.activation) {
+        // After the grant, so a failed grant never sends; the sender keeps
+        // its own once per invoice claim and never throws.
+        await deps.activation.planActivated(invoice, plan);
+      } else if (plan.billingReason === "subscription_update" && plan.changeNew > 0 && deps.activation?.planChanged) {
+        // A paid upgrade in the portal: the same acknowledgment for the new
+        // plan (law and copy review major 3).
+        await deps.activation.planChanged(invoice, plan);
+      }
       const action = plan.base > 0 ? "cycle_credits_granted" : "plan_change_credits_granted";
       return { handled: true, action, duplicate: !written, credits: plan.credits };
     }
@@ -1076,6 +1187,13 @@ export async function processStripeEvent(
         handled: true,
         action: event.type === "invoice.payment_failed" ? "payment_failure_noted" : "payment_action_noted",
       };
+    }
+
+    case "subscription_schedule.released":
+    case "subscription_schedule.canceled":
+    case "subscription_schedule.completed": {
+      await store.clearScheduledChange?.(event.data.object.id);
+      return { handled: true, action: "scheduled_change_cleared" };
     }
 
     case "customer.subscription.created":

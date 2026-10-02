@@ -14,6 +14,7 @@ import {
   daysUntil,
   inDaysText,
   lastUtcDays,
+  llmFamilyName,
   llmSpendReportFromCounters,
   type LlmSpendReport,
 } from "@curvi/trigger/llm-monitor";
@@ -54,8 +55,6 @@ export async function readLlmSpend(
   return llmSpendReportFromCounters(counters, days);
 }
 
-const FAMILY_NAMES: Record<string, string> = { openai: "OpenAI", anthropic: "Claude" };
-
 /**
  * The credit window warnings due on now's UTC day: from the first reminder
  * date until the expiry, and after the expiry until the seed changes.
@@ -67,7 +66,7 @@ export function llmCreditWarnings(
   const day = now.toISOString().slice(0, 10);
   const warnings: Array<{ code: string; message: string }> = [];
   for (const window of windows) {
-    const name = FAMILY_NAMES[window.family] ?? window.family;
+    const name = llmFamilyName(window.family);
     if (day > window.expiresOn) {
       warnings.push({
         code: `llm_credits_expired:${window.family}`,

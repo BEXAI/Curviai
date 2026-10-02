@@ -1,11 +1,13 @@
+import { SignupGrantNotice } from "@/components/app/signup-grant-notice";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Badge, Card, CardContent, CardHeader, CardTitle, buttonVariants } from "@curvi/ui";
+import { ExamplePack } from "@/components/app/example-pack";
 import { LowBalanceNudge } from "@/components/app/paywall";
 import { StatusChip } from "@/components/app/status-chip";
 import { canManageBilling } from "@/lib/billing/access";
 import { lowBalanceCopy } from "@/lib/billing/paywall";
-import { isStripeConfigured } from "@/lib/env";
+import { isCheckoutOpen } from "@/lib/env";
 import {
   freeCredits,
   joinList,
@@ -50,12 +52,13 @@ export default async function DashboardPage() {
   const nudge = lowBalanceCopy({
     plan: workspace.plan,
     creditBalance: workspace.creditBalance,
-    stripeLive: isStripeConfigured(),
+    stripeLive: isCheckoutOpen(),
     canBill: canManageBilling(workspace.role),
   });
 
   return (
     <div className="space-y-8">
+      {await SignupGrantNotice()}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-ink-950">{workspace.name}</h1>
@@ -86,9 +89,9 @@ export default async function DashboardPage() {
                   {formatBalance(-workspace.creditBalance)} below zero
                 </p>
                 <p className="mt-1 text-sm text-ink-600">
-                  A move to a smaller plan returned money for time on the bigger plan, so the credits that time paid
-                  for were taken back, including some you had already used. New packs start again once a top up or
-                  your next renewal brings the balance back up.
+                  A plan change returned money for time you had already been billed for, so the credits that time
+                  paid for were taken back, including some you had already used. New packs start again once a top up
+                  or your next renewal brings the balance back up.
                 </p>
               </div>
             ) : (
@@ -156,6 +159,8 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      {firstSession ? <ExamplePack /> : null}
 
       <section>
         <h2 className="text-lg font-semibold text-ink-950">Products</h2>

@@ -11,7 +11,10 @@ const productLinks = [
 ];
 
 const resourceLinks = [
+  { href: "/status", label: "Service status" },
+  { href: "/changelog", label: "Changelog" },
   { href: "/help", label: "Help center" },
+  { href: "/support", label: "Support" },
   { href: "/ai-product-images", label: "AI product images" },
   { href: "/ai-ecommerce", label: "AI for e-commerce" },
   { href: "/compare/ai-image-generators", label: "Curvi vs AI image generators" },
@@ -71,6 +74,11 @@ export function SiteFooter() {
                 </Link>
               </li>
               <li>
+                <Link href="/legal/subprocessors" className="text-ink-400 transition-colors hover:text-white">
+                  Subprocessors
+                </Link>
+              </li>
+              <li>
                 <CookieSettingsLink className="text-ink-400 transition-colors hover:text-white" />
               </li>
               <li>
@@ -81,7 +89,7 @@ export function SiteFooter() {
             </ul>
           </div>
         </div>
-        <p className="mt-10 text-xs text-ink-500">
+        <p className="mt-10 text-xs text-ink-400">
           Channel rules are checked against official documentation and can change. Always confirm current
           marketplace policies before publishing.
         </p>

@@ -13,7 +13,7 @@ import { z } from "zod";
 import { and, eq, events, sql } from "@curvi/db";
 import { topUps } from "@curvi/pipeline/seed";
 import { BILLING_FORBIDDEN_NOTICE, canManageBilling } from "@/lib/billing/access";
-import { isPaidTierKey } from "@/lib/billing/plans";
+import { isPaidTierKey, isSelfServeTierKey, LARGER_PLAN_EMAIL, LARGER_PLAN_LINE } from "@/lib/billing/plans";
 import { readJsonCapped } from "@/lib/http/json-body";
 import { sameOriginOrRefuse } from "@/lib/http/same-origin";
 import { resolveSignedIn } from "@/lib/http/services";
@@ -59,6 +59,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid request.", issues: parsed.error.issues.map((i) => i.message) },
+      { status: 400 },
+    );
+  }
+
+  // Agency is set up by email, never requested here (P20-08).
+  if (parsed.data.kind === "tier" && !isSelfServeTierKey(parsed.data.tier)) {
+    return NextResponse.json(
+      { error: "tier_not_self_serve", notice: `${LARGER_PLAN_LINE} Write to ${LARGER_PLAN_EMAIL}.` },
       { status: 400 },
     );
   }

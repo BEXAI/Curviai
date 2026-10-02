@@ -1,17 +1,17 @@
 /**
- * HMAC signing shared by the two PHASE_19 signed values: the lasting preview
- * and download link tokens (P19-17, lib/mcp-links.ts on p19/files) and the
- * estimate quotes (P19-16, on p19/tools). Both use the MCP_LINK_KEYS ring,
- * each under its own purpose, so a link token can never pass as a quote or
- * the other way round. Wave 0 (P19-02) puts the ring here so both lanes
- * parse it the same way; each lane reads MCP_LINK_KEYS and documents it.
+ * Signing shared by the two PHASE_19 signed values: the lasting preview and
+ * download link tokens (P19-17, lib/mcp-links.ts), sealed with AES-256-GCM so
+ * their claims cannot be read, and the estimate quotes (P19-16), under an
+ * HMAC. Both use the MCP_LINK_KEYS ring, each under its own purpose, so a
+ * link token can never pass as a quote or the other way round. Wave 0
+ * (P19-02) put the ring here so both parse it the same way.
  *
  * MCP_LINK_KEYS is a comma separated list of kid:secret pairs. The first
  * pair is the newest and signs; every pair verifies. To rotate, put the new
  * pair first and keep the old one for 24 hours (the link lifetime).
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 
 export interface SigningKey {
   kid: string;
@@ -80,6 +80,84 @@ export function signPayload(
     throw new SigningKeyConfigError("MCP_LINK_KEYS has no key to sign with.");
   }
   return { kid: key.kid, signature: mac(purpose, key.secret, payload).toString("base64url") };
+}
+
+// Sealing: AES-256-GCM under a key derived from the ring's secret, for a
+// value whose contents must stay unreadable (the link tokens, whose claims
+// hold internal ids and an expiry; OpenAI O6 and R12 keep those out of the
+// chat). The kid stays in the clear for rotation and is bound by the
+// associated data, so a sealed value cannot be moved to another key.
+
+const SEAL_IV_BYTES = 12;
+const SEAL_TAG_BYTES = 16;
+const sealKeys = new Map<string, Buffer>();
+
+function sealKey(purpose: SigningPurpose, secret: string): Buffer {
+  const cacheKey = `${purpose}\u0000${secret}`;
+  let key = sealKeys.get(cacheKey);
+  if (key === undefined) {
+    key = Buffer.from(hkdfSync("sha256", secret, "curvi:seal", `curvi:${purpose}:aes-256-gcm`, 32));
+    if (sealKeys.size > 32) {
+      sealKeys.clear();
+    }
+    sealKeys.set(cacheKey, key);
+  }
+  return key;
+}
+
+function sealAad(purpose: SigningPurpose, kid: string): Buffer {
+  return Buffer.from(`curvi:${purpose}:${kid}`);
+}
+
+/** Seals a payload with the newest key: the kid, the base64url IV and the
+ * base64url ciphertext with its 16 byte tag. Nothing of the payload can be
+ * read without the secret, and any change fails to open. */
+export function sealPayload(
+  keys: readonly SigningKey[],
+  purpose: SigningPurpose,
+  payload: string,
+): { kid: string; iv: string; sealed: string } {
+  const key = keys[0];
+  if (!key) {
+    throw new SigningKeyConfigError("MCP_LINK_KEYS has no key to sign with.");
+  }
+  const iv = randomBytes(SEAL_IV_BYTES);
+  const cipher = createCipheriv("aes-256-gcm", sealKey(purpose, key.secret), iv, { authTagLength: SEAL_TAG_BYTES });
+  cipher.setAAD(sealAad(purpose, key.kid));
+  const body = Buffer.concat([cipher.update(payload, "utf8"), cipher.final(), cipher.getAuthTag()]);
+  return { kid: key.kid, iv: iv.toString("base64url"), sealed: body.toString("base64url") };
+}
+
+/** The payload a sealPayload call made with the named key for this purpose,
+ * or null when the kid is unknown or anything was changed (the tag check). */
+export function openPayload(
+  keys: readonly SigningKey[],
+  purpose: SigningPurpose,
+  kid: string,
+  iv: string,
+  sealed: string,
+): string | null {
+  const key = keys.find((candidate) => candidate.kid === kid);
+  if (!key) {
+    return null;
+  }
+  const ivBytes = Buffer.from(iv, "base64url");
+  const body = Buffer.from(sealed, "base64url");
+  if (ivBytes.length !== SEAL_IV_BYTES || body.length <= SEAL_TAG_BYTES) {
+    return null;
+  }
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", sealKey(purpose, key.secret), ivBytes, {
+      authTagLength: SEAL_TAG_BYTES,
+    });
+    decipher.setAAD(sealAad(purpose, kid));
+    decipher.setAuthTag(body.subarray(body.length - SEAL_TAG_BYTES));
+    return Buffer.concat([decipher.update(body.subarray(0, body.length - SEAL_TAG_BYTES)), decipher.final()]).toString(
+      "utf8",
+    );
+  } catch {
+    return null;
+  }
 }
 
 /** True when the signature was made by the named key for this purpose and

@@ -24,9 +24,10 @@ for (const guide of guides) {
     await expect(page.locator('meta[property="og:image"]').first()).toHaveAttribute("content", /opengraph-image/);
     const types = jsonLdTypes(await page.locator('script[type="application/ld+json"]').allTextContents());
     expect(types).toEqual(expect.arrayContaining(["WebPage", "BreadcrumbList", "FAQPage"]));
+    // Each guide's Start free link carries its page source (P18-01).
     await expect(page.locator("main").getByRole("link", { name: "Start free" }).first()).toHaveAttribute(
       "href",
-      "/signup",
+      guide.path.startsWith("/compare/") ? "/signup?source=compare" : "/signup?source=pillar",
     );
   });
 }

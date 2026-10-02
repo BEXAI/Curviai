@@ -5,14 +5,24 @@ import { canManageBilling } from "@/lib/billing/access";
 import { lowBalanceCopy, type PaywallContext } from "@/lib/billing/paywall";
 import { entitlementsFor } from "@curvi/pipeline/seed";
 import { tierKeyOf } from "@/lib/entitlements";
-import { isStripeConfigured } from "@/lib/env";
+import { isCheckoutOpen } from "@/lib/env";
 import { usableBrandColors } from "@/lib/output-options-form";
 import { SCENES_PAUSED_COPY, preflightCopy, providerPreflightDetail } from "@/lib/provider-preflight";
-import { getServices } from "@/lib/services";
+import { profileChannelSpecs } from "@/lib/seller-profile";
+import { getServices, type Services } from "@/lib/services";
 import { newPackChannelOptions } from "./channel-options";
 
 export const metadata: Metadata = { title: "New pack" };
 export const dynamic = "force-dynamic";
+
+/** The channel specs of the seller's answered channels (P18-20), or none. */
+async function answeredChannels(services: Services, workspaceId: string): Promise<string[]> {
+  try {
+    return profileChannelSpecs(await services.getSellerProfile(workspaceId));
+  } catch {
+    return [];
+  }
+}
 
 export default async function NewPackPage({
   searchParams,
@@ -35,6 +45,9 @@ export default async function NewPackPage({
   // workspace fills the form in. A prefill only; nothing starts here.
   const reuse = typeof params.from === "string" ? await services.getReusePrefill(workspace.id, params.from) : null;
   const products = await services.listProducts(workspace.id);
+  // The channels answered at /welcome (P18-20) preselect a pack that reuses
+  // nothing. Optional: a failed read keeps the default pick.
+  const preferredChannels = reuse ? [] : await answeredChannels(services, workspace.id);
   const tier = tierKeyOf(workspace.plan);
   // Channels whose feature is not live, or not in this plan, are shown but
   // cannot be picked, matching what createJob accepts.
@@ -42,7 +55,7 @@ export default async function NewPackPage({
   const paywall: PaywallContext = {
     plan: workspace.plan,
     creditBalance: workspace.creditBalance,
-    stripeLive: isStripeConfigured(),
+    stripeLive: isCheckoutOpen(),
     canBill: canManageBilling(workspace.role),
   };
   const nudge = lowBalanceCopy(paywall);
@@ -121,6 +134,7 @@ export default async function NewPackPage({
           brandHasLogo={brandHasLogo}
           scenesPausedNote={outputOptionsEnabled && preflight === "scenes_paused" ? SCENES_PAUSED_COPY : null}
           reuse={reuse}
+          preferredChannels={preferredChannels}
         />
       </div>
     </div>

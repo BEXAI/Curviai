@@ -37,6 +37,7 @@ const page = vi.hoisted(() => ({
   options: false,
   brandColors: ["#1F2A44"] as string[],
   storedPhotoCount: undefined as number | undefined,
+  sellerProfile: null as { category: string | null; channels: string[]; answeredAt: string | null } | null,
 }));
 
 vi.mock("@/lib/services", () => ({
@@ -60,6 +61,7 @@ vi.mock("@/lib/services", () => ({
             },
           ],
     outputOptionsEnabled: async () => page.options,
+    getSellerProfile: async () => page.sellerProfile,
     getBrandKit: async () => ({
       name: "Kit",
       colors: page.brandColors,
@@ -202,6 +204,22 @@ describe("/app/new", () => {
     const pin = channelRow(html, "pinterest.pin");
     expect(pin).not.toContain('disabled=""');
     expect(pin).not.toContain('checked=""');
+  });
+
+  it("preselects the channels the seller answered at /welcome (P18-20)", async () => {
+    page.sellerProfile = { category: "candles", channels: ["amazon", "shopify"], answeredAt: "2026-10-01T12:00:00.000Z" };
+    try {
+      const html = await renderPage();
+      for (const id of ["amazon.main", "amazon.secondary", "shopify.product"]) {
+        expect(channelRow(html, id), id).toContain('checked=""');
+      }
+      expect(channelRow(html, "meta.feed_1x1")).not.toContain('checked=""');
+      expect(channelRow(html, "etsy.listing")).not.toContain('checked=""');
+    } finally {
+      page.sellerProfile = null;
+    }
+    // No answer keeps the default pick, Meta feed included.
+    expect(channelRow(await renderPage(), "meta.feed_1x1")).toContain('checked=""');
   });
 
   it("renders exactly as before PHASE_15 while output options are off", async () => {

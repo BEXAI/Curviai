@@ -30,14 +30,16 @@
  *   next renewal covers it.
  */
 
-import { creditLedger, eq, events, sql, subscriptions, workspaces, type Db } from "@curvi/db";
-import { isPaidTierKey } from "./plans";
+import { billingConsents, creditLedger, eq, events, sql, subscriptions, workspaces, type Db } from "@curvi/db";
+import { isPaidTierKey, tierDisplayName, type BillingCadence, type PaidTierKey } from "./plans";
+import { clearPendingChange, CLEAR_PENDING_CHANGE } from "./scheduled-change";
 import { acceptsSubscriptionStatus, keepsPaidPlan, SUPERSEDED_STATUS } from "./subscription-status";
 import {
   disputeKey,
   DUPLICATE_SUBSCRIPTION_EVENT,
   roundCredits,
   UnroutableBillingEventError,
+  type BillingConsent,
   type BillingLink,
   type BillingNote,
   type BillingStore,
@@ -157,9 +159,8 @@ export class DbBillingStore implements BillingStore {
         `No workspace for billing grant ${key} (customer ${grant.stripeCustomerId ?? "none"}).`,
       );
     }
-    const expiresAt = grant.expiresMonths
-      ? new Date(Date.now() + grant.expiresMonths * 30 * 24 * 60 * 60 * 1000)
-      : null;
+    // Credits never expire (P20-05, seed creditExpiry), so no grant writes
+    // credit_ledger.expires_at; migration billing_terms cleared the old ones.
     return this.db.transaction(async (tx) => {
       const inserted = await tx
         .insert(events)
@@ -192,7 +193,8 @@ export class DbBillingStore implements BillingStore {
         delta: grant.credits,
         reason: grant.reason,
         source: this.eventSource,
-        expiresAt,
+        note: grant.reason === "topup" ? `Top up ${grant.credits}`
+          : isPaidTierKey(grant.detail?.tier) ? `${tierDisplayName(grant.detail.tier)} plan credits` : null,
       });
       return true;
     });
@@ -291,6 +293,7 @@ export class DbBillingStore implements BillingStore {
         tier: update.tier,
         status: update.status,
         periodEnd: update.periodEnd,
+        cadence: update.cadence,
       };
       // Without a Stripe read the payload is all there is, and the status
       // rules alone keep an older payload from winning.
@@ -304,6 +307,10 @@ export class DbBillingStore implements BillingStore {
       }
       seen = await this.subscriptionVersion(this.db, update.externalId);
     }
+  }
+
+  async clearScheduledChange(scheduleId: string): Promise<void> {
+    await clearPendingChange(this.db, scheduleId);
   }
 
   /**
@@ -411,6 +418,9 @@ export class DbBillingStore implements BillingStore {
             periodEnd,
             // Kept when an event does not say, like the in memory store.
             cancelAtPeriodEnd: incoming.cancelAtPeriodEnd ?? current.cancelAtPeriodEnd,
+            cadence: incoming.cadence ?? current.cadence,
+            ...((incoming.tier && incoming.tier !== current.tier) || (incoming.cadence && incoming.cadence !== current.cadence)
+              ? CLEAR_PENDING_CHANGE : {}),
           })
           .where(eq(subscriptions.id, current.id));
         current.tier = incoming.tier ?? current.tier;
@@ -426,6 +436,7 @@ export class DbBillingStore implements BillingStore {
             status: incoming.status,
             periodEnd,
             cancelAtPeriodEnd: incoming.cancelAtPeriodEnd ?? false,
+            cadence: incoming.cadence ?? null,
           })
           .returning();
         rows.push(inserted);
@@ -716,6 +727,13 @@ export class DbBillingStore implements BillingStore {
     });
   }
 
+  /** Whether the dedupe claim for `key` exists (the name every write above
+   * claims). Read only; the reconciler's dry run uses it (P20-02). */
+  async isClaimed(key: string): Promise<boolean> {
+    const rows = await this.db.select({ id: events.id }).from(events).where(eq(events.name, this.eventName(key))).limit(1);
+    return rows.length > 0;
+  }
+
   async noteOnce(eventId: string, note: BillingNote): Promise<void> {
     const workspaceId = await this.resolveWorkspaceId(note.workspaceId, note.stripeCustomerId);
     await this.db
@@ -727,6 +745,97 @@ export class DbBillingStore implements BillingStore {
       })
       .onConflictDoNothing();
   }
+
+  /**
+   * One billing_consents row per Checkout Session (P20-07). The email is
+   * stored as its normalized key (migration 0012's normalized_email_key),
+   * and a workspace that no longer exists is stored as null, so the record
+   * is kept either way.
+   */
+  async recordConsentOnce(consent: BillingConsent): Promise<boolean> {
+    let workspaceId = await this.resolveWorkspaceId(consent.workspaceId, consent.stripeCustomerId);
+    if (workspaceId) {
+      const [workspace] = await this.db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
+      workspaceId = workspace?.id ?? null;
+    }
+    const inserted = await this.db
+      .insert(billingConsents)
+      .values({
+        workspaceId,
+        userId: consent.userId && UUID.test(consent.userId) ? consent.userId : null,
+        emailKey: consent.email ? sql`normalized_email_key(${consent.email})` : null,
+        email: consent.email,
+        stripeCustomerId: consent.stripeCustomerId,
+        checkoutSessionId: consent.checkoutSessionId,
+        tier: consent.tier,
+        cadence: consent.cadence,
+        amountUsd: consent.amountUsd,
+        disclosureVersion: consent.disclosureVersion,
+        disclosureSha256: consent.disclosureSha256,
+        disclosureText: consent.disclosureText,
+        acceptedAt: consent.acceptedAt,
+      })
+      .onConflictDoNothing({ target: billingConsents.checkoutSessionId })
+      .returning({ id: billingConsents.id });
+    return inserted.length > 0;
+  }
+
+  /**
+   * Records the renewal terms a subscriber saw beside the plan change button
+   * on /app/billing when they opened the portal on that change (law and copy
+   * review major 3), once per portal session. The portal itself confirms the
+   * change; this row keeps what we showed and who clicked. Returns true when
+   * written. Throws on a failed write; the caller logs it.
+   */
+  async recordPlanChangeConsent(consent: PlanChangeConsent): Promise<boolean> {
+    const inserted = await this.db
+      .insert(billingConsents)
+      .values({
+        workspaceId: consent.workspaceId,
+        userId: consent.userId && UUID.test(consent.userId) ? consent.userId : null,
+        emailKey: consent.email ? sql`normalized_email_key(${consent.email})` : null,
+        email: consent.email,
+        stripeCustomerId: consent.stripeCustomerId,
+        portalSessionId: consent.portalSessionId,
+        tier: consent.tier,
+        cadence: consent.cadence,
+        amountUsd: null,
+        disclosureVersion: consent.disclosureVersion,
+        disclosureSha256: consent.disclosureSha256,
+        disclosureText: consent.disclosureText,
+        acceptedAt: consent.acceptedAt,
+      })
+      .onConflictDoNothing({ target: billingConsents.portalSessionId })
+      .returning({ id: billingConsents.id });
+    return inserted.length > 0;
+  }
+
+  /** Read only, for the reconciler's dry run. */
+  async consentRecorded(checkoutSessionId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: billingConsents.id })
+      .from(billingConsents)
+      .where(eq(billingConsents.checkoutSessionId, checkoutSessionId))
+      .limit(1);
+    return rows.length > 0;
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A plan change consent (DbBillingStore.recordPlanChangeConsent). */
+export interface PlanChangeConsent {
+  workspaceId: string;
+  userId: string | null;
+  email: string | null;
+  stripeCustomerId: string;
+  portalSessionId: string;
+  tier: PaidTierKey;
+  cadence: BillingCadence;
+  disclosureVersion: string;
+  disclosureSha256: string;
+  disclosureText: string;
+  acceptedAt: Date;
 }
 
 /**

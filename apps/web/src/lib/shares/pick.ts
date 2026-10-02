@@ -29,7 +29,7 @@ export function isShareSlug(value: unknown): value is string {
 
 // The hero order lives in ./hero, which is client safe (this file imports
 // node:crypto), so the reveal on the job page can share it.
-export { allHeroCandidatesOriginal, HERO_ORDER, pickHeroAsset } from "./hero";
+export { allHeroCandidatesOriginal, pickHeroAsset } from "./hero";
 
 /**
  * The file that shows a shot best on a web page: the most square one, then

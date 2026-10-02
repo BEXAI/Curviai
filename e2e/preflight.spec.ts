@@ -2,8 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 
 // The preflight at upload and the product chooser (docs/phases/PHASE_14.md
 // workstream 4 and item 3.2), in demo mode: the demo preflight simulates a
-// photo with two products for keys with "several" in them, and a screenshot
-// for keys with "screenshot".
+// photo with two products for keys with "several" in them, and a photo with
+// no product for keys with "noproduct".
 
 const DEMO_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -78,8 +78,8 @@ test("a photo with a blocking problem cannot start a pack", async ({ page }) => 
   page.on("request", (r) => {
     if (r.url().endsWith("/api/jobs") && r.method() === "POST") posted = true;
   });
-  await uploadAs(page, "e2e-screenshot");
-  await expect(page.getByTestId("preflight-problem")).toContainText("This looks like a screenshot");
+  await uploadAs(page, "e2e-noproduct");
+  await expect(page.getByTestId("preflight-problem")).toContainText("We could not find a product in this photo");
   const create = page.getByTestId("create-pack");
   await expect(create).toBeDisabled();
   await page.getByRole("button", { name: "Remove" }).click();

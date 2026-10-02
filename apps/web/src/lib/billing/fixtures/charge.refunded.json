@@ -1,0 +1,31 @@
+{
+  "id": "{{EVENT_ID}}",
+  "object": "event",
+  "api_version": "2025-08-27.basil",
+  "created": "{{CREATED}}",
+  "data": {
+    "object": {
+      "id": "{{CHARGE_ID}}",
+      "object": "charge",
+      "amount": "{{AMOUNT}}",
+      "amount_captured": "{{AMOUNT}}",
+      "amount_refunded": "{{AMOUNT_REFUNDED}}",
+      "captured": true,
+      "created": "{{CREATED}}",
+      "currency": "usd",
+      "customer": "{{CUSTOMER_ID}}",
+      "disputed": false,
+      "livemode": false,
+      "metadata": {},
+      "paid": true,
+      "payment_intent": "{{PAYMENT_INTENT_ID}}",
+      "refunded": "{{FULLY_REFUNDED}}",
+      "status": "succeeded"
+    },
+    "previous_attributes": { "amount_refunded": 0 }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "charge.refunded"
+}

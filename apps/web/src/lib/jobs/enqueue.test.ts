@@ -304,6 +304,15 @@ describe("stopStartingAt", () => {
 });
 
 describe("heartbeatQueuedJobs", () => {
+  it("neither heartbeats nor settles a queued job when a stale run key is supplied", async () => {
+    const id = await jobWith("queued", { reserve: 2, updatedAt: OLD });
+    await db.update(generationJobs).set({ runKey: "replacement-run" }).where(eq(generationJobs.id, id));
+    await heartbeatQueuedJobs(appDb(), [id], ["stopped-run"]);
+    expect((await jobRow(id)).updatedAt.getTime()).toBe(OLD.getTime());
+    expect(await settleInterruptedJob(appDb(), { jobId: id, workspaceId: ws, runKey: "stopped-run" }, "Timed out")).toBe("already_final");
+    expect((await jobRow(id)).status).toBe("queued");
+    expect(await held(id)).toBe(2);
+  });
   it("bumps queued jobs only", async () => {
     const waiting = await jobWith("queued", { updatedAt: OLD });
     const started = await jobWith("generating", { updatedAt: OLD });

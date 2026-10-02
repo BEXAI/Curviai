@@ -49,6 +49,11 @@ export async function suggestBrandPaletteAction(logoKey: unknown): Promise<Brand
   if (!workspace) {
     return { ok: false, reason: "forbidden", notice: "Sign in to edit the brand kit." };
   }
+  // Refused before counting, so a client seat cannot use up the workspace
+  // budget below and lock owners and editors out. The service checks again.
+  if (workspace.role === "client") {
+    return { ok: false, reason: "forbidden", notice: "Only owners, admins and editors can change the brand kit." };
+  }
   // Counted per user and, with the same budget, per workspace: extra seats
   // or a user switching addresses cannot multiply the vision calls one
   // workspace makes, which only the global daily cap would otherwise bound.

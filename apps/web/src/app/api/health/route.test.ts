@@ -6,7 +6,10 @@ const fakeDb = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock("@/lib/services/db", () => ({ getDb: () => fakeDb }));
 
 import { DEFAULT_PROVIDER_ENTRIES } from "@/lib/health";
+import { CRON_JOBS, type CronJobDefinition } from "@/lib/cron-health";
 import { GET } from "./route";
+
+const monitoredCrons = () => CRON_JOBS.filter((job: CronJobDefinition) => !job.monitor || job.monitor());
 
 const DB_ENV = {
   DATABASE_URL: "postgres://user:very-secret-password@db.example.test:6543/postgres",
@@ -70,12 +73,14 @@ describe("GET /api/health", () => {
       "no_image_provider",
       "no_cutout_provider",
       "recipe_drift",
-      "cron_never_ran:stale-jobs",
-      "cron_never_ran:purge-source-media",
+      ...monitoredCrons().map(job => `cron_never_ran:${job.name}`),
+      "restore_drill_overdue",
     ]);
     expect(body.details).toBeUndefined();
-    // select 1, the migration read, then the recipes and cron reads.
-    expect(fakeDb.execute).toHaveBeenCalledTimes(4);
+    // select 1, the migration read, then the recipes, cron and database
+    // size reads (P20-15), and the lifecycle email switch (P18-06; read only
+    // while an email variable is missing).
+    expect(fakeDb.execute).toHaveBeenCalledTimes(8);
     for (const value of Object.values(DB_ENV)) {
       expect(text).not.toContain(value);
     }
@@ -138,6 +143,7 @@ describe("GET /api/health detailed report", () => {
     fakeDb.execute.mockImplementation(async (query: unknown) => {
       const text = JSON.stringify(query);
       if (text.includes("__drizzle_migrations")) return [{ latest: "9999999999999" }];
+      if (text.includes("count(*)") && text.includes("generation_jobs")) return [{ running: "2" }];
       if (text.includes("from recipes")) return [];
       if (text.includes("spend_cap_counters")) {
         return [{ key: "llm|day|2026-10-01|copy_generator|openai:gpt-6-luna|cost_micros", total_micros: "1234" }];
@@ -165,10 +171,10 @@ describe("GET /api/health detailed report", () => {
       code: "cron_never_ran:purge-source-media",
       message: "The purge-source-media cron has never recorded a successful run.",
     });
-    expect(body.details.crons.map((c: { name: string; state: string }) => [c.name, c.state])).toEqual([
-      ["stale-jobs", "fresh"],
-      ["purge-source-media", "never"],
-    ]);
+    expect(body.details.crons.map((c: { name: string; state: string }) => [c.name, c.state])).toEqual(
+      monitoredCrons().map(job => [job.name, job.name === "stale-jobs" ? "fresh" : "never"]),
+    );
+    expect(body.details.release).toEqual({ appliedWhen: 9999999999999, runningPacks: 2, checkedAt: new Date().toISOString() });
     expect(body.details.recipes.drift.length).toBeGreaterThan(0);
     expect(body.details.providerKeys.find((s: { stage: string }) => s.stage === "analyze")).toMatchObject({
       ready: true,

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { SigningKeyConfigError, parseSigningKeys, signPayload, verifyPayload } from "./mcp-signing";
+import {
+  SigningKeyConfigError,
+  openPayload,
+  parseSigningKeys,
+  sealPayload,
+  signPayload,
+  verifyPayload,
+} from "./mcp-signing";
 
 // The MCP_LINK_KEYS ring shared by link tokens (P19-17) and quotes (P19-16).
 
@@ -41,5 +48,24 @@ describe("signPayload and verifyPayload", () => {
     expect(verifyPayload(rotated, "link", "k9", "job:1|file:2", signed.signature)).toBe(false);
     expect(verifyPayload(rotated, "link", signed.kid, "job:1|file:2", `${signed.signature}AA`)).toBe(false);
     expect(verifyPayload(parseSigningKeys(NEW)!, "link", signed.kid, "job:1|file:2", signed.signature)).toBe(false);
+  });
+});
+
+describe("sealPayload and openPayload", () => {
+  it("round trips with any key of the ring, hides the payload and binds the purpose and kid", () => {
+    const ring = parseSigningKeys(`${NEW},${OLD}`)!;
+    const sealed = sealPayload(ring, "link", "job:1|file:2");
+    expect(sealed.kid).toBe("k2");
+    expect(Buffer.from(sealed.sealed, "base64url").toString("latin1")).not.toContain("job:1");
+    expect(openPayload(ring, "link", sealed.kid, sealed.iv, sealed.sealed)).toBe("job:1|file:2");
+    expect(openPayload(ring, "quote", sealed.kid, sealed.iv, sealed.sealed)).toBeNull();
+    expect(openPayload(ring, "link", "k1", sealed.iv, sealed.sealed)).toBeNull();
+    expect(openPayload(ring, "link", "k9", sealed.iv, sealed.sealed)).toBeNull();
+    expect(openPayload(ring, "link", sealed.kid, "short", sealed.sealed)).toBeNull();
+    expect(openPayload(ring, "link", sealed.kid, sealed.iv, "AA")).toBeNull();
+    const old = sealPayload(parseSigningKeys(OLD)!, "link", "x");
+    expect(openPayload(ring, "link", old.kid, old.iv, old.sealed)).toBe("x");
+    expect(openPayload(parseSigningKeys(NEW)!, "link", old.kid, old.iv, old.sealed)).toBeNull();
+    expect(() => sealPayload([], "link", "x")).toThrow(SigningKeyConfigError);
   });
 });

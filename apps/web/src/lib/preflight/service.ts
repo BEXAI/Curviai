@@ -17,6 +17,7 @@ import { channelChoices, moodChoices, questionSet } from "@curvi/pipeline/seed";
 import type { UploadPreflightArgs, UploadPreflightRun } from "@curvi/trigger/preflight";
 import { noteKey, PREFLIGHT_FRESH_MS, type PreflightIntake } from "@curvi/trigger/preflight-intake";
 import { isWorkspaceKey } from "@/lib/r2";
+import { isWorkspaceTmpKey } from "@/lib/object-keys";
 import { preflightViewOf, storedPreflightOf, type StoredPreflight } from "./result";
 import type { PreflightView } from "./types";
 
@@ -45,7 +46,7 @@ export async function defaultPreflightRun(args: UploadPreflightArgs): Promise<Up
  * deleting the workspace's storage deletes them. */
 export function preflightThumbKey(workspaceId: string, uploadKey: string, preflightId: string, number: number): string {
   const upload = createHash("sha256").update(uploadKey).digest("hex").slice(0, 32);
-  return `ws/${workspaceId}/preflight/${upload}/${preflightId}-${number}.jpg`;
+  return `tmp/ws/${workspaceId}/preflight/${upload}/${preflightId}-${number}.jpg`;
 }
 
 /**
@@ -59,7 +60,7 @@ export function preflightThumbKey(workspaceId: string, uploadKey: string, prefli
  */
 export function preflightPreviewKey(workspaceId: string, uploadKey: string): string {
   const upload = createHash("sha256").update(uploadKey).digest("hex").slice(0, 32);
-  return `ws/${workspaceId}/cache/preview/${upload}.png`;
+  return `tmp/ws/${workspaceId}/cache/preview/${upload}.png`;
 }
 
 function isFresh(row: Pick<UploadPreflight, "updatedAt">, now: Date): boolean {
@@ -201,7 +202,7 @@ export async function preflightUpload(
   const now = deps.now?.() ?? new Date();
   const note = input.note?.trim() ?? "";
   const sign = async (key: string) =>
-    isWorkspaceKey(workspaceId, key) && deps.sign ? deps.sign(key) : null;
+    (isWorkspaceKey(workspaceId, key) || isWorkspaceTmpKey(workspaceId, key)) && deps.sign ? deps.sign(key) : null;
   const cached = (await preflightRowsFor(deps.db, workspaceId, [input.key])).get(input.key);
   if (cached && cached.status !== "unavailable" && cached.noteKey === noteKey(note) && isFresh(cached, now)) {
     return preflightViewOf(input.key, cached.result as unknown as StoredPreflight, sign);

@@ -83,6 +83,12 @@ describe("suggestedTier", () => {
   it("treats an unknown plan as free", () => {
     expect(suggestedTier("legacy", 1)?.key).toBe("starter");
   });
+
+  it("never offers Agency, which is set up by email (P20-08)", () => {
+    const pro = tierByKey("pro");
+    expect(suggestedTier("pro", 1)).toBeNull();
+    expect(suggestedTier("growth", pro.creditsPerMonth + 1)?.key).toBe("pro");
+  });
 });
 
 describe("suggestedTopUp", () => {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { INGEST_PIXEL_CAP } from "@curvi/pipeline/ingest";
 import {
   IMAGE_MAX_BYTES,
+  PIXEL_CAP_MEGAPIXELS,
   VIDEO_MAX_BYTES,
   VIDEO_MAX_SECONDS,
   UNSUPPORTED_FILE_COPY,
@@ -154,5 +156,11 @@ describe("uploadTypeForFile", () => {
       message: UNSUPPORTED_PHOTO_COPY,
     });
     expect(uploadTypeForFile({ name: "a.gif", type: "image/gif" }, { allowedImageTypes: ["image/png"] }).ok).toBe(false);
+  });
+});
+
+describe("pixel cap", () => {
+  it("matches the server ingest cap, so the browser and the server refuse the same photos", () => {
+    expect(PIXEL_CAP_MEGAPIXELS * 1_000_000).toBe(INGEST_PIXEL_CAP);
   });
 });

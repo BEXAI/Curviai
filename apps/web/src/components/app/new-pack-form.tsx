@@ -84,6 +84,7 @@ import {
   chosenItem,
   PREFLIGHT_UNAVAILABLE_NOTICE,
   preflightBlockReason,
+  specName,
   type PhotoOutputContext,
 } from "@/lib/preflight/copy";
 import type { PreflightBox, PreflightView } from "@/lib/preflight/types";
@@ -181,6 +182,28 @@ interface NewPackFormProps {
   /** "Make this pack again" (PHASE_16 workstream 6): an earlier pack's
    * channels, choices, answers and note, filled in once. A prefill only. */
   reuse?: ReusePrefill | null;
+  /** The channel specs the seller said they sell on at /welcome
+   * (docs/phases/PHASE_18.md P18-20), used when nothing is reused. */
+  preferredChannels?: readonly string[];
+}
+
+/**
+ * The channels a new form starts with: an earlier pack's when making it
+ * again, else the ones the seller answered at /welcome (P18-20), else the
+ * default pick; always less any the plan cannot pick.
+ */
+export function initialChannelPick(
+  channels: readonly ChannelOption[],
+  reuse: Pick<ReusePrefill, "channels"> | null | undefined,
+  preferred: readonly string[] = [],
+): string[] {
+  const pickable = (id: string) => channels.some((c) => c.id === id && isPickable(c));
+  const reused = (reuse?.channels ?? []).filter(pickable);
+  if (reused.length > 0) {
+    return reused;
+  }
+  const answered = preferred.filter(pickable);
+  return answered.length > 0 ? answered : DEFAULT_CHANNELS.filter(pickable);
 }
 
 /** The form's first options: an earlier pack's choices when making it
@@ -258,8 +281,7 @@ export function estimateOverBalanceLine(estimate: number, creditBalance: number)
 }
 
 export function channelLabel(id: string): string {
-  const pretty = id.replaceAll(".", " ").replaceAll("_", " ");
-  return pretty.charAt(0).toUpperCase() + pretty.slice(1);
+  return specName(id);
 }
 
 /** Plain labels for the photo roles, in ANGLE_ROLES order. */
@@ -430,6 +452,7 @@ export function NewPackForm({
   brandHasLogo = false,
   scenesPausedNote = null,
   reuse = null,
+  preferredChannels = [],
 }: NewPackFormProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -471,13 +494,9 @@ export function NewPackForm({
   const [boxText, setBoxText] = useState((initialProduct?.boxContents ?? []).join("\n"));
   const [comparisonText, setComparisonText] = useState((initialProduct?.comparisonFacts ?? []).join("\n"));
   const [endorsementText, setEndorsementText] = useState((initialProduct?.endorsements ?? []).join("\n"));
-  const [selected, setSelected] = useState<string[]>(() => {
-    const pickable = (id: string) => channels.some((c) => c.id === id && isPickable(c));
-    // Making a pack again restores its channels, less any the plan can no
-    // longer pick; with none left it starts from the default pick.
-    const reused = (reuse?.channels ?? []).filter(pickable);
-    return reused.length > 0 ? reused : DEFAULT_CHANNELS.filter(pickable);
-  });
+  // Making a pack again restores its channels, less any the plan can no
+  // longer pick; otherwise the seller's answered channels, then the default.
+  const [selected, setSelected] = useState<string[]>(() => initialChannelPick(channels, reuse, preferredChannels));
   const [mode, setMode] = useState<EstimateMode>(reuse?.mode ?? "listing");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);

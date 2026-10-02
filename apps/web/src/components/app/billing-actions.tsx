@@ -4,24 +4,30 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, cn } from "@curvi/ui";
-import { ComingSoonBadge } from "@/components/marketing/coming-soon-badge";
+import { OnTheWay } from "@/components/marketing/on-the-way";
+import { ScheduledPlanButton } from "./scheduled-plan";
+import { RenewalTerms } from "@/components/marketing/renewal-terms";
 import { trackBillingEvent } from "@/lib/billing/analytics";
 import type { CheckoutSource, CheckoutStatus } from "@/lib/billing/intent";
-import { comingSoonFeatures, includedFeatures } from "@/lib/billing/plan-features";
+import { includedFeatures } from "@/lib/billing/plan-features";
 import {
   annualSavingsUsd,
   formatCredits,
   formatUsd,
-  paidTiers,
+  isPaidTierKey,
+  planChangeDirection,
   priceForCadence,
+  selfServeTiers,
   tierDisplayName,
   type BillingCadence,
   type PaidTierKey,
+  type PlanPrice,
 } from "@/lib/billing/plans";
+import { firstRenewal } from "@/lib/billing/renewal-terms";
 import { annualSavingsPercentRange } from "@/lib/marketing-facts";
 
 type CheckoutBody =
-  | { kind: "tier"; tier: string; cadence: BillingCadence; source?: CheckoutSource }
+  | { kind: "tier"; tier: string; cadence: BillingCadence; source?: CheckoutSource; releaseScheduledChange?: boolean }
   | { kind: "topup"; credits: number; source?: CheckoutSource };
 
 interface ActionResponse {
@@ -30,6 +36,8 @@ interface ActionResponse {
   notice?: string;
   error?: string;
   ok?: boolean;
+  /** The button that confirms a scheduled_change_pending answer. */
+  confirmLabel?: string;
 }
 
 async function postJson(path: string, body?: unknown): Promise<ActionResponse> {
@@ -67,13 +75,24 @@ export function CheckoutButton({
   variant?: "primary" | "secondary" | "outline";
 }) {
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{ notice: string; label: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function go() {
+  async function go(releaseScheduledChange = false) {
     setBusy(true);
     setNotice(null);
+    setConfirm(null);
     try {
-      const data = await postJson("/api/billing/checkout", body);
+      const data = await postJson(
+        "/api/billing/checkout",
+        releaseScheduledChange && body.kind === "tier" ? { ...body, releaseScheduledChange: true } : body,
+      );
+      if (data.error === "scheduled_change_pending" && data.notice) {
+        // P20-06 stopgap: the upgrade would cancel a change the founder
+        // scheduled; nothing is released until the subscriber continues.
+        setConfirm({ notice: data.notice, label: data.confirmLabel ?? "Continue" });
+        return;
+      }
       if (data.url) {
         trackBillingEvent("checkout_started", {
           kind: body.kind,
@@ -100,6 +119,14 @@ export function CheckoutButton({
         {busy ? "Opening" : label}
       </Button>
       {notice ? <Notice>{notice}</Notice> : null}
+      {confirm ? (
+        <div className="mt-2" data-testid="scheduled-change-confirm">
+          <Notice>{confirm.notice}</Notice>
+          <Button variant="outline" className="mt-2 w-full" disabled={busy} onClick={() => void go(true)}>
+            {confirm.label}
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -219,57 +246,77 @@ export function CadenceToggle({
   );
 }
 
+/** What a plan card lists: only what runs today (P20-08). Lines that do
+ * not run yet are in the OnTheWay list under the cards. */
 export function PlanFeatureList({ tier }: { tier: PaidTierKey }) {
   const included = includedFeatures(tier);
-  const comingSoon = comingSoonFeatures(tier);
   return (
     <div className="flex-1">
-      <ul className="mt-3 space-y-1 text-sm text-ink-600">
+      <ul className="mt-3 space-y-1 text-sm text-ink-600" data-testid={`plan-lines-${tier}`}>
         {included.map((item) => (
           <li key={item}>{item}</li>
         ))}
       </ul>
-      {comingSoon.length > 0 ? (
-        <div className="mt-3">
-          <ComingSoonBadge />
-          <ul className="mt-1 space-y-1 text-sm text-ink-400">
-            {comingSoon.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
     </div>
   );
 }
 
 /**
- * The plan cards with a monthly and annual toggle. mode picks the action:
+ * The plan cards sold online (P20-08: Agency is set up by email) with a
+ * monthly and annual toggle, and the On the way list under them. mode picks
+ * the action:
  * checkout (Stripe is live), request (card payments not open yet) or none
  * (the viewer cannot change billing).
+ *
+ * For a subscriber the toggle starts on their own cadence, and each card
+ * follows planChangeDirection (P20-06 stopgap): an upgrade opens the portal
+ * with the renewal terms beside the button, the current price opens the
+ * portal home, and anything else (a smaller plan, or a monthly price for a
+ * yearly subscriber) shows the email line instead of a button.
  */
 export function PlanPicker({
   currentPlan,
   hasSubscription,
+  currentCadence = null,
   mode,
-  initialCadence = "monthly",
+  initialCadence,
+  today,
 }: {
   currentPlan: string;
   hasSubscription: boolean;
+  /** The subscription's cadence, when known (subscriptions.cadence). */
+  currentCadence?: BillingCadence | null;
   mode: PlanActionMode;
   initialCadence?: BillingCadence;
+  /** The server's date (ISO), which dates the cancel deadline in the
+   * renewal terms beside each buy button (P20-07). */
+  today?: string;
 }) {
-  const [cadence, setCadence] = useState<BillingCadence>(initialCadence);
+  const from: PlanPrice | null =
+    hasSubscription && isPaidTierKey(currentPlan) ? { tier: currentPlan, cadence: currentCadence ?? "monthly" } : null;
+  const [cadence, setCadence] = useState<BillingCadence>(initialCadence ?? from?.cadence ?? "monthly");
+  const start = today ? new Date(today) : null;
 
   return (
     <div>
       <CadenceToggle cadence={cadence} onChange={setCadence} />
-      <div className="mt-6 grid gap-6 md:grid-cols-2 xl:grid-cols-4">
-        {paidTiers.map((tier) => {
+      <div className="mt-6 grid gap-6 md:grid-cols-3">
+        {selfServeTiers.map((tier) => {
           const key = tier.key as PaidTierKey;
-          const current = tier.key === currentPlan && hasSubscription;
+          const current = from !== null && tier.key === from.tier;
           const price = priceForCadence(tier, cadence);
           const name = tierDisplayName(tier.key);
+          const target: PlanPrice = { tier: key, cadence };
+          const direction = from ? planChangeDirection(from, target) : null;
+          const byEmail = mode === "checkout" && direction === "downgrade";
+          const label =
+            direction === null
+              ? `Choose ${name}`
+              : direction === "same"
+                ? "Manage plan"
+                : current
+                  ? "Switch to yearly billing"
+                  : `Switch to ${name}`;
           return (
             <Card key={tier.key} className={cn("flex flex-col", current && "border-accent-500 shadow-md")}>
               <CardHeader>
@@ -297,17 +344,13 @@ export function PlanPicker({
                 </p>
                 <PlanFeatureList tier={key} />
                 <div className="mt-5">
-                  {mode === "checkout" ? (
+                  {byEmail ? (
+                    <ScheduledPlanButton label={`Switch to ${name} at renewal`} target={target} />
+                  ) : mode === "checkout" ? (
                     <CheckoutButton
-                      label={
-                        current
-                          ? "Manage plan"
-                          : hasSubscription
-                            ? `Switch to ${name}`
-                            : `Choose ${name}`
-                      }
+                      label={label}
                       body={{ kind: "tier", tier: key, cadence, source: "billing" }}
-                      variant={current ? "outline" : "primary"}
+                      variant={direction === "same" ? "outline" : "primary"}
                     />
                   ) : mode === "request" ? (
                     <RequestPlanButton
@@ -316,12 +359,20 @@ export function PlanPicker({
                       variant="outline"
                     />
                   ) : null}
+                  {mode !== "none" && direction !== "same" ? (
+                    <RenewalTerms
+                      tier={key}
+                      cadence={cadence}
+                      renewsOn={start && !hasSubscription ? firstRenewal(start, cadence) : null}
+                    />
+                  ) : null}
                 </div>
               </CardContent>
             </Card>
           );
         })}
       </div>
+      <OnTheWay className="mt-6" />
     </div>
   );
 }

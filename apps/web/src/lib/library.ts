@@ -11,7 +11,6 @@
  */
 
 import { Shot } from "@curvi/pipeline/schemas";
-import { parseVariationShotId } from "@curvi/pipeline/variations";
 import { familyName } from "@/lib/preflight/copy";
 import type { JobView } from "@/lib/services/types";
 
@@ -215,12 +214,6 @@ export function galleryItemsOf(args: {
     });
   }
   return items;
-}
-
-/** "Version 2 of this scene" for an extra version's shot id, else null. */
-export function versionLabel(shotId: string | null | undefined): string | null {
-  const parsed = shotId ? parseVariationShotId(shotId) : null;
-  return parsed ? `Version ${parsed.variation} of this scene` : null;
 }
 
 /** The job page's gallery: every finished shot with a stored preview whose

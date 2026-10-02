@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { JobProgressBoard } from "@/components/app/job-progress-board";
+import { PackFeedbackCard } from "@/components/app/pack-feedback-card";
 import { SharePanel } from "@/components/app/share-panel";
 import { isUuid } from "@/lib/validation/ids";
 
@@ -17,6 +18,8 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
   return (
     <>
       <JobProgressBoard jobId={id} />
+      {/* "Would you use these files?" once the pack is done (P18-05). */}
+      <PackFeedbackCard jobId={id} />
       {/* Appears once the pack has finished images (plan 9.6.1). */}
       <SharePanel jobId={id} />
     </>

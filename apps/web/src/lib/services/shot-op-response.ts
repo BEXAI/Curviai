@@ -4,7 +4,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { RETRY_AFTER_SECONDS } from "./workspace-response";
+import { refusalInit } from "./workspace-response";
 import type { CancelJobResult, ShotOpRejection, ShotOpResult } from "./types";
 
 const SHOT_OP_STATUS: Record<ShotOpRejection, number> = {
@@ -32,11 +32,7 @@ export function shotOpResponse(result: ShotOpResult): NextResponse {
   if (result.outcome === "started") {
     return NextResponse.json({ job: result.job, creditsHeld: result.creditsHeld }, { status: 202 });
   }
-  const status = SHOT_OP_STATUS[result.reason];
-  return NextResponse.json(
-    { error: result.message, reason: result.reason },
-    status === 503 ? { status, headers: { "Retry-After": RETRY_AFTER_SECONDS } } : { status },
-  );
+  return NextResponse.json({ error: result.message, reason: result.reason }, refusalInit(SHOT_OP_STATUS[result.reason]));
 }
 
 export function cancelResponse(result: CancelJobResult): NextResponse {
@@ -56,10 +52,7 @@ export function cancelResponse(result: CancelJobResult): NextResponse {
       );
     case "rejected": {
       const status = result.reason === "not_found" ? 404 : result.reason === "role_forbidden" ? 403 : 503;
-      return NextResponse.json(
-        { error: result.message, reason: result.reason },
-        status === 503 ? { status, headers: { "Retry-After": RETRY_AFTER_SECONDS } } : { status },
-      );
+      return NextResponse.json({ error: result.message, reason: result.reason }, refusalInit(status));
     }
   }
 }

@@ -9,6 +9,7 @@
 
 import { readBodyLimited } from "@/lib/http/read-body";
 import { NextResponse, type NextRequest } from "next/server";
+import { recordCspCounts } from "@/lib/csp-counts";
 import {
   CSP_REPORT_MAX_BYTES,
   isCspReportContentType,
@@ -41,6 +42,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
   for (const violation of violations.slice(0, allowed)) {
     console.warn(JSON.stringify({ level: "warn", event: "csp_violation", ...violation }));
+  }
+  try {
+    await recordCspCounts(violations.slice(0, allowed));
+  } catch {
+    console.warn(JSON.stringify({ level: "warn", event: "csp_count_write_failed" }));
   }
   return new NextResponse(null, { status: 204 });
 }

@@ -1,0 +1,46 @@
+{
+  "id": "{{EVENT_ID}}",
+  "object": "event",
+  "api_version": "2025-08-27.basil",
+  "created": "{{CREATED}}",
+  "data": {
+    "object": {
+      "id": "{{SESSION_ID}}",
+      "object": "checkout.session",
+      "allow_promotion_codes": true,
+      "amount_subtotal": "{{AMOUNT}}",
+      "amount_total": "{{AMOUNT}}",
+      "client_reference_id": "{{WORKSPACE_ID}}",
+      "consent": { "promotions": null, "terms_of_service": "accepted" },
+      "consent_collection": { "payment_method_reuse_agreement": null, "promotions": "none", "terms_of_service": "required" },
+      "created": "{{CREATED}}",
+      "currency": "usd",
+      "customer": "{{CUSTOMER_ID}}",
+      "customer_details": { "address": null, "email": "buyer@example.com", "name": null, "phone": null, "tax_exempt": "none", "tax_ids": [] },
+      "invoice": "{{INVOICE_ID}}",
+      "invoice_creation": { "enabled": true, "invoice_data": { "metadata": {} } },
+      "livemode": false,
+      "metadata": {
+        "workspaceId": "{{WORKSPACE_ID}}",
+        "priceId": "{{PRICE_ID}}",
+        "kind": "topup",
+        "plan": "topup",
+        "cadence": "once",
+        "source": "billing"
+      },
+      "mode": "payment",
+      "payment_intent": "{{PAYMENT_INTENT_ID}}",
+      "payment_status": "{{PAYMENT_STATUS}}",
+      "status": "complete",
+      "subscription": null,
+      "success_url": "http://localhost:3000/app/billing?status=success&session_id={CHECKOUT_SESSION_ID}",
+      "total_details": { "amount_discount": 0, "amount_shipping": 0, "amount_tax": 0 },
+      "ui_mode": "hosted",
+      "url": null
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "{{TYPE}}"
+}

@@ -64,7 +64,8 @@ describe("GET /api/billing/cancel", () => {
     expect(body.tier).toBe("growth");
     expect(body.live).toBe(false);
     expect(body.reasons.length).toBeGreaterThan(3);
-    expect(body.offers.map((o: { kind: string }) => o.kind)).toEqual(["pause", "downgrade", "discount"]);
+    // The smaller plan offer is off until P20-06's P1 part (seed retentionOffers).
+    expect(body.offers.map((o: { kind: string }) => o.kind)).toEqual(["pause", "discount"]);
     expect(stripeCalls.count).toBe(0);
   });
 
@@ -90,6 +91,13 @@ describe("POST /api/billing/cancel", () => {
     expect(body).toMatchObject({ ok: true, outcome: "canceled", stripeApplied: false });
     expect(body.notice).toContain("nothing is charged or changed today");
     expect(stripeCalls.count).toBe(0);
+  });
+
+  it("cancels without a reason, which is optional (P20-07)", async () => {
+    const response = await POST(post({ choice: "cancel" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, outcome: "canceled" });
+    expect((await POST(post({ reason: null, choice: "keep" }))).status).toBe(200);
   });
 
   it("rejects bad input before touching billing", async () => {

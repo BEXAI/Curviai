@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { members, termsAcceptances, workspaces } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { eq, type Db } from "@curvi/db";
+import { LEGAL_FACTS } from "@/lib/legal/facts";
 import { recordTermsAcceptance, resetTermsCacheForTests, TERMS_VERSION } from "./terms";
 
 let client: Awaited<ReturnType<typeof createTestDb>>["client"];
@@ -17,7 +17,7 @@ function nextUser(): string {
 function headers(ip?: string): Headers {
   const h = new Headers({ "user-agent": "Mozilla/5.0 test" });
   if (ip) {
-    h.set("cf-connecting-ip", ip);
+    h.set("x-forwarded-for", ip);
   }
   return h;
 }
@@ -79,6 +79,14 @@ describe("recordTermsAcceptance", () => {
     expect(row).toMatchObject({ ip: null, workspaceId: null });
   });
 
+  it("does not record an unauthenticated Cloudflare header as the request IP", async () => {
+    const user = nextUser();
+    const requestHeaders = headers();
+    requestHeaders.set("cf-connecting-ip", "203.0.113.99");
+    await recordTermsAcceptance(db as unknown as Db, { userId: user, source: "first_app_visit", headers: requestHeaders });
+    expect((await rowsFor(user))[0].ip).toBeNull();
+  });
+
   it("skips the database once a user is known to have a record", async () => {
     const user = nextUser();
     await recordTermsAcceptance(db as unknown as Db, { userId: user, source: "first_app_visit", headers: headers() });
@@ -92,11 +100,9 @@ describe("recordTermsAcceptance", () => {
 });
 
 describe("TERMS_VERSION", () => {
-  it("matches the Last updated date on the terms page", () => {
-    const page = readFileSync(new URL("../../app/(marketing)/terms/page.tsx", import.meta.url), "utf8");
-    const shown = /Last updated ([A-Z][a-z]+ \d{1,2}, \d{4})/.exec(page)?.[1];
-    expect(shown).toBeDefined();
-    const iso = new Date(`${shown} 12:00:00 UTC`).toISOString().slice(0, 10);
-    expect(iso).toBe(TERMS_VERSION);
+  // The terms page prints LEGAL_FACTS.termsLastUpdated as its Last updated
+  // date; lib/legal/pages.test.ts checks the rendered page.
+  it("is the Last updated date of the terms page", () => {
+    expect(LEGAL_FACTS.termsLastUpdated).toBe(TERMS_VERSION);
   });
 });

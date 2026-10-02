@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceRole } from "@/lib/services/types";
 import type { BillingAccount } from "./account";
+import { stubKeyOnly, stubOpenCheckout } from "@/lib/billing/test-env";
 
 // Route level tests for /api/billing/checkout, /api/billing/portal and
 // /api/billing/upgrade-request with the service layer, the account reader
@@ -26,8 +27,14 @@ const stripeMock = {
     },
   },
   billingPortal: { sessions: { create: vi.fn(async (_params: unknown) => ({ url: "https://billing.stripe.test/portal" })) } },
+  subscriptionSchedules: {
+    retrieve: vi.fn(async (id: string) => ({ id, phases: [] })),
+    release: vi.fn(async (id: string) => ({ id })),
+  },
   subscriptions: {
-    retrieve: vi.fn(async () => ({ items: { data: [{ id: "si_1", price: { id: "price_growth_monthly" } }] } })),
+    retrieve: vi.fn(async (): Promise<{ schedule?: string; items: { data: Array<{ id: string; price: { id: string } }> } }> => ({
+      items: { data: [{ id: "si_1", price: { id: "price_growth_monthly" } }] },
+    })),
     list: vi.fn(async (_params: unknown, _opts?: unknown): Promise<{ data: Array<{ id: string; status: string }> }> => ({ data: [] })),
   },
 };
@@ -85,7 +92,7 @@ beforeEach(() => {
   state.role = "owner";
   state.signedIn = true;
   state.account = { stripeCustomerId: null, subscription: null };
-  vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_routes");
+  stubOpenCheckout(vi.stubEnv);
   vi.stubEnv("STRIPE_PRICE_GROWTH_MONTHLY", "price_growth_monthly");
   vi.stubEnv("STRIPE_PRICE_GROWTH_ANNUAL", "price_growth_annual");
   vi.stubEnv("STRIPE_PRICE_TOPUP_100", "price_topup_100");
@@ -126,10 +133,12 @@ describe("client role cannot bill (Update.md 4.4)", () => {
     expect(response.status).toBe(403);
   });
 
-  it("editors can still start checkout", async () => {
+  it("editors cannot start checkout or open the portal (P20-59)", async () => {
     state.role = "editor";
     const response = await checkout(jsonRequest(growthAnnual));
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(403);
+    expect((await portal(portalRequest())).status).toBe(403);
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
   });
 });
 
@@ -145,6 +154,25 @@ describe("POST /api/billing/checkout", () => {
     const response = await checkout(jsonRequest(growthAnnual));
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: "billing_not_configured" });
+  });
+
+  it("answers 503 with a secret key but no webhook secret, and never reaches Stripe (P20-01)", async () => {
+    stubKeyOnly(vi.stubEnv);
+    const response = await checkout(jsonRequest(growthAnnual));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: "billing_not_configured" });
+    vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_routes");
+    // Still closed: the self serve prices are missing too.
+    expect((await checkout(jsonRequest(growthAnnual))).status).toBe(503);
+    expect(stripeMock.customers.create).not.toHaveBeenCalled();
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 for a test key on the production site with no environment label", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENV_LABEL", "");
+    const response = await checkout(jsonRequest(growthAnnual));
+    expect(response.status).toBe(503);
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
   });
 
   it("maps annual Growth to STRIPE_PRICE_GROWTH_ANNUAL", async () => {
@@ -245,6 +273,62 @@ describe("POST /api/billing/checkout", () => {
     });
   });
 
+  it("asks an existing subscriber who picks a smaller plan to email us (P20-06 stopgap)", async () => {
+    state.account = {
+      stripeCustomerId: "cus_saved",
+      subscription: { externalId: "sub_live", tier: "growth", status: "active", periodEnd: null },
+    };
+    // Stripe says the subscription is on Growth monthly; Starter is smaller.
+    const response = await checkout(jsonRequest({ kind: "tier", tier: "starter", cadence: "monthly", source: "billing" }));
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as { error: string; notice: string };
+    expect(body.error).toBe("downgrade_by_email");
+    expect(body.notice).toContain("Email us to move to a smaller plan. It takes effect at your next renewal.");
+    expect(stripeMock.billingPortal.sessions.create).not.toHaveBeenCalled();
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("asks a yearly subscriber who picks a bigger monthly plan to email us, never debiting at once (security review major 1)", async () => {
+    state.account = {
+      stripeCustomerId: "cus_saved",
+      subscription: { externalId: "sub_live", tier: "growth", status: "active", periodEnd: null, cadence: "annual" },
+    };
+    stripeMock.subscriptions.retrieve.mockResolvedValueOnce({
+      items: { data: [{ id: "si_1", price: { id: "price_growth_annual" } }] },
+    });
+    const response = await checkout(jsonRequest({ kind: "tier", tier: "pro", cadence: "monthly", source: "billing" }));
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as { error: string; notice: string };
+    expect(body.error).toBe("downgrade_by_email");
+    expect(body.notice).toContain("Email us to switch to monthly billing. It takes effect at your next renewal.");
+    expect(stripeMock.billingPortal.sessions.create).not.toHaveBeenCalled();
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("asks before an upgrade cancels a scheduled change, then goes ahead on Continue (law and copy review major 7)", async () => {
+    state.account = {
+      stripeCustomerId: "cus_saved",
+      subscription: { externalId: "sub_live", tier: "growth", status: "active", periodEnd: null },
+    };
+    const withSchedule = { schedule: "sub_sched_1", items: { data: [{ id: "si_1", price: { id: "price_growth_monthly" } }] } };
+    stripeMock.subscriptions.retrieve.mockResolvedValueOnce(withSchedule);
+    const asked = await checkout(jsonRequest({ kind: "tier", tier: "pro", cadence: "monthly", source: "billing" }));
+    expect(asked.status).toBe(409);
+    const body = (await asked.json()) as { error: string; notice: string; confirmLabel: string };
+    expect(body).toMatchObject({ error: "scheduled_change_pending", confirmLabel: "Continue" });
+    expect(body.notice).toContain("This cancels your move to");
+    expect(stripeMock.subscriptionSchedules.release).not.toHaveBeenCalled();
+    expect(stripeMock.billingPortal.sessions.create).not.toHaveBeenCalled();
+
+    stripeMock.subscriptions.retrieve.mockResolvedValueOnce(withSchedule);
+    const confirmed = await checkout(
+      jsonRequest({ kind: "tier", tier: "pro", cadence: "monthly", source: "billing", releaseScheduledChange: true }),
+    );
+    expect(confirmed.status).toBe(200);
+    expect(stripeMock.subscriptionSchedules.release).toHaveBeenCalledWith("sub_sched_1");
+    expect(stripeMock.billingPortal.sessions.create).toHaveBeenCalled();
+  });
+
   it("still sells top ups to an existing subscriber", async () => {
     state.account = {
       stripeCustomerId: "cus_saved",
@@ -257,6 +341,16 @@ describe("POST /api/billing/checkout", () => {
   it("rejects unknown tiers and sources", async () => {
     expect((await checkout(jsonRequest({ kind: "tier", tier: "free", cadence: "monthly" }))).status).toBe(400);
     expect((await checkout(jsonRequest({ ...growthAnnual, source: "elsewhere" }))).status).toBe(400);
+  });
+
+  it("refuses Agency with tier_not_self_serve and never reaches Stripe (P20-08)", async () => {
+    const response = await checkout(jsonRequest({ kind: "tier", tier: "agency", cadence: "monthly" }));
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: string; notice: string };
+    expect(body.error).toBe("tier_not_self_serve");
+    expect(body.notice).toContain("Need more than Pro? Email us and we will set up a larger plan.");
+    expect(stripeMock.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(stripeMock.customers.create).not.toHaveBeenCalled();
   });
 
   it("answers 502 when Stripe rejects the session", async () => {
@@ -303,6 +397,12 @@ describe("POST /api/billing/upgrade-request", () => {
   it("rejects an unknown plan", async () => {
     const response = await upgradeRequest(jsonRequest({ kind: "tier", tier: "enterprise", cadence: "annual" }));
     expect(response.status).toBe(400);
+  });
+
+  it("points an Agency request to email (P20-08)", async () => {
+    const response = await upgradeRequest(jsonRequest({ kind: "tier", tier: "agency", cadence: "annual" }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "tier_not_self_serve" });
   });
 });
 

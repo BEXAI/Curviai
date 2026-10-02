@@ -1,0 +1,98 @@
+{
+  "products": [
+    {
+      "id": 7340901859408,
+      "title": "Amber &amp; Oak Candle",
+      "handle": "amber-oak-candle",
+      "body_html": "<p>Soy wax, cotton wick.</p>",
+      "published_at": "2026-03-27T14:19:02-07:00",
+      "created_at": "2026-03-27T14:19:02-07:00",
+      "updated_at": "2026-03-27T14:19:05-07:00",
+      "vendor": "Example Candles",
+      "product_type": "Candle",
+      "tags": ["candle"],
+      "variants": [],
+      "options": [],
+      "images": [
+        {
+          "id": 2,
+          "created_at": "2026-03-27T14:19:02-07:00",
+          "position": 2,
+          "updated_at": "2026-03-27T14:19:05-07:00",
+          "product_id": 7340901859408,
+          "variant_ids": [],
+          "src": "https://cdn.shopify.com/s/files/1/0000/0001/files/amber-side.png?v=1",
+          "width": 2000,
+          "height": 2000
+        },
+        {
+          "id": 1,
+          "created_at": "2026-03-27T14:19:02-07:00",
+          "position": 1,
+          "updated_at": "2026-03-27T14:19:05-07:00",
+          "product_id": 7340901859408,
+          "variant_ids": [],
+          "src": "https://cdn.shopify.com/s/files/1/0000/0001/files/amber-front.png?v=1",
+          "width": 2000,
+          "height": 2000
+        },
+        {
+          "id": 3,
+          "position": 3,
+          "product_id": 7340901859408,
+          "variant_ids": [],
+          "src": "//cdn.shopify.com/s/files/1/0000/0001/files/amber-top.png?v=1",
+          "width": 2000,
+          "height": 2000
+        }
+      ]
+    },
+    {
+      "id": 7340901859409,
+      "title": "Fig Leaf Candle",
+      "handle": "fig-leaf-candle",
+      "images": [
+        {
+          "id": 4,
+          "position": 1,
+          "product_id": 7340901859409,
+          "variant_ids": [],
+          "src": "https://cdn.shopify.com/s/files/1/0000/0001/files/fig-front.png?v=1",
+          "width": 1200,
+          "height": 1200
+        }
+      ]
+    },
+    {
+      "id": 7340901859410,
+      "title": "Gift Card",
+      "handle": "gift-card",
+      "images": []
+    },
+    {
+      "id": 7340901859411,
+      "title": "Broken entry with no handle"
+    },
+    {
+      "id": 7340901859412,
+      "title": "Sea Salt Candle",
+      "handle": "sea-salt-candle",
+      "images": [
+        {
+          "id": 5,
+          "position": 1,
+          "product_id": 7340901859412,
+          "variant_ids": [],
+          "src": "https://internal.example/s/files/sea-front.png",
+          "width": 2000,
+          "height": 2000
+        },
+        {
+          "id": 6,
+          "position": 2,
+          "src": "http://cdn.shopify.com/s/files/plain-http.png"
+        }
+      ]
+    }
+  ]
+}

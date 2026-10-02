@@ -2,7 +2,7 @@
  * POST /api/cron/purge-source-media
  * Runs the 30 day source media purge (apps/web/src/lib/trust/purge.ts).
  * Protected by CRON_SECRET (Authorization: Bearer, or x-cron-secret): 503
- * while the secret is unset, 403 for a wrong or missing one. ?dryRun=1
+ * while the secret is unset, 401 for a wrong or missing one. ?dryRun=1
  * reports what would be deleted and deletes nothing. Needs the database and
  * R2; without either it answers 200 with skipped, since there is nothing to
  * purge. Scheduling is in docs/LAUNCH_CHECKLIST.md.
@@ -35,11 +35,12 @@ export async function POST(request: Request): Promise<NextResponse> {
     const db = getDb();
     const report = await purgeStaleSourceMedia({ db, storage: r2TrustStorage(), dryRun });
     console.info("[purge] source media purge finished", report);
-    if (!dryRun) {
+    const complete = (report.objectsFailed ?? 0) === 0;
+    if (!dryRun && complete) {
       // Health warns when this goes stale (lib/cron-health.ts).
       await recordCronSuccess(db, "purge-source-media");
     }
-    return NextResponse.json({ ok: true, report });
+    return NextResponse.json({ ok: complete, report }, { status: complete ? 200 : 503 });
   } catch (err) {
     console.error("[purge] source media purge failed", err);
     return NextResponse.json({ error: "The purge failed. Check the server log." }, { status: 500 });

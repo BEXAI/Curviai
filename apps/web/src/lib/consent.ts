@@ -19,12 +19,15 @@ export const CONSENT_OPEN_EVENT = "curvi:consent-open";
 
 export type ConsentChoice = "granted" | "denied";
 
+/** The OpenAI Ads Manager pixel id used while NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID is unset. */
+export const DEFAULT_OPENAI_ADS_PIXEL_ID = "KpwKcUT18gMx18HnxhkL6K";
+
 /**
  * The OpenAI Ads Manager pixel id (a public id, not a secret). Set
  * NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID to an empty string to turn the pixel off.
  */
 export function openaiAdsPixelId(): string {
-  return process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID ?? "KpwKcUT18gMx18HnxhkL6K";
+  return process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID ?? DEFAULT_OPENAI_ADS_PIXEL_ID;
 }
 
 /** True when analytics or the ads pixel is configured; without either there is nothing to consent to. */

@@ -48,6 +48,11 @@ describe("buildGeneratePackInput", () => {
     expect(input.images).toEqual([{ mediaId: "m1" }, { mediaId: "m3" }]);
   });
 
+  it("marks a pack started through /api/mcp for the assistant screening, and nothing else (PHASE_19 P19-29)", () => {
+    expect(buildGeneratePackInput({ ...base, audience: "assistant" }).audience).toBe("assistant");
+    expect(buildGeneratePackInput(base)).not.toHaveProperty("audience");
+  });
+
   it("omits the sku when the product has none", () => {
     const input = buildGeneratePackInput({
       ...base,

@@ -10,16 +10,39 @@
  * written when its key is empty (putSourceObjectIfAbsent): a retry, or a
  * later pack sending the same photo, never puts the raw upload with its
  * EXIF back over the cleaned copy.
+ *
+ * Photos attached in ChatGPT (PHASE_19 P19-15) arrive as OpenAI's file
+ * object, { download_url, file_id, mime_type?, file_name? }
+ * (docs/verification.md, "PHASE_19: ChatGPT and Codex plugin", O2). Only
+ * download_url is read, through the same SSRF safe import as a photo link,
+ * so a link that resolves to a private address is refused like any other.
+ * The type comes from the bytes, never from mime_type or file_name, and
+ * neither download_url nor file_id is stored or logged: the stored key is
+ * named after the bytes. A refusal for an attachment uses the neutral MCP
+ * copy (mcp-copy.ts), which has no web form words.
+ *
+ * A set of photos is read three at a time under one 30 second deadline for
+ * the whole set (it was up to six reads one after another, 15 seconds
+ * each), and the request's order and de-duplication are kept.
  */
 
 import { createHash } from "node:crypto";
 import { apiSourceKey, putSourceObjectIfAbsent } from "@/lib/r2";
 import { r2TrustStorage } from "@/lib/trust/storage";
 import { IMAGE_MAX_BYTES, PIXEL_CAP_MEGAPIXELS, withinPixelCap } from "@/lib/upload-validation";
-import { imageDimensions, importPhoto, sniffImageType, type ImportedPhoto, type PhotoImportResult } from "@/lib/url-import/image";
+import {
+  imageDimensions,
+  importPhoto,
+  isHeic,
+  sniffImageType,
+  type ImportedPhoto,
+  type PhotoImportResult,
+} from "@/lib/url-import/image";
 import type { PhotoAngle } from "@/lib/services/types";
+import { MCP_COPY } from "./mcp-copy";
 
 export type PhotoFailureReason = Extract<PhotoImportResult, { ok: false }>["reason"];
+type PhotoFailure = Extract<PhotoImportResult, { ok: false }>;
 
 export const PHOTO_FAILURE_STATUS: Record<PhotoFailureReason, number> = {
   invalid_url: 400,
@@ -30,6 +53,22 @@ export const PHOTO_FAILURE_STATUS: Record<PhotoFailureReason, number> = {
   unreachable: 502,
 };
 
+/** Photos of one request read at the same time. */
+export const PACK_PHOTO_FETCH_CONCURRENCY = 3;
+
+/** One deadline for reading every photo of a request. */
+export const PACK_PHOTO_SET_DEADLINE_MS = 30_000;
+
+/** The refusal when a chat attachment did not come through (the file
+ * argument is missing or a placeholder), and the line for a request that
+ * sends both kinds of photo. */
+export const NO_ATTACHMENT = {
+  status: 400,
+  reason: "no_attachment",
+  message: MCP_COPY.noAttachment,
+  bothSources: MCP_COPY.photoSourcesBoth,
+} as const;
+
 const DATA_COPY = {
   not_base64: "A photo's data is not base64. Send the file bytes base64 encoded.",
   not_image: "A photo is not a JPEG, PNG, WEBP, GIF or TIFF image.",
@@ -37,6 +76,9 @@ const DATA_COPY = {
   pixels: `A photo is over ${PIXEL_CAP_MEGAPIXELS} megapixels. Send a smaller one.`,
   unreadable: "We could not read the size of a photo. Send it as JPEG or PNG.",
 } as const;
+
+/** The public API's line when the set's deadline passes during a read. */
+const SET_TIMEOUT_COPY = "Reading the photos took too long. Try again, or send fewer or smaller photos.";
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/_-]*={0,2}$/;
 
@@ -55,7 +97,7 @@ export function photoFromBase64(raw: string): PhotoImportResult {
   }
   const contentType = sniffImageType(body);
   if (!contentType) {
-    return { ok: false, reason: "not_image", message: DATA_COPY.not_image };
+    return { ok: false, reason: "not_image", message: DATA_COPY.not_image, ...(isHeic(body) ? { format: "heic" as const } : {}) };
   }
   const size = imageDimensions(body, contentType);
   const readable = size !== null && size.width > 0 && size.height > 0;
@@ -76,10 +118,32 @@ export function photoFromBase64(raw: string): PhotoImportResult {
   };
 }
 
+/** A ChatGPT attachment, as far as Curvi reads it: the link only. */
+export interface AttachedFile {
+  download_url: string;
+}
+
+/**
+ * One photo of a request: a link (url), base64 bytes (data), or a ChatGPT
+ * attachment. An element of create_pack's images is itself an attachment
+ * (download_url); check_main_image's single attachment arrives as image.
+ * Other fields of OpenAI's file object (file_id, mime_type, file_name) are
+ * never read.
+ */
 export interface PhotoSource {
   url?: string;
   data?: string;
+  download_url?: string;
+  image?: AttachedFile;
 }
+
+/** One photo of a pack request, with what it shows when not the front. */
+export type PackPhotoSource = PhotoSource & { angle?: PhotoAngle };
+
+/** Who reads a photo refusal: "api" keeps the public API's copy, and
+ * "assistant" is the neutral MCP copy, without web form words. A chat
+ * attachment always gets the assistant copy. */
+export type PhotoCopyAudience = "api" | "assistant";
 
 export interface PhotoDeps {
   /** Fetches a photo link. Defaults to the SSRF safe product photo import. */
@@ -92,12 +156,101 @@ export interface PhotoDeps {
   remove?: (keys: string[]) => Promise<string[]>;
 }
 
-/** Reads one photo from a link or from base64. */
-export async function readPhoto(source: PhotoSource, deps: PhotoDeps = {}): Promise<PhotoImportResult> {
-  if (source.data !== undefined) {
-    return photoFromBase64(source.data);
+export interface ReadPhotoOptions {
+  /** The photo's place in the request, counted from 1, for the copy. */
+  number?: number;
+  audience?: PhotoCopyAudience;
+  /** The longest a link fetch may take, in milliseconds. */
+  timeoutMs?: number;
+}
+
+/** The attachment link of a photo, or null when it is not an attachment. */
+export function attachmentLinkOf(source: PhotoSource): string | null {
+  if (source.download_url !== undefined) {
+    return source.download_url;
   }
-  return (deps.fetchPhoto ?? importPhoto)(source.url ?? "");
+  return source.image !== undefined ? source.image.download_url : null;
+}
+
+function audienceOf(source: PhotoSource, audience: PhotoCopyAudience | undefined): PhotoCopyAudience {
+  return attachmentLinkOf(source) !== null ? "assistant" : (audience ?? "api");
+}
+
+/** The neutral MCP line for a photo that could not be read. */
+export function assistantPhotoMessage(failure: Pick<PhotoFailure, "reason" | "format">, photoNumber: number): string {
+  if (failure.format === "heic") {
+    return MCP_COPY.heic;
+  }
+  switch (failure.reason) {
+    case "not_image":
+      return MCP_COPY.photoUnreadable(photoNumber);
+    case "too_large":
+      return MCP_COPY.photoTooLarge(photoNumber);
+    case "timeout":
+      return MCP_COPY.photoTimeout(photoNumber);
+    case "invalid_url":
+    case "blocked_host":
+    case "unreachable":
+      return MCP_COPY.photoNotDownloaded(photoNumber);
+  }
+}
+
+/** Reads one photo from a link, an attachment or base64. A refusal for an
+ * attachment (or for the assistant audience) carries the neutral MCP copy;
+ * otherwise the public API's copy, as before. */
+export async function readPhoto(
+  source: PhotoSource,
+  deps: PhotoDeps = {},
+  options: ReadPhotoOptions = {},
+): Promise<PhotoImportResult> {
+  const link = attachmentLinkOf(source);
+  let read: PhotoImportResult;
+  if (link === null && source.data !== undefined) {
+    read = photoFromBase64(source.data);
+  } else {
+    const url = link ?? source.url ?? "";
+    read = deps.fetchPhoto
+      ? await deps.fetchPhoto(url)
+      : await importPhoto(url, options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {});
+  }
+  if (read.ok || audienceOf(source, options.audience) === "api") {
+    return read;
+  }
+  return { ...read, message: assistantPhotoMessage(read, options.number ?? 1) };
+}
+
+/**
+ * True when a file argument carries no usable attachment: absent, null, a
+ * placeholder string a model wrote in place of the file, an empty list, or
+ * an entry without a download_url that is an absolute URL. ChatGPT
+ * sometimes calls a tool without the file the user attached
+ * (docs/phases/PHASE_19.md, "Still unverified"); the caller answers with
+ * MCP_COPY.noAttachment instead of a schema error.
+ */
+export function attachmentMissing(value: unknown): boolean {
+  if (value === undefined || value === null || typeof value !== "object") {
+    return true;
+  }
+  const entries: unknown[] = Array.isArray(value) ? value : [value];
+  return (
+    entries.length === 0 ||
+    entries.some((entry) => {
+      const link = entry && typeof entry === "object" ? (entry as { download_url?: unknown }).download_url : undefined;
+      return typeof link !== "string" || !URL.canParse(link);
+    })
+  );
+}
+
+/** True when a request body names the attachment field but nothing usable
+ * came through in it (attachmentMissing). */
+export function missingAttachmentIn(body: unknown, field: "images" | "image"): boolean {
+  return (
+    body !== null &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    Object.hasOwn(body, field) &&
+    attachmentMissing((body as Record<string, unknown>)[field])
+  );
 }
 
 export interface PackUpload {
@@ -117,64 +270,213 @@ export type StorePhotosResult =
     }
   | { ok: false; status: number; reason: string; message: string };
 
+type SetFailure = Extract<StorePhotosResult, { ok: false }>;
+
+export interface PhotoSetOptions extends PhotoDeps {
+  /** The copy for refusals of link and base64 photos (attachments always
+   * get the assistant copy). Defaults to "api". */
+  audience?: PhotoCopyAudience;
+  /** One deadline for reading the whole set. Defaults to
+   * PACK_PHOTO_SET_DEADLINE_MS. */
+  deadlineMs?: number;
+}
+
+/**
+ * Runs fn over the items, at most `limit` at a time, starting them in
+ * order, and starts no new item once stop() is true. Results are by index;
+ * an item that never started is undefined.
+ */
+async function eachLimited<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+  stop: () => boolean,
+): Promise<Array<R | undefined>> {
+  const results: Array<R | undefined> = new Array<R | undefined>(items.length).fill(undefined);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length && !stop()) {
+      const index = next;
+      next += 1;
+      results[index] = await fn(items[index] as T, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(0, Math.min(limit, items.length)) }, worker));
+  return results;
+}
+
+/** Reads one photo of a set before the set's deadline: whatever the fetch
+ * does, the read answers by then. */
+async function readBefore(
+  source: PhotoSource,
+  index: number,
+  deadlineAt: number,
+  options: PhotoSetOptions,
+): Promise<PhotoImportResult> {
+  const audience = audienceOf(source, options.audience);
+  const timedOut: PhotoImportResult = {
+    ok: false,
+    reason: "timeout",
+    message: audience === "assistant" ? MCP_COPY.photoTimeout(index + 1) : SET_TIMEOUT_COPY,
+  };
+  const left = deadlineAt - Date.now();
+  if (left <= 0) {
+    return timedOut;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<PhotoImportResult>((resolve) => {
+    timer = setTimeout(() => resolve(timedOut), left);
+  });
+  try {
+    return await Promise.race([
+      readPhoto(source, options, { number: index + 1, audience, timeoutMs: left }),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function setFailure(read: PhotoFailure, index: number, source: PhotoSource, audience: PhotoCopyAudience | undefined): SetFailure {
+  return {
+    ok: false,
+    status: PHOTO_FAILURE_STATUS[read.reason],
+    reason: read.reason,
+    // The assistant copy names the photo already.
+    message: audienceOf(source, audience) === "assistant" ? read.message : `Photo ${index + 1}: ${read.message}`,
+  };
+}
+
+const STORAGE_FAILURE: SetFailure = {
+  ok: false,
+  status: 503,
+  reason: "storage",
+  message: "We could not save a photo. Try again in a moment.",
+};
+
 /**
  * Reads each photo and, when store is true, writes it to the workspace's
  * source prefix. With store false (the in memory demo, which keeps no
  * files) the photo is still read and checked, and its key is named the same
  * way, so a demo replay behaves as production does.
+ *
+ * Photos are read PACK_PHOTO_FETCH_CONCURRENCY at a time under one
+ * deadline. The first refusal in the request's order is answered, no new
+ * read starts after a refusal, and every photo this call wrote is taken back.
+ * Uploads keep the request's order; the same photo twice is one photo, with
+ * the first one's angle.
  */
 export async function storePackPhotos(
   workspaceId: string,
-  photos: ReadonlyArray<PhotoSource & { angle?: PhotoAngle }>,
-  options: { store: boolean } & PhotoDeps,
+  photos: readonly PackPhotoSource[],
+  options: { store: boolean } & PhotoSetOptions,
 ): Promise<StorePhotosResult> {
-  const uploads: PackUpload[] = [];
-  const created: string[] = [];
-  const fail = async (result: Extract<StorePhotosResult, { ok: false }>): Promise<StorePhotosResult> => {
+  const deadlineAt = Date.now() + (options.deadlineMs ?? PACK_PHOTO_SET_DEADLINE_MS);
+  const put = options.put ?? ((ws, photo, k) => putSourceObjectIfAbsent(ws, photo.body, photo.contentType, k));
+  const claimed = new Set<string>();
+  let refused = false;
+  type Slot = { ok: true; key: string; sha256: string; created: boolean } | SetFailure;
+
+  const slots = await eachLimited<PackPhotoSource, Slot>(
+    photos,
+    PACK_PHOTO_FETCH_CONCURRENCY,
+    async (source, index) => {
+      const read = await readBefore(source, index, deadlineAt, options);
+      if (!read.ok) {
+        refused = true;
+        return setFailure(read, index, source, options.audience);
+      }
+      const key = apiSourceKey(workspaceId, read.photo.sha256);
+      let created = false;
+      // The same photo twice is stored once; nothing more is stored once the
+      // request is refused.
+      if (options.store && !refused && !claimed.has(key)) {
+        claimed.add(key);
+        try {
+          created = await put(workspaceId, read.photo, key);
+        } catch (err) {
+          refused = true;
+          console.error("[api/v1] storing a photo failed", err);
+          return STORAGE_FAILURE;
+        }
+      }
+      return { ok: true, key, sha256: read.photo.sha256, created };
+    },
+    () => refused,
+  );
+
+  const created = [...new Set(slots.flatMap((slot) => (slot?.ok && slot.created ? [slot.key] : [])))];
+  const failure = slots.find((slot): slot is SetFailure => slot !== undefined && !slot.ok);
+  if (failure) {
     await discardStoredPhotos(created, options);
-    return result;
-  };
-  for (const [index, source] of photos.entries()) {
-    const read = await readPhoto(source, options);
-    if (!read.ok) {
-      return fail({
-        ok: false,
-        status: PHOTO_FAILURE_STATUS[read.reason],
-        reason: read.reason,
-        message: `Photo ${index + 1}: ${read.message}`,
-      });
-    }
-    const key = apiSourceKey(workspaceId, read.photo.sha256);
-    if (uploads.some((upload) => upload.key === key)) {
-      // The same photo twice is one photo.
+    return failure;
+  }
+  const uploads: PackUpload[] = [];
+  for (const [index, slot] of slots.entries()) {
+    if (!slot?.ok || uploads.some((upload) => upload.key === slot.key)) {
       continue;
     }
-    if (options.store) {
-      try {
-        const wrote = await (
-          options.put ?? ((ws, photo, k) => putSourceObjectIfAbsent(ws, photo.body, photo.contentType, k))
-        )(workspaceId, read.photo, key);
-        if (wrote) {
-          created.push(key);
-        }
-      } catch (err) {
-        console.error("[api/v1] storing a photo failed", err);
-        return fail({
-          ok: false,
-          status: 503,
-          reason: "storage",
-          message: "We could not save a photo. Try again in a moment.",
-        });
-      }
-    }
-    uploads.push({
-      key,
-      sha256: read.photo.sha256,
-      kind: "image",
-      ...(source.angle ? { angle: source.angle } : {}),
-    });
+    const angle = photos[index]?.angle;
+    uploads.push({ key: slot.key, sha256: slot.sha256, kind: "image", ...(angle ? { angle } : {}) });
   }
   return { ok: true, uploads, created };
+}
+
+/** What a photo is, read without storing it: estimate_pack (PHASE_19 P19-16)
+ * needs each photo's hash, size and angle to count credits as createJob will. */
+export interface ReadPackPhoto {
+  sha256: string;
+  width?: number;
+  height?: number;
+  angle?: PhotoAngle;
+}
+
+export type ReadPackPhotosResult = { ok: true; photos: ReadPackPhoto[] } | SetFailure;
+
+/**
+ * Reads and checks each photo exactly as storePackPhotos does (the same
+ * concurrency, deadline, copy, order and de-duplication) and stores nothing.
+ * The bytes are dropped once hashed and sized.
+ */
+export async function readPackPhotos(
+  photos: readonly PackPhotoSource[],
+  options: PhotoSetOptions = {},
+): Promise<ReadPackPhotosResult> {
+  const deadlineAt = Date.now() + (options.deadlineMs ?? PACK_PHOTO_SET_DEADLINE_MS);
+  let refused = false;
+  type Slot = { ok: true; photo: ReadPackPhoto } | SetFailure;
+  const slots = await eachLimited<PackPhotoSource, Slot>(
+    photos,
+    PACK_PHOTO_FETCH_CONCURRENCY,
+    async (source, index) => {
+      const read = await readBefore(source, index, deadlineAt, options);
+      if (!read.ok) {
+        refused = true;
+        return setFailure(read, index, source, options.audience);
+      }
+      const { sha256, width, height } = read.photo;
+      return {
+        ok: true,
+        photo: {
+          sha256,
+          ...(width !== undefined && height !== undefined ? { width, height } : {}),
+          ...(source.angle ? { angle: source.angle } : {}),
+        },
+      };
+    },
+    () => refused,
+  );
+  const failure = slots.find((slot): slot is SetFailure => slot !== undefined && !slot.ok);
+  if (failure) {
+    return failure;
+  }
+  const read: ReadPackPhoto[] = [];
+  for (const slot of slots) {
+    if (slot?.ok && !read.some((photo) => photo.sha256 === slot.photo.sha256)) {
+      read.push(slot.photo);
+    }
+  }
+  return { ok: true, photos: read };
 }
 
 /**

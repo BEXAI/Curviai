@@ -1,9 +1,10 @@
 import Stripe from "stripe";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tierByKey } from "@curvi/pipeline/seed";
-import { creditLedger, events, generationJobs, products, subscriptions, workspaces } from "@curvi/db/schema";
+import { billingConsents, creditLedger, events, generationJobs, products, subscriptions, workspaces } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { and, eq, type Db } from "@curvi/db";
+import { planChangeDisclosure } from "./checkout";
 import { DbBillingStore, SUBSCRIPTION_SYNC_ATTEMPTS, SubscriptionSyncConflictError } from "./db-store";
 import { buildPriceTable, tierPriceEnvName, topUpPriceEnvName } from "./price-table";
 import {
@@ -42,6 +43,22 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await client.close();
+});
+
+describe("scheduled change cleanup", () => {
+  for (const type of ["subscription_schedule.released", "subscription_schedule.canceled", "subscription_schedule.completed"] as const) {
+    it(`clears only the matching schedule on ${type}`, async () => {
+      const workspaceId = await newWorkspace("growth");
+      const externalId = `sub_${type}`;
+      await db.insert(subscriptions).values({ workspaceId, provider: "stripe", externalId, tier: "growth", cadence: "monthly", status: "active",
+        pendingTier: "starter", pendingCadence: "monthly", pendingAt: new Date("2026-11-01Z"), pendingScheduleId: "sched_current" });
+      const event = (id: string) => ({ id: `evt_${type}_${id}`, type, data: { object: { id } } }) as Stripe.Event;
+      await processStripeEvent(event("sched_old"), table, store());
+      expect((await db.query.subscriptions.findFirst({ where: eq(subscriptions.externalId, externalId) }))?.pendingScheduleId).toBe("sched_current");
+      await processStripeEvent(event("sched_current"), table, store());
+      expect((await db.query.subscriptions.findFirst({ where: eq(subscriptions.externalId, externalId) }))?.pendingScheduleId).toBeNull();
+    });
+  }
 });
 
 function asDb(value: unknown): Db {
@@ -870,6 +887,28 @@ describe("unroutable events", () => {
     expect(await balance(ws)).toBe(growth.creditsPerMonth);
   });
 
+  it("writes no expiry on any grant, top ups included (P20-05)", async () => {
+    const ws = await newWorkspace();
+    const store = new DbBillingStore(asDb(db), "stripe");
+    await store.recordGrantOnce("checkout:cs_no_expiry", {
+      workspaceId: ws,
+      stripeCustomerId: null,
+      credits: 100,
+      reason: "topup",
+      payment: { checkoutSessionId: "cs_no_expiry" },
+    });
+    await store.recordGrantOnce("invoice:in_no_expiry", {
+      workspaceId: ws,
+      stripeCustomerId: null,
+      credits: growth.creditsPerMonth,
+      reason: "grant",
+      payment: { invoiceId: "in_no_expiry" },
+    });
+    const rows = await db.select().from(creditLedger).where(eq(creditLedger.workspaceId, ws));
+    expect(rows.map((row) => row.reason).sort()).toEqual(["grant", "topup"]);
+    expect(rows.every((row) => row.expiresAt === null)).toBe(true);
+  });
+
   it("keeps acknowledging unroutable Shopify grants", async () => {
     const shopify = new DbBillingStore(asDb(db), "shopify");
     await expect(
@@ -878,7 +917,6 @@ describe("unroutable events", () => {
         stripeCustomerId: null,
         credits: 10,
         reason: "grant",
-        expiresMonths: null,
       }),
     ).resolves.toBe(true);
   });
@@ -1050,5 +1088,41 @@ describe("duplicate subscriptions against Stripe (fix/duplicate-subscriptions)",
     const empty = await newWorkspace();
     await store().linkCustomer(empty, "cus_first_link");
     await expect(store().billingLink(empty, null)).resolves.toEqual({ workspaceId: empty, stripeCustomerId: "cus_first_link" });
+  });
+});
+
+describe("plan change consent (law and copy review major 3)", () => {
+  it("keeps the terms shown beside the plan change button, who clicked and the portal session, once", async () => {
+    const ws = await newWorkspace("growth", "cus_change");
+    const disclosure = planChangeDisclosure({ tier: "pro", cadence: "annual" });
+    const consent = {
+      workspaceId: ws,
+      userId: "00000000-0000-4000-8000-00000000c0c0",
+      email: "Owner@Example.com",
+      stripeCustomerId: "cus_change",
+      portalSessionId: "bps_change_1",
+      tier: "pro" as const,
+      cadence: "annual" as const,
+      disclosureVersion: disclosure.version,
+      disclosureSha256: disclosure.sha256,
+      disclosureText: disclosure.text,
+      acceptedAt: new Date("2026-10-02T12:00:00Z"),
+    };
+    expect(await store().recordPlanChangeConsent(consent)).toBe(true);
+    expect(await store().recordPlanChangeConsent(consent)).toBe(false);
+    const rows = await db.select().from(billingConsents).where(eq(billingConsents.workspaceId, ws));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      checkoutSessionId: null,
+      portalSessionId: "bps_change_1",
+      email: "Owner@Example.com",
+      stripeCustomerId: "cus_change",
+      tier: "pro",
+      cadence: "annual",
+      disclosureText: disclosure.text,
+    });
+    expect(disclosure.text).toContain("Your Curvi Pro plan renews automatically every year");
+    expect(disclosure.text).toContain("cancel before your next renewal date");
+    expect(rows[0]?.emailKey).not.toContain("@");
   });
 });

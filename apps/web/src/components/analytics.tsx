@@ -9,7 +9,8 @@ import { CONSENT_CHANGED_EVENT, readConsent, type ConsentChoice } from "@/lib/co
  * lazily and only after consent, so a visitor who declines, or has not
  * chosen yet, downloads no analytics code and gets no analytics cookies.
  * Withdrawing consent later opts the running instance out, which stops
- * capture and clears its persistence.
+ * capture and clears its persistence. Pageviews follow client navigations
+ * ("history_change"), since the App Router changes pages without a load.
  */
 export function Analytics() {
   useEffect(() => {
@@ -23,25 +24,29 @@ export function Analytics() {
     const apply = (choice: ConsentChoice | null): void => {
       if (choice === "granted") {
         started = true;
-        void import("posthog-js").then(({ default: posthog }) => {
-          if (!posthog.__loaded) {
-            posthog.init(key, {
-              api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
-              capture_pageview: true,
-              capture_pageleave: true,
-            });
-          } else if (posthog.has_opted_out_capturing()) {
-            posthog.opt_in_capturing({ captureEventName: false });
-          }
-        });
+        void import("posthog-js")
+          .then(({ default: posthog }) => {
+            if (!posthog.__loaded) {
+              posthog.init(key, {
+                api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
+                capture_pageview: "history_change",
+                capture_pageleave: true,
+              });
+            } else if (posthog.has_opted_out_capturing()) {
+              posthog.opt_in_capturing({ captureEventName: false });
+            }
+          })
+          .catch(() => undefined);
         return;
       }
       if (choice === "denied" && started) {
-        void import("posthog-js").then(({ default: posthog }) => {
-          if (posthog.__loaded) {
-            posthog.opt_out_capturing();
-          }
-        });
+        void import("posthog-js")
+          .then(({ default: posthog }) => {
+            if (posthog.__loaded) {
+              posthog.opt_out_capturing();
+            }
+          })
+          .catch(() => undefined);
       }
     };
     apply(readConsent());

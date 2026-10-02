@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadRecipes, recipes, sql, type Db } from "@curvi/db";
 import { createTestDb } from "@curvi/db/testing";
+import { canonicalJson } from "@curvi/pipeline/output-options";
 import { recipeSeedRows } from "@curvi/pipeline/seed";
-import { canonicalJson, compareRecipes, readRecipeRows, recipeBodyHash, type RecipeLike } from "./recipe-drift";
+import { compareRecipes, readRecipeRows, recipeBodyHash, type RecipeLike } from "./recipe-drift";
 
 const seed: RecipeLike[] = [
   { key: "a", version: 1, model: "m1", fallbackModels: ["m2"], body: { system: "one", maxTokens: 10 }, active: true },
@@ -46,6 +47,29 @@ describe("compareRecipes", () => {
     expect(JSON.stringify(drift)).not.toContain("one edited");
     expect(compareRecipes([], seed).map((d) => d.issue)).toEqual(["missing", "missing"]);
   });
+
+  it("reports both percentages and active states per version, including rollback and inactive rows", () => {
+    const expected = [
+      { ...seed[0], trafficPct: 100 },
+      { ...seed[0], version: 2, trafficPct: 0 },
+      { ...seed[0], version: 3, active: false, trafficPct: 0 },
+    ];
+    const actual = [
+      { ...expected[0], trafficPct: 50 },
+      { ...expected[1], active: false, trafficPct: 50 },
+      { ...expected[2], active: true, trafficPct: 10 },
+    ];
+    expect(compareRecipes(actual, expected)).toEqual([
+      { key: "a", version: 1, issue: "traffic_pct", expected: "100", actual: "50" },
+      { key: "a", version: 2, issue: "inactive", expected: "true", actual: "false" },
+      { key: "a", version: 2, issue: "traffic_pct", expected: "0", actual: "50" },
+      { key: "a", version: 3, issue: "unexpected_active", expected: "false", actual: "true" },
+      { key: "a", version: 3, issue: "traffic_pct", expected: "0", actual: "10" },
+    ]);
+    expect(compareRecipes([{ ...seed[0], trafficPct: 100 }], [seed[0]])).toEqual([]);
+    expect(compareRecipes([{ ...expected[2], trafficPct: 20 }], [expected[2]]))
+      .toEqual([{ key: "a", version: 3, issue: "traffic_pct", expected: "0", actual: "20" }]);
+  });
 });
 
 describe("readRecipeRows against the real schema", () => {
@@ -72,5 +96,12 @@ describe("readRecipeRows against the real schema", () => {
     expect(drift).toEqual([
       { key: active.key, version: active.version, issue: "model", expected: active.model, actual: "swapped-model" },
     ]);
+  });
+
+  it("reads the production traffic percentage instead of silently defaulting it", async () => {
+    await loadRecipes(db as unknown as Db, recipeSeedRows);
+    await db.execute(sql`update ${recipes} set traffic_pct = 50 where key = 'shot_planner' and version = 3`);
+    const drift = compareRecipes(await readRecipeRows(db), recipeSeedRows);
+    expect(drift).toEqual([{ key: "shot_planner", version: 3, issue: "traffic_pct", expected: "100", actual: "50" }]);
   });
 });

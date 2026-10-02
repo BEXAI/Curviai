@@ -8,8 +8,9 @@ import type { BrandStyle, GeneratePackInput } from "@curvi/trigger/runner";
 import type { PreflightIntake } from "@curvi/trigger/preflight-intake";
 import { isTemplateFontKey, presets, socialBadgeByTier, type TierKey } from "@curvi/pipeline/seed";
 import { isAngleRole, printableEndorsements, printableSellerLines } from "@curvi/pipeline/seller-inputs";
-import { ResolvedOutputOptions } from "@curvi/pipeline/output-options";
+import { HEX, ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 import { parseSellerAnswers } from "@curvi/pipeline/questions";
+import { isWorkspaceObjectKey } from "@/lib/object-keys";
 
 export interface PayloadProduct {
   id: string;
@@ -116,10 +117,7 @@ export function brandStyleFor(workspaceId: string, kit: PayloadBrandKit | null |
   }
   const heading = isTemplateFontKey(kit.fonts?.heading) ? kit.fonts.heading : null;
   const body = isTemplateFontKey(kit.fonts?.body) ? kit.fonts.body : null;
-  const logoKey =
-    typeof kit.logoKey === "string" && kit.logoKey.startsWith(`ws/${workspaceId}/`) && !kit.logoKey.includes("..")
-      ? kit.logoKey
-      : null;
+  const logoKey = isWorkspaceObjectKey(workspaceId, kit.logoKey) ? kit.logoKey : null;
   const stylePreset = kit.stylePreset && Object.hasOwn(presets, kit.stylePreset) ? kit.stylePreset : null;
   if (!heading && !body && !logoKey && !stylePreset) {
     return null;
@@ -150,6 +148,8 @@ export function buildGeneratePackInput(args: {
   /** generation_jobs.seller_answers as stored (PHASE_16 workstream 4). Read
    * with the shared schema; a value out of shape is left out, never fatal. */
   sellerAnswers?: unknown;
+  /** "assistant" for a pack started through /api/mcp (PHASE_19 P19-29). */
+  audience?: "assistant";
 }): GeneratePackPayload {
   const brand = brandStyleFor(args.workspaceId, args.brandKit);
   const output = payloadOutputOf(args.outputOptions);
@@ -182,7 +182,7 @@ export function buildGeneratePackInput(args: {
       .sort((a, b) => Number(b.angle === "front") - Number(a.angle === "front")),
     userDescription: args.userDescription,
     brandColors: (Array.isArray(args.brandColors) ? args.brandColors : [])
-      .filter((c) => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c))
+      .filter((c) => typeof c === "string" && HEX.test(c))
       .slice(0, 6),
     sku: args.product.sku || args.product.amazonSku || undefined,
     seoSlug: seoSlugFor(args.product.title),
@@ -195,5 +195,6 @@ export function buildGeneratePackInput(args: {
     ...(brand ? { brand } : {}),
     ...(output ? { output } : {}),
     ...(sellerAnswers ? { sellerAnswers } : {}),
+    ...(args.audience === "assistant" ? { audience: "assistant" as const } : {}),
   };
 }

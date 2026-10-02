@@ -7,7 +7,7 @@
  * - "several": two products, so the chooser shows (a watch and sneakers,
  *   the evaluator's cafe photo), with the note's pick preselected when the
  *   note names one of them;
- * - "screenshot": a screenshot, so the photo blocks the pack;
+ * - "noproduct": no product found, so the photo blocks the pack;
  * - "questions": the two products with the question step (PHASE_16
  *   workstream 4): which product, where it sells and the scene mood, as the
  *   deterministic questions the step asks when its model is down.
@@ -67,13 +67,13 @@ export function demoPreflight(key: string, note?: string): PreflightView {
     demo: true,
   };
   const name = key.toLowerCase();
-  if (name.includes("screenshot")) {
+  if (name.includes("noproduct")) {
     return {
       ...base,
       status: "blocked",
       found: null,
       productLongSide: null,
-      problem: problemFor("screenshot"),
+      problem: problemFor("no_product"),
       previewUrl: null,
     };
   }

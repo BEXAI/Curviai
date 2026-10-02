@@ -17,10 +17,23 @@ test("pricing CTAs carry the chosen plan and cadence to signup", async ({ page }
   await expect(page.getByTestId("annual-savings")).toContainText("save up to");
 });
 
-test("pricing labels unbuilt features as coming soon", async ({ page }) => {
+test("pricing lists unbuilt features under On the way, never inside a card (P20-08)", async ({ page }) => {
   await page.goto("/pricing");
-  await expect(page.getByTestId("coming-soon-growth")).toContainText("Generative video");
-  await expect(page.getByTestId("coming-soon-agency")).toContainText("White label share pages");
+  const onTheWay = page.getByTestId("on-the-way");
+  await expect(onTheWay).toContainText("Generative video, coming soon to Growth and up.");
+  await expect(onTheWay).toContainText("Coming soon");
+  await expect(page.getByTestId("tier-growth")).not.toContainText("Generative video");
+  await expect(page.getByTestId("tier-agency")).toHaveCount(0);
+  await expect(page.getByTestId("larger-plan")).toContainText("Need more than Pro? Email us and we will set up a larger plan.");
+});
+
+test("pricing shows the renewal terms beside every plan button (P20-07)", async ({ page }) => {
+  await page.goto("/pricing");
+  await expect(page.getByTestId("renewal-terms-growth")).toContainText("renews automatically every month at $79");
+  await expect(page.getByTestId("renewal-terms-growth")).toContainText("If our price changes, we email you before it applies");
+  await page.getByRole("switch", { name: "Toggle annual billing" }).click();
+  await expect(page.getByTestId("renewal-terms-growth")).toContainText("renews automatically every year");
+  await expect(page.getByTestId("renewal-terms-growth")).toContainText("days before each renewal");
 });
 
 test("billing shows the finish upgrading card for a plan intent", async ({ page }) => {

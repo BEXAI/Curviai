@@ -5,11 +5,17 @@ import Link from "next/link";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "@curvi/ui";
 import { AUTH_NETWORK_ERROR, isNetworkAuthError, runAuthCall, trackAuthError } from "@/lib/auth-call";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { Turnstile, turnstileEnabled } from "./turnstile";
 
 type Status = "idle" | "busy" | "sent" | "error";
 
-/** Requests a password recovery email through Supabase auth. */
-export function ForgotPasswordForm() {
+/** Requests a password recovery email through Supabase auth. Inside the
+ * ChatGPT connect flow (PHASE_19 P19-09) onLogIn switches back to the log in
+ * form in place and sentNote says to come back to the page, so the visitor
+ * never leaves the consent page or meets the marketing header. */
+export function ForgotPasswordForm({ onLogIn, sentNote }: { onLogIn?: () => void; sentNote?: string } = {}) {
+  const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaReset, setCaptchaReset] = useState(0);
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState<string | null>(null);
@@ -25,7 +31,9 @@ export function ForgotPasswordForm() {
     setStatus("busy");
     setMessage(null);
     const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent("/reset-password")}`;
-    const result = await runAuthCall(() => supabase.auth.resetPasswordForEmail(email, { redirectTo }));
+    const result = await runAuthCall(() => supabase.auth.resetPasswordForEmail(email, { redirectTo, captchaToken: captchaToken || undefined }));
+    setCaptchaToken("");
+    setCaptchaReset((n) => n + 1);
     if (!result.ok) {
       setStatus("error");
       setMessage(result.message);
@@ -33,7 +41,9 @@ export function ForgotPasswordForm() {
       return;
     }
     setStatus("sent");
-    setMessage("If an account exists for that email, a reset link is on its way. Open it on this device.");
+    setMessage(
+      `If an account exists for that email, a reset link is on its way. Open it on any device.${sentNote ? ` ${sentNote}` : ""}`,
+    );
   }
 
   return (
@@ -55,7 +65,8 @@ export function ForgotPasswordForm() {
               placeholder="you@yourbrand.com"
             />
           </div>
-          <Button type="submit" variant="secondary" className="w-full" disabled={status === "busy"}>
+          <Turnstile action="password_reset" onToken={setCaptchaToken} resetKey={captchaReset} />
+          <Button type="submit" variant="secondary" className="w-full" disabled={status === "busy" || (turnstileEnabled && !captchaToken)}>
             {status === "busy" ? "Sending" : "Send reset link"}
           </Button>
           {message ? (
@@ -69,9 +80,15 @@ export function ForgotPasswordForm() {
         </form>
         <p className="mt-4 text-sm text-ink-500">
           Remembered it?{" "}
-          <Link href="/login" className="font-medium text-ink-900 underline">
-            Log in
-          </Link>
+          {onLogIn ? (
+            <button type="button" onClick={onLogIn} className="font-medium text-ink-900 underline">
+              Log in
+            </button>
+          ) : (
+            <Link href="/login" className="font-medium text-ink-900 underline">
+              Log in
+            </Link>
+          )}
         </p>
       </CardContent>
     </Card>
@@ -148,7 +165,7 @@ export function ResetPasswordForm() {
       <Card>
         <CardContent className="space-y-3 p-6">
           <p className="text-sm text-ink-600">
-            This page needs an active reset link. Request a new one and open it on this device.
+            This page needs an active reset link. Request a new one and open it on any device.
           </p>
           <Link href="/forgot-password" className="text-sm font-medium text-ink-900 underline">
             Request a reset link

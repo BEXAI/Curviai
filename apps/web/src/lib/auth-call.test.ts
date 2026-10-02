@@ -27,11 +27,11 @@ describe("runAuthCall", () => {
     expect(unavailable).toEqual({ ok: false, message: AUTH_NETWORK_ERROR, kind: "network" });
   });
 
-  it("passes a rejection from the auth server through", async () => {
+  it("maps an auth code without exposing the provider message", async () => {
     const result = await runAuthCall(async () => ({
-      error: { name: "AuthApiError", message: "Invalid login credentials", status: 400 },
+      error: { code: "invalid_credentials", name: "AuthApiError", message: "private provider detail", status: 400 },
     }));
-    expect(result).toEqual({ ok: false, message: "Invalid login credentials", kind: "rejected" });
+    expect(result).toEqual({ ok: false, message: "That email and password do not match. Try again or reset your password.", kind: "rejected" });
   });
 
   it("uses a generic message when the rejection has no text", async () => {

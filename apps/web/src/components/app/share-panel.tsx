@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, cn } from "@curvi/ui";
+import { SHARE_PROOF_HINT, SHARE_PROOF_TOGGLE } from "@/lib/proof-copy";
 import { track } from "@/lib/track";
 import type { ShareKind, ShareStatus } from "@/lib/shares/types";
+import { ShareButtons } from "./share-buttons";
 
 /** How often the panel asks again while the pack is still running. */
 const WAIT_POLL_MS = 10_000;
@@ -30,6 +32,8 @@ export function SharePanel({ jobId }: { jobId: string }) {
   const [status, setStatus] = useState<ShareStatus | null>(null);
   const [kind, setKind] = useState<ShareKind>("before_after");
   const [gallery, setGallery] = useState(false);
+  // The measured checks on the public page (P18-16), off until the owner opts in.
+  const [proof, setProof] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -37,7 +41,8 @@ export function SharePanel({ jobId }: { jobId: string }) {
   const apply = useCallback((share: ShareStatus) => {
     setStatus(share);
     setKind(share.kind);
-    setGallery(share.inGallery);
+    setGallery(share.galleryRequested ?? share.inGallery);
+    setProof(share.showProof === true);
   }, []);
 
   useEffect(() => {
@@ -77,7 +82,7 @@ export function SharePanel({ jobId }: { jobId: string }) {
         const response = await fetch(`/api/jobs/${jobId}/share`, {
           method,
           headers: method === "POST" ? { "content-type": "application/json" } : undefined,
-          body: method === "POST" ? JSON.stringify({ kind, gallery }) : undefined,
+          body: method === "POST" ? JSON.stringify({ kind, gallery, proof }) : undefined,
         });
         const { share, error } = await readShare(response);
         if (!response.ok || !share) {
@@ -88,18 +93,20 @@ export function SharePanel({ jobId }: { jobId: string }) {
         setMessage(
           method === "DELETE"
             ? "Your share page is down. The link no longer works."
+            : share.galleryReviewStatus === "pending"
+              ? "Published. Your gallery submission is waiting for review."
             : share.inGallery
               ? "Published, and listed in the public gallery."
               : "Published. Anyone with the link can see it.",
         );
-        track(method === "DELETE" ? "share_unpublished" : "share_published", { kind, gallery });
+        track(method === "DELETE" ? "share_unpublished" : "share_published", { kind, gallery, proof });
       } catch {
         setMessage("We could not reach Curvi. Check your connection and try again.");
       } finally {
         setBusy(false);
       }
     },
-    [jobId, kind, gallery, apply],
+    [jobId, kind, gallery, proof, apply],
   );
 
   const copy = useCallback(async () => {
@@ -117,7 +124,8 @@ export function SharePanel({ jobId }: { jobId: string }) {
     return null;
   }
 
-  const changed = status.published && (kind !== status.kind || gallery !== status.inGallery);
+  const changed =
+    status.published && (kind !== status.kind || gallery !== (status.galleryRequested ?? status.inGallery) || proof !== (status.showProof === true));
 
   return (
     <Card id="share" data-testid="share-panel" className="mt-8">
@@ -157,6 +165,9 @@ export function SharePanel({ jobId }: { jobId: string }) {
             can see it, unless you also list it in the gallery. You can take it down any time.
           </p>
         )}
+
+        {/* Post the page on X, LinkedIn, Pinterest or Reddit (P18-14). */}
+        {status.published && status.path ? <ShareButtons path={status.path} /> : null}
 
         {status.canPublish ? (
           <>
@@ -202,8 +213,25 @@ export function SharePanel({ jobId }: { jobId: string }) {
                 className="mt-0.5 h-4 w-4 accent-accent-500"
               />
               <span>
-                Also show it in the public gallery at /gallery, where search engines can find it. I have
+                Submit it for the public gallery at /gallery. Approved submissions can be found by search engines. I have
                 the right to share these photos.
+              </span>
+            </label>
+
+            {status.galleryReviewStatus === "pending" ? <p className="text-sm text-ink-600">Your gallery submission is waiting for review. Your share link already works.</p> : null}
+            {status.galleryReviewStatus === "rejected" ? <p className="text-sm text-ink-600">This submission was not added to the gallery. You can still share its link.</p> : null}
+
+            <label className="flex cursor-pointer items-start gap-3 text-sm text-ink-700">
+              <input
+                type="checkbox"
+                data-testid="share-proof"
+                checked={proof}
+                onChange={(event) => setProof(event.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-accent-500"
+              />
+              <span>
+                <span className="block">{SHARE_PROOF_TOGGLE}</span>
+                <span className="block text-xs text-ink-500">{SHARE_PROOF_HINT}</span>
               </span>
             </label>
 

@@ -10,7 +10,9 @@
  *   server sees after the user accepted by signing up;
  * - otherwise at the first signed in visit to /app, which covers accounts
  *   made before this table existed and sessions that never passed the
- *   callback.
+ *   callback;
+ * - or at the first signed in visit to the ChatGPT consent page (PHASE_19
+ *   P19-09), for a user who signs up there and never opens /app.
  *
  * Either way a row is written only when the user has no acceptance record at
  * all, so an existing user is never recorded as accepting a newer version
@@ -21,8 +23,8 @@
 import { sql, type Db, type TermsAcceptanceSource } from "@curvi/db";
 import { clientIp } from "@/lib/rate-limit";
 
-/** Matches "Last updated September 28, 2026" on /terms. Change both together. */
-export const TERMS_VERSION = "2026-09-28";
+/** Matches "Last updated October 2, 2026" on /terms. Change both together. */
+export const TERMS_VERSION = "2026-10-02";
 
 export interface TermsAcceptanceInput {
   userId: string;

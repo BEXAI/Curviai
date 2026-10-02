@@ -4,10 +4,10 @@ import { describe, expect, it } from "vitest";
 import { TEMPLATE_STILL_TYPES, type ProductProfile, type Shot } from "@curvi/pipeline";
 import {
   creditCosts,
+  creditExpiry,
   isShotMethodDeliverable,
   tierByKey,
   tiers,
-  topUps,
   undeliverableShotMethods,
   type TierKey,
 } from "@curvi/pipeline/seed";
@@ -45,10 +45,9 @@ import {
   specFilesName,
   specFilesNameFor,
   tierDisplayName,
-  topUpMonths,
   typicalPackCredits,
   unqualifiedClaims,
-  UNUSED_CREDITS_SENTENCE,
+  CREDIT_TERMS_SENTENCE,
 } from "./marketing-facts";
 
 describe("typical pack size", () => {
@@ -122,15 +121,14 @@ describe("annual savings", () => {
 });
 
 describe("credit policy sentences", () => {
-  it("state the top up lifetime from the seed", () => {
-    expect(topUpMonths()).toBe(Math.min(...topUps.map((topUp) => topUp.expiresMonths)));
-  });
-
-  it("promise no rollover cap, since subscription credits never expire today", () => {
-    expect(UNUSED_CREDITS_SENTENCE).toBe(
-      "Credits you do not use stay in your balance from one billing period to the next.",
+  it("say credits stay while the account is open, as the seed's creditExpiry says (P20-05)", () => {
+    expect(creditExpiry.kind).toBe("none");
+    expect(CREDIT_TERMS_SENTENCE).toBe(
+      "Credits you do not use stay in your balance from one month to the next, for as long as your account is open.",
     );
-    expect(UNUSED_CREDITS_SENTENCE).not.toMatch(/carr(y|ies) over|up to|cap/i);
+    // No cap, no lifetime, and never the word PHASE_18's email lint bans
+    // next to "credits".
+    expect(CREDIT_TERMS_SENTENCE).not.toMatch(/carr(y|ies) over|up to|cap|expire|\d+ months/i);
   });
 
   it("formats credit amounts", () => {
@@ -372,7 +370,7 @@ describe("unqualifiedClaims", () => {
     expect(unqualifiedClaims("Publishing straight to Shopify is coming soon.")).toEqual([]);
     expect(unqualifiedClaims("Every Monday, new variants land in your library.")).toHaveLength(1);
     expect(unqualifiedClaims("A short looping video for the gallery.")).toHaveLength(1);
-    expect(unqualifiedClaims("Upload one photo or paste a product URL.")).toHaveLength(1);
+    expect(unqualifiedClaims("Upload one photo and get auto packs for every new product.")).toHaveLength(1);
     expect(unqualifiedClaims("Checks background, fill and text policy per channel.")).toHaveLength(1);
   });
 

@@ -68,6 +68,17 @@ describe("PUT /api/assets/[assetId]/favorite", () => {
     expect(services.setFavorite).not.toHaveBeenCalled();
   });
 
+  it("never reads the body of a signed out caller and caps the body", async () => {
+    services = createFakeServices(null);
+    const unread = put(favoriteUrl, { favorite: true });
+    expect((await favoritePut(unread, favoriteParams)).status).toBe(401);
+    expect(unread.bodyUsed).toBe(false);
+    services = createFakeServices("owner");
+    const big = await favoritePut(put(favoriteUrl, { favorite: true, pad: "x".repeat(20_000) }), favoriteParams);
+    expect(big.status).toBe(413);
+    expect(services.setFavorite).not.toHaveBeenCalled();
+  });
+
   it("maps refusals to statuses", async () => {
     vi.mocked(services.setFavorite).mockResolvedValue({ outcome: "rejected", reason: "not_found", message: "No." });
     expect((await favoritePut(put(favoriteUrl, { favorite: true }), favoriteParams)).status).toBe(404);
@@ -82,6 +93,16 @@ describe("PUT /api/jobs/[id]/shots/[shotId]/pick", () => {
     const response = await pickPut(put(pickUrl, { picked: true }), pickParams);
     expect(response.status).toBe(200);
     expect(services.pickShotVersion).toHaveBeenCalledWith(TEST_WORKSPACE_ID, TEST_JOB_ID, "s05_lifestyle.v2", true);
+  });
+
+  it("refuses a signed out caller before the body and an oversized body with 413", async () => {
+    services = createFakeServices(null);
+    const unread = put(pickUrl, { picked: true });
+    expect((await pickPut(unread, pickParams)).status).toBe(401);
+    expect(unread.bodyUsed).toBe(false);
+    services = createFakeServices("owner");
+    expect((await pickPut(put(pickUrl, { picked: true, pad: "x".repeat(20_000) }), pickParams)).status).toBe(413);
+    expect(services.pickShotVersion).not.toHaveBeenCalled();
   });
 
   it("answers 409 for a full channel and 400 for a bad body", async () => {

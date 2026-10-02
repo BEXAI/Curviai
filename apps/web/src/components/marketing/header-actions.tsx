@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { buttonVariants } from "@curvi/ui";
 import { MobileMenu, type MobileMenuLink } from "./mobile-menu";
+import { SignupLink } from "./signup-link";
 import { useSignedIn } from "./signed-in";
 
 /**
@@ -27,9 +28,9 @@ export function HeaderActionsView({ signedIn, links }: { signedIn: boolean; link
       <Link href="/login" className="hidden text-sm font-medium text-ink-300 transition-colors hover:text-white sm:block">
         Log in
       </Link>
-      <Link href="/signup" className={buttonVariants({ variant: "secondary" })}>
+      <SignupLink source="header" className={buttonVariants({ variant: "secondary" })}>
         Start free
-      </Link>
+      </SignupLink>
       <MobileMenu links={[...links, { href: "/login", label: "Log in" }]} />
     </div>
   );

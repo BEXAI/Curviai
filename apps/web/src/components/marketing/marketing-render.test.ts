@@ -8,6 +8,7 @@ import { afterDemoImage, beforeDemoImage, galleryCases, isIllustrationSrc } from
 import { homeFaqs, homeFeatures } from "./home-copy";
 import { imageSpecs, specSlug } from "./spec-slug";
 import { checkerVerdictCopy, toolPackCta } from "./tool-copy";
+import { stubOpenCheckout } from "@/lib/billing/test-env";
 
 // The web tsconfig keeps JSX as is for Next.js, so Vitest compiles it to
 // React.createElement calls. Components only call it while rendering, so a
@@ -220,19 +221,19 @@ describe("pages", () => {
     vi.stubEnv("STRIPE_SECRET_KEY", "");
     const { default: HomePage } = await import("@/app/(marketing)/page");
     expect(render(React.createElement(HomePage))).toContain("Paid plans open soon");
-    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_placeholder");
+    stubOpenCheckout(vi.stubEnv);
     expect(render(React.createElement(HomePage))).not.toContain("Paid plans open soon");
   });
 
-  it("help marks the Fresh Creative Drop coming soon and keeps it out of JSON-LD", async () => {
+  it("help indexes published articles and omits coming-soon and gated billing articles", async () => {
     vi.stubEnv("STRIPE_SECRET_KEY", "");
     const { default: HelpPage } = await import("@/app/(marketing)/help/page");
     const html = render(React.createElement(HelpPage));
-    expect(html).toContain("Coming soon");
-    const questions = faqQuestions(html);
-    expect(questions).not.toContain("What is the Fresh Creative Drop?");
-    expect(questions).not.toContain("How do billing and cancellation work?");
-    expect(questions).toContain("How do credits work?");
+    expect(html).not.toContain("What is the Fresh Creative Drop?");
+    expect(html).not.toContain("How do billing and cancellation work?");
+    expect(html).toContain('href="/help/how-credits-work"');
+    // Full article answers live on their individual Article pages.
+    expect(faqQuestions(html)).toEqual([]);
   });
 
   it("gallery labels every case as an illustration", async () => {
@@ -372,7 +373,7 @@ describe("free tool pages", () => {
     const { default: CheckerPage, metadata } = await import("@/app/(marketing)/tools/main-image-checker/page");
     const { amazonMainRules } = await import("@/lib/marketing-facts");
     const rules = amazonMainRules();
-    const html = render(React.createElement(CheckerPage));
+    const html = render(await CheckerPage({ searchParams: Promise.resolve({}) }));
     // Both ends of the fill rule (Update.md 6.10).
     expect(html).toContain(`${rules.fillMinPercent} to ${rules.fillMaxPercent} percent`);
     expect(html).toContain(`at least ${rules.minLongSide} px`);
@@ -385,7 +386,7 @@ describe("free tool pages", () => {
 describe("signup page", () => {
   it("states the seed free grant and promises no share page", async () => {
     const { default: SignupPage } = await import("@/app/(marketing)/signup/page");
-    const html = render(React.createElement(SignupPage));
+    const html = render(await SignupPage());
     const lead = testIdText(html, "signup-lead");
     expect(lead).toContain(`Start free with ${freeCredits()} credits`);
     expect(lead).not.toMatch(/share page/i);
@@ -426,7 +427,7 @@ describe("site header", () => {
     const { SiteHeader } = await import("./site-header");
     const html = render(React.createElement(SiteHeader));
     expect(html).toContain('href="/login"');
-    expect(html).toContain('href="/signup"');
+    expect(html).toContain('href="/signup?source=header"');
     expect(html).toContain(">Start free<");
     expect(html).not.toContain("Open app");
   });

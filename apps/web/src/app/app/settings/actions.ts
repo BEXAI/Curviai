@@ -8,11 +8,23 @@ import type { SaveResult } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
 import { createSupabaseServerClient, getSessionUser } from "@/lib/supabase/server";
 import { DELETE_ACCOUNT_NOTICES, deleteAccountData } from "@/lib/trust/account";
+import { normalizedEmailKey } from "@curvi/email/keys";
+import {
+  EMAIL_SETTINGS_BLOCKED,
+  EMAIL_SETTINGS_FAILED,
+  EMAIL_SETTINGS_NO_ACCOUNT,
+  EMAIL_SETTINGS_SAVED_OFF,
+  EMAIL_SETTINGS_SAVED_ON,
+} from "@/lib/email/copy";
+import { getSuppressionStore } from "@/lib/email/preferences";
 import { deleteAuthUser } from "@/lib/trust/auth-admin";
 import { DELETE_CONFIRMATION_WORD, isDeleteConfirmed } from "@/lib/trust/confirmation";
 import { r2TrustStorage } from "@/lib/trust/storage";
 
-export async function renameWorkspaceAction(name: string): Promise<SaveResult> {
+export async function renameWorkspaceAction(name: unknown): Promise<SaveResult> {
+  if (typeof name !== "string") {
+    return { ok: false, notice: "Workspace name cannot be empty." };
+  }
   const services = getServices();
   const workspace = await services.ensureWorkspace();
   if (!workspace) {
@@ -68,4 +80,33 @@ export async function deleteAccountAction(confirmation: string): Promise<SaveRes
   }
   const removal = await deleteAuthUser(user.id);
   redirect(removal === "deleted" ? "/account-deleted" : "/account-deleted?signin=pending");
+}
+
+/**
+ * The settings toggle "Emails from Curvi with listing image tips and offers"
+ * (docs/phases/PHASE_18.md P18-06): off writes a marketing suppression for
+ * the signed in user's address, on lifts it. A stop on all mail after a
+ * bounce or a spam complaint is never lifted here.
+ */
+export async function setMarketingEmailAction(allowed: boolean): Promise<SaveResult> {
+  const user = await getSessionUser();
+  const key = normalizedEmailKey(user?.email);
+  if (!user || !key) {
+    return { ok: false, notice: EMAIL_SETTINGS_NO_ACCOUNT };
+  }
+  try {
+    const store = getSuppressionStore();
+    if (!allowed) {
+      await store.add(key, "marketing", "unsubscribed");
+      return { ok: true, notice: EMAIL_SETTINGS_SAVED_OFF };
+    }
+    const lifted = await store.liftMarketing(key);
+    if (lifted === "blocked") {
+      return { ok: false, notice: EMAIL_SETTINGS_BLOCKED };
+    }
+    return { ok: true, notice: EMAIL_SETTINGS_SAVED_ON };
+  } catch (err) {
+    console.error(`[email] could not save the email setting of user ${user.id}`, err instanceof Error ? err.message : err);
+    return { ok: false, notice: EMAIL_SETTINGS_FAILED };
+  }
 }

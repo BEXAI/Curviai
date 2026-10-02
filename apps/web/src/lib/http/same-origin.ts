@@ -11,8 +11,9 @@
  * session cookie is what a forged browser request would ride on and every
  * browser that sends it also sends Origin on these methods.
  *
- * Never apply this to webhooks, csp-report, cron or leads: those are called
- * by other servers or by pages on other origins on purpose.
+ * Never apply this to webhooks, csp-report or cron: those are called by
+ * other servers on purpose. POST /api/leads uses it too (P18-06 review):
+ * only curvi.ai pages post there, and it records marketing consent.
  */
 
 import { NextResponse } from "next/server";

@@ -11,13 +11,14 @@ import {
   products,
   signupGrants,
   sourceMedia,
+  spendCapCounters,
   workspaces,
   type JobStatus,
   type MemberRole,
 } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { and, eq, loadChannelSpecs, type Db } from "@curvi/db";
-import { tierByKey } from "@curvi/pipeline/seed";
+import { costCaps, tierByKey } from "@curvi/pipeline/seed";
 
 const enqueued = vi.hoisted(() => [] as Array<{ jobId: string; images: Array<{ mediaId: string }> }>);
 vi.mock("@/lib/jobs/enqueue", () => ({
@@ -294,6 +295,11 @@ describe("DbService.createJob writes everything or nothing (Update.md 6.3)", () 
     });
     const ledger = await db.select().from(creditLedger).where(eq(creditLedger.jobId, result.job.id));
     expect(ledger.filter((r) => r.reason === "reserve")).toHaveLength(1);
+    const [saved] = await db.select().from(generationJobs).where(eq(generationJobs.id, result.job.id));
+    expect(saved.restartPayload).toMatchObject({ jobId: result.job.id, workspaceId: w.id, creditBudget: result.job.creditsReserved });
+    expect(saved.restartPayload).not.toHaveProperty("runKey");
+    expect(saved.runnerId).toBeTruthy();
+    expect(saved.heartbeatAt).toBeInstanceOf(Date);
     expect(await balanceOf(w.id)).toBe(500 - result.job.creditsReserved);
     expect(enqueued).toHaveLength(1);
     expect(enqueued[0].images.map((i) => i.mediaId)).toEqual([key]);
@@ -861,6 +867,19 @@ describe("DbService.listJobFiles and downloads", () => {
     // Another workspace never sees it, and a malformed id is no job.
     expect(await service(other.user).getComplianceReport(other.id, jobId)).toBeNull();
     expect(await service(w.user).getComplianceReport(w.id, "nope")).toBeNull();
+
+    // A new pick with the same filename has its own post-packaging checks.
+    await db.update(assetVariants).set({ picked: false }).where(eq(assetVariants.workspaceId, w.id));
+    const key = `ws/${w.id}/jobs/${jobId}/files/variation-2/amazon/MUG1.MAIN.jpg`;
+    const [version] = await db.insert(assets).values({ workspaceId: w.id, jobId, shotType: "lifestyle", approved: true, qc: {
+      shotId: "scene.v2", fileReports: { [key]: { file: "MUG1.MAIN.jpg", channel: "amazon", specId: "amazon.main",
+        checks: [{ name: "fillRatio", pass: false, measured: 0.45, limit: "0.85 to 0.9" }], pass: false } },
+    } }).returning();
+    await db.insert(assetVariants).values({ workspaceId: w.id, assetId: version.id, channelSpecId: "amazon.main", r2Key: key, filename: "MUG1.MAIN.jpg", picked: true });
+    const changed = await service(w.user).getComplianceReport(w.id, jobId);
+    expect(changed?.summary).toMatchObject({ files: 1, passed: 0, needsAttention: 1 });
+    expect(changed?.channels[0].files[0].checks[0].measured).toBe("45 percent");
+
   });
 
   it("says why the compliance report is not available yet or not stored", async () => {
@@ -1033,5 +1052,40 @@ describe("signup grant settled on the first read (migration 0012 follow up)", ()
     expect(summary?.id).toBe(owner.id);
     expect(summary?.creditBalance).toBe(0);
     expect(await db.select().from(signupGrants).where(eq(signupGrants.userId, editor))).toHaveLength(0);
+  });
+});
+
+
+describe("daily spend admission", () => {
+  it("refuses a workspace at its day cap before creating a job or holding credits", async () => {
+    const w = await makeWorkspace(100);
+    await db.insert(spendCapCounters).values({ key: `caps:workspace:${w.id}:${new Date().toISOString().slice(0,10)}`, totalMicros: costCaps.workspaceExpectedDailyMicrosByTier.starter * costCaps.workspaceDailyMultiplier });
+    const before = await countRows(w.id);
+    const result = await service(w.user).createJob(w.id, { productId: "new", mode: "listing", channels: ["amazon.main"], idempotencyKey: crypto.randomUUID(), uploads: [{ key: srcKey(w.id, "day-cap"), sha256: SHA, kind: "image" }] });
+    expect(result).toMatchObject({ outcome: "rejected", reason: "workspace_day_cap" });
+    expect(await countRows(w.id)).toEqual(before);
+    expect(await balanceOf(w.id)).toBe(100);
+  });
+  it("an operator zero stop wins over the seed and never takes a hold", async () => {
+    const w = await makeWorkspace(100);
+    await db.insert(platformSettings).values({ key: "ops:global_hard_stop_usd", value: 0 });
+    try {
+      expect(await service(w.user).createJob(w.id, { productId: "new", mode: "listing", channels: ["amazon.main"], idempotencyKey: crypto.randomUUID(), uploads: [{ key: srcKey(w.id, "stop"), sha256: SHA, kind: "image" }] })).toMatchObject({ outcome: "rejected", reason: "unavailable" });
+      expect(await balanceOf(w.id)).toBe(100);
+      expect((await countRows(w.id)).jobs).toBe(0);
+    } finally { await db.delete(platformSettings).where(eq(platformSettings.key, "ops:global_hard_stop_usd")); }
+  });
+});
+
+describe("workspace and member identity", () => {
+  it("chooses the oldest owner membership and resolves member emails only within the caller workspace", async () => {
+    const first = await makeWorkspace(50);
+    const [oldMember, recentOwner] = await db.insert(workspaces).values([{ name: "Older member" }, { name: "Newer owner" }]).returning();
+    await db.insert(members).values([{ workspaceId: oldMember.id, userId: first.user, role: "editor", createdAt: new Date(0) }, { workspaceId: recentOwner.id, userId: first.user, role: "owner", createdAt: new Date(Date.now()+1000) }]);
+    expect((await service(first.user).getCurrentWorkspace())?.id).toBe(first.id);
+    await client.exec("create table if not exists auth.users (id uuid primary key, email text)");
+    await client.query("insert into auth.users(id,email) values($1,$2)", [first.user, "owner@example.test"]);
+    expect(await service(first.user).listMembers(first.id)).toContainEqual({ id: first.user, label: "owner@example.test", role: "owner" });
+    expect(await service(userId).listMembers(first.id)).toEqual([]);
   });
 });

@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { HEX } from "@curvi/pipeline/output-options";
 import {
   AUTO_STYLE_PRESET,
   DEFAULT_TEMPLATE_FONT,
@@ -67,7 +68,7 @@ export const brandKitInputSchema = z.object({
     .regex(SAFE_TEXT)
     .transform((value) => value || "Default"),
   colors: z
-    .array(z.string().regex(/^#[0-9A-Fa-f]{6}$/))
+    .array(z.string().regex(HEX))
     .max(MAX_BRAND_COLORS),
   fonts: z.object({
     heading: fontChoice,
@@ -76,8 +77,6 @@ export const brandKitInputSchema = z.object({
   stylePreset: z.enum([AUTO_STYLE_PRESET, ...presetKeys]),
   logoKey: z.string().min(1).max(512).nullable().optional(),
 });
-
-export type BrandKitInput = z.infer<typeof brandKitInputSchema>;
 
 /** A plain spoken notice for the first problem in a rejected kit. */
 export function brandKitIssueNotice(error: z.ZodError): string {

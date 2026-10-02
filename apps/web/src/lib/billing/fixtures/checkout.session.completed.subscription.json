@@ -1,0 +1,58 @@
+{
+  "id": "{{EVENT_ID}}",
+  "object": "event",
+  "api_version": "2025-08-27.basil",
+  "created": "{{CREATED}}",
+  "data": {
+    "object": {
+      "id": "{{SESSION_ID}}",
+      "object": "checkout.session",
+      "allow_promotion_codes": true,
+      "amount_subtotal": "{{AMOUNT}}",
+      "amount_total": "{{AMOUNT}}",
+      "billing_address_collection": null,
+      "cancel_url": "http://localhost:3000/app/billing?status=cancel",
+      "client_reference_id": "{{WORKSPACE_ID}}",
+      "consent": { "promotions": null, "terms_of_service": "accepted" },
+      "consent_collection": { "payment_method_reuse_agreement": null, "promotions": "none", "terms_of_service": "required" },
+      "created": "{{CREATED}}",
+      "currency": "usd",
+      "custom_text": {
+        "after_submit": null,
+        "shipping_address": null,
+        "submit": { "message": "Your Curvi plan renews automatically until you cancel." },
+        "terms_of_service_acceptance": { "message": "I agree that my plan renews automatically at the price above until I cancel." }
+      },
+      "customer": "{{CUSTOMER_ID}}",
+      "customer_creation": null,
+      "customer_details": { "address": null, "email": "buyer@example.com", "name": null, "phone": null, "tax_exempt": "none", "tax_ids": [] },
+      "expires_at": "{{CREATED}}",
+      "invoice": "{{INVOICE_ID}}",
+      "livemode": false,
+      "metadata": {
+        "workspaceId": "{{WORKSPACE_ID}}",
+        "priceId": "{{PRICE_ID}}",
+        "kind": "tier",
+        "plan": "{{PLAN}}",
+        "cadence": "{{CADENCE}}",
+        "source": "billing",
+        "userId": "{{USER_ID}}",
+        "disclosure_version": "{{DISCLOSURE_VERSION}}",
+        "disclosure_sha256": "{{DISCLOSURE_SHA256}}"
+      },
+      "mode": "subscription",
+      "payment_intent": null,
+      "payment_status": "paid",
+      "status": "complete",
+      "subscription": "{{SUBSCRIPTION_ID}}",
+      "success_url": "http://localhost:3000/app/billing?status=success&session_id={CHECKOUT_SESSION_ID}",
+      "total_details": { "amount_discount": 0, "amount_shipping": 0, "amount_tax": 0 },
+      "ui_mode": "hosted",
+      "url": null
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "checkout.session.completed"
+}

@@ -542,3 +542,35 @@ describe("DbService.getJob pack operations", () => {
     expect((await service(CLIENT_SEAT).getJob(ws, jobId))?.canManage).toBe(false);
   });
 });
+
+describe("regenerate a delivered scene", () => {
+  async function scene(cached = true) {
+    const { ws, productId } = await workspaceWith(30);
+    const id = await deliveredPack(ws, productId);
+    const shot: Shot = { ...reviewShot(ws), id: "scene", type: "lifestyle", method: "composite_generate", scene: "A linen table", credits: creditCosts.generativeStill, channels: ["amazon.secondary"] };
+    await db.insert(sourceMedia).values({ workspaceId: ws, productId, kind: "image", sha256: "a".repeat(64), r2Key: shot.sourceMediaId });
+    const [asset] = await db.insert(assets).values({ workspaceId: ws, jobId: id, shotType: shot.type, approved: true, qc: { shotId: shot.id, status: "passed", pass: true, shot, credits: shot.credits } }).returning();
+    await db.insert(assetVariants).values({ workspaceId: ws, assetId: asset.id, channelSpecId: "amazon.secondary", filename: "scene.jpg", r2Key: `ws/${ws}/jobs/${id}/files/amazon/scene.jpg`, picked: true });
+    await db.insert(jobSteps).values({ workspaceId: ws, jobId: id, shotId: shot.id, stage: "lifestyle", status: "done" });
+    const svc = new DbService({ db: db as unknown as Db, getUserId: async () => OWNER, getSupabase: async () => null, cutoutCached: async () => cached });
+    return { ws, id, shot, svc };
+  }
+  it("uses the original photo, next version id and seed price including a missing cutout", async () => {
+    const { ws, id, shot, svc } = await scene(false);
+    expect((await svc.getJob(ws, id))?.shots.find((s) => s.shotId === "scene")?.regenerate).toEqual({ credits: creditCosts.generativeStill + creditCosts.deterministic });
+    const result = await svc.regenerateShot(ws, id, "scene");
+    expect(result).toMatchObject({ outcome: "started", creditsHeld: creditCosts.generativeStill + creditCosts.deterministic });
+    expect(followUps.fn.mock.calls[0][0]).toMatchObject({ reason: "regenerate", shots: [{ id: "scene.v2", variation: 2, method: "composite_generate", sourceMediaId: shot.sourceMediaId }] });
+  });
+  it("refuses after source purge, a client seat, and the four version cap without another hold", async () => {
+    const { ws, id, shot, svc } = await scene();
+    expect(await service(CLIENT_SEAT).regenerateShot(ws, id, "scene")).toMatchObject({ outcome: "rejected", reason: "role_forbidden" });
+    await db.insert(assets).values({ workspaceId: ws, jobId: id, shotType: "lifestyle", qc: { shotId: "scene.v4" } });
+    expect(await svc.regenerateShot(ws, id, "scene")).toMatchObject({ outcome: "rejected", reason: "not_retryable" });
+    await db.delete(sourceMedia).where(and(eq(sourceMedia.workspaceId, ws), eq(sourceMedia.r2Key, shot.sourceMediaId)));
+    expect((await svc.getJob(ws, id))?.shots.find((s) => s.shotId === "scene")?.regenerate).toBeUndefined();
+    expect(await svc.regenerateShot(ws, id, "scene")).toMatchObject({ outcome: "rejected", message: expect.stringContaining("original photo") });
+    expect(await held(id)).toBe(0);
+    expect(followUps.fn).not.toHaveBeenCalled();
+  });
+});

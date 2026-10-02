@@ -6,7 +6,9 @@
  * ever select a real plan.
  */
 
-import { isBillingCadence, isPaidTierKey, type BillingCadence, type PaidTierKey } from "./plans";
+import type { SignupSourceKey } from "@curvi/pipeline/seed";
+import { SIGNUP_EXTRA_KEYS, cleanLandingValue, cleanSignupExtra, type SignupLinkExtra } from "@/lib/attribution";
+import { isBillingCadence, isSelfServeTierKey, type BillingCadence, type PaidTierKey } from "./plans";
 
 export interface CheckoutIntent {
   tier: PaidTierKey;
@@ -28,7 +30,8 @@ function first(value: ParamValue): string | undefined {
 /**
  * Reads ?checkout=<tier>&cadence=<monthly|annual>. Also accepts the combined
  * form ?checkout=<tier>_<cadence>. A missing or unknown cadence falls back to
- * monthly; an unknown tier gives null.
+ * monthly; an unknown tier, or one not sold online (Agency, P20-08), gives
+ * null.
  */
 export function parseCheckoutIntent(params: { checkout?: ParamValue; cadence?: ParamValue }): CheckoutIntent | null {
   const raw = first(params.checkout)?.trim().toLowerCase();
@@ -42,7 +45,7 @@ export function parseCheckoutIntent(params: { checkout?: ParamValue; cadence?: P
     tierPart = combined[1];
     cadencePart = cadencePart ?? combined[2];
   }
-  if (!isPaidTierKey(tierPart)) {
+  if (!isSelfServeTierKey(tierPart)) {
     return null;
   }
   return { tier: tierPart, cadence: isBillingCadence(cadencePart) ? cadencePart : "monthly" };
@@ -53,15 +56,41 @@ export function parseCheckoutStatus(value: ParamValue): CheckoutStatus | null {
   return status === "success" || status === "canceled" ? status : null;
 }
 
-/** Signup link that carries the chosen plan for an anonymous visitor. */
-export function signupHref(input: { plan?: PaidTierKey; cadence?: BillingCadence; source: string }): string {
+export interface SignupHrefInput {
+  plan?: PaidTierKey;
+  cadence?: BillingCadence;
+  /** Where the link sits: a seeded key (packages/pipeline/src/seed/growth.ts). */
+  source: SignupSourceKey;
+  /** Share slug, claim token, preview id, referral code, category or channel
+   * (docs/phases/PHASE_18.md P18-01). Each is validated; a bad value is
+   * left off the link rather than failing the page. */
+  extra?: SignupLinkExtra;
+}
+
+/**
+ * The one signup link builder (P18-01): the chosen plan for an anonymous
+ * visitor, the page's source key and any validated extras, in that order.
+ * Landing parameters from the current page (UTM tags, ref) are added at
+ * click time by the signup link component, not here.
+ */
+export function signupHref(input: SignupHrefInput): string {
   const params = new URLSearchParams();
   if (input.plan) {
     params.set("plan", input.plan);
     params.set("cadence", input.cadence ?? "monthly");
   }
-  params.set("source", input.source);
-  return `/signup?${params.toString()}`;
+  const source = cleanLandingValue("source", input.source);
+  if (source) {
+    params.set("source", source);
+  }
+  for (const key of SIGNUP_EXTRA_KEYS) {
+    const value = cleanSignupExtra(key, input.extra?.[key]);
+    if (value) {
+      params.set(key, value);
+    }
+  }
+  const query = params.toString();
+  return query ? `/signup?${query}` : "/signup";
 }
 
 /** Billing page link that opens the focused "finish upgrading" card. */

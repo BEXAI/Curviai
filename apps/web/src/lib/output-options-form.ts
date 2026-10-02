@@ -34,7 +34,6 @@ import {
   lookOf,
   lookPresetFor,
   variationsOf,
-  keepMediaIdsFor,
   keptMaxUpscale,
   normalizeOutputOptions,
   originalFitFor,
@@ -61,6 +60,7 @@ import {
   type ScenePresetChoice as PipelineScenePresetChoice,
 } from "@curvi/pipeline/output-options";
 import { showsLightEdge } from "@curvi/pipeline/edge";
+import { clampVariations } from "@curvi/pipeline/variations";
 import {
   backgroundSwatches,
   adsFormats,
@@ -210,10 +210,6 @@ export function withVariations(choices: OutputChoices, count: number): OutputCho
   const { variations: _previous, ...rest } = copyChoices(choices);
   const clamped = clampVariations(count);
   return { ...rest, ...(clamped !== DEFAULT_VARIATIONS ? { variations: clamped } : {}) };
-}
-
-function clampVariations(count: number): number {
-  return Math.min(variationOptions.max, Math.max(variationOptions.min, Math.round(count)));
 }
 
 /** A look card's choices for the pack's current bundle, keeping the
@@ -456,23 +452,6 @@ export interface FormResolveArgs {
 export interface FormResolved {
   resolved: ResolvedOutputOptions;
   flags: OutputPlanFlags;
-}
-
-/**
- * The photos kept once each photo's own Background Select applies: "keep"
- * and "remove" win over the pack's switch, "pack" follows it. The server
- * resolves uploads[].background into keepMediaIds the same way.
- */
-export function keptPhotoIds(
-  photos: readonly Pick<FormPhoto, "id">[],
-  background: OutputChoices["background"],
-  photoBackgrounds: Readonly<Record<string, PhotoBackground>> = {},
-): string[] {
-  return keepMediaIdsFor(
-    { background },
-    photos.map((photo) => photo.id),
-    photoBackgrounds,
-  );
 }
 
 /**

@@ -28,6 +28,7 @@ vi.mock("@/lib/supabase/server", () => ({
 
 const { POST: cancel } = await import("./[id]/cancel/route");
 const { POST: retry } = await import("./[id]/shots/[shotId]/retry/route");
+const { POST: regenerate } = await import("./[id]/shots/[shotId]/regenerate/route");
 const { POST: photo } = await import("./[id]/shots/[shotId]/photo/route");
 
 const JOB: JobView = {
@@ -180,5 +181,19 @@ describe("cross site requests on the other pack operations", () => {
     expect(retryResponse.status).toBe(403);
     expect(services.cancelJob).not.toHaveBeenCalled();
     expect(services.retryShot).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST regenerate", () => {
+  it("passes the scoped job and shot to the service and returns a hold", async () => {
+    vi.mocked(services.regenerateShot).mockResolvedValue({ outcome: "started", job: JOB, creditsHeld: 2 });
+    const response = await regenerate(jsonRequest(url, {}), shotParams(TEST_JOB_ID, "s04_lifestyle"));
+    expect(response.status).toBe(202); expect(services.regenerateShot).toHaveBeenCalledWith(TEST_WORKSPACE_ID, TEST_JOB_ID, "s04_lifestyle");
+  });
+  it("refuses signed out users, clients, bad ids and cross-site requests before spending", async () => {
+    services = createFakeServices(null); expect((await regenerate(jsonRequest(url, {}), shotParams(TEST_JOB_ID, "s04_lifestyle"))).status).toBe(401);
+    services = createFakeServices("client"); expect((await regenerate(jsonRequest(url, {}), shotParams(TEST_JOB_ID, "s04_lifestyle"))).status).toBe(403); expect(services.regenerateShot).not.toHaveBeenCalled();
+    services = createFakeServices("owner"); expect((await regenerate(jsonRequest(url, {}), shotParams("bad", "s04_lifestyle"))).status).toBe(404);
+    const req = new Request(url, { method: "POST", headers: { origin: "https://evil.test" } }); expect((await regenerate(req, shotParams(TEST_JOB_ID, "s04_lifestyle"))).status).toBe(403); expect(services.regenerateShot).not.toHaveBeenCalled();
   });
 });

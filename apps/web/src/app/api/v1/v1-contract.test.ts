@@ -18,6 +18,7 @@ import { MemoryRateLimitStore, setRateLimitStoreForTests } from "@/lib/rate-limi
 import { DEMO_WORKSPACE_ID } from "@/lib/services/demo";
 import type { JobView } from "@/lib/services/types";
 import { createFakeServices, OTHER_WORKSPACE_ID } from "@/lib/testing/fake-services";
+import { checkerChannels } from "@/lib/tools/checker-rules";
 
 // Contract tests for the public API v1 (docs/phases/PHASE_16.md workstream
 // 5): every operation in the OpenAPI document is served by a route, every
@@ -29,6 +30,7 @@ const packRoute = await import("./packs/[id]/route");
 const filesRoute = await import("./packs/[id]/files/route");
 const checkRoute = await import("./checks/main-image/route");
 const channelsRoute = await import("./channels/route");
+const smokeContextRoute = await import("./smoke-context/route");
 const openapiRoute = await import("./openapi.json/route");
 
 const ROUTES: Record<string, Record<string, unknown>> = {
@@ -37,6 +39,7 @@ const ROUTES: Record<string, Record<string, unknown>> = {
   "/api/v1/packs/{id}/files": filesRoute,
   "/api/v1/checks/main-image": checkRoute,
   "/api/v1/channels": channelsRoute,
+  "/api/v1/smoke-context": smokeContextRoute,
 };
 
 const BASE = "https://curvi.ai";
@@ -494,6 +497,34 @@ describe("keys are scoped and revocable", () => {
 });
 
 describe("POST /api/v1/checks/main-image", () => {
+  it("uses each verified marketplace's rules for either its channel key or spec id", async () => {
+    const photo = (await mainImagePng(600, 0.8)).toString("base64");
+    for (const channel of checkerChannels()) {
+      for (const choice of [channel.key, channel.specId]) {
+        const response = await checkRoute.POST(request("POST", "/api/v1/checks/main-image", {
+          body: { data: photo, channel: choice },
+        }));
+        expect(response.status, choice).toBe(200);
+        const body = await expectContract(response, "/api/v1/checks/main-image", "post", MainImageCheckResponse);
+        expect(body).toMatchObject({ channel: channel.key, spec_id: channel.specId, rules: channel.rules });
+      }
+    }
+    const amazon = await checkRoute.POST(request("POST", "/api/v1/checks/main-image", { body: { data: photo } }));
+    const google = await checkRoute.POST(request("POST", "/api/v1/checks/main-image", { body: { data: photo, channel: "google" } }));
+    expect(await amazon.json()).toMatchObject({ channel: "amazon", pass: false });
+    expect(await google.json()).toMatchObject({ channel: "google", pass: true });
+  });
+
+  it("refuses channels without verified checker rules instead of silently checking Amazon", async () => {
+    for (const channel of ["shopify", "amazon.secondary", "unknown"]) {
+      const response = await checkRoute.POST(request("POST", "/api/v1/checks/main-image", {
+        body: { url: "https://example.com/never-fetched.png", channel },
+      }));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ reason: "invalid_request" });
+    }
+  });
+
   it("measures a compliant main image and a failing one", async () => {
     const good = await mainImagePng(2000, 0.87);
     const pass = await checkRoute.POST(

@@ -1,19 +1,19 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { entitlementsFor, tierByKey, tiers, topUps } from "@curvi/pipeline/seed";
-import { FEATURES, unqualifiedClaims } from "@/lib/marketing-facts";
+import { entitlementsFor, featureStatus, tierByKey, tiers, topUps, type TierFeature } from "@curvi/pipeline/seed";
+import { FEATURES, unqualifiedClaims, type FeatureKey } from "@/lib/marketing-facts";
 import { billingCheckoutHref, parseCheckoutIntent, parseCheckoutStatus, signupHref } from "./intent";
-import { comingSoonFeatures, includedFeatures, planFeatures } from "./plan-features";
+import { comingSoonFeatures, includedFeatures, onTheWay, planCardFeatureKeys, planFeatures } from "./plan-features";
 import {
   allowanceCredits,
   annualSavingsPct,
   annualTotalUsd,
   annualSavingsUsd,
-  maxAnnualSavingsPct,
   paidTierKeys,
   paidTiers,
   priceForCadence,
+  selfServeTierKeys,
   tierDisplayName,
 } from "./plans";
 import { tierPriceEnvName, topUpPriceEnvName } from "./price-table";
@@ -27,10 +27,6 @@ describe("plan math from the seed", () => {
       expect(annualSavingsPct(tier)).toBeGreaterThan(exact - 1);
       expect(annualSavingsUsd(tier)).toBe((tier.monthlyUsd - tier.annualUsdPerMonth) * 12);
     }
-    const best = Math.max(
-      ...tiers.filter((t) => t.monthlyUsd > 0).map((t) => (1 - t.annualUsdPerMonth / t.monthlyUsd) * 100),
-    );
-    expect(maxAnnualSavingsPct()).toBe(Math.floor(best));
   });
 
   it("grants a full year of credits on an annual invoice", () => {
@@ -103,6 +99,69 @@ describe("plan features (Phase 10 decision 1)", () => {
   });
 });
 
+describe("plan cards list only what runs; Agency off self serve (P20-08)", () => {
+  it("sells Starter, Growth and Pro online and keeps Agency for email", () => {
+    expect(selfServeTierKeys).toEqual(["starter", "growth", "pro"]);
+    expect(tiers.filter((tier) => !tier.selfServe).map((tier) => tier.key)).toEqual(["agency"]);
+  });
+
+  it("puts no coming soon line inside any card", () => {
+    for (const key of selfServeTierKeys) {
+      for (const label of includedFeatures(key)) {
+        expect(unqualifiedClaims(label), `${key}: ${label}`).toEqual([]);
+      }
+    }
+  });
+
+  it("builds on the plan below", () => {
+    expect(includedFeatures("growth")[0]).toBe("Everything in Starter");
+    expect(includedFeatures("pro")[0]).toBe("Everything in Growth");
+  });
+
+  it("lists every line that does not run yet once, under the smallest plan sold online that gets it", () => {
+    const lines = onTheWay();
+    const expected = [...new Set(selfServeTierKeys.flatMap((key) => comingSoonFeatures(key)))];
+    expect(lines.map((line) => line.label)).toEqual(expected);
+    for (const line of lines) {
+      const first = selfServeTierKeys.find((key) => comingSoonFeatures(key).includes(line.label));
+      expect(line.fromTier).toBe(first);
+      expect(line.plans).toBe(line.fromTier === "pro" ? "Pro" : `${tierDisplayName(line.fromTier)} and up`);
+    }
+    // Agency's own lines are not offered on a page that does not sell it.
+    for (const label of comingSoonFeatures("agency").filter((label) => !expected.includes(label))) {
+      expect(lines.map((line) => line.label)).not.toContain(label);
+    }
+  });
+
+  it("keeps FEATURES and the seed's featureStatus in step for every flag a card reads", () => {
+    // The seed plan features each card flag stands for. A new flag a card
+    // reads must be mapped here, so the two sources can never drift.
+    const seedFeatures: Partial<Record<FeatureKey, readonly TierFeature[]>> = {
+      whiteMainImage: [],
+      lifestyleScenes: [],
+      complianceReport: [],
+      sharePages: ["sharePage"],
+      brandKitColors: ["brandKit"],
+      video: ["templatedVideo", "generativeVideo", "lifestyleVideo"],
+      freshCreativeDrop: ["freshDrop"],
+      shopifyAutoPacks: ["shopifyAutoPacks"],
+      ugcAds: ["ugcAds"],
+      multipleBrandKits: ["multipleBrandKits"],
+      priorityQueue: ["priorityQueue"],
+      agencyWorkspaces: ["clientWorkspaces"],
+      reviewLinks: ["clientReviewLinks"],
+      whiteLabel: ["whiteLabelShare"],
+    };
+    for (const key of planCardFeatureKeys()) {
+      const mapped = seedFeatures[key];
+      expect(mapped, `card flag ${key} has no seed mapping`).toBeDefined();
+      for (const feature of mapped ?? []) {
+        expect(featureStatus[feature], `${key} and ${feature}`).toBe(FEATURES[key].status);
+      }
+    }
+  });
+});
+
 describe("plan intent (money-pricing-intent)", () => {
   it("builds signup and billing links that carry the plan", () => {
     expect(signupHref({ plan: "growth", cadence: "annual", source: "pricing" })).toBe(
@@ -118,12 +177,15 @@ describe("plan intent (money-pricing-intent)", () => {
     expect(parseCheckoutIntent({ checkout: "pro", cadence: "weekly" })).toEqual({ tier: "pro", cadence: "monthly" });
     expect(parseCheckoutIntent({ checkout: "free" })).toBeNull();
     expect(parseCheckoutIntent({ checkout: "enterprise" })).toBeNull();
-    expect(parseCheckoutIntent({ checkout: ["agency", "pro"], cadence: ["annual"] })).toEqual({
-      tier: "agency",
+    expect(parseCheckoutIntent({ checkout: ["pro", "growth"], cadence: ["annual"] })).toEqual({
+      tier: "pro",
       cadence: "annual",
     });
+    // Agency is set up by email (P20-08), so a crafted link selects nothing.
+    expect(parseCheckoutIntent({ checkout: "agency", cadence: "annual" })).toBeNull();
+    expect(parseCheckoutIntent({ checkout: "agency_monthly" })).toBeNull();
     expect(parseCheckoutIntent({})).toBeNull();
-    for (const key of paidTierKeys) {
+    for (const key of selfServeTierKeys) {
       expect(parseCheckoutIntent({ checkout: key })?.tier).toBe(key);
     }
   });
