@@ -116,6 +116,12 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
   transpilePackages: ["@curvi/ui", "@curvi/specs", "@curvi/db", "@curvi/pipeline", "@curvi/ai", "@curvi/trigger", "@curvi/email"],
   serverExternalPackages: ["sharp", "exiftool-vendored", "archiver", "postgres"],
+  experimental: {
+    // Bound page workers and release compiler memory before static generation.
+    cpus: 1,
+    webpackBuildWorker: true,
+    webpackMemoryOptimizations: true,
+  },
   webpack: (config, { isServer }) => {
     if (isServer) {
       // serverExternalPackages only externalizes imports issued from
