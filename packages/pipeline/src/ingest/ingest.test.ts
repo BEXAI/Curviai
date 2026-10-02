@@ -1,5 +1,5 @@
 import { crc32 } from "node:zlib";
-import sharp from "sharp";
+import sharp, { type Sharp } from "sharp";
 import { describe, expect, it } from "vitest";
 import {
   detectFormat,
@@ -33,7 +33,7 @@ function rawFrame(): Buffer {
   return data;
 }
 
-function frame(): sharp.Sharp {
+function frame(): Sharp {
   return sharp(rawFrame(), { raw: { width: W, height: H, channels: 3 } });
 }
 

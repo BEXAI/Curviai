@@ -9,7 +9,7 @@
  * renders the same on every host; without the font the labels are left out
  * rather than drawn in a fallback face.
  */
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 import { loadTemplateFont } from "../templates/font";
 
 export interface SideBySideInput {
@@ -94,7 +94,7 @@ export async function renderSideBySide(input: SideBySideInput): Promise<SideBySi
     fitPanel(input.before, panel, background),
     fitPanel(input.after, panel, background),
   ]);
-  const layers: sharp.OverlayOptions[] = [
+  const layers: OverlayOptions[] = [
     { input: left, left: gap, top: gap },
     { input: right, left: gap * 2 + panel, top: gap },
   ];

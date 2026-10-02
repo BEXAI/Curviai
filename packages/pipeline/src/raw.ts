@@ -2,7 +2,7 @@
  * Raw pixel buffer types shared by the deterministic pipeline. Images are
  * interleaved RGBA, masks are single channel where 255 means product.
  */
-import sharp from "sharp";
+import sharp, { type Sharp } from "sharp";
 import { jpegEncoding, stillStyle } from "./seed/templates";
 
 export interface RawImage {
@@ -19,11 +19,11 @@ export interface RawMask {
   height: number;
 }
 
-export function rawToSharp(img: RawImage): sharp.Sharp {
+export function rawToSharp(img: RawImage): Sharp {
   return sharp(img.data, { raw: { width: img.width, height: img.height, channels: 4 } });
 }
 
-export function maskToSharp(mask: RawMask): sharp.Sharp {
+export function maskToSharp(mask: RawMask): Sharp {
   return sharp(mask.data, { raw: { width: mask.width, height: mask.height, channels: 1 } });
 }
 

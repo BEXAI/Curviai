@@ -24,7 +24,7 @@
  *    lossless PNG. The ICC profile is kept in every path.
  */
 
-import sharp from "sharp";
+import sharp, { type Metadata, type OutputInfo } from "sharp";
 
 export type IngestImageFormat = "jpeg" | "png" | "webp" | "gif" | "tiff";
 export type DetectedFormat = IngestImageFormat | "heic" | "avif" | "mp4" | "quicktime";
@@ -163,7 +163,7 @@ const SCREENSHOT_MIN_ASPECT = 2.1;
  * from a screenshot cuts out the phone in it and stages that as the product,
  * so the capture is refused before any credits are held.
  */
-export function looksLikeScreenshot(meta: sharp.Metadata, detected: DetectedFormat): boolean {
+export function looksLikeScreenshot(meta: Metadata, detected: DetectedFormat): boolean {
   for (const block of [meta.exif, meta.xmp]) {
     if (block && block.toString("latin1").includes("Screenshot")) {
       return true;
@@ -201,7 +201,7 @@ export async function ingestImage(input: Buffer): Promise<ImageIngestResult> {
   if (!detected || detected === "mp4" || detected === "quicktime") {
     return refuse("unsupported_type");
   }
-  let meta: sharp.Metadata;
+  let meta: Metadata;
   try {
     // metadata() reads the header only; nothing is decoded yet. The pixel
     // limit is lifted for this read alone (sharp refuses the header of an
@@ -248,7 +248,7 @@ export async function ingestImage(input: Buffer): Promise<ImageIngestResult> {
       // re-encode, which drops metadata too.
     }
     const pipeline = sharp(input, SHARP_OPTIONS).rotate().keepIccProfile();
-    let output: { data: Buffer; info: sharp.OutputInfo };
+    let output: { data: Buffer; info: OutputInfo };
     let format: IngestImageFormat;
     if (detected === "jpeg") {
       format = "jpeg";
