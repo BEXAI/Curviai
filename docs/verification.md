@@ -1184,3 +1184,17 @@ PR5 merged asb4893d1. All checks, PostgreSQL17 races, demo smoke and browser tes
 
 
 Email follow-up, 2026-10-02 14:04 UTC: the complete feature-head CodeQL scan confirmed initial parser alerts1–3 absent and exposed six additional email regex patterns. They now use linear operations;116 email tests, email types/lint and20,000-input differential comparison pass with unchanged snapshots. Four additional web alerts are test-only or non-password hashing. See the phase20 handoff. The6,657/192 complete local gate above was before this bounded follow-up; the new exact-head hosted full suite and browser checks remain required. No alert dismissal or relaxed threshold was used.
+
+### Render build memory, checked 2026-10-02
+
+The release build at `8b594640` first exhausted its approximately 2 GiB V8 heap during compilation. A build-only 4 GiB heap allowed compilation and page-data collection, but Render then stopped static generation after total build memory exceeded 8 GB. The fix bounds build concurrency within the existing pipeline resources.
+
+| Verified behavior | Implementation and evidence |
+| --- | --- |
+| Render's default Starter build pipeline has 2 CPUs and 8 GB RAM on compute separate from the running service. | Keep the existing runtime plan. The Blueprint installs devDependencies and applies the 4 GiB heap only to `pnpm run build`, preserving other Node options. [Render build pipeline](https://render.com/docs/build-pipeline) |
+| Next 15 supports a separate Webpack build worker and reduced-memory compilation; custom Webpack configuration otherwise disables the worker by default. | Enable `webpackBuildWorker` and `webpackMemoryOptimizations`, retaining Sentry and native-module externals. [Next 15 memory guide](https://nextjs.org/docs/15/app/guides/memory-usage) |
+| Installed Next 15.5.26 defaults page-worker count to host CPU count minus one. Page analysis and export use separate pools; analysis workers remain until export finishes. Compiler workers end after each compiler. | Set `experimental.cpus: 1` to bound both page-worker pools. Confirmed in installed `next/dist/server/config-shared.js`, `next/dist/build/index.js`, `next/dist/export/index.js` and `next/dist/build/webpack-build/index.js`. Sentry 11.2.0 preserves these experimental options, and compiler workers reload the full custom configuration. |
+
+This change retains TypeScript checking, source maps, scanner settings and runtime job concurrency. A clean production build and browser suite must verify compatibility and memory behavior; configuration inspection alone does not establish successful deployment.
+
+Focused validation on Node 22.23.3 passed: 18 tests across the existing security-header, Sentry configuration and deployment configuration suites; ESLint for `next.config.ts`; web TypeScript; and `git diff --check`. The clean production build then completed in 50.08 seconds. Sampling the build and descendants every 0.5 seconds measured a peak aggregate RSS of 5,047.86 MiB on macOS. This is local compatibility and memory evidence, not a Linux cgroup measurement or proof of a successful Render deployment. Independent review found no blocking scope or correctness issue; full hosted CI and the actual deployment remain required.
