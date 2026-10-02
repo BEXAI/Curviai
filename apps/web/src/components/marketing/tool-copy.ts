@@ -5,7 +5,7 @@
  */
 export const toolPackCta = {
   title: "Want the whole pack, not just one fix?",
-  body: "Curvi turns one photo into a compliant main image, lifestyle scenes and channel crops, with your product pixels untouched. Leave your email to start free.",
+  body: "Curvi turns one photo into a compliant main image, lifestyle scenes and channel crops, with your product never redrawn. Leave your email to start free.",
 };
 
 /** The email gates in front of each tool's full results (POST /api/leads). */

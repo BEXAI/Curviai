@@ -37,14 +37,14 @@ export const categories: CategoryPage[] = [
       "Square, portrait and story crops for Meta",
     ],
     comingSoon: ["A short looping video for the listing gallery"],
-    proofLine: "Fabric texture and printed graphics stay pixel for pixel identical to your photo.",
+    proofLine: "Fabric texture and printed graphics are never redrawn, and every file is checked for color change inside your garment.",
   },
   {
     slug: "jewelry",
     name: "Jewelry",
     headline: "Jewelry photos that keep every facet honest",
     intro:
-      "Jewelry is the hardest category to photograph and the easiest to ruin with AI. Curvi masks your piece and only rebuilds the background and lighting sweep, so stones, engravings and metal grain never change. You get a compliant main image plus editorial style scenes from a single phone photo.",
+      "Jewelry is the hardest category to photograph and the easiest to ruin with AI. Curvi masks your piece and only rebuilds the background and lighting sweep, so stones, engravings and metal grain are never redrawn by AI. You get a compliant main image plus editorial style scenes from a single phone photo.",
     painPoints: [
       "Generative tools invent extra prongs, links and reflections",
       `Tiny products fail the Amazon ${amazonFillMin} percent fill rule by default`,
@@ -56,7 +56,7 @@ export const categories: CategoryPage[] = [
       "Square, portrait and story crops for Meta",
     ],
     comingSoon: ["A slow rotation style video loop"],
-    proofLine: "We never regenerate product pixels, so a customer receives exactly what the photo shows.",
+    proofLine: "We never regenerate product pixels, and every file is checked for color change inside your piece before it ships.",
   },
   {
     slug: "beauty",
@@ -75,14 +75,14 @@ export const categories: CategoryPage[] = [
       "Story and feed crops with safe zones respected",
     ],
     comingSoon: ["A templated video with your brand colors"],
-    proofLine: "Label text is untouched because label pixels are never regenerated.",
+    proofLine: "Label text is never rewritten, because label pixels are never regenerated.",
   },
   {
     slug: "food",
     name: "Food",
     headline: "Food and beverage photos that stay true to the package",
     intro:
-      "Nutrition panels and net weight statements must match the physical product. Curvi builds appetizing kitchen and tabletop scenes around your real package photo, keeping every panel readable, and delivers marketplace ready images plus social creative from one upload.",
+      "Nutrition panels and net weight statements must match the physical product. Curvi builds appetizing kitchen and tabletop scenes around your real package photo, never redrawing a panel, and delivers marketplace ready images plus social creative from one upload.",
     painPoints: [
       "Regenerated packaging misstates weights and ingredients",
       "Marketplace rules reject busy home kitchen backgrounds",
@@ -101,7 +101,7 @@ export const categories: CategoryPage[] = [
     name: "Electronics",
     headline: "Electronics listings with ports, buttons and logos intact",
     intro:
-      "Electronics buyers zoom in on ports and controls before they buy. Curvi preserves your device pixels exactly and swaps only the environment, producing a compliant main image, desk and everyday use scenes, and channel sized crops from a single photo.",
+      "Electronics buyers zoom in on ports and controls before they buy. Curvi never redraws your device and swaps only the environment, producing a compliant main image, desk and everyday use scenes, and channel sized crops from a single photo.",
     painPoints: [
       "AI tools hallucinate extra ports and misprint logos",
       "Certification marks must stay legible for compliance",
@@ -139,7 +139,7 @@ export const categories: CategoryPage[] = [
     name: "Pet supplies",
     headline: "Pet product packs without the studio wrangling",
     intro:
-      "Pet products sell on warmth and trust. Curvi turns one photo of your toy, treat bag or accessory into a compliant main image plus cozy home scenes and playful social creative, while the packaging and product stay exactly as photographed.",
+      "Pet products sell on warmth and trust. Curvi turns one photo of your toy, treat bag or accessory into a compliant main image plus cozy home scenes and playful social creative, while the packaging and product come from your photo, never redrawn by AI.",
     painPoints: [
       "Live animal shoots are unpredictable and pricey",
       "Treat packaging carries feeding guidelines that must stay accurate",
@@ -152,14 +152,14 @@ export const categories: CategoryPage[] = [
       ...(tiktokShopLive ? ["A main image sized for TikTok Shop"] : []),
     ],
     comingSoon: ["A short playful templated video", ...(tiktokShopLive ? [] : ["Crops for TikTok Shop"])],
-    proofLine: "Feeding guides and safety text remain pixel identical to your upload.",
+    proofLine: "Feeding guides and safety text come from your photo and are never rewritten by AI.",
   },
   {
     slug: "sports",
     name: "Sports and outdoors",
     headline: "Gear photos that hold up on Amazon and Shopify",
     intro:
-      "Outdoor gear gets bought on durability signals, so materials and hardware must look real. Curvi keeps your gear pixels locked, builds trail, gym and field scenes around them, and exports the sizes each channel expects.",
+      "Outdoor gear gets bought on durability signals, so materials and hardware must look real. Curvi never redraws your gear, builds trail, gym and field scenes around it, and exports the sizes each channel expects.",
     painPoints: [
       "Location shoots for one product cost more than a month of software",
       "Technical fabrics look fake when AI repaints them",
@@ -171,7 +171,7 @@ export const categories: CategoryPage[] = [
       "Vertical story creative with safe zones",
     ],
     comingSoon: ["A motion teaser video for ads"],
-    proofLine: "Stitching, straps and buckles are your real product, untouched.",
+    proofLine: "Stitching, straps and buckles are your real product, never redrawn.",
   },
 ];
 

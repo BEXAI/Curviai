@@ -6,7 +6,7 @@ license: MIT
 
 # Curvi
 
-Curvi builds a pack of listing images from one product photo. The product is cut out and placed, never redrawn, so labels and logos stay exactly as photographed. Every file is measured against its channel's rules and the pack comes with a compliance report.
+Curvi builds a pack of listing images from one product photo. The product is cut out and placed, never redrawn, so labels and logos are never rewritten, and every file is checked for color change inside the product. Every file is measured against its channel's rules and the pack comes with a compliance report.
 
 This skill drives the `curvi` command. The command talks to the Curvi API with a workspace API key. API keys work on the Growth plan and up.
 

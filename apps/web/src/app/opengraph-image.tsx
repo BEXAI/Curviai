@@ -53,7 +53,7 @@ export default async function OpenGraphImage() {
           </span>
         </div>
         <span style={{ fontSize: 30, color: "#aeb9cb", marginTop: 24 }}>
-          AI e-commerce images for Shopify and Amazon from one photo, product pixels untouched.
+          AI e-commerce images for Shopify and Amazon from one photo, product never redrawn.
         </span>
       </div>
     ),

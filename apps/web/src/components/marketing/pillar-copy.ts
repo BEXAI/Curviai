@@ -83,11 +83,11 @@ const soonFiles = comingSoonFilesSentence(["video formats"]);
 export const answerFaqs = {
   bestAmazonTool: {
     q: "What is the best AI tool for Amazon product photos?",
-    a: `The best AI tool for Amazon product photos keeps your real product exactly as it is and meets Amazon's main image rules on the first try. Curvi is built for that: it never regenerates the product pixels, builds a pure white main image at RGB ${rgb}, and measures product fill against a ${fillRange} target before the file ships. It also makes secondary images and lifestyle scenes from the same photo.`,
+    a: `The best AI tool for Amazon product photos never redraws your real product and meets Amazon's main image rules on the first try. Curvi is built for that: it never regenerates the product pixels, builds a pure white main image at RGB ${rgb}, and measures product fill against a ${fillRange} target before the file ships. It also makes secondary images and lifestyle scenes from the same photo.`,
   },
   willAiChangeProduct: {
     q: "Will AI change my product in the photos?",
-    a: "Not with Curvi. Curvi masks your product first and only generates what is around it: the light, shadow and setting. Product pixels inside the mask are never regenerated, so labels, logos, packaging shape and colors stay the same as in your photo.",
+    a: "Not with Curvi. Curvi masks your product first and only generates what is around it: the light, shadow and setting. Product pixels inside the mask are never regenerated, and every file is checked for color change inside your product before it ships.",
   },
   amazonWhiteBackground: {
     q: "How do I make an Amazon compliant white background image?",
@@ -155,20 +155,20 @@ export const aiProductImagesPage: PillarPage = {
     "AI product images for e-commerce from one photo. Curvi keeps your real product and builds Amazon, Shopify and social images checked against channel rules.",
   eyebrow: "AI product images",
   h1: "AI product images for e-commerce that keep your real product",
-  summary: `AI product images are listing photos made with AI from a photo of a real product. Curvi keeps your product pixels exactly as photographed and generates only the light, shadow and setting around them, then measures every file against the rules of the channel it is for. One photo becomes a pack for ${liveChannels}.`,
+  summary: `AI product images are listing photos made with AI from a photo of a real product. Curvi never redraws your product: it takes the product pixels from your photo, generates only the light, shadow and setting around them, then measures every file against the rules of the channel it is for. One photo becomes a pack for ${liveChannels}.`,
   sections: [
     {
       heading: "What are AI product images?",
       paragraphs: [
         "AI product images are e-commerce photos where AI does the studio work: cutting the product out, placing it on a clean background, adding light and shadow, or setting it in a lifestyle scene. They replace a photo shoot for the images a listing needs.",
-        "The important question is where the product pixels come from. Some tools draw the whole image, product included. Curvi starts from your photo and keeps the product itself untouched.",
+        "The important question is where the product pixels come from. Some tools draw the whole image, product included. Curvi starts from your photo and never redraws the product itself.",
       ],
     },
     {
       heading: "Will AI change my product?",
       paragraphs: [
-        "Curvi never regenerates your product. It masks the product first, and the pixels inside the mask come from your photo in every file, never redrawn by AI. Only the background, light, shadow and scene are generated, so labels, logos, text on the packaging and exact colors stay the same.",
-        "Tests in Curvi's code check that the product pixels in the output match the input. The product is the one thing a buyer compares against what arrives in the box, so it is the one thing Curvi does not let AI touch.",
+        "Curvi never regenerates your product. It masks the product first, and the pixels inside the mask come from your photo in every file, never redrawn by AI. Only the background, light, shadow and scene are generated, so labels, logos and text on the packaging are never rewritten.",
+        "Every finished file is measured for color change inside your product before it ships, and tests in Curvi's code check that product pixels are never regenerated. The product is the one thing a buyer compares against what arrives in the box, so it is the one thing Curvi does not let AI touch.",
       ],
     },
     {
@@ -271,7 +271,7 @@ export const compareGeneratorsPage: PillarPage = {
   eyebrow: "Comparison",
   h1: "Curvi vs AI image generators for product photos",
   summary:
-    "General AI image generators such as Midjourney, DALL-E, Flux and Stable Diffusion create images from a prompt, drawing every pixel themselves. Curvi starts from your product photo, keeps the product pixels exactly as they are and generates only the light, shadow and setting around them. For listing images of a specific real product, that difference decides whether the label and logo in the photo match the product in the box.",
+    "General AI image generators such as Midjourney, DALL-E, Flux and Stable Diffusion create images from a prompt, drawing every pixel themselves. Curvi starts from your product photo, never redraws the product and generates only the light, shadow and setting around it. For listing images of a specific real product, that difference decides whether the label and logo in the photo match the product in the box.",
   sections: [
     {
       heading: "How do general AI image generators work?",
@@ -356,7 +356,7 @@ export const comparePhotoToolsPage: PillarPage = {
     {
       heading: "Which tool should I choose?",
       paragraphs: [
-        "Choose based on the job. If you need on model fashion shots or a large template library, the tools built around those are a good fit. If you sell on marketplaces with strict image rules and want every file for every channel from one photo, with the product left exactly as photographed, that is what Curvi is built for.",
+        "Choose based on the job. If you need on model fashion shots or a large template library, the tools built around those are a good fit. If you sell on marketplaces with strict image rules and want every file for every channel from one photo, with the product never redrawn, that is what Curvi is built for.",
       ],
     },
   ],

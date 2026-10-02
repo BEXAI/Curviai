@@ -2,9 +2,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { creditCosts } from "@curvi/pipeline/seed";
-import { buildLlmsTxt } from "@/lib/llms";
+import { QC_THRESHOLDS } from "@curvi/pipeline/qc-thresholds";
+import { buildLlmsFullTxt, buildLlmsTxt } from "@/lib/llms";
 import {
   freeCredits,
+  identityClaims,
   specAvailability,
   typicalPackCredits,
   unqualifiedClaims,
@@ -333,4 +335,92 @@ describe("owned marketing sources", () => {
       }
     });
   }
+});
+
+// P18-09 part 1: every product file is resized for its channel, so no copy
+// may say the product, its label or its pixels come out exactly or
+// identically as photographed. "Never redrawn" and the measured color check
+// are the true claims (docs/marketing.md section 6.5, C-01 and C-02).
+const RETIRED_IDENTITY_CLAIMS = [
+  "Labels, logos and textures in the output match your photo exactly.",
+  "The product is masked first, and the pixels inside the mask are never regenerated, so labels, logos and textures stay identical to the original photo.",
+  "Fabric texture and printed graphics stay pixel for pixel identical to your photo.",
+  "Feeding guides and safety text remain pixel identical to your upload.",
+  "Curvi keeps your product pixels exactly as photographed and generates only the light, shadow and setting around them.",
+  "Curvi locks 100% of your original product pixels while compiling asset suites.",
+  "AI e-commerce images for Shopify and Amazon from one photo, product pixels untouched.",
+  "It ensures that the subject of your original photo remains unchanged.",
+  "Curvi preserves your device pixels exactly and swaps only the environment.",
+];
+
+/**
+ * Marketing and public sources whose shipped strings must make no identity
+ * claim, read as text because some hold JSX copy no export reaches.
+ * marketing-facts.ts holds the patterns themselves.
+ */
+const IDENTITY_SOURCES = [
+  ...OWNED_SOURCES.filter((relative) => !relative.endsWith("marketing-facts.ts")),
+  "./pillar-copy.ts",
+  "./competitor-facts.ts",
+  "../../app/opengraph-image.tsx",
+  "../../app/(marketing)/welcome/page.tsx",
+  "../../app/(marketing)/s/[slug]/og/route.tsx",
+  "../../lib/shares/page-copy.ts",
+  "../../lib/api-v1/openapi.ts",
+  "../../../../../skills/curvi/SKILL.md",
+];
+
+describe("product identity claims", () => {
+  it("catch every retired identity sentence", () => {
+    for (const sentence of RETIRED_IDENTITY_CLAIMS) {
+      expect(identityClaims(sentence), sentence).toEqual([sentence]);
+    }
+  });
+
+  it("allow the measured wording, kept photos, denials and sizes", () => {
+    for (const sentence of [
+      "Never redrawn by AI. Curvi cuts out your real product and builds the scene around it, then measures the color inside your product on every file.",
+      "Resizing for each channel means most files are not byte for byte copies, and the check measures exactly that.",
+      "Every pixel of your photo kept byte for byte.",
+      "Your photo file as uploaded, with location and camera details removed.",
+      "The background has to be pure white, meaning every background pixel reads exactly 255 255 255.",
+      "Measured 99.2 percent of edge pixels at exactly 255 255 255.",
+      "An A plus header image is exactly 970 x 600 pixels.",
+    ]) {
+      expect(identityClaims(sentence), sentence).toEqual([]);
+    }
+  });
+
+  it("never appear in live copy or in what is on the way", () => {
+    const offenders = [
+      ...liveCopy(),
+      ...homeFeatures.map((feature) => ({ where: `home feature ${feature.key}`, text: feature.body })),
+      ...helpArticles.map((article) => ({ where: `help ${article.slug}`, text: article.body.join(" ") })),
+      ...pillarPages.flatMap((page) => pillarPageTexts(page).map((text) => ({ where: `guide ${page.path}`, text }))),
+    ]
+      .map(({ where, text }) => ({ where, claims: identityClaims(text) }))
+      .filter((entry) => entry.claims.length > 0);
+    expect(offenders).toEqual([]);
+  });
+
+  it("never appear in llms.txt or llms-full.txt", () => {
+    expect(identityClaims(buildLlmsTxt())).toEqual([]);
+    expect(identityClaims(buildLlmsFullTxt())).toEqual([]);
+  });
+
+  for (const relative of IDENTITY_SOURCES) {
+    it(`${relative} ships no identity claim`, () => {
+      const source = withoutComments(readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8"));
+      expect(identityClaims(source.replace(/\s+/g, " "))).toEqual([]);
+    });
+  }
+
+  it("state the fidelity limits from the QC threshold table", () => {
+    const answer = helpArticles.find((article) => article.slug === "will-ai-change-my-product")?.body.join(" ") ?? "";
+    expect(answer).toContain("never redraws your product");
+    expect(answer).toContain(`at most ${QC_THRESHOLDS.main.maxMeanDeltaE} for main images`);
+    expect(answer).toContain(`${QC_THRESHOLDS.other.maxMeanDeltaE} for the rest`);
+    const tile = homeFeatures.find((feature) => feature.key === "fidelity");
+    expect(tile?.body).toMatch(/^Never redrawn by AI\./);
+  });
 });
