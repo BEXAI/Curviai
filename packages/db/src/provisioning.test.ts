@@ -12,6 +12,7 @@ import {
   createAppUserRole,
   createTestDb,
   readJournalEntries,
+  SUPABASE_AUTH_SHIM_SQL,
   type TestDb,
 } from "./test-helpers";
 import * as schema from "./schema";
@@ -35,11 +36,7 @@ async function createSupabaseLikeDb(opts: { stopBefore?: string } = {}): Promise
 }> {
   const client = new PGlite();
   await client.exec(`
-    create schema if not exists auth;
-    create or replace function auth.uid() returns uuid
-    language sql
-    stable
-    as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+    ${SUPABASE_AUTH_SHIM_SQL}
     create table auth.users (
       id uuid primary key,
       email varchar(255),
@@ -49,6 +46,7 @@ async function createSupabaseLikeDb(opts: { stopBefore?: string } = {}): Promise
     create role anon;
     create role authenticated;
     create role service_role bypassrls;
+    create role supabase_auth_admin;
   `);
   const entries = readJournalEntries();
   const stopAt = opts.stopBefore ? entries.findIndex((e) => e.tag === opts.stopBefore) : -1;
@@ -228,6 +226,28 @@ describe("signup grant on a confirmed email (Supabase auth triggers)", () => {
     const user = uid(2);
     await signUp(client, user, "admin.made@example.com", true);
     expect(await balanceOf(client, await workspaceOf(db, user))).toBe(12);
+  });
+
+  it("pays a Google sign in once: Supabase inserts the user, then confirms it in the same request (P18-13)", async () => {
+    // GoTrue's createAccountFromExternalIdentity creates the user unconfirmed
+    // and then calls user.Confirm (an UPDATE of email_confirmed_at) when
+    // Google reports the email verified, all in one transaction. Later
+    // Google sign ins update the row without touching email_confirmed_at.
+    const user = uid(40);
+    await client.transaction(async (tx) => {
+      await tx.query("insert into auth.users (id, email) values ($1, $2)", [user, "google.seller@gmail.com"]);
+      await tx.query("update auth.users set email_confirmed_at = now() where id = $1", [user]);
+    });
+    const ws = await workspaceOf(db, user);
+    expect(await balanceOf(client, ws)).toBe(12);
+
+    await client.query("update auth.users set email = email where id = $1", [user]);
+    await client.query("update auth.users set email_confirmed_at = email_confirmed_at where id = $1", [user]);
+    expect(await balanceOf(client, ws)).toBe(12);
+    const ledgerRows = await db.select().from(creditLedger).where(eq(creditLedger.workspaceId, ws));
+    expect(ledgerRows).toHaveLength(1);
+    expect(ledgerRows[0]).toMatchObject({ delta: 12, reason: "grant", source: "signup" });
+    expect(await db.select().from(signupGrants).where(eq(signupGrants.userId, user))).toHaveLength(1);
   });
 
   it("gives no second grant to plus addressed or dotted Gmail variants of one inbox", async () => {

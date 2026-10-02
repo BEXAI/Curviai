@@ -12,6 +12,7 @@ import {
   createAppUserRole,
   createTestDb,
   readJournalEntries,
+  SUPABASE_AUTH_SHIM_SQL,
 } from "./test-helpers";
 
 // Migration 0027: site_visits and site_visit_salts are platform tables for
@@ -179,10 +180,7 @@ describe("0027 privileges under Supabase style default grants", () => {
     const fresh = new PGlite();
     try {
       await fresh.exec(`
-        create schema if not exists auth;
-        create or replace function auth.uid() returns uuid
-        language sql stable
-        as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+        ${SUPABASE_AUTH_SHIM_SQL}
         create role anon;
         create role authenticated;
         create role service_role bypassrls;

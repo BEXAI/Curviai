@@ -197,6 +197,125 @@
       "when": 1790701700000,
       "tag": "0027_site_visits",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1790864442094,
+      "tag": "0028_mcp_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790864502094,
+      "tag": "0029_attribution_and_funnel",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1790866451714,
+      "tag": "0030_deploy_restarts",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790866641551,
+      "tag": "0031_seller_profile",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790866646688,
+      "tag": "0032_free_previews",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1790866816106,
+      "tag": "0033_share_proof",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1790868078311,
+      "tag": "0034_lifecycle_email",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1790870292166,
+      "tag": "0035_pack_feedback",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1790870315379,
+      "tag": "0036_pack_claims",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1790870469863,
+      "tag": "0037_referrals",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790872346199,
+      "tag": "0038_ops_switches_and_audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1790921588222,
+      "tag": "0039_billing_terms",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1790938247303,
+      "tag": "0040_billing_schedule",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1790938296172,
+      "tag": "0041_runner_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1790938380386,
+      "tag": "0042_retention_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1790938484592,
+      "tag": "0043_ops_alerts_gallery",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790938535212,
+      "tag": "0044_disposable_domains",
+      "breakpoints": true
     }
   ]
 }
