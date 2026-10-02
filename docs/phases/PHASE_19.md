@@ -701,9 +701,9 @@ As built on `p19/integration` (wave 4, P19-25 and P19-26; docs/verification.md, 
 | 6 Secondary | P19-28 S | 0.5 days |
 | Total | 29 items | about 37 agent days at the middle of each size. The critical path (wave 0, p19/auth, the spike, P19-12, the full consent page, wave 4) is about 14.5 agent days at the low end of each size and 19 at the middle, so about 3 to 4 weeks of calendar time with the other branches alongside, plus founder steps (identity verification, ES256 migration, Cloudflare, reviewer account, demo video) and OpenAI's review time (unknown; developers report 3 to 6 weeks). The viewer is off this path (decision 6). |
 
-## Data model summary (one migration, next free number at build time)
+## Data model summary
 
-- Number: `0028` (`0027_site_visits` comes from the site-visitors branch, merged into `growth/base` under `p19/integration`; PHASE_18 renumbers after 0028).
+- Final number: `0028_mcp_connections`, now part of the applied, immutable migration history through `0044_disposable_domains`. The earlier branch-number allocation was planning history; do not renumber or reapply those migrations.
 
 - New tenant table `mcp_connections` with `workspace_id`, `profile_id`, RLS and a test (rule 5).
 - New function `public.curvi_access_token_hook(jsonb)` with its grants (inside a `pg_roles` check).
@@ -886,6 +886,8 @@ Shared files per wave: mcp.ts (p19/auth for the auth branch; P19-20 in p19/spike
 
 ## Rollout and the rule 6 gate
 
+Historical branch rollout plan from 2026-10-01. The combined inline web release and applied migration history supersede this branch sequence; use the current "Founder steps, in order" below for deployment. Historical branch names are not a cherry-pick or merge prescription.
+
 1. Dark merge of p19/auth and p19/spike (lint, typecheck, test); FOUNDER applies the migration (B1) and deploys with `MCP_OAUTH_ENABLED=0`. The MCP endpoint behaves as today.
 2. FOUNDER: A2, A3, B0; the hook (B2) and the web sign in check.
 3. FOUNDER: the developer client (B4, B5) and `MCP_OAUTH_ENABLED=1` (B3, a restart).
@@ -942,7 +944,7 @@ After publishing: tool changes (descriptions, schemas, annotations, security sch
 
 ## Implementation status
 
-Recorded 2026-10-01 on `p19/integration` (main 31992a9 is merged in). Nothing from this phase is on main or in production yet. These notes supersede the "As built" notes above where they differ.
+The original record below was made on 2026-10-01 on `p19/integration` with main 31992a9 merged in. Its unpublished status and branch references are historical. The 2026-10-02 combined implementation, current founder steps and dated deployment evidence in `docs/verification.md` govern the present rollout.
 
 ### Local completion updates, 2026-10-02
 
@@ -959,7 +961,7 @@ Focused checks for this local work passed: Registry manifest 3 tests, registry r
 
 The screening-readiness follow-up passed 24 worker tests, including the real database existing-hold/replay case, and 124 web copy/MCP tests. Worker and web TypeScript and scoped ESLint passed. These tests prove the fail-closed runtime and credit settlement; the funded version 8 evaluation and live activation remain pending.
 
-### What is built on p19/integration
+### Implementation inventory, with original branch provenance
 
 | Items | Status | Where |
 | --- | --- | --- |
@@ -976,15 +978,15 @@ The screening-readiness follow-up passed 24 worker tests, including the real dat
 | P19-12 | Not done | Needs production: the dark deploy, the Supabase OAuth server, the hook and a ChatGPT developer mode connection (founder steps 5 to 9). |
 | P19-28 | Local artifacts built 2026-10-02; unpublished | `packages/openai-plugin/registry/server.json` uses the verified 2025-12-11 Registry schema and the fixed HTTPS MCP endpoint. `/.well-known/mcp-registry-auth` serves only a valid Ed25519 public proof from `MCP_REGISTRY_AUTH`, otherwise 404. Contract and route tests cover both. Domain verification and publication wait for the production OAuth proof (founder step 12). |
 
-### Review findings (P19-27, three lenses)
+### Historical review findings (P19-27, three lenses)
 
 The security, guidelines and copy, and correctness lenses raised 24 findings, several of them the same issue seen from two sides. 20 are fixed: the stale 0028 snapshot in 919b4ae (with a drift test in 7ba4001); seventeen in 7ba4001 (get_pack links without `MCP_LINK_KEYS` and under the rollback in two findings, the kill switch on links and consent, sealed link tokens, the `max_credits` loop, check_main_image's audience in two findings, the paused options line, plural counts, the refused key line, the photo `data` field for OAuth callers, env access through lib/env, `PACK_VIEWER_LIVE` off in three findings, "Use another account" and "Forgot password?"); P19-29 in two findings by 65fd7ce. ea3dd0a closes the rest of two of them: list_channels stops offering background and scene choices while the output options switch is off, and the golden negatives check the real refusal line. Four are not changed in code:
 
 - `.env.example` (two findings): env files are blocked for the agents, so the six lines are founder step 1.
-- Sentry events for MCP failures (O7): Sentry is not installed; PHASE_20 P20-13 owns it, and `addMcpLogSink` (65fd7ce) is its seam. Until then the redacted `[mcp]` lines in the Render log are the record (founder step 13).
-- The 0028 number clash: p18/integration has 0028 to 0036 and p20/integration has 0028. Settled at merge time by whichever branch lands second (founder step 4).
+- Sentry events for MCP failures (O7): this was awaiting PHASE_20 P20-13 at the original review. The combined implementation now registers `addMcpLogSink` in `apps/web/src/sentry.server.config.ts`; founder step 13 verifies configured delivery rather than adding another sink.
+- The original 0028 branch-number clash was resolved in the final migration history through 0044. Production already has that history; founder steps 4 and 5 do not renumber or replay it.
 
-### Rule 6 gate
+### Historical Rule 6 gate
 
 Run 2026-10-01 and 2026-10-02 on `p19/integration` with the code as of this commit, locally (CLAUDE.md rule 6):
 
@@ -995,7 +997,7 @@ Run 2026-10-01 and 2026-10-02 on `p19/integration` with the code as of this comm
 
 ### Migration
 
-`packages/db/migrations/0028_mcp_connections.sql`, the only migration in this phase. It keeps 0028 if this branch merges to main before PHASE_18 and PHASE_20; otherwise it is renumbered after theirs with a regenerated snapshot. It is additive and runs after 0027: the `mcp_connections` table (workspace_id, profile_id, RLS: the row's user and the workspace's owners and admins read, no client role writes), the restrictive `no_oauth_clients` policy on every public table so a token from Supabase's OAuth server reads and writes nothing through the Data API (web sessions carry no `client_id`), and `public.curvi_access_token_hook`, executable only by `supabase_auth_admin`. Every later migration that adds a public table must give it `no_oauth_clients`; mcp-connections.test.ts fails until it does, and snapshot-drift.test.ts fails when the newest snapshot differs from schema.ts.
+`packages/db/migrations/0028_mcp_connections.sql` is part of the final applied history through `0044_disposable_domains`, verified on 2026-10-02. Preserve its number, SQL and recorded hash. It added the `mcp_connections` table (workspace_id, profile_id, RLS: the row's user and the workspace's owners and admins read, no client role writes), the restrictive `no_oauth_clients` policy on every public table so a token from Supabase's OAuth server reads and writes nothing through the Data API (web sessions carry no `client_id`), and `public.curvi_access_token_hook`, executable only by `supabase_auth_admin`. Every later migration that adds a public table must give it `no_oauth_clients`; mcp-connections.test.ts fails until it does, and snapshot-drift.test.ts fails when the newest snapshot differs from schema.ts. No replay or renumbering of 0028–0044 is part of the current web release.
 
 ### Environment variables
 
@@ -1014,26 +1016,26 @@ All web, server only, and none in .env.example yet (founder step 1). docs/LAUNCH
 
 ### Founder steps, in order
 
-The same list is in docs/PENDING.md, "Phase 19 founder steps".
+Current as of 2026-10-02. `docs/PENDING.md`, "Assistant and growth gates", summarizes the remaining acceptance work. These steps supersede the historical branch rollout above. Code publication and no-spend deployment verification may proceed with OAuth off and screening unavailable; funded evaluation and external activation require their separate approval and evidence.
 
-Before anything reaches production:
+Preparation and acceptance gates:
 
 1. **Add six lines to .env.example by hand** (env files are blocked for the agents; the comments are in docs/LAUNCH_CHECKLIST.md, PHASE_19 sections): `MCP_OAUTH_ENABLED=0`, `MCP_RESOURCE_URL=`, `SUPABASE_AUTH_ISSUER=`, `MCP_OAUTH_CLIENT_IDS=`, `MCP_LINK_KEYS=` and `OPENAI_APPS_CHALLENGE_TOKEN=`.
-2. **Run the live intake eval for version 8 (P19-29),** with live keys in your shell, never in CI (it spends money): `pnpm eval --live --provider openai --recipe intake_normalizer` against the stored Claude baseline (record one first with `pnpm eval --live --provider anthropic --record-baseline` if none is stored). The vape, pepper spray and firework fixtures must each name their category, no clean golden photo may name one, and the usual bar holds. If it fails, set intake version 7 active at 100 and version 8 at 0 in packages/pipeline/src/seed/recipes.ts before any re-seed.
+2. **Complete the separately funded live intake evaluation for version 8 (P19-29),** with authorized live keys in your shell, never in CI: `pnpm eval --live --provider openai --recipe intake_normalizer@8`. If a matching baseline must be recorded, that separately funded command is `pnpm eval --live --provider anthropic --recipe intake_normalizer@8 --record-baseline`; the explicit version prevents the unversioned Claude selector from testing version 6. Record the candidate prompt hash, provider/model, fixtures and results. The vape, pepper spray and firework fixtures must each name their category, no clean golden photo may name one, and the usual bar holds. Evaluation does not activate recipes. Until it passes and targeted activation is approved, preserve production version 7 at 100% with version 8 absent. An unsuccessful or unrun eval leaves assistant generation unavailable; it is not a reason to run a broad seed.
 3. **Start identity verification now** (runbook A4: business or individual at platform.openai.com, a project with global data residency, and confirm you are an organization owner), since it can take time, and check that Developer mode shows on your ChatGPT plan (A5).
-4. **Merge p19/integration to main** once the rule 6 gate is green there. It keeps migration 0028 if it merges first; PHASE_18 (0028 to 0036 on p18/integration) and PHASE_20 (0028 on p20/integration) then renumber after it, regenerate their drizzle snapshot, and give every new public table the `no_oauth_clients` policy (packages/db/src/mcp-connections.test.ts and snapshot-drift.test.ts fail until they do).
+4. **Publish the reviewed combined implementation through the current release PR** once its lint, typecheck, unit and browser gates pass. Release the coherent web/package dependency set already prepared for main; the old `p19/integration` merge and historical cherry-pick order are superseded. Keep `MCP_OAUTH_ENABLED=0`, public assistant flags off and the screening guard in place. Preserve the immutable migration files and journal through 0044.
 
 Then in production, in this order:
 
-5. **Production migration 0028** (runbook B1: the Supabase SQL editor or `pnpm db:migrate`, after 0027, staging first). Additive: `mcp_connections`, the restrictive `no_oauth_clients` policy on every public table and `public.curvi_access_token_hook`. Nothing changes for users until the hook is on. Then sign in to curvi.ai in a private window and open /app.
+5. **Verify the already-applied production schema.** Migrations 0028–0044, including MCP connections, OAuth isolation policies and the access-token hook function, were applied and verified on 2026-10-02. Compare protected health and the migration manifest with the intended release; do not replay or renumber them. Applying schema did not enable Supabase OAuth or the hook setting. Check ordinary private-window sign-in and /app after the web deployment; future migrations follow the guarded migration runbook.
 6. **Supabase OAuth server and the audience hook.** A2: ES256 signing keys, at a quiet time, then a private window sign in. A3: Authentication, OAuth Server on, authorization path `/oauth/consent`, dynamic registration off; Site URL `https://curvi.ai`; Secure password change and Secure email change on, and "require current password" if offered (then check /reset-password in a private window). Redirect URLs must allow `https://curvi.ai/auth/callback` with a query string (for example `https://curvi.ai/**`). B0: Cloudflare must not challenge OpenAI's egress on `/api/mcp`, `/api/mcp/*` and `/.well-known/*`; record any skip rule in docs/verification.md. B2: Authentication, Hooks, Custom Access Token, `public.curvi_access_token_hook`; sign in to curvi.ai at once in a private window, and turn the hook off if sign in fails.
 7. **Environment variables on Render** (Environment, Save only): `MCP_LINK_KEYS` = `k1:` plus the output of `openssl rand -hex 32` (without it estimate_pack cannot count credits for anyone); `MCP_OAUTH_ENABLED` = `0` or unset; leave `MCP_RESOURCE_URL` and `SUPABASE_AUTH_ISSUER` unset unless Supabase's issuer differs from `${NEXT_PUBLIC_SUPABASE_URL}/auth/v1`; `MCP_OAUTH_CLIENT_IDS` waits for step 9 and `OPENAI_APPS_CHALLENGE_TOKEN` for step 11. Confirm `CURVI_INLINE_PACK_CONCURRENCY` = `2` on the service (decision 13).
-8. **Deploy with `MCP_OAUTH_ENABLED=0` first:** the Trigger.dev worker, then the web app. Check that `https://curvi.ai/.well-known/oauth-protected-resource/api/mcp` answers 404 and that an API key still lists and runs the tools and gets download links from get_pack. Then re-seed with pnpm db:seed, staging first, once step 2 passed: intake version 8 serves, version 7 is retired and version 6 stays the Claude rollback at 0.
+8. **Deploy the inline web release with `MCP_OAUTH_ENABLED=0`.** The Render web service contains the pack runner; there is no separate Trigger.dev worker deployment. Verify the exact deployed commit, protected health/schema report, public smoke and running/queued counts. The protected-resource metadata URL must answer 404. API-key discovery, read-only tools and existing pack downloads remain available; `create_pack` through MCP is expected to fail with temporary screening-unavailable copy and release its hold while live intake remains at version 7. Do not call generation merely to prove a no-spend deployment. After step 2 passes and activation is explicitly approved, review and apply narrowly scoped version 8 recipe SQL with expected-current-state/hash checks and read-back evidence, staging first; preserve unrelated recipes and operator settings. No broad `pnpm db:seed` is part of this rollout. Complete successful and restricted-product assistant acceptance only after that activation.
 9. **The developer mode proof (P19-12).** At a quiet time set `MCP_OAUTH_ENABLED=1` (B3; the restart settles running packs). B4: add the "Curvi (dev)" connection in ChatGPT developer mode and note its callback URL. B5: create the confidential Supabase client "ChatGPT developer" with exactly that callback, enter its id and secret in ChatGPT, and set `MCP_OAUTH_CLIENT_IDS` to its id. Then run "Verifying the live connection" steps 1 to 8 with the agent, including decision 15's Auth API probe with a ChatGPT style token: if that token can change the password or add an MFA factor, decision 15's default is the WorkOS fallback before anything else is built. Record every result with its date in docs/verification.md. Also confirm the retention numbers and the support reply time (decision 10), how Sign out on curvi.ai should behave (LAUNCH_CHECKLIST, p19/consent item 2), and that `output_options_enabled` is true before review case 5.
 10. **P19-27 again (agent),** on the surfaces this plan lists with step 9's probe results in hand; every finding fixed and deployed. Then the agent flips `FEATURES.agentApi` to live, and you deploy.
 11. **The submission (runbook C to E):** `pnpm plugin:zip --developer-name "<verified name>"`, the local marketplace install in the ChatGPT desktop app (C3b, ChatGPT and Codex; if Codex cannot sign in with the static client, decision 1's fallback comes first), the demo video and `review.demo_recording_url` (C4), the reviewer account "Curvi Review" on Starter with 300 credits and two packs (D1 to D5), then upload, connect the MCP with a second Supabase client "ChatGPT" and add its id to `MCP_OAUTH_CLIENT_IDS`, put the domain token in `OPENAI_APPS_CHALLENGE_TOKEN` and verify the domain, wait for the tool scan, enter the reviewer details, submit (E1 to E7).
 12. **After approval (E8):** press Publish plugin; the agent flips `FEATURES.chatgptPlugin` to live and sets `CHATGPT_LISTING_URL`; deploy. Then ship the pack viewer by deploy (`PACK_VIEWER_LIVE = true` in apps/web/src/lib/mcp-ui/pack-viewer/resource.ts, decision 6) and press Rescan, run the 5 positive cases on iOS, Android and Codex CLI, and publish to the official MCP Registry (P19-28: local manifest and public-proof route are ready; you make the OpenSSL 3 Ed25519 key, configure only its public proof as `MCP_REGISTRY_AUTH`, then run `mcp-publisher login http --domain curvi.ai --private-key "$PRIVATE_KEY"` and `mcp-publisher publish` from `packages/openai-plugin/registry` after the live OAuth proof).
-13. **PHASE_20 P20-13 (Sentry):** register a sink with `addMcpLogSink` (apps/web/src/lib/api-v1/mcp-log.ts) so the redacted MCP failure events reach Sentry by reason; until then they are `[mcp]` lines in the Render log.
+13. **Verify the existing Sentry wiring (P20-13).** Next.js instrumentation already loads `apps/web/src/sentry.server.config.ts`, which registers the redacted MCP sink with `addMcpLogSink`. Configure the approved Sentry environment values and verify an authorized, harmless failure reaches the intended project with the expected release/reason and no tokens, signed links, tool arguments or results. Do not register a duplicate sink. Until configured delivery is observed, the redacted `[mcp]` lines remain the local Render-log evidence; wiring alone is not delivery acceptance.
 
 ## Backlog
 
