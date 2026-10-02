@@ -21,7 +21,7 @@ Every external setting name, value and limit below was checked against the linke
 | 11 | Upstash Redis | Founder | Shared rate limits |
 | 12 | PostHog | Founder | Funnel data |
 | 13 | Sentry | Engineer, then founder | Error alerts |
-| 14 | Trigger.dev v4 and Cloud | Engineer, then founder | Durable packs, scheduled jobs |
+| 14 | Inline runner and shared tick cron | Engineer, then founder | Packs and scheduled jobs |
 | 15 | Uptime monitor | Founder | Outage alerts |
 | 16 | Post deploy smoke test | Founder | Announcing paid plans |
 
@@ -40,13 +40,13 @@ Do these in exactly this order. Main auto deploys, so everything the new code ne
 
 **Who:** founder, with a lawyer.
 
-**Do:** have counsel review the live pages at https://curvi.ai/terms and https://curvi.ai/privacy (source: `apps/web/src/app/(marketing)/terms/page.tsx` and `privacy/page.tsx`). Points to cover:
+**Do:** have counsel review the live pages at https://curvi.ai/terms, https://curvi.ai/privacy and https://curvi.ai/legal/subprocessors (source: `apps/web/src/app/(marketing)/terms/page.tsx`, `privacy/page.tsx` and `legal/subprocessors/page.tsx`). Every fact and number on them comes from `apps/web/src/lib/legal/facts.ts`, the retention table from `lib/legal/retention.ts` and the vendor list from `lib/legal/subprocessors.ts` (PHASE_20 P20-23). Points to cover:
 
-- The legal entity name, address, contact (hello@curvi.ai) and governing law.
+- The legal entity name, postal address and governing law: set `entity` in `apps/web/src/lib/legal/facts.ts`. Until then the terms and privacy pages show a marked "Pending" line in their place. Then move the Last updated dates and the fingerprints in `lib/legal/pages.test.ts` (the test says how).
 - Credits, subscriptions and refunds as the product actually works: credits are held when a pack starts, charged only for delivered assets, and released otherwise; a refund or dispute claws back the credits that invoice granted (PHASE_10 decision 3); annual plans grant the year of credits on the paid invoice (decision 2).
 - Uploaded content: the license customers grant to process their photos, retention and deletion.
 - AI generated output: Concept Mode images are generated and labeled as such; Listing Mode keeps the real product pixels. Acceptable use, and the moderation gate that holds flagged uploads.
-- Subprocessors: Render (hosting), Supabase (database and auth), Cloudflare (R2 storage, DNS, email routing), Stripe, Resend, PostHog, Sentry, Upstash, Trigger.dev, and the model providers Anthropic, Google (Gemini), Black Forest Labs, OpenAI and fal (fal also runs the cutouts; Photoroom is no longer used since Phase 14).
+- Subprocessors: the page lists only the vendors whose variables the build sees (Render, Supabase and Cloudflare always; Stripe, Resend, PostHog, Sentry, Upstash, Turnstile on Cloudflare, and the model providers Anthropic, Google (Gemini), Black Forest Labs, OpenAI and fal when their keys are set; the OpenAI Ads pixel unless it is turned off). Trigger.dev is not on it: `TRIGGER_SECRET_KEY` stays unset (PHASE_20 P20-18 removes the path). The marketing pages are built at deploy time, so a vendor variable saved with Save only shows on the page from the next deploy.
 - Privacy rights for EU, UK and California visitors, and whether PostHog analytics needs a consent banner for EU traffic.
 
 **Verify:** the lawyer's written sign off is on file with a date; both pages show the reviewed text and an effective date; a code change carrying the new text has shipped (copy follows CLAUDE.md rule 9).
@@ -214,43 +214,48 @@ Without it, rate limits run in process (PHASE_10 decision 5): each instance coun
 
 ## 13. Sentry
 
-**Status:** not wired. The repo has no Sentry SDK (no `@sentry/nextjs` dependency), so the `SENTRY_DSN` variable in render.yaml does nothing today.
-
-**Who:** an engineer adds the SDK in its own change (it is a new dependency), then the founder sets the variables.
-
-**Do:** run `npx @sentry/wizard@latest -i nextjs` in `apps/web`. It adds `instrumentation.ts`, `instrumentation-client.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts` and `app/global-error.tsx`. Keep the user facing error copy plain (rule 9). The founder sets `SENTRY_DSN` (and `NEXT_PUBLIC_SENTRY_DSN` for the browser) and `SENTRY_AUTH_TOKEN` for source maps in Render, and adds an alert rule that emails them on new issues.
-
-**Verify:** a deliberate test error shows up in Sentry with a readable stack trace, and the alert email arrives.
-
-**Source:** https://docs.sentry.io/platforms/javascript/guides/nextjs/ (checked 2026-09-28).
-
-## 14. Trigger.dev v4 and Cloud (durable packs and scheduled jobs)
-
-**Status:** the code pins `@trigger.dev/sdk` 3.x and imports `@trigger.dev/sdk/v3`. Trigger.dev Cloud has shut v3 down: "v3 triggers and deploys no longer run."
-
-**Keep `TRIGGER_SECRET_KEY` unset on Render until this step is finished.** With the key set, every pack is sent to Trigger.dev instead of the inline runner and fails to queue ("The pack could not be queued.", credits released). The scheduled jobs (metrics digest Mondays 08:00 New York time, churn scoring daily 07:00, the weekly creative drop) run only on Trigger.dev, so none of them run in production today.
-
-Until then, packs run on the inline runner: limited by `CURVI_INLINE_PACK_CONCURRENCY`, capped per run by `CURVI_INLINE_PACK_MAX_RUN_MS` and drained on SIGTERM (step 8). A hard crash or out of memory kill still loses the running packs; the stale run reconciler fails them and releases their credits after 30 minutes.
-
-**Who:** an engineer upgrades the code, then the founder sets up the account.
-
-**Do:**
-
-1. Engineer: `npx trigger.dev@latest update` (moves `@trigger.dev/*` to 4.x), change imports to `@trigger.dev/sdk`, define queues ahead of time with `queue()`, switch lifecycle hooks to the single object parameter, and apply both items in Update.md "Before moving pack jobs to Trigger.dev cloud" (ship the template font, keep the cutout to one per job).
-2. Founder: create the Trigger.dev Cloud project, set the production environment variables there (database, R2, provider keys, Resend), and deploy the tasks (`pnpm --filter @curvi/trigger run deploy`; the `run` matters, since `pnpm deploy` is a different built in command).
-3. Founder: set `TRIGGER_SECRET_KEY` (the production secret key) in Render and redeploy.
-
-**Verify:** a pack created on curvi.ai appears as a run in the Trigger.dev dashboard and reaches done; the Schedules page lists the three scheduled tasks with their next run times; the first Monday digest arrives.
-
-**Sources:** https://trigger.dev/docs/migrating-from-v3, https://trigger.dev/docs/upgrade-to-v4 (checked 2026-09-28).
-
-## 15. Uptime monitor
+**Status:** wired for the server and edge runtimes (docs/phases/PHASE_20.md P20-13, `@sentry/nextjs` 11.2.0): `apps/web/src/instrumentation.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts` and `lib/sentry/`. Without `SENTRY_DSN` nothing is initialized and nothing is sent. The browser side, `app/global-error.tsx` and the 404 page come with P20-14 (Release 3).
 
 **Who:** founder.
 
-**Do:** point an external uptime monitor (for example Better Stack or UptimeRobot; pick any) at `https://curvi.ai/api/health`, expecting HTTP 200 **and** a body containing `"ok":true`, plus a second check on `https://curvi.ai/`. Alert the founder by email and phone. The body match is required, not optional: after an instance has started, a database outage answers 200 with `"ok":false` (step 8 explains why), so a monitor that only checks the status code never sees it.
+**Do:**
 
-**Verify:** a test alert from the monitor arrives. The monitor's settings show the keyword or body check for `"ok":true`.
+1. Create a Sentry account on the free Developer plan (decision 13: 5k errors a month, one user, email alerts) and a Next.js project.
+2. On Render, web service, Environment, Save only: `SENTRY_DSN` (the project's DSN), and for readable stack traces `SENTRY_AUTH_TOKEN` (an organization auth token with release and source map scopes; a secret), `SENTRY_ORG` and `SENTRY_PROJECT` (the slugs). The token is read only by `next build`; without it the build succeeds and stack traces stay minified (checked 2026-10-01). Render sets `RENDER_GIT_COMMIT`, which names the release.
+3. In Sentry, add an issue alert rule that emails you on every new issue.
+4. Deploy.
+
+| Name | Read by | Unset means |
+| --- | --- | --- |
+| `SENTRY_DSN` | `apps/web/src/lib/sentry/options.ts` (server and edge) | No Sentry: nothing is initialized or sent, founder alerts go by email only. |
+| `SENTRY_AUTH_TOKEN` | `apps/web/next.config.ts`, at build time only | Source maps are not uploaded and no release is created; stack traces stay minified. The build still succeeds. |
+| `SENTRY_ORG`, `SENTRY_PROJECT` | `apps/web/next.config.ts`, at build time only | Source maps cannot be uploaded. |
+| `NEXT_PUBLIC_SENTRY_DSN` | P20-14 (browser errors, Release 3) | Not read yet. |
+
+What it sends: server request errors, every `console.error` line (warnings stay in the log), pack crashes and time caps tagged with `job_id`, `workspace_id`, `run_key` and `run_kind`, and a copy of every founder alert. Request bodies, cookies, query strings, credential headers and link tokens are removed first. At most 20 events of one error an hour, 60 an hour and 150 a day per instance (seed `errorReporting`). docs/ops/ALERTS.md, "Sentry", has the details.
+
+**Verify:** the first error after the deploy (any `console.error` line in Render's log) appears in Sentry with a readable stack trace, and the new issue email arrives. A pack error carries its job: search `job_id:<uuid>`. Nothing arrives at all: check `SENTRY_DSN` and look for the `sentry_event_dropped` warning in the log.
+
+**Source:** https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/ and /configuration/options/ (checked 2026-10-01, docs/verification.md, PHASE_20).
+
+## 14. Inline packs and the shared tick cron
+
+PHASE_20 removes the Trigger.dev SDK and cloud task wrappers. Packs run inside the bounded web runner. Keep `TRIGGER_SECRET_KEY` unset and remove any retired dashboard value; it is no longer a worker-routing control. The `@curvi/trigger` workspace remains as shared tested pipeline code.
+
+The production Blueprint now describes one `curvi-tick` scheduler plus the separate encrypted backup scheduler. See the combined production inventory below for the exact separation of environment variables and the safe adoption procedure. Do not create a new worker or duplicate existing cron services. First prove the tick, health heartbeat and per-job successes, then retire the old dashboard cron commands. The first real backup/restore and Monday report remain live acceptance checks.
+
+## 15. Uptime monitor
+
+**Who:** founder. The full list of alerts, what each means and the first action is docs/ops/ALERTS.md (docs/phases/PHASE_20.md P20-17).
+
+**Do:**
+
+1. **Monitor A**, UptimeRobot Free (decision 14; its terms allow commercial use): a Keyword monitor on `https://curvi.ai/api/health` every 5 minutes, keyword `"ok":true`, alert when the keyword does not exist, by push (the mobile app) and email. The body match is required, not optional: after an instance has started, a database outage answers 200 with `"ok":false` (step 8 explains why), so a monitor that only checks the status code never sees it.
+2. **Monitor B:** a second keyword monitor on the same URL, keyword `"status":"ok"`, email. It also fires for degraded warnings that leave `ok` true: packs paused for a provider, a dead cron, a stale backup, high memory, a nearly full database (`status` and `degradedBy` in the body, P20-15).
+3. **healthchecks.io** Hobbyist (free): a `curvi-backup` check pinged by the backup cron on success (P20-10, `HEALTHCHECKS_BACKUP_URL`), period 1 day. After the first ping, confirm it shows "up": a wrong check id still answers 200.
+4. **Render:** email notifications for failed deploys on.
+
+**Verify** (both safe on production): a temporary UptimeRobot keyword monitor on `https://curvi.ai/api/health` with a keyword that never appears alerts within 10 minutes, then delete it; a temporary healthchecks.io check that is never pinged emails within 30 minutes, then delete it. Record both, dated, in docs/verification.md. The staging 503 drill (both monitors fire) joins the Release 4 gate.
 
 ## 16. Post deploy smoke test
 
@@ -275,7 +280,7 @@ Full version, in addition:
 
 ## Environment variables added in batch 1
 
-Set these in Render (the Curviai service, Environment, **Save only**, step 7) and list every name in `.env.example` (CLAUDE.md rule 8). None is needed to boot: unset, the code uses the default below. Packs run inline in the web service today, so these belong on the web service. Once packs move to Trigger.dev Cloud (step 14), also set `FOUNDER_ALERT_EMAIL`, `FOUNDER_ALERT_FROM` and `RESEND_API_KEY` in the Trigger.dev production environment; the three `CURVI_*` runner variables apply to the inline runner only.
+Set these in Render (the Curviai service, Environment, **Save only**, step 7) and list every name in `.env.example` (CLAUDE.md rule 8). None is needed to boot: unset, the code uses the default below. Packs run inline in the web service today, so these belong on the web service. The inline web runner owns these keys. The tick cron only calls the web route and does not receive provider or email keys.
 
 | Name | Read by | Unset means | Meaning and when to set it |
 |---|---|---|---|
@@ -411,7 +416,7 @@ No new environment variables. What the founder does outside the repo:
 
 1. **Apply migration 0018 (`cancel_flows`) to production** in the Supabase SQL editor, in journal order with the other batch 2 migrations, before the code that writes the table goes live. It creates the table, enables row level security and adds one read policy for owners, admins and editors. Until it is applied, the billing page still loads, but the cancel flow records nothing, so the reasons are lost and a pause or discount can be taken more than once (Stripe still refuses a second pause or cancellation on the same subscription).
 2. **Stripe (only once step 10 is done).** Nothing to create by hand: the first subscriber who takes the discount creates the coupon `curvi_save_30pct_3mo` (30 percent off, repeating for 3 months, from `retentionOffers` in packages/pipeline/src/seed/retention.ts). If the terms in the seed change, a new coupon id is made; delete the old coupon in the Dashboard if it should no longer be offered. The downgrade offer needs the smaller plan's price id env var (`STRIPE_PRICE_<TIER>_<CADENCE>`, already listed for checkout). Cancellation now happens in the app, so consider turning off "Cancel subscriptions" in the Customer Portal configuration so every cancellation passes through the save offers (docs/STRIPE_SETUP.md, portal settings). In test mode, run each offer once: pause (the subscription shows "collection paused" until the resume date), downgrade (the next invoice is at the smaller price), discount (the subscription shows the coupon), and cancel (the subscription shows "cancels on" the period end), then check the webhook synced the plan.
-3. **Brand fonts on Trigger.dev Cloud (step 14).** Template text now reads one of five bundled TTFs (Inter, Montserrat, Playfair Display, Lora, Roboto Slab) from the `@expo-google-fonts/*` packages. The web inline runner finds them in node_modules. A Trigger.dev Cloud build must ship these packages too (keep them external, or add the TTF files to the build); a brand font that cannot be found falls back to Inter, and only a missing Inter sends text templates to needs review, as before.
+3. **Bundled brand fonts.** The inline web runner reads the five packaged TTF families. Keep those font packages in the web deployment. A missing selected font falls back to Inter; missing Inter sends text templates to review.
 
 ## Phase 12 health (p12/health)
 
@@ -424,7 +429,7 @@ No new environment variables and no migration. Two existing ones gain a use:
 
 What changes for the founder:
 
-1. **`/api/health` warnings now cover drift.** Besides `storage_not_configured`, `no_llm_provider` and `no_image_provider`, it can list `no_cutout_provider`, `recipe_drift` (the recipes table differs from the seed in the deployed build, so production runs other prompts or models), `recipe_check_failed`, `cron_never_ran:<name>`, `cron_overdue:<name>` (last success older than twice the interval: stale-jobs every 10 minutes, purge-source-media daily), `cron_check_failed`, `shot_concurrency_invalid` and `memory_high` (RSS at 85 percent of the container limit or more). Warnings never change `ok` or the status code. Until both crons are scheduled (Phase 12 A4), the two `cron_never_ran` warnings are expected, so the short smoke test in step 16 reads `"warnings":[]` only after that.
+1. **`/api/health` warnings now cover drift.** Besides `storage_not_configured`, `no_llm_provider` and `no_image_provider`, it can list `no_cutout_provider`, `recipe_drift` (the recipes table differs from the seed in the deployed build, so production runs other prompts or models), `recipe_check_failed`, `cron_never_ran:<name>`, `cron_overdue:<name>` (last success older than twice the interval: stale-jobs every 10 minutes, purge-source-media daily, billing-reconcile every `billingReconcile.everyMinutes`; the backup instead after the seeded `backup.maxAgeHours`, 26 hours), `cron_check_failed`, `shot_concurrency_invalid` and `memory_high` (RSS at 85 percent of the container limit or more). Warnings never change `ok` or the status code, but since PHASE_20 P20-15 they set `status` to `degraded` (a `cron_never_ran` or `cron_overdue` warning among them; docs/ops/ALERTS.md lists each code's severity). Until all four crons (stale-jobs, purge-source-media, billing-reconcile and backup) have run, their `cron_never_ran` warnings are expected and `status` reads `degraded`, so the short smoke test in step 16 reads `"warnings":[]` only after that.
 2. **Read the detail:** `curl -s -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/health` adds `details`: each warning in plain words, the recipe differences (model ids and body hashes, never prompts), key presence per stage (env var names only), each cron's last success, shot concurrency and memory. A wrong secret gets the public body.
 3. **Probe the provider keys after each deploy:** `curl -s -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/health/providers`. Each configured provider gets one free metadata call (model lookup for Anthropic, Gemini and OpenAI, the credit balance for BFL; the fal cutout has no free probe and shows as skipped), and the reply lists `ok`, the HTTP status and the latency per provider; the top level `ok` is true only when every configured key was accepted. A 401 means the key was refused; a 403 usually means the key is not allowed or has no credit left. Nothing is generated and nothing is spent. This route used to be public; if an uptime monitor polled it, point that monitor at `/api/health` instead.
 4. **Clear a recipe drift warning** by running `pnpm db:seed` against the database from the deployed commit (it upserts the seed rows), or, when a table edit was deliberate, by moving the same change into packages/pipeline/src/seed/recipes.ts.
@@ -449,7 +454,7 @@ No migration. Cutouts moved from Photoroom (a competitor) to BiRefNet on fal.ai,
 
 | Name | Read by | Unset means | Meaning |
 | --- | --- | --- | --- |
-| `FAL_KEY` | Cutout chain (`trigger/src/live-runtime.ts`, `packages/ai/src/adapters/falCutout.ts`) | No live cutout provider: `/api/health` warns `no_cutout_provider` and every shot of a real pack goes to review | fal.ai API key. Required. A secret: Render (and Trigger.dev once step 14 is done) only, never in the repo. Model and price come from `cutoutModelSeedRows` (packages/pipeline/src/seed/models.ts). |
+| `FAL_KEY` | Cutout chain (`trigger/src/live-runtime.ts`, `packages/ai/src/adapters/falCutout.ts`) | No live cutout provider: `/api/health` warns `no_cutout_provider` and every shot of a real pack goes to review | fal.ai API key. Required. A secret: the Render web service only, never in the repo. Model and price come from `cutoutModelSeedRows` (packages/pipeline/src/seed/models.ts). |
 | `PHOTOROOM_API_KEY` | Nothing any more | Nothing | Remove it from Render and from `.env.example`; no code reads it. Cancel the Photoroom plan once packs run on fal. |
 
 What changes for the founder:
@@ -459,6 +464,23 @@ What changes for the founder:
 3. **Scenes degrade instead of failing the pack.** When every image provider is down, packs still deliver the white background, alternate angle, cutout and sweep files, and each lifestyle scene is marked "Paused, the scene service is unavailable, not charged". Only delivered files are charged.
 4. **One automatic retry.** Shots that fail on a timeout, 429, 5xx or network error run once more 30 seconds later in the same run (not for quota answers, safety refusals or other 4xx).
 5. **Preflight on the new pack page.** While the cutout service is down the page says "Packs are paused for a few minutes while an image service recovers. Nothing will be charged." and Create pack is disabled; while only scenes are down a softer banner says white background and cutout files still work.
+
+## PHASE_19 site: support page, policy text and the domain token (p19/site)
+
+The code is on `p19/site` (PHASE_19 P19-22 to P19-24); there is no migration. It adds https://curvi.ai/support (the support URL the plugin listing names), a privacy section on ChatGPT and other assistants with retention timelines, a "Connected assistants" clause in the terms, the `/.well-known/openai-apps-challenge` route for OpenAI's domain check, the `chatgptPlugin` flag (coming soon), and help and llms.txt copy for ChatGPT and Codex.
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `OPENAI_APPS_CHALLENGE_TOKEN` | `apps/web/src/app/.well-known/openai-apps-challenge/route.ts` | `/.well-known/openai-apps-challenge` answers a plain 404, as before. | The domain verification token from OpenAI's plugin submission page (PHASE_19 runbook E3). Served as plain text, exactly, with surrounding whitespace removed. Server only. |
+
+What changes for the founder:
+
+1. **Add `OPENAI_APPS_CHALLENGE_TOKEN=` to .env.example by hand,** with the comment `# OpenAI plugin domain verification token (PHASE_19 runbook E3). Server only. Unset: the challenge path answers 404.` (env files are blocked for the agents).
+2. **Confirm the retention defaults before the privacy update ships** (PHASE_19 decision 10). Request logs: "kept for up to 30 days" (Render keeps service logs 7, 14 or 30 days by workspace plan, docs/verification.md, so 30 is the ceiling; also confirm the logs you keep, Render's, Cloudflare's or the app's, are the ones that carry IP addresses). Connection records: "stay until you close your account, including after you disconnect", because a disconnect marks the record revoked instead of deleting it (PHASE_19 "Revocation"); the plan's draft said "until you disconnect or close your account". Original uploads: 30 days, as today. To change a number, edit `REQUEST_LOG_RETENTION_DAYS` and the text in `apps/web/src/app/(marketing)/privacy/privacy-copy.ts`.
+3. **Confirm the support response time,** "two business days" (`SUPPORT_RESPONSE_TIME` in `apps/web/src/components/marketing/support-copy.ts`), and that mail to hello@curvi.ai reaches you (step 4).
+4. **Approve the privacy and terms text** (step 1's legal review covers it). The terms now say "Last updated October 1, 2026", so `TERMS_VERSION` is 2026-10-01: new signups record that version, and existing users keep their 2026-09-28 record (lib/trust/terms.ts records only a first acceptance).
+5. **At submission (runbook E3),** paste the token from the OpenAI dashboard into Render as `OPENAI_APPS_CHALLENGE_TOKEN`, Save, and wait for the restart. Open https://curvi.ai/.well-known/openai-apps-challenge and check that it shows exactly the token and nothing else, then press Verify Domain. Cloudflare must let OpenAI reach `/.well-known/*` (runbook B0).
+6. **After the plugin is published (runbook E8),** the agent flips `FEATURES.chatgptPlugin` to live and sets `CHATGPT_LISTING_URL` in `apps/web/src/components/marketing/help-articles.ts`; the help article, llms.txt and the API keys page then say ChatGPT works without a key. Until then they say it is coming soon.
 
 ## Site visitor count (site-visitors)
 
@@ -478,3 +500,537 @@ What changes for the founder:
 4. **Schedule the stale job sweep** if it is not scheduled yet (item 3 of "Batch 2 platform" above, every 10 to 15 minutes, with `CRON_SECRET`). It now also deletes the visitor salts on time when the site is quiet; without it they still go on the first page view of a new day or when the dashboard opens.
 5. **Open `/app/ops/visitors`** signed in with a listed email: unique visitors and page views for today, yesterday, the last 7 and 30 days, a 30 day daily chart, top pages, the sites that sent visitors, UTM sources and campaigns, and phones against computers. A person who visits on two days counts on each day, so totals over several days, and every top table, are daily visitors added up, and the page says so. Your own visits to `/app/ops` are not counted; the rest of the site, `/app` included, is.
 6. **Read the count as close, not exact.** People who block scripts are missed, and people sharing one address with the same browser count once. A client that sends a different user agent, or a forged IP header, on every request makes a new visitor each time; that is bounded by 300 counted page views and 30 new visitors an hour per IP (`visits.record` and `visits.newVisitor` in lib/rate-limit.ts, shared across instances only with Upstash), 3 beacons worked on at once per instance (the rest are answered 204 and not counted, which keeps the count to at most 3 of the 10 database connections), 500 page views per visitor code a day, and 100,000 stored page views a day per instance. The per IP bounds hold only once `clientIp()` trusts nothing but edge set headers (docs/verification.md, "Site visitor count"); until then a script that forges the IP header gets past them, and the in flight bound and the daily ceiling are what hold. Browsers driven by automation, headless browsers and known crawlers are not counted. An iPad on iPadOS 13 or later reports a Mac user agent and counts as a computer.
+
+## PHASE_19 sign in for ChatGPT and Codex (p19/auth)
+
+Migration 0028 and four new server only environment variables (docs/phases/PHASE_19.md, P19-04 to P19-08 and P19-11, runbook B). Everything ships dark: with `MCP_OAUTH_ENABLED` unset or `0`, `/api/mcp` behaves exactly as before (API keys only, discovery open, `Bearer realm="curvi"`), and both `/.well-known/oauth-protected-resource` paths answer 404.
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `MCP_OAUTH_ENABLED` | `apps/web/src/lib/mcp-auth/config.ts` | Off: today's behavior, the rollback | `1` turns on OAuth sign in at `/api/mcp`: `initialize`, `tools/list` and `tools/call` without a credential answer 401 with `WWW-Authenticate: Bearer resource_metadata=...`, ChatGPT tokens are accepted beside API keys, and the metadata documents are served. Any other value is off. Changing it restarts the service, which settles running packs, so flip it at a quiet time. |
+| `MCP_RESOURCE_URL` | same | `${NEXT_PUBLIC_SITE_URL}/api/mcp` | The MCP URL users paste, byte for byte (no www, no trailing slash). Leave unset on production; it is permanent (decision 9). |
+| `SUPABASE_AUTH_ISSUER` | same | `${NEXT_PUBLIC_SUPABASE_URL}/auth/v1` | Must equal the `issuer` in Supabase's `/.well-known/oauth-authorization-server/auth/v1` byte for byte. Leave unset unless they differ. |
+| `MCP_OAUTH_CLIENT_IDS` | `apps/web/src/lib/mcp-auth/verify.ts` | Every ChatGPT token is refused (`unknown_client`) | Comma separated Supabase OAuth client ids allowed to call the MCP server: the "ChatGPT developer" client (runbook B5) and later the "ChatGPT" client (E3). Not secret, but only these clients may act for a user. |
+
+Lines for `.env.example` (an engineer adds them; values stay empty or default):
+
+```
+# PHASE_19 OAuth sign in at /api/mcp: 1 turns it on; anything else keeps API keys only (the rollback).
+MCP_OAUTH_ENABLED=0
+# Canonical MCP resource. Default: ${NEXT_PUBLIC_SITE_URL}/api/mcp
+MCP_RESOURCE_URL=
+# Supabase Auth issuer. Default: ${NEXT_PUBLIC_SUPABASE_URL}/auth/v1
+SUPABASE_AUTH_ISSUER=
+# Comma separated Supabase OAuth client ids for ChatGPT (runbook B5, E3). Empty: no ChatGPT token is accepted.
+MCP_OAUTH_CLIENT_IDS=
+```
+
+What the founder does, in this order:
+
+1. **Apply migration 0028** (runbook B1: the Supabase SQL editor or `pnpm db:migrate`, after 0027). It is additive: it creates `mcp_connections` with row level security (the row's user and the workspace's owners and admins read; no client role writes), adds a restrictive `no_oauth_clients` policy to every public table so a token from Supabase's OAuth server reads and writes nothing through the Data API (web sessions carry no `client_id` and are unaffected), and creates `public.curvi_access_token_hook`, executable only by `supabase_auth_admin`. Nothing changes for users until the hook is switched on. **Verify:** sign in to curvi.ai in a private window and open /app; the workspace and packs load.
+2. **Deploy main with `MCP_OAUTH_ENABLED` unset or `0`.** Verify: `https://curvi.ai/.well-known/oauth-protected-resource/api/mcp` answers 404, and an API key still lists and runs the tools.
+3. **Runbook A2 and A3** (ES256 signing keys, OAuth server on with authorization path `/oauth/consent`, dynamic registration off, Secure password and email change on).
+4. **Runbook B2: Authentication, Hooks, Custom Access Token,** pick `public.curvi_access_token_hook`. Sign in to curvi.ai in a private window and open /app at once. If sign in fails, switch the hook off and tell the engineer.
+5. **Runbook B4 and B5,** then set `MCP_OAUTH_CLIENT_IDS` to the developer client's id (Save only).
+6. **Runbook B3: set `MCP_OAUTH_ENABLED=1`** and deploy or restart at a quiet time. **Verify:** `https://curvi.ai/.well-known/oauth-protected-resource/api/mcp` returns JSON whose `resource` is `https://curvi.ai/api/mcp` and whose `authorization_servers` holds Supabase's issuer, and an `initialize` POST to `/api/mcp` without a token answers 401 with `www-authenticate: Bearer resource_metadata="https://curvi.ai/.well-known/oauth-protected-resource/api/mcp", scope="openid email"`.
+
+Rollback, fastest first: `MCP_OAUTH_ENABLED=0` (ChatGPT connections stop, links they were given stop serving files, the consent page connects nothing, and API keys keep working with today's links); switch the hook off (OAuth tokens then fail the audience check; web sign in unaffected); switch the OAuth server off.
+
+For engineers: a later migration that adds a table to `public` must give it the same `no_oauth_clients` policy; `packages/db/src/mcp-connections.test.ts` fails until it does. The Render log carries `[mcp]` lines (event, reason, method, tool, status, auth kind and protocol only; never a token, link, tool argument or client hint) for refused sign ins, challenges and tool errors. If `auth.sessions` is not readable by the database user, the log says once that sessions are checked through the Auth API, and session checks go to Supabase's `GET /auth/v1/user` instead; that is expected until P19-12 settles it.
+
+## PHASE_19 tools: credits before spending (p19/tools)
+
+No migration. The MCP tools now answer ChatGPT and other assistants with short chat views instead of the REST bodies, a new read only `estimate_pack` tool says how many credits a pack will hold before anything is spent and returns a signed quote, and `create_pack` refuses an OAuth caller's pack without a matching quote and `max_credits`, or one that would hold more than either. Every refusal an assistant can read is plain and never names a plan, a top up or an API key. The REST API v1 and the web app are unchanged.
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `MCP_LINK_KEYS` | `apps/web/src/lib/api-v1/pack-quote.ts` (quotes) and P19-17's link tokens, through `apps/web/src/lib/mcp-signing.ts` | In production, `estimate_pack` answers that it cannot count credits for every caller (API keys included), and an OAuth `create_pack` (which needs a quote) cannot start a pack. An API key `create_pack` still works without a quote. get_pack falls back to today's 15 minute storage links with no previews (next section). Outside production a random key per process signs quotes. | Comma separated `kid:secret` pairs, newest first; the first signs, all verify. Each secret at least 32 characters (for example `openssl rand -base64 32`). To rotate, put the new pair first and keep the old one for 24 hours. Server only, never committed. Add it to `.env.example` as `MCP_LINK_KEYS=` when merging (the integrator does this once for both lanes that read it). |
+
+What changes for the founder:
+
+1. **Set `MCP_LINK_KEYS` on Render** before `MCP_OAUTH_ENABLED` goes to "1" (runbook step 6 of "Rollout"), Save only, then deploy. One pair is enough to start, for example `k1:<32 or more random characters>`.
+2. **Nothing changes for API key users.** A key caller of `/api/mcp` may still send its own `idempotency_key`; it may now leave it out, and the server derives one so a repeat within 10 minutes returns the same pack.
+
+## PHASE_19 chat photos, lasting links and caller rate limits (p19/files)
+
+No migration. One new server only environment variable, shared with the estimate quotes from p19/tools (P19-16).
+
+| Name | Read by | Unset means | Meaning and when to set it |
+| --- | --- | --- | --- |
+| `MCP_LINK_KEYS` | `apps/web/src/lib/mcp-links.ts` through `lib/mcp-signing.ts` (and the estimate quotes, P19-16) | get_pack falls back to the REST API's 15 minute storage download links with no previews, for every caller, so no caller loses its download links; every `/api/mcp/files/...` and `/api/mcp/preview/...` link answers 404. A malformed value counts as unset and logs one warning that never shows the secret. With `MCP_OAUTH_ENABLED` off (the rollback), API key callers get the 15 minute links even when the keys are set, exactly as before PHASE_19, and links an OAuth connection made answer 410. | Comma separated `kid:secret` pairs, newest first. A kid is 1 to 32 letters, digits, `_` or `-`; a secret is at least 32 characters (for example `openssl rand -hex 32`). The first pair signs, every pair verifies. A secret: Render only, never in the repo. |
+
+Line for `.env.example` (this lane could not open `.env.example`, which the sandbox keeps unreadable, so the integrator adds it):
+
+```
+# Signing keys for the lasting MCP preview and download links and the estimate quotes: kid:secret pairs, newest first, each secret 32 characters or more. Unset: no links.
+MCP_LINK_KEYS=
+```
+
+What changes for the founder:
+
+1. **Set `MCP_LINK_KEYS` on Render** before the production deploy that carries the plugin (rollout step 6), Save only, then deploy. Example value: `k1:` followed by the output of `openssl rand -hex 32`.
+2. **Rotating the key.** Put a new pair first and keep the old pair after it, for example `k2:<new>,k1:<old>`; deploy; after 24 hours (the link lifetime) remove `k1`. Links made with a removed key stop working at once, and so do unexpired quotes.
+3. **What a link checks on every click.** The token is sealed (AES-256-GCM under a key derived from `MCP_LINK_KEYS`), so the chat sees only the key id, never a workspace, connection, pack or file id or the expiry. Each click checks the seal and its 24 hour expiry, that `MCP_OAUTH_ENABLED` is on for a connection's link, that the ChatGPT connection is still live (or the API key not revoked), that its member is still in the workspace, and that the file still belongs to that pack. A disconnect or a removed member stops that connection's links within a minute. Expired links answer 410, anything else 404, both with "This link expired. Ask ChatGPT for the pack's files again."
+4. **Cloudflare.** The links live under `/api/mcp/files/` and `/api/mcp/preview/`, so the `/api/mcp/*` skip rule in runbook B0 covers them. Link paths reach Cloudflare and Render request logs; that is why they are tied to a live connection and expire.
+5. **Rate limits.** ChatGPT callers (OAuth) are counted per user and per workspace, never per IP, because every ChatGPT call comes from OpenAI's shared addresses. API key callers keep the IP and user rules. New policies: `mcp.read` (get_pack, list_channels, get_profile: 1,200 an hour per user, 2,400 per IP or workspace) and `mcp.links` (600 an hour per IP and 600 per connection or key). estimate_pack counts against `imports.photo` per user. With Upstash configured (step 11) these are shared across instances.
+6. **Photos attached in ChatGPT** are read through the same safe link fetch as photo links, three at a time under one 30 second deadline for the whole set. HEIC photos are refused with a plain message; nothing about the attachment link is stored or logged.
+
+## PHASE_19 consent page, Connected apps and the MCP origin list (p19/consent)
+
+No migration and no new environment variable (docs/phases/PHASE_19.md, P19-09, P19-10 and P19-20). It adds the page ChatGPT's sign in lands on, `https://curvi.ai/oauth/consent?authorization_id=...` (Supabase's authorization path, runbook A3), with its own minimal layout (no marketing header, no pricing link, not indexed), sign in and sign up inside that page, Settings, Connected apps at `/app/settings/connections` with a Disconnect button, and lets `https://chatgpt.com` and `https://platform.openai.com` call `/api/mcp` from a browser (an `OPTIONS` preflight and CORS headers; every other site still gets 403).
+
+What the founder does or decides:
+
+1. **Supabase, Authentication, URL Configuration: Redirect URLs** must allow `https://curvi.ai/auth/callback` with a query string (for example `https://curvi.ai/**`), as the signup confirmation link already uses. A new account made on the consent page confirms its email through that link and goes straight back to the consent page instead of /welcome. Terms acceptance is recorded at that link as for any signup, and again (only if missing) the first time the consent page sees the user; the free signup grant is paid by the database when the email is confirmed, as on the web.
+2. **Decide how Sign out on curvi.ai should behave** (new finding, docs/verification.md, p19/consent rows). Today the web Sign out ends every session of the user on every device, and that now includes ChatGPT's: after a seller signs out of curvi.ai anywhere, ChatGPT has to sign in to Curvi again (silently, while the connection in Connected apps is live). Option A, keep it: nothing to do. Option B, sign out only the current browser: one line in `apps/web/src/app/auth/signout/route.ts` (`signOut({ scope: "local" })`), with the trade off that signing out on one device no longer signs out the others. The consent page's "Use another account" already signs out only that browser.
+3. **P19-12 probe additions** (runbook B6): check that the database user can read `auth.oauth_authorizations` and `auth.oauth_clients` and delete from `auth.sessions`. If it cannot, the consent page still works on the fresh path, but a ChatGPT sign in for a seller who consented before shows "Curvi could not open this connection request right now" instead of connecting (the page fails closed rather than follow a link it cannot check), and an owner's Disconnect of a member's connection still stops every call at once (the row is revoked) while their token lives until it expires.
+4. **Verify after deploy:** `https://curvi.ai/oauth/consent` with no id shows "This connection request expired. Go back to ChatGPT and press Connect again."; signed in, Settings shows a "Connected apps" card and its page says nothing is connected yet. Once the OAuth server and `MCP_OAUTH_ENABLED` are on (p19/auth steps above), connecting from ChatGPT developer mode shows the permissions list, the workspace picker for an account in two workspaces, and returns to chatgpt.com.
+
+For engineers: the consent decisions are in `apps/web/src/lib/mcp-auth/consent.ts`, the Supabase and database calls in `consent-backend.ts`, Disconnect in `connected-apps.ts`, the copy in `consent-copy.ts`, the origin list and CORS in `apps/web/src/lib/api-v1/mcp-cors.ts`. Without Supabase (local and e2e) a demo backend serves three fixed requests (`demo-fresh`, `demo-consented`, `demo-unknown-client`) and a `curvi_demo_consent_user` cookie (`teammate`, `signed_out`) picks the demo person; it refuses production like the rest of demo mode.
+
+## PHASE_19 pack viewer in ChatGPT (p19/ui)
+
+No migration and no environment variable. The branch `p19/ui` (PHASE_19 P19-19) adds a small viewer that ChatGPT shows under a `create_pack` call: "Waiting for your go ahead" until you confirm, then "Making your images" with a progress bar, then the finished images with a Download button each and "See all N files" for the zip and the report. It checks the pack by itself every 5 seconds for up to 30 minutes. Every tool result still carries its links as text, so the plugin works the same without it.
+
+What changes for the founder:
+
+1. **When it ships.** Decision 6: merge and deploy it after the plugin is approved and published (runbook E8), then press **Rescan** in the plugin dashboard. No new ZIP and no new review: OpenAI checks the viewer and its content security policy in its continuous review. On `p19/integration` the viewer is merged but switched off: `PACK_VIEWER_LIVE` is `false` in `apps/web/src/lib/mcp-ui/pack-viewer/resource.ts`, and that one switch removes the viewer and the reference to it. To ship it, the agent sets it to `true` and you deploy.
+2. **What the viewer may load.** Only images from `https://curvi.ai` (the site address, `NEXT_PUBLIC_SITE_URL`). It fetches nothing else, embeds nothing, and opens only curvi.ai download links and the pack's page in Curvi. Its declared origin (`_meta.ui.domain`) is `https://curvi.ai`; if ChatGPT's developer mode or the Rescan reports a domain problem, record the value it asks for in docs/verification.md ("p19/ui: pack viewer") and change `packViewerMeta` in the same file.
+3. **Manual check after the deploy**, on desktop web and in the ChatGPT desktop app, and on iOS and Android once the plugin is installable there: run positive case 4 (a listing pack). The viewer shows "Waiting for your go ahead" before you confirm, then progress, then the images; Download saves a file; "See all" opens every file, including the zip and the report; the product looks exactly as photographed. Record the result in docs/verification.md with the date.
+4. **Changing it later.** ChatGPT caches the viewer by its address, `ui://curvi/pack-viewer/v1.html`. A change that would break an older copy needs a new address (`v2`), changed in `resource.ts`.
+
+## PHASE_19 plugin ZIP (p19/integration, wave 4)
+
+No migration and no environment variable. `pnpm plugin:zip` checks the plugin folder `packages/openai-plugin/package/` against OpenAI's submission rules (docs/phases/PHASE_19.md, P19-25) and writes `packages/openai-plugin/dist/curvi-1.0.0.zip` (the file to upload at platform.openai.com/plugins, runbook E1) and the folder `dist/curvi-1.0.0/` (for the local marketplace install, runbook C3b). It uploads nothing.
+
+What the founder does:
+
+1. **The developer name.** Once identity verification is done (runbook A4), either replace `SET TO THE VERIFIED DEVELOPER NAME` in `packages/openai-plugin/package/plugin.json` (both `author.name` and `interface.developerName`) with the verified name, or build with `pnpm plugin:zip --developer-name "Your verified name"`. The build refuses the placeholder.
+2. **The demo recording.** After runbook C4, add `"demo_recording_url": "https://..."` under `extensions["com.openai"].review` in plugin.json and rebuild. Until then the build warns that MCP review needs it.
+3. **Reviewer access never goes in the ZIP.** The reviewer email, password and instructions go in the dashboard (runbook E5); the build refuses `test_credentials` and `reviewer_instructions`.
+4. **The review photo** is `https://curvi.ai/review/sample-product.jpg` (the home page's product photo). Keep that address working while a review is open.
+5. **Manual runs** in developer mode use `packages/openai-plugin/fixtures/golden-prompts.json` (checklist step 4): the 5 positive and 3 negative review prompts, 10 more phrasings and the prohibited goods negatives.
+
+## Phase 18 measure (p18/measure): signup attribution and the weekly funnel
+
+docs/phases/PHASE_18.md P18-01 and P18-02. Migration `attribution_and_funnel` (its number is set when the Phase 18 lanes are combined, after `0027_site_visits` and PHASE_19's `mcp_connections`). No new environment variable: it uses `CRON_SECRET`, `RESEND_API_KEY`, `FOUNDER_ALERT_EMAIL` (and optional `FOUNDER_ALERT_FROM`) and `OPS_EMAILS`, which already exist.
+
+What it does:
+
+- **Every signup carries its source.** Every Start free link on the marketing site goes through `signupHref` and `SignupLink` with the page's seeded source key (`home`, `header`, `pillar`, `compare`, `channel` with the channel, `category` with the category, `help`, `gallery`, `share`, `tools`, `email_capture`), and once in the browser it adds the UTM tags, `ref` and share slug of the page the visitor is on. Nothing is stored for that. The signup form adds an optional "How did you hear about Curvi?" field (choices in `signupSourceChoices`, packages/pipeline/src/seed/growth.ts).
+- **First touch cookie, only after consent.** When a visitor accepts cookies, `curvi_ft` (first party, 90 days, under 1 KB) keeps the first page they opened, the site that sent them and its UTM tags. It is never overwritten, and declining deletes it. The privacy page says so.
+- **One attribution row per signup.** The signup form puts the hint in the signup metadata; on a fresh verification `/auth/callback` checks it again and writes one `signup_attributions` row (owners and admins can read their own; only the server writes), then the `funnel.signup_confirmed` event, both once per user.
+- **Server side funnel in `events`.** `funnel.signup_confirmed`, `funnel.pack_started` (createJob), `funnel.pack_done` (the runner, with the job id), `funnel.download` (pack zip, one file, API links), `funnel.checkout_completed` and `funnel.payment` (Stripe webhook, payments only when a paid grant was applied), `funnel.share_published` and `funnel.lead_captured`, plus `funnel.first_<step>` once per workspace for pack started, pack done, download and payment. Client roles can no longer insert `funnel.%` or `billing:%` event names.
+- **Weekly funnel email.** `POST /api/cron/funnel-digest` sends the founder a plain text email once per ISO week, on the first call on or after Monday 13:00 UTC: signups by self reported source, utm_source and page; activation; first downloads; payments; repeat use; leads; share pages; site visitors; and the dated gates of docs/marketing.md section 5.5 (`validationGates` in growth.ts). Workspaces owned by an `OPS_EMAILS` account are left out. `/app/ops/funnel` shows the same counts by week and source to operators.
+
+What changes for the founder:
+
+1. **Apply the `attribution_and_funnel` migration** (pnpm db:migrate, staging first, after any earlier migration production does not have yet). Additive: a new table with RLS, a partial unique index on `events`, and the `events_insert_member` policy recreated so client roles cannot write `funnel.%` or `billing:%` names (no app code ever did).
+2. **Deploy, then dry run the email:** `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" "https://curvi.ai/api/cron/funnel-digest?dryRun=1"`. The answer holds the email's subject and text; nothing is sent and the week is not claimed.
+3. **Add the route to the daily purge cron command** so no new cron service is needed. Change that Render Cron Job's command to
+   `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/cron/purge-source-media && curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/cron/funnel-digest`.
+   The purge runs at 03:30 UTC, so the email goes out on Tuesday's run (the first call after Monday 13:00 UTC). To get it on Monday instead, move the schedule to after 13:00 UTC, for example `30 13 * * *`. If a scheduler cannot chain two calls, one more Render cron service costs $1 a month at least.
+4. **Check that `RESEND_API_KEY` and `FOUNDER_ALERT_EMAIL` are set** (they also carry the spend alerts). Without them the route answers 200 with `skipped` and tries again the next day.
+5. **Open `/app/ops/funnel`** signed in with an `OPS_EMAILS` address.
+6. **Smoke test (Release 1):** open `https://curvi.ai/?utm_source=test&utm_campaign=smoke`, click Start free, sign up a test address with an answer to "How did you hear about Curvi?", confirm it, then run the first query below and see one row with `utm_source = test`, `utm_campaign = smoke`, `source = home` and your answer.
+
+**Verify:** `/api/health` lists `cron_never_ran:funnel-digest` until the first scheduled call, then nothing for it. Without `CRON_SECRET` the route answers 503; with a wrong secret 401.
+
+### Saved funnel SQL (Supabase SQL editor, read only)
+
+Replace the dates before running. They read the same rows as the weekly email; the email also leaves out workspaces owned by an `OPS_EMAILS` account, so add `and workspace_id not in (...)` with those workspace ids to match it exactly.
+
+```sql
+-- F1: how each confirmed signup found Curvi (one row per user).
+select a.created_at, a.method, a.source, a.self_reported, a.self_reported_other,
+       a.utm_source, a.utm_medium, a.utm_campaign, a.ref, a.share_slug, a.referrer_host, a.landing_path, a.consent
+from signup_attributions a
+where a.created_at >= timestamptz '2026-10-01 00:00Z'
+order by a.created_at desc;
+```
+
+```sql
+-- F2: confirmed signups by self reported answer, utm_source and page, with first packs done.
+with params as (select timestamptz '2026-10-01 00:00Z' as start_at, now() as end_at),
+signups as (
+  select e.workspace_id, e.props
+  from events e, params p
+  where e.name = 'funnel.signup_confirmed' and e.at >= p.start_at and e.at < p.end_at
+)
+select coalesce(props ->> 'self_reported', 'not answered') as self_reported,
+       coalesce(props ->> 'utm_source', 'none') as utm_source,
+       coalesce(props ->> 'source', 'none') as page,
+       count(*) as signups,
+       count(*) filter (where exists (
+         select 1 from events f where f.workspace_id = s.workspace_id and f.name = 'funnel.first_pack_done')) as activated
+from signups s
+group by 1, 2, 3
+order by signups desc;
+```
+
+```sql
+-- F3: the funnel steps by ISO week (Monday, UTC).
+select to_char(date_trunc('week', at at time zone 'UTC'), 'YYYY-MM-DD') as week,
+  count(*) filter (where name = 'funnel.signup_confirmed') as signups,
+  count(*) filter (where name = 'funnel.first_pack_started') as first_pack_started,
+  count(*) filter (where name = 'funnel.first_pack_done') as first_pack_done,
+  count(*) filter (where name = 'funnel.first_download') as first_download,
+  count(*) filter (where name = 'funnel.payment') as payments,
+  count(*) filter (where name = 'funnel.first_payment') as first_payments,
+  count(*) filter (where name = 'funnel.share_published') as shares,
+  count(*) filter (where name = 'funnel.lead_captured') as leads
+from events
+where name like 'funnel.%' and at >= timestamptz '2026-10-01 00:00Z'
+group by 1
+order by 1 desc;
+```
+
+```sql
+-- F4: repeat use, a second pack done within 30 days of the first.
+select f.workspace_id, f.at as first_done,
+  (select count(distinct e.props ->> 'job_id') from events e
+    where e.workspace_id = f.workspace_id and e.name = 'funnel.pack_done'
+      and e.at < f.at + interval '30 days') as packs_in_30_days
+from events f
+where f.name = 'funnel.first_pack_done'
+order by f.at desc;
+```
+
+```sql
+-- F5: payments with their plan, amount and promotion code id.
+select at, workspace_id, props ->> 'kind' as kind, props ->> 'plan' as plan, props ->> 'cadence' as cadence,
+       props ->> 'amount_usd' as amount_usd, props ->> 'billing_reason' as billing_reason
+from events where name = 'funnel.payment' order by at desc limit 50;
+
+select at, workspace_id, props ->> 'plan' as plan, props ->> 'checkout_source' as checkout_source,
+       props ->> 'discounted' as discounted, props ->> 'promotion_code' as promotion_code
+from events where name = 'funnel.checkout_completed' order by at desc limit 50;
+```
+
+## Phase 18 resilience (p18/resilience)
+
+P18-03 adds the acquisition gate, the fal balance probe and low balance alerts (docs/phases/PHASE_18.md). No migration for P18-03.
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `FAL_ADMIN_KEY` | `trigger/src/provider-balance.ts` through `POST /api/cron/provider-balance`; `apps/web/src/lib/config-health.ts` | No balance check for the `FAL_KEY` account: no low balance email, the gate never closes on that balance (it still closes when packs are paused or by hand), and `/api/health` warns `fal_admin_key_missing`. | A fal Admin API key. It only reads the account's credit balance (`GET https://api.fal.ai/v1/account/billing?expand=credits`). A secret: Render only, never in the repo, never a `NEXT_PUBLIC_` name. |
+| `FAL_ADMIN_KEY_BACKUP` | same | No balance check for the `FAL_KEY_BACKUP` account; health warns while `FAL_KEY_BACKUP` is set. | The Admin API key of the backup fal account. Optional. |
+| `CURVI_DEMO_ACQUISITION` | `apps/web/src/lib/acquisition.ts` | The gate is open in demo mode. | Tests only: `waitlist` closes the gate in demo mode. Ignored when a database is configured. |
+
+Existing variables this needs: `CRON_SECRET` (the new cron route), `RESEND_API_KEY` and `FOUNDER_ALERT_EMAIL` (the alerts).
+
+What changes for the founder:
+
+1. **The gate.** Every Start free button wrapped by the gate (the home hero today; every `SignupLink` once Lane 1 sweeps the links) turns into "Get notified when packs are back" while any of these holds: `platform_settings.acquisition_paused` is true; the new pack preflight says packs are paused (every cutout account out of credit or failing); or every configured fal account's newest balance (younger than 90 minutes) is below $3. The button opens a dialog that stores the email in `leads` with source `packs-paused`. `/signup` shows "Packs are paused right now..." and stays open. The free checkers never need fal and keep working. `GET /api/status` answers only `{"acquisition":"open"}` or `{"acquisition":"waitlist"}`, cached 30 seconds, so a change reaches every page within a minute.
+2. **Pause by hand** with `insert into platform_settings (key, value) values ('ops:acquisition_paused', 'true'::jsonb) on conflict (key) do update set value = excluded.value, updated_at = now();` (and `'false'::jsonb` to open). No row means not paused; `pnpm db:seed` never writes an `ops:` row (P20-20).
+3. **Balance check.** Add `POST /api/cron/provider-balance` to the stale-jobs cron command (docs/PENDING.md, "Phase 18 founder steps, Lane 2 Resilience", step 2). Each run reads each account with an admin key, stores the reading (platform_settings `fal_balance:<provider>`), writes a `provider_balance` events row at most once an hour, and emails you once per UTC day per account below $15 ("Curvi: the fal balance is low ($x left)"), and at once below $3 with the pause note and the manual ChatGPT ads step. The lines live in `packages/pipeline/src/seed/monitoring.ts` (`falBalanceLines`).
+4. **Other emails.** When the gate closes because packs cannot run, you get "Curvi: acquisition is paused because packs cannot run" (once per UTC day and reason). A cutout or image provider that answers out of quota now also emails you, once per provider per UTC hour. Every gate change is a `funnel.acquisition_paused` or `funnel.acquisition_resumed` events row.
+5. **Health.** `/api/health` warns `fal_admin_key_missing` and `cron_never_ran:provider-balance` until both are set up; the detailed view (with `CRON_SECRET`) lists `falBalances`, the newest reading per account.
+
+**Verify:** with `FAL_ADMIN_KEY` set, a manual call of the cron route returns 200 with `"probed":true` and the balance; `curl -s https://curvi.ai/api/status` returns `{"acquisition":"open"}`; set `acquisition_paused` to true, wait a minute, and the home page's Start free reads "Get notified when packs are back"; set it back.
+
+P18-23 adds deploy restarts: a pack a deploy stops starts again on the new instance instead of failing. Migration `deploy_restarts` (its number is set when the Phase 18 lanes are combined) adds `generation_jobs.restart_count` and `generation_jobs.restart_payload`, with a trigger that lets only the server write them. No new environment variable. **It ships switched off:** `ops:deploy_restarts_enabled` is off while no row says otherwise (an operator switch the seed never writes, P20-20), and while it is off a deploy settles packs exactly as before. Turn it on when its gate is met (PHASE_18 Release 5) with `insert into platform_settings (key, value) values ('ops:deploy_restarts_enabled', 'true'::jsonb) on conflict (key) do update set value = excluded.value, updated_at = now();` (it applies within 30 seconds; `'false'::jsonb` turns it off again, and any restart already queued is then failed by the stale reconciler with its hold released).
+
+1. **What happens on a deploy.** On SIGTERM the inline runner offers every pack it stops to start again. A pack that had not started keeps its hold and stays queued under a `restart:` run key, with its worker payload saved on the job. A pack still running when the grace window ends (and with no delivered files) has its abort signal fired first, so it starts no new generation; then its hold is released, the files it made are marked superseded (never charged or delivered), its progress rows are cleared and the estimate is reserved again, at most once per pack (`deployRestarts.max` in packages/pipeline/src/seed/growth.ts). Anything else, or a balance that no longer covers the estimate, is settled as before.
+2. **Who runs it.** The new instance claims each restarted pack (one conditional update, so exactly one instance runs it) from the health poll, the stale-jobs cron or any new pack, at most every 30 seconds per instance, and runs it after the response. The cutout comes from the R2 cache, so the rerun pays again only for scenes. The pack page shows "We restarted the server while your pack was running, so it started again. You are charged only once." Each restart writes a `funnel.pack_restarted` events row.
+3. **Keep `maxShutdownDelaySeconds` at 300 and `CURVI_INLINE_PACK_CONCURRENCY` at 2** on the live service (steps 8 and 9 above), so most packs finish inside the grace window and fewer need a restart.
+
+**Verify:** start a pack, deploy while it runs, and watch the pack page: it goes back to queued, then running, then done, with the restart line, and the credits charged equal the files delivered. Logs show `pack_restart_queued` on the old instance and `pack_restarts_claimed` on the new one.
+
+## Phase 18 activation (p18/activation)
+
+Google sign in (P18-13), the first run questions (P18-20) and the free white main image before signup (P18-12, switched off). The founder steps, in order, are in docs/PENDING.md, "Phase 18 activation founder steps".
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `NEXT_PUBLIC_GOOGLE_AUTH` | `apps/web/src/lib/google-sign-in.ts` | No Google button on /signup or /login. | `1` shows "Continue with Google" once the Google provider is on in Supabase. Public and inlined at build time, so a change needs a deploy. |
+| `NEXT_PUBLIC_FREE_PREVIEW` | `apps/web/src/lib/free-preview/copy.ts` `freePreviewOn`, `gate.ts` `previewSetupGaps` | No preview box on the home page; `/api/preview` answers 503 closed and the auth callback claims nothing. | `1` turns on the free white main image before signup (P18-12) once fal is funded and Upstash is set. Public and inlined at build time. The server also needs `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, `DATABASE_URL` with Supabase, the R2 keys, `FAL_KEY` (or `FAL_KEY_BACKUP`) and `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, and stays closed without any of them. |
+
+## Phase 18 email (p18/email)
+
+Lifecycle email (docs/phases/PHASE_18.md P18-06 and P18-07) over Resend directly (founder decision 3). Migration `lifecycle_email` (its number is set when the Phase 18 lanes are combined) adds the platform tables `email_sends` (one row per dedupe key, the address only as its sha256 key) and `email_suppressions`, and `leads.marketing_consent_at` and `leads.consent_source`. **It ships switched off:** `ops:lifecycle_email_enabled` is off while no row says otherwise (an operator switch the seed never writes, P20-20); nothing is sent until the founder steps in docs/PENDING.md, "Phase 18 founder steps, Lane 3 Email", are done and the switch is turned on.
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `LIFECYCLE_EMAIL_FROM` | `packages/email/src/config.ts` | No customer email is sent (each attempt is logged `disabled` and tried again once set). | Sender on the Resend verified `updates.curvi.ai` subdomain, for example `Curvi <hello@updates.curvi.ai>`. |
+| `LIFECYCLE_REPLY_TO` | same | No customer email is sent. | Reply-To of every lifecycle email (the founder's inbox); also the mailto in `List-Unsubscribe`. |
+| `CURVI_LINK_SECRET` | same; `apps/web/src/lib/email/config.ts` | No marketing email is sent (it would have no working unsubscribe); transactional email still goes. In db mode no unsubscribe link verifies. | HMAC secret for signed links (the unsubscribe links now; P18-05 feedback and P18-12 download links later). A secret: Render only. Never rotate it while email is on. |
+| `CURVI_POSTAL_ADDRESS` | `packages/email/src/config.ts` `usablePostalAddress` | Marketing email waits; transactional email still goes. A placeholder such as `[postal address]` or `TODO` counts as unset. | The CAN-SPAM postal address in the marketing footer (decision 4); a registered PO box or private mailbox is fine. |
+| `LIFECYCLE_FOUNDER_NAME` | same | Emails are signed "Curvi" and the welcome email does not name the founder. | Optional first name. |
+| `RESEND_WEBHOOK_SECRET` | `apps/web/src/app/api/webhooks/resend/route.ts` | `/api/webhooks/resend` answers 503; bounces are checked by hand in Resend. | The webhook's `whsec_...` signing secret from Resend. |
+
+1. **What is sent.** Transactional mail (welcome, pack ready, packs back to an account) goes to anyone not suppressed for all mail. Marketing mail (the first pack nudges, the feedback ask, out of credits, win back, and every email to a lead: the tool link, packs back, tips and offers) also needs no marketing unsubscribe, `CURVI_LINK_SECRET`, a real `CURVI_POSTAL_ADDRESS` and an https `NEXT_PUBLIC_SITE_URL`. It carries `List-Unsubscribe` (https and mailto) and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, and a footer that says it is a marketing email, why the reader gets it, the one click unsubscribe link and the postal address. Leads get the tool link, tips and offers only if they ticked the new consent box on the free tool email gate or the packs paused waitlist; every lead captured before that box has none. A visitor who joined the packs paused waitlist gets the packs back email because they asked for it, as marketing mail. Someone who asks to unsubscribe by replying (the mailto in the header goes to `LIFECYCLE_REPLY_TO`) is added by hand within 10 business days (docs/PENDING.md, "Phase 18 founder steps, Lane 3 Email", step 14).
+2. **Unsubscribe.** `/email/unsubscribe?t=<token>` asks once ("Stop tips and offers from Curvi?") and posts to `/api/email/unsubscribe`, which also takes a mail app's one click POST and answers 200 with no redirect. The settings page has "Emails from Curvi with listing image tips and offers". Both write or clear a `marketing` suppression; a bounce, a complaint or a Resend suppression (the webhook) stops all mail and is never lifted from settings.
+3. **Limits.** At most 25 lifecycle emails per cron run and 60 per UTC day (seed `emailLimits` in packages/pipeline/src/seed/growth.ts), inside Resend's free 100 a day and 3,000 a month with room for the Supabase auth mail and founder alerts on the same account. A failed send is tried again up to 3 times; Resend's `Idempotency-Key` (the dedupe key) stops a second delivery.
+4. **Health.** `/api/health` warns `lifecycle_email_not_configured` while the switch is on and a variable above is missing, naming the variables.
+
+**Verify** after switching email on: open `/api/health` (no `lifecycle_email_not_configured`), then in the SQL editor `select template, status, error, created_at from email_sends order by created_at desc limit 20;` shows the newest attempts without any address.
+
+**P18-07, the lifecycle emails.** `POST /api/cron/lifecycle` (CRON_SECRET; `?dryRun=1` lists what is due by template and sends nothing) joins the stale-jobs cron command after `/api/cron/provider-balance`, so it runs every 10 to 15 minutes with no new cron service. Each run reads the server side funnel (P18-02), jobs, the ledger balance, leads and the send log, picks what is due (`dueEmails` in packages/email/src/due.ts, timings in `lifecycleSchedule`, packages/pipeline/src/seed/growth.ts) and sends at most one email per person per run, transactional first, with no marketing email within 20 hours of another email to the same person:
+
+| Email | When | Kind |
+| --- | --- | --- |
+| welcome | at confirmation (within 48 hours) | transactional |
+| first_pack_nudge_1, first_pack_nudge_2 | 1 and 3 days after confirmation with no pack started, free plan only | marketing, held while packs are paused |
+| pack_ready | a pack is done with at least one passed file, once per pack, with the measured color check (P18-08) | transactional |
+| feedback_ask | 2 days after the first pack, until answered (off until P18-05) | marketing |
+| out_of_credits | after a pack leaves a free or Starter balance below the next pack, at most once in 30 days, not after a purchase | marketing, held while paused |
+| win_back | 21 days after the last pack, once ever | marketing, held while paused |
+| packs_back | when the acquisition gate reopens, once per pause, to waitlist leads and to signups of the pause who made no pack | transactional to an account, marketing to a waitlist lead |
+| lead_results | a lead from the checker, fixer, resizer or store audit who ticked the consent box, once per lead and tool | marketing |
+| lead_tip, lead_offer | 3 and 10 days after a lead ticked the consent box, until they sign up | marketing, held while paused |
+
+Every link carries `utm_source=curvi_email&utm_medium=email&utm_campaign=<template>`, so a returning signup is credited to the email; there are no open tracking pixels. Each send writes `funnel.email_sent { template }`, and the weekly funnel email shows "Lifecycle emails sent by template". An email is dropped, not sent late, once it is past its window, so switching email on never mails old signups. Workspaces owned by an `OPS_EMAILS` address get no lifecycle email, so prospect and test packs never mail the founder.
+
+## Phase 18 concierge (p18/concierge)
+
+Pack feedback and testimonials (P18-05), the share loop and gallery labels (P18-14) and the prospect makeover tool (P18-04). The founder steps, in order, are in docs/PENDING.md, "Phase 18 concierge founder steps".
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `CURVI_LINK_SECRET` | `apps/web/src/lib/feedback/link.ts` | No signed feedback link is made; `/feedback/<token>` says links are not available. The card on the pack page still works. | Server only. At least 32 characters. Signs the pack feedback link (one pack, one person, `packFeedback.linkDays` days) for the day 2 email (P18-07). Changing it ends every link already sent. |
+
+**P18-05, pack feedback.** Migration `pack_feedback` (a tenant table: members read, the server writes). Once a pack is done, its page asks "Would you use these files in a live listing?" ("Yes, as they are", "Some of them", "Not yet"), then "What would make them better?", "Would you pay for packs like this?" and the quote consent with an empty name field. One answer per pack and person; "Not now" hides the card in that browser. Each answer writes `funnel.feedback_submitted` with `usable`, so the weekly funnel email shows the usable share against the day 14 gate, and the email lists the week's new consented quotes word for word. `feedbackLinkPath({ jobId, userId })` in `apps/web/src/lib/feedback/link.ts` is the link the day 2 email puts in (Lane 3).
+
+**Verify:** finish a pack, answer the card with the consent box ticked, and check `select usable, quote_consent, display_name from pack_feedback order by created_at desc limit 1;` and `select props from events where name = 'funnel.feedback_submitted' order by at desc limit 1;`. The next funnel digest dry run (`POST /api/cron/funnel-digest?dryRun=1`) lists the quote.
+
+**P18-14, the share loop.** No migration and no new variable. A published share page's panel gets "Post on X", "Share on LinkedIn", "Save to Pinterest" and "Post on Reddit" (and "Share from this phone" on phones); every link carries `utm_source=<network>&utm_medium=share&utm_campaign=pack_share`, and Make mine sends `source=share` and the page's slug to `/signup`, so a share driven signup lands in `signup_attributions` with `source = share`, `share_slug` and the network. Gallery listed share pages join `/sitemap.xml` within an hour. Gallery entries from a workspace owned by an `OPS_EMAILS` account read "Made by the Curvi team"; seller entries show a consented quote when there is one.
+
+**Verify:** publish a pack page, click "Post on Reddit" and check that the link and title are filled in (the one share format not read on Reddit's own page, docs/verification.md); open the page with `?utm_source=x`, click Make mine and sign up, then `select source, share_slug, utm_source from signup_attributions order by created_at desc limit 1;`. Then unpublish "Blue Car 1", "Blue Gatorade v2" and "Blue Gatorade v4" from the gallery (docs/marketing.md MKT-009).
+
+**P18-04, the prospect makeover tool.** Migration `pack_claims` (a platform table: no client access; only the sha256 of a claim token is stored). No new variable: it uses `OPS_EMAILS` (the operator allowlist from the site visitor count), the R2 keys and the database. `/app/ops/prospects` and `/api/ops/prospects/*` answer 404 to anyone whose confirmed email is not in `OPS_EMAILS`.
+
+1. **Credits.** "Add prospect credits" adds credits to your own workspace as a `grant` ledger row with source `system`, at most `staffMonthlyCreditCap` (400) per UTC calendar month, counted from `ops:prospect_credits` events rows, which no client role can write (`events_insert_member` refuses `ops:%`). Packs then spend them like any pack.
+2. **Make a pack.** Store name, product link (Shopify or Amazon, imported through the existing import routes) or the listing photo, channels and a note. The pack runs through the normal pack path. When it is done, the list publishes its share page once: the whole pack, link only (never in the gallery, so never indexed), with the measured checks on.
+3. **Send it.** "Make the claim link" makes a fresh link (the previous one stops working) that works for 30 days, with the outreach kit: the link, the Amazon checker's rows for their current listing photo, the color check summary, and a draft note under 80 words with the outreach signature under it (postal address placeholder, "This is a promotional email from Curvi.", the opt out line). Check the do not contact list, replace the address placeholder and send it from the outreach domain. "Show the outreach kit" shows the kit again later without a new token; with `CURVI_LINK_SECRET` set (at least 32 characters) it also shows the live link, because claim tokens are then derived from the claim and its expiry, so the link the prospect has keeps working.
+4. **The prospect's side.** The page is titled "{store} listing pack, made by Curvi" and, with the link, offers "Make it yours". Signing up from it attributes the account to `concierge` with the store as `utm_campaign`, copies the listing photo into their new workspace as a product, opens `/app/new` on it, and adds no extra credits (the 15 credit signup grant pays the first pack). "Take it down here" in the footer makes the page private at once.
+
+**Verify:** docs/PENDING.md, "Phase 18 concierge founder steps", step 7. The weekly funnel email shows "Prospect packs made", "Prospect claims" and the claims by store.
+
+## Phase 18 search: the URL import claim gate (P18-11)
+
+`FEATURES.urlImport` stays `coming_soon` on the branch, so no page promises the Shopify or Amazon product link import yet; the import itself works in the new pack form. Before the copy goes live:
+
+1. In production, start one pack from a Shopify product link and one from an Amazon product link. Both must import the photo and title into a pack.
+2. Record both, with the date and the two links, in docs/verification.md.
+3. Then flip the one line in `apps/web/src/lib/marketing-facts.ts` (`urlImport` status `live`) in its own commit and deploy. Help, llms.txt and the site features gain the product link sentence; `apps/web/src/lib/url-import/live-copy.test.ts` checks whichever state the flag is in.
+
+If either import fails, leave the flag as it is.
+
+## Phase 18 offer (p18/offer)
+
+The founding member offer and per pack price framing (P18-21) and referral give and get credits (P18-24). No new environment variable: the banner reads Stripe with `STRIPE_SECRET_KEY`. The founder steps, in order, are in docs/PENDING.md, "Phase 18 founder steps, Lane 9 Offer".
+
+1. **Live with the deploy:** each paid plan on /pricing shows "About $x per listing pack." and the intro shows the dated soona price. Nothing to set.
+2. **Founding banner, switched off.** `ops:founding_offer_enabled` is off while no row says otherwise (an operator switch the seed never writes, P20-20). With it on, `GET /api/offer` answers the banner only while the offer is open (through `foundingMemberOffer.endsOn`, UTC), packs run, the `FOUNDING` promotion code is active in Stripe and seats are left; otherwise `{ "founding": null }`. Stripe is read at most once every 5 minutes per instance.
+3. **Referral rewards, switched off.** Migration `referrals` (its number is set when the Phase 18 lanes are combined) adds `referral_codes` and reworks `referrals` (it refuses a table that is not empty, and no client role reads it: the settings page shows counts through the server), plus a unique index that keeps each referral ledger row to one. A referral whose first payment used a card that also paid for the referrer is rejected (`same_card`, read from Stripe's charge list), and a referral step that fails answers the Stripe webhook with 500 so Stripe delivers it again. `ops:referrals_enabled` is off while no row says otherwise (an operator switch the seed never writes, P20-20). While off: no invite codes, `/r/<code>` goes to the plain home page, `/app/settings/referrals` answers 404, and no referral is recorded.
+
+**Verify (after decision 18 and the switches):** /pricing shows the banner with the seats left; a test checkout with `FOUNDING` costs $19. Open Settings, Invite a seller, sign up a second test account from the link, buy a top up there in test mode: both balances rise by 50 and `select status from referrals` says rewarded; refund it in Stripe and both fall back.
+
+## Phase 20 billing core (p20/billing-core)
+
+No migration and no new variable on Render. What changes before live Stripe keys (docs/phases/PHASE_20.md P20-01 to P20-04):
+
+1. **Checkout opens only when Stripe can grant credits** (P20-01). `STRIPE_SECRET_KEY` alone no longer opens checkout; it needs `STRIPE_WEBHOOK_SECRET` and every self serve `STRIPE_PRICE_*` too, in a key mode that fits the site (docs/STRIPE_SETUP.md section 2). **Verify:** `curl -fsS -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/health/providers` shows the `stripe` service with `"checkoutOpen"` and the `problems` keeping it closed; `/api/health` lists only the codes. Keep Stripe keys out of Render until the Release 2 gate (PHASE_20 decision 1).
+2. **Schedule the billing reconcile** (P20-02), until the one tick cron exists (P20-38), by adding it to the existing `curvi-stale-jobs` cron command so both run every 10 to 15 minutes:
+
+   ```
+   curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/cron/stale-jobs; curl -fsS --max-time 600 -X POST -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/cron/billing-reconcile
+   ```
+
+   It replays the handled Stripe events of the last `billingReconcile.lookbackHours` (seed 72) through the webhook handler, at most `maxEventsPerRun` (seed 1,000) a run, so a payment whose webhook never landed still grants its credits exactly once. Replays never refund, cancel or change anything in Stripe. Without a Stripe key it answers `skipped` and still counts as a run, so `/api/health` does not report `cron_never_ran:billing-reconcile` while billing is off. When a run applies anything, or an event newly fails, the founder gets one email through the existing founder alert path (`RESEND_API_KEY`, `FOUNDER_ALERT_EMAIL`): "Billing check: {n} payments were missing credits. They are granted now." A failure that stays failed is emailed once, then retried silently each run while it is in the window. **Verify:** after setting the Stripe test keys locally, `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" "http://localhost:3000/api/cron/billing-reconcile?dryRun=1"` lists what it would write and writes nothing.
+3. **Webhook endpoint check** (P20-02). Each run lists the Stripe webhook endpoints and warns `stripe_webhook_endpoint_mismatch` on `/api/health` unless an enabled endpoint at `NEXT_PUBLIC_SITE_URL` plus `/api/webhooks/stripe` sends every handled event on API version `2025-08-27.basil`. The signing secret cannot be checked through the API; `stripe_webhook_quiet` covers it (a checkout opened in the last 7 days and no webhook succeeded since).
+4. **Test mode run and `pnpm billing:verify`** (P20-03): see docs/STRIPE_SETUP.md section 8.
+5. **Unit economics** (P20-04): `pnpm report:unit-economics --days 30` with `DATABASE_URL` set, read only. Record the generative still price decision in docs/phases/PHASE_20.md before live keys (decision 2).
+
+## Phase 20 billing terms (P20-05 to P20-08)
+
+Migration `billing_terms` (take a pg_dump first, then pnpm db:migrate, staging first, before the web deploy). What changes before live Stripe keys (docs/phases/PHASE_20.md P20-05 to P20-08):
+
+1. **Credits never expire** (P20-05): one credit sentence everywhere; the migration clears the unused top up expiry.
+2. **Plan cards list only what runs; Agency off self serve** (P20-08): do not create Agency prices (docs/STRIPE_SETUP.md section 1).
+3. **Downgrades by email** (P20-06 stopgap): turn Switch plan off in the default portal configuration and create the two upgrade only configurations of docs/STRIPE_SETUP.md section 5.
+4. **Renewal terms, consent record, activation email and cancel flow** (P20-07): keep Stripe's "Send emails about upcoming renewals" off (section 6), and set the billing sender.
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `STRIPE_PORTAL_UPGRADE_CONFIG_STARTER`, `_STARTER_ANNUAL`, `_GROWTH`, `_GROWTH_ANNUAL`, `_PRO` | web (checkout route) | Those subscribers get the default configuration (Switch plan off) and cannot upgrade online; `/api/health` warns `stripe_portal_upgrade_config_missing` once checkout is open. | The `bpc_...` ids of the five upgrade only portal configurations (docs/STRIPE_SETUP.md section 5). |
+| `BILLING_EMAIL_FROM` | web (Stripe webhook, billing reconcile) | Checkout stays closed (with `RESEND_API_KEY`, it is a readiness requirement); `/api/health` warns `billing_email_not_configured` (info until billing is meant to be live, degraded after). | The sender of billing emails, an address on the verified `updates.curvi.ai`, for example `Curvi Billing <billing@updates.curvi.ai>`. Needs `RESEND_API_KEY`. |
+
+## Phase 20 nightly backup (p20/data, P20-10)
+
+No migration. Supabase Free keeps no restorable backup, so a Render cron job, `curvi-backup`, dumps the database every night at 09:15 UTC, encrypts it to the founder's age public key and stores it in its own R2 bucket, `curvi-backups` (daily copies 35 days, monthly copies 180 days, the newest 7 days locked). It reports to `POST /api/cron/backup-report`, which records `backup:last`; `/api/health` warns `cron_never_ran:backup` until the first report and `cron_overdue:backup` once the newest is older than 26 hours. Every setup step, with its commands, is in docs/ops/BACKUP_RESTORE.md, "Setting it up"; the short list is in docs/PENDING.md, "Phase 20 founder steps: nightly backup".
+
+| Name | Read by | Unset means | Meaning |
+| --- | --- | --- | --- |
+| `BACKUP_DATABASE_URL` | ops/cron/backup.sh (cron only) | The backup refuses to start (exit 2) and pings healthchecks.io `/fail`; health turns degraded after 26 hours. | The Supabase session pooler string, port 5432, user `postgres.<ref>`. A secret. Never on the web service. |
+| `BACKUP_AGE_RECIPIENT` | ops/cron/backup.sh | As above. | The founder's age public key (`age1...`). The private key lives only in the password manager. |
+| `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY` | ops/cron/backup.sh | As above. | The account, the backup bucket and a token scoped to that bucket only (object read and write). The web service never holds it, so the app cannot write or delete backups. |
+| `HEALTHCHECKS_BACKUP_URL` | ops/cron/backup.sh | No ping; health still warns when the backup goes stale. | The healthchecks.io ping URL of the `curvi-backup` check. |
+| `NEXT_PUBLIC_SITE_URL`, `CRON_SECRET` | ops/cron/backup.sh, for the report | The backup refuses to start. | The same values the web service has. |
+
+**Restore drill (P20-11).** Once before live Stripe keys and then monthly, the founder runs `pnpm ops:restore-drill` on the laptop into a fresh local Supabase stack (never staging or production; the script refuses both and any database `DATABASE_URL` points at). It restores the newest backup, runs nine checks, posts the timing to `POST /api/cron/restore-drill-report` and destroys the stack. `/api/health` shows `restore_drill_overdue` (info) until the first drill and after 35 days without one. It reads `CRON_SECRET` and a read only `BACKUP_R2_*` token from the shell only; nothing goes on Render. Steps: docs/ops/BACKUP_RESTORE.md, "The restore drill".
+
+## Production environment inventory
+
+Authoritative combined inventory for PHASE_18 through PHASE_20, checked 2026-10-02. It supersedes older batch notes about Trigger.dev and cron deployment. Secrets have service-level `sync: false`; optional values can remain unset. Render only prompts for these on initial creation and ignores them on an existing Blueprint, so a new declaration does not install a live value. No secret values are recorded here.
+
+The `curvi-common` group contains only the site URL, `NODE_ENV` and `CRON_SECRET`. Render does not support `sync: false` inside environment groups; the Blueprint uses `generateValue: true` for the cron capability. Before adopting existing services, precreate or verify the group with the **existing** cron secret through the founder's secure dashboard flow, and verify that every service resolves that same value. Do not blindly rotate it or remove service overrides. `generateValue` keeps an existing group value; a new installation creates a new capability. No credential was created during this repository work.
+
+Production automatic deploys remain `autoDeployTrigger: checksPass`, matching the latest authorized workflow. The guarded `pnpm release` CLI is available for a future explicit release policy choice; do not assume its pre-deploy drain runs on an automatic Render deploy. Before first Blueprint sync: set Blueprint Auto Sync to No, compare Generate Blueprint with this file, match service names/types, and inspect the preview. Proceed only when it adopts the existing services without new or suffixed copies and without overwriting environment values. Applying this Blueprint or provisioning cron resources requires the separate founder operation.
+
+`curvi-backup` remains daily at 09:15 UTC. `curvi-tick` calls `/api/cron/tick` every ten minutes, with a start/success/failure heartbeat, and replaces the two legacy dashboard scheduler services only after its first live success and job freshness are verified. It holds no database, Stripe, provider or backup credentials. The web service cannot write the encrypted backup bucket. Verify the Docker base Postgres major against the source database before a real backup.
+
+**Founder verification required:** `.env.example` was not read or changed because it is protected in this task. Copy the inventory names and safe empty/default placeholders to it by hand, then enable a separate hard completeness check. The repository test deliberately verifies the source/Blueprint/checklist inventory without opening that protected file. Live adoption, current dashboard values, cron provisioning and heartbeat delivery remain unverified.
+
+Official syntax and behavior: [Render Blueprint reference](https://render.com/docs/blueprint-spec), [Render cron jobs](https://render.com/docs/cronjobs), [Healthchecks ping API](https://healthchecks.io/docs/http_api/), retrieved 2026-10-02.
+
+| Variable | Scope | Purpose and behavior when unset |
+| --- | --- | --- |
+| `CRON_SECRET` | common group | Shared random bearer capability for cron HTTP routes. Preserve the existing value during adoption. |
+| `NEXT_PUBLIC_SITE_URL` | common group | Canonical https://curvi.ai origin for both web and cron callbacks. |
+| `NODE_ENV` | common group | production on all three services. |
+| `ANTHROPIC_API_KEY` | web only | Optional configured LLM provider; absent providers are skipped. |
+| `BFL_API_KEY` | web only | Configured BFL image provider; absent provider is skipped. |
+| `BILLING_EMAIL_FROM` | web only | Verified transactional sender; missing blocks billing communications/readiness. |
+| `CLIENT_IP_HEADER` | web only | Explicit trusted proxy address header; unset uses the conservative untrusted path. |
+| `CLIENT_IP_PROXY_SECRET` | web only | Shared trusted proxy proof; missing never grants trusted-IP status. |
+| `CSP_ENFORCE` | web only | Unset/0 keeps the policy report-only. Enable enforcement only after the CSP proof gate. |
+| `CURVI_ALLOW_DEMO_GENERATION` | web only | Leave unset in production. Explicit development escape hatch for synthetic generation. |
+| `CURVI_INLINE_PACK_CONCURRENCY` | web only | Existing production default 2; confirm measured memory before changing. |
+| `CURVI_INLINE_PACK_MAX_RUN_MS` | web only | Optional bounded per-pack run limit; unset uses the runner default. |
+| `CURVI_LINK_SECRET` | web only | Signing key for email/prospect/feedback links; missing blocks signed link features and marketing mail. |
+| `CURVI_POSTAL_ADDRESS` | web only | Real postal address required for marketing email; unset/placeholder blocks marketing mail. |
+| `CURVI_PROVIDER_CANARY_ENABLED` | web only | Unset/0 keeps paid periodic canaries off. Enable only after the authorized provider/budget gate. |
+| `CURVI_SHOT_CONCURRENCY` | web only | Optional per-pack shot concurrency. Unset uses seeded policy; memory health checks warn on unsafe settings. |
+| `CURVI_SHUTDOWN_GRACE_MS` | web only | Optional drain grace; must stay below Render maxShutdownDelaySeconds (300). |
+| `CURVI_TEMPLATE_FONT_FILE` | web only | Optional server font path; unset uses bundled fonts. |
+| `DAILY_SPEND_HARD_STOP_USD` | web only | Optional spend hard-stop override; unset uses seeded policy. |
+| `DATABASE_URL` | web only | Supabase transaction pooler URL. Required for database mode; missing production config fails closed. |
+| `FAL_ADMIN_KEY` | web only | Primary fal account balance read key; missing makes balance health unknown. |
+| `FAL_ADMIN_KEY_BACKUP` | web only | Backup fal account balance read key; missing makes balance health unknown. |
+| `FAL_KEY` | web only | Primary fal inference/cutout key; absent provider is skipped. |
+| `FAL_KEY_BACKUP` | web only | Optional independent backup fal inference account. |
+| `FOUNDER_ALERT_EMAIL` | web only | Destination for operational alerts and weekly report; missing logs/drops configured email alerts. |
+| `FOUNDER_ALERT_FROM` | web only | Verified operational sender; unset uses Curvi Alerts at alerts@curvi.ai. |
+| `GEMINI_API_KEY` | web only | Configured Gemini image provider; absent provider is skipped. |
+| `LIFECYCLE_EMAIL_FROM` | web only | Verified lifecycle sender; missing blocks lifecycle and configured support mail. |
+| `LIFECYCLE_FOUNDER_NAME` | web only | Optional welcome/signature display name; omitted when unset. |
+| `LIFECYCLE_REPLY_TO` | web only | Reply-to inbox for lifecycle mail; missing blocks lifecycle sending. |
+| `MCP_LINK_KEYS` | web only | Versioned signing keys for MCP delivery links and quotes; absent blocks signed links in production. |
+| `MCP_OAUTH_CLIENT_IDS` | web only | Approved OAuth client IDs; required by the release auth gate. |
+| `MCP_OAUTH_ENABLED` | web only | Unset/0 keeps OAuth authentication/discovery disabled; API keys keep working. |
+| `MCP_REGISTRY_AUTH` | web only | Optional public MCP Registry domain-auth proof; unset endpoint404. Not a private signing key. |
+| `MCP_RESOURCE_URL` | web only | OAuth protected resource URL; unset uses the canonical configured MCP endpoint. |
+| `NEXT_PUBLIC_FREE_PREVIEW` | web only | Set1 only after the preview readiness gate; unset disables free preview. |
+| `NEXT_PUBLIC_GOOGLE_AUTH` | web only | Set1 to show Google sign-in after provider configuration; unset hides it. |
+| `NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID` | web only | Public Ads pixel ID/disable control; unset follows the existing consent-gated default. |
+| `NEXT_PUBLIC_OUTPUT_OPTIONS` | web only | Optional output-option feature flag; unset follows the current feature default and ops switch. |
+| `NEXT_PUBLIC_POSTHOG_HOST` | web only | Optional analytics host; unset uses the SDK default. |
+| `NEXT_PUBLIC_POSTHOG_KEY` | web only | Public analytics key; absent disables PostHog. |
+| `NEXT_PUBLIC_SENTRY_DSN` | web only | Browser error reporting DSN; absent disables browser capture and tunnel. |
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | web only | Optional public Stripe key used for environment consistency checks. |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | web only | Public Supabase client key. Required for production sign in. |
+| `NEXT_PUBLIC_SUPABASE_URL` | web only | Supabase project URL. Required for production sign in. |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | web only | Public widget key; pair with secret and configure Supabase CAPTCHA. Unset leaves widget off. |
+| `NODE_OPTIONS` | web only | Optional Node heap options; unset uses Node defaults. Do not raise beyond the service memory limit. |
+| `NODE_VERSION` | web only | 22 for the supported runtime; keep aligned with package.json. |
+| `OPENAI_ADS_CONVERSIONS_KEY` | web only | Server Ads conversions key; absent disables server conversion forwarding. |
+| `OPENAI_API_KEY` | web only | Configured OpenAI LLM/image provider; absent provider is skipped. |
+| `OPENAI_APPS_CHALLENGE_TOKEN` | web only | Optional public application verification challenge; unset endpoint404. |
+| `OPS_EMAIL` | web only | Legacy single-operator fallback; prefer OPS_EMAILS. |
+| `OPS_EMAILS` | web only | Comma-separated operator allowlist; missing denies operator access. |
+| `OPS_RELEASE_TOKEN` | web only | Scoped deploy-pending capability shared only with founder release CLI; unset endpoint returns404. |
+| `PHOTOROOM_API_KEY` | web only | Optional legacy adapter key; no active seed route requires it. Leave unset unless explicitly configured. |
+| `R2_ACCESS_KEY_ID` | web only | Private product bucket access key; never reuse the backup bucket token. |
+| `R2_ACCOUNT_ID` | web only | Private object store account. Required for real file delivery. |
+| `R2_BUCKET_PRIVATE` | web only | Private product bucket; unset defaults to curvi-private. |
+| `R2_SECRET_ACCESS_KEY` | web only | Private product bucket secret; missing disables real file delivery. |
+| `RESEND_API_KEY` | web only | Transactional and lifecycle mail transport; missing sends no mail. |
+| `RESEND_WEBHOOK_SECRET` | web only | Resend signed bounce/complaint webhook secret; missing rejects webhook writes. |
+| `SENTRY_AUTH_TOKEN` | web only | Build-only source-map upload credential; absent still builds with minified stacks. |
+| `SENTRY_DSN` | web only | Server/edge error reporting DSN; absent disables capture. |
+| `SENTRY_ORG` | web only | Sentry organization slug for source maps and operator issue links. |
+| `SENTRY_PROJECT` | web only | Sentry project slug for source maps. |
+| `SHOPIFY_API_SECRET` | web only | Webhook signature secret; absent rejects Shopify webhook writes. |
+| `STRIPE_PORTAL_UPGRADE_CONFIG_AGENCY` | web only | Scoped Stripe portal upgrade configuration for this source plan/cadence; missing forbids that portal update. Gated plans stay gated. |
+| `STRIPE_PORTAL_UPGRADE_CONFIG_AGENCY_ANNUAL` | web only | Scoped Stripe portal upgrade configuration for this source plan/cadence; missing forbids that portal update. Gated plans stay gated. |
+| `STRIPE_PORTAL_UPGRADE_CONFIG_GROWTH` | web only | Scoped Stripe portal upgrade configuration for this source plan/cadence; missing forbids that portal update. Gated plans stay gated. |
+| `STRIPE_PORTAL_UPGRADE_CONFIG_GROWTH_ANNUAL` | web only | Scoped Stripe portal upgrade configuration for this source plan/cadence; missing forbids that portal update. Gated plans stay gated. |
+| `STRIPE_PORTAL_UPGRADE_CONFIG_PRO` | web only | Scoped Stripe portal upgrade configuration for this source plan/cadence; missing forbids that portal update. Gated plans stay gated. |
+| `STRIPE_PORTAL_UPGRADE_CONFIG_PRO_ANNUAL` | web only | Scoped Stripe portal upgrade configuration for this source plan/cadence; missing forbids that portal update. Gated plans stay gated. |
+| `STRIPE_PORTAL_UPGRADE_CONFIG_STARTER` | web only | Scoped Stripe portal upgrade configuration for this source plan/cadence; missing forbids that portal update. Gated plans stay gated. |
+| `STRIPE_PORTAL_UPGRADE_CONFIG_STARTER_ANNUAL` | web only | Scoped Stripe portal upgrade configuration for this source plan/cadence; missing forbids that portal update. Gated plans stay gated. |
+| `STRIPE_PRICE_AGENCY_ANNUAL` | web only | Matching Stripe price ID from seeded tier/cadence; missing price is unavailable. Agency stays gated by product policy. |
+| `STRIPE_PRICE_AGENCY_MONTHLY` | web only | Matching Stripe price ID from seeded tier/cadence; missing price is unavailable. Agency stays gated by product policy. |
+| `STRIPE_PRICE_GROWTH_ANNUAL` | web only | Matching Stripe price ID from seeded tier/cadence; missing price is unavailable. Agency stays gated by product policy. |
+| `STRIPE_PRICE_GROWTH_MONTHLY` | web only | Matching Stripe price ID from seeded tier/cadence; missing price is unavailable. Agency stays gated by product policy. |
+| `STRIPE_PRICE_PRO_ANNUAL` | web only | Matching Stripe price ID from seeded tier/cadence; missing price is unavailable. Agency stays gated by product policy. |
+| `STRIPE_PRICE_PRO_MONTHLY` | web only | Matching Stripe price ID from seeded tier/cadence; missing price is unavailable. Agency stays gated by product policy. |
+| `STRIPE_PRICE_STARTER_ANNUAL` | web only | Matching Stripe price ID from seeded tier/cadence; missing price is unavailable. Agency stays gated by product policy. |
+| `STRIPE_PRICE_STARTER_MONTHLY` | web only | Matching Stripe price ID from seeded tier/cadence; missing price is unavailable. Agency stays gated by product policy. |
+| `STRIPE_PRICE_TOPUP_100` | web only | Matching Stripe top-up price ID; missing top-up is unavailable. |
+| `STRIPE_PRICE_TOPUP_500` | web only | Matching Stripe top-up price ID; missing top-up is unavailable. |
+| `STRIPE_SECRET_KEY` | web only | Stripe server key for the selected environment; missing keeps purchasing closed. |
+| `STRIPE_TAX_ENABLED` | web only | Set1 only after Stripe tax registrations are ready; unset leaves Stripe Tax off. |
+| `STRIPE_WEBHOOK_SECRET` | web only | Stripe webhook signing secret; missing rejects webhook writes. |
+| `SUPABASE_AUTH_ISSUER` | web only | Optional explicit issuer; unset derives the issuer from the Supabase URL. |
+| `SUPABASE_SERVICE_ROLE_KEY` | web only | Server-only auth administration key; missing disables account deletion/admin operations. |
+| `SUPPORT_INBOX` | web only | Support destination; unset uses hello@curvi.ai. |
+| `TURNSTILE_SECRET_KEY` | web only | Server Turnstile verifier secret; partial configuration fails closed, absent pair uses strict anonymous fallback caps. |
+| `UPSTASH_REDIS_REST_TOKEN` | web only | Rate-limit backend token; keep paired with its URL. |
+| `UPSTASH_REDIS_REST_URL` | web only | Optional shared rate-limit backend URL; absent uses supported database/local fallbacks. |
+| `VISITS_HASH_KEY` | web only | Server-only visit hashing key; missing disables durable visitor hashing/counts. |
+| `BACKUP_AGE_RECIPIENT` | backup cron only | Age public recipient; required. Private decryption key never belongs on Render. |
+| `BACKUP_DATABASE_URL` | backup cron only | Session pooler database URL for pg_dump, not the web transaction-pooler URL. |
+| `BACKUP_R2_ACCESS_KEY_ID` | backup cron only | Access key scoped to the backup bucket only; required. |
+| `BACKUP_R2_ACCOUNT_ID` | backup cron only | Backup bucket account ID; required. |
+| `BACKUP_R2_BUCKET` | backup cron only | Separate encrypted-backup bucket name; required. |
+| `BACKUP_R2_SECRET_ACCESS_KEY` | backup cron only | Secret scoped to the backup bucket only; required. |
+| `HEALTHCHECKS_BACKUP_URL` | backup cron only | Optional private backup heartbeat URL; missing leaves external backup monitoring disabled. |
+| `HEALTHCHECKS_TICK_URL` | tick cron only | Optional private tick heartbeat URL; missing leaves external tick monitoring disabled. |
+| `ALLOW_DEMO_MODE` | local/test only | Never set on production. Allows explicit test demo mode. |
+| `APPDATA` | CLI host supplied | Windows CLI config root; unset uses the OS home fallback. |
+| `CI` | CI/platform supplied | Build/test quiet and concurrency behavior; never a secret. |
+| `CURVI_API_KEY` | customer CLI only | CLI credential; never configure as a web-service tenant key. |
+| `CURVI_API_URL` | customer CLI only | Optional CLI target; unset uses canonical API URL. |
+| `CURVI_CONFIG_DIR` | customer CLI only | Optional isolated CLI config directory. |
+| `CURVI_DEMO_ACQUISITION` | local/demo only | Demo acquisition state fixture; never set on production. |
+| `CURVI_RSS_TEST` | local test only | Memory-test opt-in; never set on production. |
+| `GITHUB_RUN_ID` | GitHub supplied | Smoke test unique run identifier. |
+| `INIT_CWD` | package manager supplied | Restore CLI starting directory; no Render configuration needed. |
+| `NEXT_MANUAL_SIG_HANDLE` | Next runtime supplied | Internal signal integration flag; application sets it for inline draining. |
+| `NEXT_PUBLIC_ENV_LABEL` | staging only | Visible staging label/noindex. Do not put it on production. |
+| `NEXT_RUNTIME` | Next build supplied | Runtime selection by Next; no manual configuration. |
+| `OPS_OPERATOR_EMAIL` | founder machine only | Grant CLI operator identity, must be in allowlist. |
+| `OPS_RELEASE_EMAIL` | founder machine only | Audited deploy CLI operator identity. |
+| `OPS_SITE_URL` | founder machine only | Canonical HTTP target for guarded migration/release scripts. |
+| `PORT` | Render supplied | Web server listening port; local start defaults3000. |
+| `RENDER_API_KEY` | founder machine only | Render control-plane credential; never in web/cron env. |
+| `RENDER_BACKUP_CRON_ID` | founder machine only | Existing backup job ID used by guarded migration backup step. |
+| `RENDER_GIT_COMMIT` | Render supplied | Deploy commit used by health and Sentry releases. |
+| `RENDER_SERVICE_ID` | founder machine only | Existing web service ID for guarded release CLI. |
+| `SMOKE_ALLOW_PACKS` | GitHub/local smoke only | Explicit paid staging pack opt-in; unset keeps generation off. |
+| `SMOKE_ALLOW_PRODUCTION_PACK` | GitHub/local smoke only | Separate explicit production synthetic pack opt-in. |
+| `SMOKE_API_KEY` | GitHub/local smoke only | Excluded operator-workspace API key only when its synthetic test is explicitly enabled. |
+| `SMOKE_BASE_URL` | GitHub/local smoke only | Explicit smoke target origin; no default live target. |
+| `SMOKE_EXPECTED_SHA` | GitHub/local smoke only | Optional deployed commit expectation. |
+| `SMOKE_MODE` | GitHub/local smoke only | demo, staging, production or separately authorized synthetic mode. |
+| `SMOKE_USER_EMAIL` | GitHub/local smoke only | Staging login fixture only; never production customer credentials. |
+| `SMOKE_USER_PASSWORD` | GitHub/local smoke only | Staging login fixture password only. |
+| `SMOKE_WORKSPACE_EXCLUDED` | GitHub/local smoke only | Required operator-workspace exclusion proof for production synthetic packs. |
+| `STAGING_DATABASE_URL` | founder restore-drill only | Staging identity denylist for restore guards; never a production deployment credential. |
+| `STAGING_SUPABASE_URL` | founder restore-drill only | Staging project identity used to reject an unsafe restore target. |
+| `STRIPE_E2E` | local test only | Explicit Stripe test-mode E2E opt-in; unset skips real-stack test. |
+| `TEST_DATABASE_URL` | isolated test/CI only | Disposable PostgreSQL race-test target; never production. |
+| `TRIGGER_SECRET_KEY` | retired | Ignored diagnostic only; remove from Render. No Trigger.dev worker is deployed. |
+| `XDG_CONFIG_HOME` | CLI host supplied | Unix CLI config root; unset uses ~/.config. |
+| `STAGING_OPS_SITE_URL` | founder/local or host supplied only | Staging origin for guarded operator CLI commands. |
+| `STAGING_CRON_SECRET` | founder/local or host supplied only | Staging-only cron HTTP capability for CLI health and migrations. |
+| `STAGING_OPS_RELEASE_TOKEN` | founder/local or host supplied only | Staging-only deploy-pending capability. |
+| `STAGING_OPS_RELEASE_EMAIL` | founder/local or host supplied only | Audited operator identity for staging releases. |
+| `STAGING_RENDER_API_KEY` | founder/local or host supplied only | Render control-plane key used only by the founder staging CLI. |
+| `STAGING_RENDER_SERVICE_ID` | founder/local or host supplied only | Existing staging web service ID. |
+| `STAGING_RENDER_BACKUP_CRON_ID` | founder/local or host supplied only | Existing staging backup ID, only if a separate staging backup exists. |
+| `BACKUP_TIMESTAMP` | founder/local or host supplied only | Test fixture clock override for backup-script tests; leave unset for real backups. |
+| `TMPDIR` | founder/local or host supplied only | Host temporary directory; cron scripts default to /tmp. |

@@ -1,8 +1,18 @@
-# Render Blueprint for Curvi.ai
-# Mirrors the dashboard service: project Curvi.ai / Production / web service "Curviai".
-# The service was created manually in the dashboard; this file keeps the config in
-# source control and lets Render recreate it via Blueprints if needed.
-# Docs: https://render.com/docs/blueprint-spec
+# Production Blueprint reference. Applying it is a separate founder operation.
+# Before adoption: turn Blueprint Auto Sync off, compare Generate Blueprint,
+# precreate curvi-common with the EXISTING CRON_SECRET, and inspect the preview
+# for no new/suffixed resources or overwritten values. See LAUNCH_CHECKLIST.
+# sync:false is service-only; Render ignores it inside environment groups.
+# Existing generated values are retained; a new installation gets a new secret.
+envVarGroups:
+  - name: curvi-common
+    envVars:
+      - key: NEXT_PUBLIC_SITE_URL
+        value: https://curvi.ai
+      - key: NODE_ENV
+        value: production
+      - key: CRON_SECRET
+        generateValue: true
 
 services:
   - type: web
@@ -11,133 +21,241 @@ services:
     repo: https://github.com/BEXAI/Curviai
     branch: main
     region: oregon
-    # Standard compute plan (legacy name Standard): 1 CPU, 2 GB RAM, $25 a month
-    # on the founder's Render dashboard (2026-10-01). Paid instances never spin
-    # down, so idle time no longer kills packs. The plan is the founder's call
-    # (it costs money); see docs/LAUNCH_CHECKLIST.md, Render plan upgrade.
     plan: 1c-2g
-    # && so a failed install stops the build instead of building on a broken tree.
-    buildCommand: pnpm install --frozen-lockfile && pnpm run build
+    # NODE_ENV is production; build tools still require devDependencies.
+    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm run build
     startCommand: pnpm run start
-    # Render routes traffic to a new deploy only once this returns 2xx, and
-    # restarts an instance that fails it for 60 seconds. It returns 503 when
-    # the database fails before the instance has passed a whole check once
-    # (boot readiness), while the database is behind this build's migrations,
-    # and while draining. After that first pass, a database failure answers
-    # 200 with "ok":false, so a database blip never restarts a running
-    # instance; the uptime monitor alerts on the body.
-    # The hand made dashboard service does not follow this file: set the path
-    # in the dashboard only after batch 1 is live (docs/LAUNCH_CHECKLIST.md,
-    # Render health check path), since older code has no /api/health.
     healthCheckPath: /api/health
-    # Seconds between SIGTERM and SIGKILL (Render default 30, max 300). The
-    # inline pack runner drains within CURVI_SHUTDOWN_GRACE_MS (default 20000)
-    # and then settles unfinished jobs, so this must stay above that grace.
     maxShutdownDelaySeconds: 300
-    # Deploy only after the GitHub Actions CI checks pass on the commit
-    # (replaces the deprecated autoDeploy: true). The dashboard service was
-    # created by hand, so set the same thing there: Settings, Auto-Deploy,
-    # After CI Checks Pass. See docs/LAUNCH_CHECKLIST.md.
+    # Current user-approved policy: deploy main only after CI passes.
     autoDeployTrigger: checksPass
     envVars:
-      - key: NODE_VERSION
-        value: "22"
-      - key: NEXT_PUBLIC_SITE_URL
-        value: https://curvi.ai
-      # Packs the inline runner runs at once; the rest wait in order. 2 on the
-      # 2 GB plan (1 on 512 MB, 3 on 4 GB). Raise it only while Render's memory
-      # graph stays well below the limit with that many packs running
-      # (docs/LAUNCH_CHECKLIST.md, Render plan upgrade).
+      - fromGroup: curvi-common
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: BFL_API_KEY
+        sync: false
+      - key: BILLING_EMAIL_FROM
+        sync: false
+      - key: CLIENT_IP_HEADER
+        sync: false
+      - key: CLIENT_IP_PROXY_SECRET
+        sync: false
+      - key: CSP_ENFORCE
+        sync: false
+      - key: CURVI_ALLOW_DEMO_GENERATION
+        sync: false
       - key: CURVI_INLINE_PACK_CONCURRENCY
         value: "2"
-      # Values are set in the Render dashboard, never committed. sync: false makes
-      # Render prompt for them when a Blueprint first creates the service; it
-      # ignores them for an existing service. Every variable below is described
-      # in docs/LAUNCH_CHECKLIST.md, Environment variables added in batch 1.
-      # Optional: how long a shutdown waits for running packs before settling
-      # them (default 20000). Only raise it (for example to 240000) once
-      # maxShutdownDelaySeconds is confirmed at 300 on the live service, or
-      # SIGKILL lands first.
-      - key: CURVI_SHUTDOWN_GRACE_MS
-        sync: false
-      # Optional: wall clock cap per inline pack run in milliseconds (default
-      # 1500000, 25 minutes; at most 1740000, below the 30 minute stale run
-      # reconciler). A pack past it is settled and its slot freed.
       - key: CURVI_INLINE_PACK_MAX_RUN_MS
         sync: false
-      # Optional: 1 turns on Stripe Tax in Checkout, only once tax registrations
-      # exist in Stripe (docs/STRIPE_SETUP.md).
-      - key: STRIPE_TAX_ENABLED
+      - key: CURVI_LINK_SECRET
         sync: false
-      # Where the daily provider spend alert and hard stop notice go (needs
-      # RESEND_API_KEY). Unset: the alert only reaches the server log.
-      - key: FOUNDER_ALERT_EMAIL
+      - key: CURVI_POSTAL_ADDRESS
         sync: false
-      # Sender for those alerts, on a domain verified in Resend. Default
-      # "Curvi Alerts <alerts@curvi.ai>", which needs curvi.ai verified.
-      - key: FOUNDER_ALERT_FROM
+      - key: CURVI_PROVIDER_CANARY_ENABLED
         sync: false
-      - key: NEXT_PUBLIC_SUPABASE_URL
+      - key: CURVI_SHOT_CONCURRENCY
         sync: false
-      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+      - key: CURVI_SHUTDOWN_GRACE_MS
         sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
+      - key: CURVI_TEMPLATE_FONT_FILE
+        sync: false
+      - key: DAILY_SPEND_HARD_STOP_USD
         sync: false
       - key: DATABASE_URL
         sync: false
-      - key: R2_ACCOUNT_ID
+      - key: FAL_ADMIN_KEY
+        sync: false
+      - key: FAL_ADMIN_KEY_BACKUP
+        sync: false
+      - key: FAL_KEY
+        sync: false
+      - key: FAL_KEY_BACKUP
+        sync: false
+      - key: FOUNDER_ALERT_EMAIL
+        sync: false
+      - key: FOUNDER_ALERT_FROM
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: LIFECYCLE_EMAIL_FROM
+        sync: false
+      - key: LIFECYCLE_FOUNDER_NAME
+        sync: false
+      - key: LIFECYCLE_REPLY_TO
+        sync: false
+      - key: MCP_LINK_KEYS
+        sync: false
+      - key: MCP_OAUTH_CLIENT_IDS
+        sync: false
+      - key: MCP_OAUTH_ENABLED
+        sync: false
+      - key: MCP_REGISTRY_AUTH
+        sync: false
+      - key: MCP_RESOURCE_URL
+        sync: false
+      - key: NEXT_PUBLIC_FREE_PREVIEW
+        sync: false
+      - key: NEXT_PUBLIC_GOOGLE_AUTH
+        sync: false
+      - key: NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID
+        sync: false
+      - key: NEXT_PUBLIC_OUTPUT_OPTIONS
+        sync: false
+      - key: NEXT_PUBLIC_POSTHOG_HOST
+        sync: false
+      - key: NEXT_PUBLIC_POSTHOG_KEY
+        sync: false
+      - key: NEXT_PUBLIC_SENTRY_DSN
+        sync: false
+      - key: NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_TURNSTILE_SITE_KEY
+        sync: false
+      - key: NODE_OPTIONS
+        sync: false
+      - key: NODE_VERSION
+        value: "22"
+      - key: OPENAI_ADS_CONVERSIONS_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_APPS_CHALLENGE_TOKEN
+        sync: false
+      - key: OPS_EMAIL
+        sync: false
+      - key: OPS_EMAILS
+        sync: false
+      - key: OPS_RELEASE_TOKEN
+        sync: false
+      - key: PHOTOROOM_API_KEY
         sync: false
       - key: R2_ACCESS_KEY_ID
         sync: false
-      - key: R2_SECRET_ACCESS_KEY
+      - key: R2_ACCOUNT_ID
         sync: false
       - key: R2_BUCKET_PRIVATE
         sync: false
-      - key: STRIPE_SECRET_KEY
+      - key: R2_SECRET_ACCESS_KEY
         sync: false
-      - key: STRIPE_WEBHOOK_SECRET
+      - key: RESEND_API_KEY
         sync: false
-      # One Stripe price id per paid tier and cadence, plus the two top ups
-      # from packages/pipeline/src/seed/credits.ts.
-      - key: STRIPE_PRICE_STARTER_MONTHLY
+      - key: RESEND_WEBHOOK_SECRET
         sync: false
-      - key: STRIPE_PRICE_STARTER_ANNUAL
+      - key: SENTRY_AUTH_TOKEN
         sync: false
-      - key: STRIPE_PRICE_GROWTH_MONTHLY
+      - key: SENTRY_DSN
         sync: false
-      - key: STRIPE_PRICE_GROWTH_ANNUAL
+      - key: SENTRY_ORG
         sync: false
-      - key: STRIPE_PRICE_PRO_MONTHLY
+      - key: SENTRY_PROJECT
         sync: false
-      - key: STRIPE_PRICE_PRO_ANNUAL
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: STRIPE_PORTAL_UPGRADE_CONFIG_AGENCY
+        sync: false
+      - key: STRIPE_PORTAL_UPGRADE_CONFIG_AGENCY_ANNUAL
+        sync: false
+      - key: STRIPE_PORTAL_UPGRADE_CONFIG_GROWTH
+        sync: false
+      - key: STRIPE_PORTAL_UPGRADE_CONFIG_GROWTH_ANNUAL
+        sync: false
+      - key: STRIPE_PORTAL_UPGRADE_CONFIG_PRO
+        sync: false
+      - key: STRIPE_PORTAL_UPGRADE_CONFIG_PRO_ANNUAL
+        sync: false
+      - key: STRIPE_PORTAL_UPGRADE_CONFIG_STARTER
+        sync: false
+      - key: STRIPE_PORTAL_UPGRADE_CONFIG_STARTER_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_AGENCY_ANNUAL
         sync: false
       - key: STRIPE_PRICE_AGENCY_MONTHLY
         sync: false
-      - key: STRIPE_PRICE_AGENCY_ANNUAL
+      - key: STRIPE_PRICE_GROWTH_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_GROWTH_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_PRO_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_PRO_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_STARTER_ANNUAL
+        sync: false
+      - key: STRIPE_PRICE_STARTER_MONTHLY
         sync: false
       - key: STRIPE_PRICE_TOPUP_100
         sync: false
       - key: STRIPE_PRICE_TOPUP_500
         sync: false
-      - key: RESEND_API_KEY
+      - key: STRIPE_SECRET_KEY
         sync: false
-      - key: UPSTASH_REDIS_REST_URL
+      - key: STRIPE_TAX_ENABLED
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: SUPABASE_AUTH_ISSUER
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPPORT_INBOX
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
-      - key: TRIGGER_SECRET_KEY
+      - key: UPSTASH_REDIS_REST_URL
         sync: false
-      - key: ANTHROPIC_API_KEY
+      - key: VISITS_HASH_KEY
         sync: false
-      - key: GEMINI_API_KEY
+
+  - type: cron
+    name: curvi-backup
+    runtime: docker
+    repo: https://github.com/BEXAI/Curviai
+    branch: main
+    region: oregon
+    plan: 0.5c-512mb
+    autoDeployTrigger: checksPass
+    schedule: "15 9 * * *"
+    dockerfilePath: ./ops/cron/Dockerfile
+    dockerContext: .
+    dockerCommand: /usr/local/bin/curvi-backup
+    envVars:
+      - fromGroup: curvi-common
+      - key: BACKUP_DATABASE_URL
         sync: false
-      - key: BFL_API_KEY
+      - key: BACKUP_AGE_RECIPIENT
         sync: false
-      - key: OPENAI_API_KEY
+      - key: BACKUP_R2_ACCOUNT_ID
         sync: false
-      - key: FAL_KEY
+      - key: BACKUP_R2_BUCKET
         sync: false
-      - key: SENTRY_DSN
+      - key: BACKUP_R2_ACCESS_KEY_ID
         sync: false
-      - key: NEXT_PUBLIC_POSTHOG_KEY
+      - key: BACKUP_R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: HEALTHCHECKS_BACKUP_URL
+        sync: false
+
+  - type: cron
+    name: curvi-tick
+    runtime: docker
+    repo: https://github.com/BEXAI/Curviai
+    branch: main
+    region: oregon
+    plan: 0.5c-512mb
+    autoDeployTrigger: checksPass
+    schedule: "*/10 * * * *"
+    dockerfilePath: ./ops/cron/Dockerfile
+    dockerContext: .
+    dockerCommand: /usr/local/bin/curvi-tick
+    envVars:
+      - fromGroup: curvi-common
+      - key: HEALTHCHECKS_TICK_URL
         sync: false

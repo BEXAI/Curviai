@@ -857,7 +857,7 @@ Each task lists: owner, window, cost, time, depends on, inputs, steps, output (w
   1. Send T-CON-01 to sellers who said the pack was usable.
   2. Only after a written yes that names what may be shown (images, brand name, quote) and where: record consent_at and consent_scope in outreach-log.csv.
   3. Show consented packs only where the consent allows: posts, videos, calls, directory images. Do not list a founder made pack in the gallery until P18-14 ships the "Made by the Curvi team" label; today every gallery entry says "Shared by the seller", which would be false for a pack the founder made. A seller who makes a pack in their own account may opt it into the gallery themselves.
-  4. Quotes go into claims.md (C-20) in the seller's exact words, with only the name or brand the consent covers. Once P18-05 ships, quotes consented in the product count too.
+  4. Quotes go into claims.md (C-20) in the seller's exact words, with only the name or brand the consent covers. Once P18-05 ships, quotes consented in the product count too, but only on curvi.ai: the in product box says "You can quote me on curvi.ai with this name and store". Before using such a quote in a post, video, directory or comparison page, get a written yes for that place as in step 2.
   5. If a seller asks to remove anything, take it down within 24 hours (guardrail 7).
 - Output: consent_at and consent_scope in marketing-private/outreach-log.csv; quotes in docs/marketing-ops/claims.md.
 - Done when: 3 or more consented sellers, or the window ends.
