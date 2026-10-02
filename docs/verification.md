@@ -1208,3 +1208,41 @@ The frozen implementation passes full lint/types and **6,800 unit tests**. Fourt
 Prepared migration0045–0047 wrappers passed exact-journal local replay validation:48 hashes,8 new RLS tables,4 intended client SELECT grants,6 protected functions denied to clients, default-off budgets/endpoints and duplicate replay refusal. This is PGlite proof, not real concurrency or live Supabase application. Frozen migration hashes and rollback limits are in the schema handoff. No Phase21 live SQL, receiver activation, credential creation or external delivery has occurred.
 
 The prerequisite analytics correction is published as PR6 head`1f855cc32ffd28213cb0505ec47c9ddeaeb2ac38`. Its seven-alert CodeQL disposition gate remains unresolved. Production was read healthy at15:44:36UTC, commit`dae0fb0`, schema0044; newer source commits are not yet proven deployed.
+
+
+### Phase 22 plugin contracts, checked 2026-10-02
+
+The connection, asset and submission owners independently rechecked current official OpenAI documentation against the existing Phase19 source. Root also opened the current UI, submission and submission-error pages on2026-10-02. These references establish protocol/review requirements; they do not establish a successful live Curvi connection or submission.
+
+| Contract | Official source | Implementation use |
+| --- | --- | --- |
+| MCP Apps resource association and host bridge | [ChatGPT UI](https://developers.openai.com/plugins/build/chatgpt-ui), [Plugin reference](https://developers.openai.com/plugins/reference) | Versioned UI resource, model-visible render tool, data-only authenticated polling/refresh, capability-detected external-link handoff. No invented native attachment or Library-import API. |
+| Chat file inputs | [Plugin reference](https://developers.openai.com/plugins/reference#define-file-inputs) | Existing top-level file parameters require download_url/file_id and permit mime_type/file_name. Keep safe fetch, byte checks and explicit credit quote. |
+| OAuth discovery and supported clients | [Authentication](https://developers.openai.com/plugins/build/auth) | Reuse the established static-client/PKCE/audience/session/consent design; exact callback and real refresh/revocation still need host proof. |
+| Supabase token boundary | [Token security](https://supabase.com/docs/guides/auth/oauth-server/token-security), [OAuth flows](https://supabase.com/docs/guides/auth/oauth-server/oauth-flows) | OIDC scopes do not constrain database/API access. Preserve restrictive OAuth RLS and the exact approved disposable-account Auth containment gate before activation. |
+| Current package/review route | [Submission](https://developers.openai.com/plugins/deploy/submission), [Submission errors](https://developers.openai.com/plugins/deploy/submission-errors), [MCP review](https://developers.openai.com/plugins/deploy/app-review) | Keep root plugin.json/mcp.json ZIP and secure dashboard review flow. Add explicit final-package checks for recording/identity consistency/current tool snapshot and valid optional UI screenshots. ZIP validation cannot verify legal identity or portal approval. |
+| Real client acceptance | [Connect and test](https://developers.openai.com/plugins/deploy/connect-chatgpt), [Plugin guidelines](https://developers.openai.com/plugins/plugin-guidelines) | Record actual installed/developer-mode behavior and authorized sample-data downloads. Browser-host fixtures alone do not satisfy ChatGPT or mobile review evidence. |
+
+Production observations remain unchanged at15:48:58UTC: healthy commitdae0fb0, expected/applied0044, idle runner. Earlier harmless GETs found OAuth resource metadata, support and review sample photo unavailable on that deployment. Do not infer secret settings from a404 or use source existence as production proof.
+
+
+Phase22 annotation review,15:56UTC: [MCP review requirements](https://developers.openai.com/plugins/deploy/app-review) define read-only tools as retrieval without business-state modification. Independent source review found that existing`getJob` and`estimateJob` could call stale-job reconciliation, which may charge delivered work, release holds, change job state and create a Phase21 completion event. The connection owner is separating these MCP reads from reconciliation while retaining web/default and scheduled recovery. Record completion only after the DB-backed regression proof passes.
+
+Documentation conflict verified by two lanes: [Plugin guidelines](https://developers.openai.com/plugins/plugin-guidelines) says annotation justifications are no longer required, but [Submission errors](https://developers.openai.com/plugins/deploy/submission-errors) still lists them as required. Preserve accurate prepared rationales and use the current portal's actual fields; no undocumented manifest field or claim of automatic acceptance is added.
+
+
+### Hosted Phase 18–21 proof, 2026-10-02 16:06 UTC
+
+PR6 exact head`1f855cc32ffd28213cb0505ec47c9ddeaeb2ac38` passes [CI37028430633](https://github.com/BEXAI/Curviai/actions/runs/37028430633): lint/types/unit checks, PostgreSQL17 races (four tests, no skips) and192 browser tests. Its separate CodeQL PR gate remains failed; no alert disposition or security-setting change occurred.
+
+PR8 exact head`9d1d594cc4e829aad29baf007fd660b42b8c79f2` passes checks and the [PostgreSQL17 job](https://github.com/BEXAI/Curviai/actions/runs/37029265253/job/110919173551). Completed logs verify all14 real-database tests ran with no skips: nine database races and five web billing/case races. Its browser job is still running at this checkpoint. This closes the Phase21 real-concurrency evidence gap, not the outstanding live Supabase/merge/deploy gates. Source migrations and prepared SQL hashes remain unchanged.
+
+Phase22 review closed the inherited read-only defect: explicit internal snapshot reads skip reconciliation for MCP estimate/get/show, with nine-table invariants for stale delivered/undelivered jobs. Default reads and scheduled recovery retain once-only charges, releases and completion events. The focused eight-suite run passes150 tests, including actual generated OAuth descriptors against the strict package gate. Whole-repository Phase22 checks are running separately.
+
+### Phase22 final local proof and Phase21 hosted completion, 2026-10-02 16:16 UTC
+
+Reviewed Phase22 source commit `55bbce4b7987eb145ae0ab62b98e852be49456b8` passes whole-repository lint/types, **6,842 unit tests**, the production build and **199 browser tests**. All four new MCP-viewer journeys pass in the fixture host. Fifteen local unit skips comprise14 real-PostgreSQL tests and one unavailable-ffmpeg diagnostic, since ffmpeg is present. Source-only Gitleaks scans1,770 files with zero findings. Full logs are `/tmp/curvi-phase22-{lint,types,unit,e2e}-final.log`; scan evidence is `/tmp/curvi-phase22-gitleaks.log`. Independent review closes all five findings. No actual ChatGPT acceptance is inferred from these fixtures.
+
+Parent Phase21 [CI37029265253](https://github.com/BEXAI/Curviai/actions/runs/37029265253) is fully successful at exact `9d1d594`, including all14 PostgreSQL17 tests with zero skips and its [browser job](https://github.com/BEXAI/Curviai/actions/runs/37029265253/job/110919173622), which completed16:14:03UTC. Phase22 hosted CI remains separate. PR6's security disposition gate remains unresolved.
+
+Public health read at16:15:52UTC remains healthy on `dae0fb0`, schema0044, idle runner. The original `/Users/nathaniel/Developer/Curviai` checkout is clean main `b4893d1`. No live0045–0047 SQL, credential action, funded generation, submission or approval occurred. Strict final-package CLI correctly refuses the missing identity/recording/tools evidence and creates no deliverable.

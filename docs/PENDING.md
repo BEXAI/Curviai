@@ -54,7 +54,7 @@ Still required:
 
 ## Assistant and growth gates
 
-The assistant API/MCP and plugin code are implemented locally. Remote OAuth server/hook configuration, real ChatGPT Developer Mode, identity/review submission, listing publication and registry ownership proof are separate acceptance steps in [Phase 19](phases/PHASE_19.md). Keep public assistant gates off until their evidence is recorded.
+The assistant API/MCP and plugin code are implemented locally. Remote OAuth server/hook configuration, real ChatGPT Developer Mode, identity/review submission and listing publication continue under the authorized [Phase 22 launch plan](phases/PHASE_22.md), reusing [Phase 19](phases/PHASE_19.md). Registry ownership proof retains its existing separate acceptance gate. Keep public assistant gates off until their evidence is recorded.
 
 P19-29 is not accepted live: on 2026-10-02 production still has `intake_normalizer@7` active at 100%, with version 8 absent. Assistant generation intentionally fails closed with temporary screening-unavailable copy until the funded version 8 eval and approved database rollout succeed. The guard also refuses an unsupported standby or compiled-only recipe fallback, releases held credits and leaves ordinary web/REST packs unchanged. Listing tools or returning a credit estimate does not establish screening readiness. Prepared SQL and green mock tests are not authorization to promote the recipe.
 
@@ -77,3 +77,12 @@ Other later work includes Shopify embedded app/billing and auto-packs, Amazon pu
 - [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md): production variable/service inventory and verified rollout steps.
 - [STAGING.md](ops/STAGING.md): isolated staging and opt-in smoke workflows.
 - [verification.md](verification.md): dated production facts, observations and unresolved checks.
+
+
+## Phase 21 and Phase 22 continuation
+
+Phase21 code for resolution cases, optional owner credit budgets and private completion webhooks is published in [draft PR8](https://github.com/BEXAI/Curviai/pull/8), stacked on PR6. The frozen local gate passes6,800 unit tests, lint/types, full195 browser checks and9 rebuilt affected privacy/legal checks. Hosted CI also passes, including all14 PostgreSQL17 concurrency tests with zero skips. Exact main/deploy proof and reviewed migration0045–0047 application remain pending. No live endpoint or budget has been activated. See [Phase21 checkpoint](ops/PHASE_21_CHECKPOINT.md).
+
+Phase22 now authorizes full plugin implementation and official submission/publication, with actual approval left to OpenAI. It includes the viewer before first submission, existing-pack rendering, bounded authenticated link refresh, partial-output handling and strict package checks. Source, local fixtures, production tests, actual ChatGPT evidence and portal decisions are distinct milestones. Confirmed publishing identity/public legal details, secure test/reviewer access, owned sample assets, bounded funded evaluation and exact action-time attestations are still missing. See [Phase22 checkpoint](ops/PHASE_22_CHECKPOINT.md). The three earlier future proposals are preserved in [Phase23](phases/PHASE_23.md), planning only.
+
+Phase22 source commit `55bbce4` passes lint/types,6,842 unit tests, production build and199 browser tests, with no source-scan secret findings. Five code/review lanes are complete. Hosted Phase22 checks, prerequisite security disposition, live deployment/access and the actual ChatGPT/review steps remain open.

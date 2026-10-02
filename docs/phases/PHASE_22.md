@@ -25,6 +25,8 @@ See [submission evidence](../ops/handoffs/phase22-submission-readiness.md) and [
 
 Subsequent root checkpoint: Phase 21 was saved as commits `1004a93` and `72941b2`, with final checks rerunning and a separate Phase 22 clone being prepared. These local commits do not change the production observations above.
 
+For the current release state, use the [latest checkpoint](../ops/PHASE_22_CHECKPOINT.md). At16:16UTC, Phase21 exact `9d1d594` has fully passing hosted CI, including195 browser tests and14 PostgreSQL17 tests with zero skips. Phase22 reviewed source `55bbce4` passes full local lint/types,6,842 unit tests, production build and199 browser tests. The production observations above remain true; these successful source checks do not establish deployment.
+
 ## Official route, rechecked 2026-10-02
 
 Retain `packages/openai-plugin/package`: the root `plugin.json`, `mcp.json` and assets use the current portable Agent Plugins format. UI/authentication belong to the MCP integration. Local installation tests the package but does not publish it. A legacy `ai-plugin.json` manifest is not this route. [Package guide](https://developers.openai.com/plugins/build/plugins)
@@ -33,7 +35,7 @@ Select the owning organization/project and verified developer identity, upload t
 
 MCP submissions require a verified individual/business identity, submission permission and currently a global-data-residency project. Use `https://curvi.ai/api/mcp`; preserve its entire URL because official submission and maintenance pages still differ on path changes. Review duration is not promised. [MCP review requirements](https://developers.openai.com/plugins/deploy/app-review)
 
-Final submission requires more than ZIP upload: a current production tool scan, domain proof, annotation justifications, accessible recording, exactly five positive and three negative cases, release notes and usable OAuth reviewer access. Optional screenshots require a scanned UI template; if supplied, provide one per starter prompt at 706 pixels wide and 400–860 pixels tall. [Submission errors](https://developers.openai.com/plugins/deploy/submission-errors)
+Final submission requires more than ZIP upload: a current production tool scan, domain proof, accessible recording, exactly five positive and three negative cases, release notes and usable OAuth reviewer access. Current official pages disagree on annotation justifications: plugin-guidelines says they are no longer required, while submission-errors still requires them. Keep precise rationales prepared and follow the actual portal fields without inventing manifest keys. Optional screenshots require a scanned UI template; if supplied, provide one per starter prompt at 706 pixels wide and 400–860 pixels tall. [Submission errors](https://developers.openai.com/plugins/deploy/submission-errors)
 
 Describe actual functionality and data practices accurately. Keep payment/upgrade flows out of the plugin; users may use existing entitlements. Published privacy disclosures must match returned personal data and retention. Real desktop/mobile behavior and a sample-data reviewer login are review requirements. [Plugin guidelines](https://developers.openai.com/plugins/plugin-guidelines)
 
@@ -65,19 +67,19 @@ No row becomes complete because code exists. Keep local, deployed, actual-client
 
 | ID | Passing behavior | Existing work / gap | Required proof |
 | --- | --- | --- | --- |
-| P22-01 | Coherent release and schema prerequisites | PR 6 gate pending; Phase 21 full checks ongoing | Exact SHA, CI/check URLs, migration/hash read-back, Render live SHA and healthy smoke. |
+| P22-01 | Coherent release and schema prerequisites | PR6 security gate pending; Phase21 hosted CI passed; Phase22 local checks passed | Phase22 hosted exact-SHA CI, migration/hash read-back, Render live SHA and healthy smoke. |
 | P22-02 | Verified publisher/account | Identity placeholders and null legal facts | Nonsecret organization/project/role/residency evidence and founder-confirmed public entity details. |
-| P22-03 | Secure workspace OAuth | Audience/client/session checks, consent and roles exist | Actual ChatGPT connect/refresh, workspace selection, role isolation, client-seat refusal, disconnect/reconnect. |
+| P22-03 | Secure workspace OAuth | Audience/client/session checks, consent and roles exist | Actual ChatGPT connect/refresh, workspace selection, role isolation, client-seat generation refusal with authorized pack reads allowed, disconnect/reconnect. |
 | P22-04 | Token containment | RLS/OAuth deny policies and hook function exist; settings/Auth probe unproved | Authorized disposable-account proof that forbidden Data API/storage/Auth operations fail and web sign-in still works. |
 | P22-05 | Authorized chat attachments | Four-field file schema and SSRF-safe fetch exist | Real JPEG/PNG/WebP, size bounds, expired/missing/unsupported files, forged URL refusal and redacted logs. |
 | P22-06 | Confirmed, screened generation | Quote/credit ceiling/shared reservations exist; live screening gate remains | No-spend estimate; authorized positive generation; restricted-product refusal; stale/tampered quote, replay and budget refusal without extra debit. |
 | P22-07 | Durable progress/recovery | Existing queued/running/terminal jobs | Real delayed pack, bounded retrieval, new conversation, failure/cancel/partial results and no false completion or repeated generation. |
-| P22-08 | Visible previews | Viewer disabled; existing-pack display/renewal/state need work | First-submission UI enabled/reviewed; desktop/mobile preview, existing-pack render, restored state and escaped content. |
+| P22-08 | Visible previews | Version2 viewer enabled/reviewed; existing-pack display, renewal and restored state pass source and browser fixtures | Actual ChatGPT desktop/mobile preview, existing-pack render, restored state and escaped content. |
 | P22-09 | Image, ZIP and report delivery | Signed downloads and fidelity filtering exist | Actual ChatGPT-originated downloads; bytes/MIME/names, ZIP contents and report match delivered files. Record normal-browser fallback where the client uses it. |
 | P22-10 | Expiry/revocation | Connection-bound signed links exist | Authorized refresh after expiry; disconnected/deleted-member/wrong-workspace links fail; withheld/raw assets remain inaccessible. |
 | P22-11 | Accurate listing and policies | URLs/icons/cases in source; live support/photo 404; legal identity null | Final package checks, live URLs/attachments 200, approved entity/retention copy and no unsupported claims. |
 | P22-12 | Complete reviewer package | Five/three cases and builder exist; account/recording absent | ZIP/version/hash, private reviewer readiness, actual case results, accessible sanitized recording and release notes. |
-| P22-13 | Official draft/scan | No Phase 22 dashboard evidence | Correct account, verified domain, current tool/UI/auth scan, resolved blockers and annotation justifications. |
+| P22-13 | Official draft/scan | No Phase 22 dashboard evidence | Correct account, verified domain, current tool/UI/auth scan, resolved blockers and annotation rationales available for any actual portal requirement. |
 | P22-14 | Submitted review | Acceptance and action-time attestations pending | Plugin ID, draft/version/hash, submission timestamp and real portal status. |
 | P22-15 | Review outcome/publication | External decision required | Feedback, tested corrections, approval record, Publish result, listing URL and fresh installed-user smoke. |
 | P22-16 | Operational ownership | Existing scheduler/telemetry/support | Five-minute release checks, redacted incident evidence, bounded post-publication checks and rollback route. |
@@ -94,7 +96,7 @@ Record case ID, surface/version, source/deployment SHA, UTC time, sample hash, w
 
 Retain package name `curvi`, display name `Curvi`, proposed version `1.0.0`, category `Creativity`, subtitle `Listing images from one photo`, and contact `hello@curvi.ai`. Reconcile any existing dashboard draft before selecting the final version. Both developer names come from the verified identity. Listing URLs are `https://curvi.ai`, `/privacy`, `/terms`, `/support`; channel claims remain tied to registry-backed package checks. Do not fabricate a listing, recording, reviewer account or certification.
 
-`pnpm plugin:zip --developer-name "<actual verified publisher>"` builds locally and uploads nothing. Missing `review.demo_recording_url` currently only warns, so add or maintain an explicit final-readiness gate before calling an artifact submission-ready. Save its SHA-256, version, source SHA, entry list, validation results and live-link proof. Reviewer credentials go only into authorized private dashboard fields.
+`pnpm plugin:zip --submission --developer-name "<actual verified publisher>" --tools-file <sanitized-current-tools.json>` performs the implemented strict local checks and uploads nothing. Final mode requires identity consistency, recording and a bounded complete tool snapshot; optional screenshots receive format/path/dimension checks. Draft mode remains available without claiming submission readiness. Local checks do not verify legal identity, live scan provenance or actual acceptance. Once all live gates pass, save the actual ZIP's SHA-256, version, source SHA, entry list, validation results and live-link proof. Reviewer credentials go only into authorized private dashboard fields.
 
 Phase 19's reviewer proposal remains one noncustomer workspace `Curvi Review`, Starter-equivalent capabilities, a bounded 300-credit grant, password login without MFA, and two sample packs. It still requires explicit account/access/credit approval. First confirm those entitlements exercise the actual listed features; propose the smallest sufficient change if not. A credit grant is not authorization for provider spending.
 
@@ -137,7 +139,7 @@ After publication, verify directory installation, monitor auth/queue/credit/asse
 | Milestone | Current state | Evidence required next |
 | --- | --- | --- |
 | Requirements/implementation reconciled | Plan complete; lane gaps actionable | Official links and dated handoffs. |
-| Source gaps and final checks | In progress | Final SHA, CI and local checks. |
+| Source gaps and final checks | Reviewed source `55bbce4`; lint/types,6,842 unit tests, production build and199 browser tests pass locally | Hosted Phase22 exact-head CI; all14 parent Phase21 PG17 tests already pass. |
 | Exact release/schema deployed | Pending prerequisite gate | Deploy SHA, health and migration proof. |
 | Actual ChatGPT asset journey | Pending access/screening/spend approvals | Client case record and walkthrough. |
 | Final package/reviewer readiness | Pending identity and live proof | Version/ZIP/hash and private setup proof. |
