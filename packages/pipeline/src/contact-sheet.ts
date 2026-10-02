@@ -11,7 +11,7 @@
  * font they are drawn as seven segment digits from plain rectangles.
  */
 import type opentype from "opentype.js";
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 import { CUTOUT_ALPHA_THRESHOLD, maskComponents } from "./isolate";
 import type { BBox } from "./mask";
 import { encodeVisionJpeg, type RawImage } from "./raw";
@@ -178,7 +178,7 @@ export async function renderContactSheet(
   for (let i = 0; i < alpha.length; i++) alpha[i] = cutout.data[i * 4 + 3];
   const { labels, components } = maskComponents({ data: alpha, width: cutout.width, height: cutout.height }, CUTOUT_ALPHA_THRESHOLD);
 
-  const layers: sharp.OverlayOptions[] = [];
+  const layers: OverlayOptions[] = [];
   const cells: ContactSheet["cells"] = [];
   for (let i = 0; i < pieces.length; i++) {
     const box = pieces[i];

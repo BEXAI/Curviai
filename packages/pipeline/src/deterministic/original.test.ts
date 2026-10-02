@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import sharp from "sharp";
+import sharp, { type Sharp } from "sharp";
 import { describe, expect, it } from "vitest";
 import { getSpec, listSpecs } from "@curvi/specs";
 import { ciede2000, rgbToLab } from "../color";
@@ -118,7 +118,7 @@ function deltaE(a: RawImage, b: RawImage, mask?: RawMask): { mean: number; max: 
   return { mean: n === 0 ? 0 : sum / n, max };
 }
 
-async function rawOf(pipeline: sharp.Sharp): Promise<RawImage> {
+async function rawOf(pipeline: Sharp): Promise<RawImage> {
   const { data, info } = await pipeline.toColourspace("srgb").ensureAlpha().raw({ depth: "uchar" }).toBuffer({ resolveWithObject: true });
   return { data, width: info.width, height: info.height, channels: 4 };
 }
@@ -584,7 +584,7 @@ describe("makeOriginalFit: the fidelity gate catches drift", () => {
     const result = await rendered(bytes, "amazon.secondary");
     const reference = await referenceFor(bytes, result);
     const { width, height } = result;
-    const asRaw = async (p: sharp.Sharp): Promise<RawImage> => rawOf(p);
+    const asRaw = async (p: Sharp): Promise<RawImage> => rawOf(p);
     const input = sharp(result.raw.data, { raw: { width, height, channels: 4 } });
     const sharpened = await asRaw(input.clone().sharpen());
     const brighter = await asRaw(input.clone().modulate({ brightness: 1.02 }));
