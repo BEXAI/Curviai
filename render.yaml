@@ -22,8 +22,8 @@ services:
     branch: main
     region: oregon
     plan: 1c-2g
-    # NODE_ENV is production; build tools still require devDependencies.
-    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm run build
+    # Keep build tools and scope the larger heap to Render's separate build instance.
+    buildCommand: pnpm install --frozen-lockfile --prod=false && NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=4096" pnpm run build
     startCommand: pnpm run start
     healthCheckPath: /api/health
     maxShutdownDelaySeconds: 300
