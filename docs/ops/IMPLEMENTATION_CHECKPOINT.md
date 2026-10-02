@@ -77,3 +77,20 @@ Remaining live acceptance: funded model/recipe evaluation and controlled activat
 ## Final local gate completed13:50UTC
 
 All agents completed and froze their work. Final candidate lint/types,6,657 unit tests (four optional PG skips plus one unavailable-ffmpeg diagnostic skip), production build/192browser tests pass. Full audit0/788 dependencies, Gitleaks0/1,689files. Scoped esbuild validation complete:6transform cases, no schema drift,19localDBtests,88unchangedmigration/snapshotfiles. Source and candidate evidence docs are synchronized before one correction push toPR6. No local server remains. Next: observe new exact-headCI/CodeQL, merge, observe mainCI/Renderhealth, publicsmoke, safelyfastforwardoriginalcheckout.
+
+
+## Corrected head published13:52UTC
+
+Shared implementation committed ascbb7c4e. PR6 corrected head is`f530cc1995e07b007d1c238c89c415564c35c43c`. [CI](https://github.com/BEXAI/Curviai/actions/runs/37015905921), [CodeQL](https://github.com/BEXAI/Curviai/actions/runs/37015901850), [Smoke](https://github.com/BEXAI/Curviai/actions/runs/37015905508). All are freshly triggered; wait exact-head results before merging. CIwatchsession74137 uses300-second cadence, log `/tmp/curvi-final-pr6-ci-watch.log`. `/tmp/curvi-release-final-evidence.json` collects final links/status. Allsubagents completed; no need to reactivate absent an actual failure.
+
+Independent read-only parity confirmed1,689trackednon-envfiles have identicalbytes/modes acrosssharedcbb7c4e andcandidatef530cc199;45SQL+43metadatafiles identical through0044. Both clean at audit;originalmainstillclean31992a9. No environment file contents read. The candidate's pushed docs are a truthful pre-hosted-check snapshot; keep further live release evidence local/shared untilfinalreport toavoid restartingCIwithdocumentation-only pushes.
+
+
+## Additional feature-head CodeQL findings13:58UTC
+
+DoNOTmergef530cc199 yet. MatchingCodeQLanalysis1881226028 onrefs/pull/6/head completed with18findings: old1–3fixed/absent, old4–11remainbenignastriaged, new12–21. Phase18 nowownsONLYemailregex12–17 inpackages/email. MaterialremoteResenderror-redactionboundary hasquadraticregexbefore300-charactertruncation; remainingconfig/formathelpersalsouseequivalentlinearhardening. Childownsrender.ts/tests;parentownsconfig/keys/resend/tests. Phase19read-onlytriageswebtest/quotehashalerts18–21. No broadrevieworalertdismissal. Candidatef530stillclean; sourcewillcontainemailcorrections. Prior6657/192localproofisforf530. Afterfocusedemailtests/types/lint andreview,copycorrectionwithtriageevidenceandpushonce;fullnewheadCI/CodeQLandbrowsermustpassbeforemerge. Oldwatch74137willendcanceledwhennewheadsupersedesit; updatewatchaccordingly.
+
+
+## Email correction frozen14:04UTC
+
+Phase18 completed8email source/test files (includes newconfig.test.ts);116emailtests/types/lint pass;20,000differentialinputs matcholdbehavior,snapshotsunchanged. Phase19 confirmednewweb18–21test-only/nonpasswordhash/noURLauthorization. Allagentscompleteagain. Rootcopying8files+triageevidencetocandidateandpublishingonefollow-up. DoNOTmergef530untilthenewheadfullCI/CodeQL/browserpass. Precedinglocal6657/192proofandnew116focusedemailproofareseparate; subsequenthostedfullgateauthoritative.

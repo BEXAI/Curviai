@@ -85,6 +85,57 @@ describe("renderEmail", () => {
   it("keeps a full stop after a link outside the link", () => {
     expect(paragraphHtml("See https://curvi.ai/a.")).toBe('See <a href="https://curvi.ai/a" style="color:#1d4ed8">https://curvi.ai/a</a>.');
   });
+
+  it("removes only terminal slashes from the site URL before resolving relative links", () => {
+    for (const [siteUrl, pathname] of [
+      ["https://curvi.ai", "/next"],
+      ["https://curvi.ai///", "/next"],
+      ["https://curvi.ai/base///", "/base/next"],
+      ["https://curvi.ai/base///inside", "/base///inside/next"],
+      ["https://curvi.ai/base///\n", "/base////next"],
+    ]) {
+      const url = new URL(emailLink(siteUrl, "welcome", "next"));
+      expect(url.pathname, siteUrl).toBe(pathname);
+      expect(url.searchParams.get("utm_campaign")).toBe("welcome");
+    }
+  });
+
+  it("handles long internal and terminal slash runs without repeated suffix searches", () => {
+    const slashes = "/".repeat(100_000);
+    const start = performance.now();
+    const internal = emailLink(`https://curvi.ai/base${slashes}inside`, "welcome", "next");
+    const terminal = emailLink(`https://curvi.ai/base${slashes}`, "welcome", "next");
+    const elapsed = performance.now() - start;
+    expect(new URL(internal).pathname).toBe(`/base${slashes}inside/next`);
+    expect(new URL(terminal).pathname).toBe("/base/next");
+    // The linear scans finish in milliseconds; leave ample room for CI.
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it("moves exactly the supported sentence punctuation outside each link and keeps escaping", () => {
+    const link = '<a href="https://curvi.ai/a?x=1&amp;y=2" style="color:#1d4ed8">https://curvi.ai/a?x=1&amp;y=2</a>';
+    for (const trailing of ["", ".", ",", ";", ":", ")", ".,;:)"]) {
+      expect(paragraphHtml(`See <this>: https://curvi.ai/a?x=1&y=2${trailing}\nNext`)).toBe(
+        `See &lt;this&gt;: ${link}${trailing}<br>Next`,
+      );
+    }
+    for (const ending of ["!", "?", "(", "é"]) {
+      const url = `https://curvi.ai/a.,;:)${ending}`;
+      expect(paragraphHtml(url)).toBe(`<a href="${url}" style="color:#1d4ed8">${url}</a>`);
+    }
+  });
+
+  it("handles long punctuation runs inside and after a link without repeated suffix searches", () => {
+    const punctuation = ".,;:)".repeat(20_000);
+    const internal = `https://curvi.ai/${punctuation}x`;
+    const start = performance.now();
+    const html = paragraphHtml(`See ${internal} and https://curvi.ai/end${punctuation}`);
+    const elapsed = performance.now() - start;
+    expect(html).toBe(
+      `See <a href="${internal}" style="color:#1d4ed8">${internal}</a> and <a href="https://curvi.ai/end" style="color:#1d4ed8">https://curvi.ai/end</a>${punctuation}`,
+    );
+    expect(elapsed).toBeLessThan(1_000);
+  });
 });
 
 describe("email config", () => {

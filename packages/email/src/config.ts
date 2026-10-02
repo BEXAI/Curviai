@@ -102,6 +102,21 @@ export function marketingGaps(config: EmailConfig): string[] {
 /** The bare address inside "Name <address>", or the value itself when it is one. */
 export function bareAddress(value: string | null): string | null {
   if (!value) return null;
-  const inside = /<([^<>\s]+@[^<>\s]+)>/.exec(value)?.[1] ?? value.trim();
-  return /^[^\s@<>,;:]+@[^\s@<>,;:]+\.[^\s@<>,;:]+$/.test(inside) ? inside : null;
+  let inside = value.trim();
+  // Each bracketed token is visited once. Requiring an interior @ after
+  // extraction preserves the first matching token without overlapping
+  // repetitions on either side of @.
+  for (const match of value.matchAll(/<([^<>\s]+)>/g)) {
+    const candidate = match[1];
+    const at = candidate.indexOf("@", 1);
+    if (at > 0 && at < candidate.length - 1) {
+      inside = candidate;
+      break;
+    }
+  }
+  const at = inside.indexOf("@");
+  if (at <= 0 || at !== inside.lastIndexOf("@") || /[\s<>,;:]/.test(inside)) return null;
+  const domain = inside.slice(at + 1);
+  const dot = domain.indexOf(".", 1);
+  return dot > 0 && dot < domain.length - 1 ? inside : null;
 }

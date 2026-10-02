@@ -126,3 +126,21 @@ The locations below are the original main/SARIF locations, so later edits can mo
 The full dependency audit also exposed development-tool advisories beyond the earlier production-only audit. Root updated Vitest to exact `4.1.11` and added the scoped `@esbuild-kit/core-utils>esbuild` override to exact `0.25.12`. `/tmp/curvi-final-all-audit.json` now records **zero advisories across 788 total dependencies** (all severity counts zero). This is an audit snapshot, not a claim that all code is secure. The scoped override passed six transform cases, DB source typechecking and 19 migration/snapshot/PGlite tests. Drizzle generation used copied schema/snapshots with an explicit credential-free temporary config and reported no schema changes; all 88 migration/snapshot files remained unchanged. Logs are under `/tmp/curvi-esbuild-offline-6fqHFx/`. Root owns final candidate validation and matching CodeQL readback.
 
 Official advisory references checked 2026-10-02: [Vitest fixed versions and scope](https://github.com/advisories/GHSA-82fw-gwwq-j7x9), [esbuild development-server advisory](https://github.com/advisories/GHSA-67mh-4wv8-2f99). Neither audit presence alone proves an exposed production exploit; these dependency updates remove the affected versions and passed compatibility checks.
+
+
+### Complete feature-branch analysis and email correction, 2026-10-02
+
+[Matching CodeQL run37015901850](https://github.com/BEXAI/Curviai/actions/runs/37015901850) completed successfully on feature headf530cc199. Analysis1881226028 (`refs/pull/6/head`) had18 results: corrected alerts1–3 were absent; reviewed4–11 persisted; new12–21 came from feature code absent from the earlier main analysis. No alerts were dismissed.
+
+| New alert | Concrete review and disposition |
+|---|---|
+|12–13, email config sender parsing|Configured sender values, with no shared-helper size limit. Replaced overlapping regexes with linear token extraction and address validation, preserving the first matching bracketed token.|
+|14, normalized email keys|Used for account/lead/recipient addresses; webhook recipients are capped at320 but the shared helper was unbounded. Replaced trim/domain matching with linear scans while preserving SQL ASCII-space btrim semantics.|
+|15–16, email links/punctuation|Configured site URL and generated template links. Replaced tail regexes with backward suffix scans.|
+|17, provider error redaction|Material remote-input hardening: Resend error text was read before redaction and300-character storage truncation. Linear token redaction preserves the existing address masking and truncation order.|
+|18, offer-render.test.ts:26|Test-only text extraction from static component output, consumed only by an assertion; no production HTML sink.|
+|19, search-render.test.ts:40|Test-only extraction with a fixed test ID and text assertions; no browser insertion or sanitization boundary.|
+|20, api-v1/pack-quote.ts:60|SHA-256 hashes canonical request options/photo hashes and replay IDs, not passwords. Quote authenticity separately uses purpose-separated HMAC and constant-time comparison.|
+|21, scripts/backup-script.test.ts:195|Filters local fake curl logs for exact URL assertions. It is not a URL allowlist or live network operation.|
+
+Eight email source/test files changed. All116 email tests, email TypeScript and scoped ESLint pass; templates/snapshots are unchanged. A20,000-input offline differential comparison preserved previous extraction, normalization and redaction outputs. No live mail or external mutation was performed. Final corrected-head hosted CI/CodeQL must confirm the six email patterns are gone; successful analysis alone is not a zero-finding claim.

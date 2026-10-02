@@ -43,11 +43,34 @@ export type ResendSendResult =
   | { ok: true; id: string | null }
   | { ok: false; status: number | null; retryable: boolean; error: string };
 
-const EMAIL_LIKE = /[^\s@<>"',;:]+@[^\s@<>"',;:]+/g;
+const ADDRESS_SEPARATOR = /[\s@<>"',;:]/;
+
+/** Replace the same address-shaped token pairs as the old unanchored
+ * pattern, visiting every character only once even when @ is absent. */
+function redactAddresses(value: string): string {
+  const parts: string[] = [];
+  let copiedThrough = 0;
+  let i = 0;
+  while (i < value.length) {
+    if (ADDRESS_SEPARATOR.test(value[i])) {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < value.length && !ADDRESS_SEPARATOR.test(value[i])) i++;
+    if (value[i] !== "@" || i + 1 === value.length || ADDRESS_SEPARATOR.test(value[i + 1])) continue;
+    i++;
+    while (i < value.length && !ADDRESS_SEPARATOR.test(value[i])) i++;
+    parts.push(value.slice(copiedThrough, start), "[address]");
+    copiedThrough = i;
+  }
+  parts.push(value.slice(copiedThrough));
+  return parts.join("");
+}
 
 /** An error text safe to store: no address, at most 300 characters. */
 export function safeErrorText(value: string): string {
-  return value.replace(EMAIL_LIKE, "[address]").replace(/\s+/g, " ").trim().slice(0, 300);
+  return redactAddresses(value).replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
 export async function postResendEmail(

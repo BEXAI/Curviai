@@ -73,6 +73,32 @@ describe("postResendEmail", () => {
   it("strips addresses from error text", () => {
     expect(safeErrorText("bad: a.b+c@example.com, and x@y.io")).toBe("bad: [address], and [address]");
   });
+
+  it.each([
+    ["a@b@c", "[address]@c"],
+    ["a@b@c@d", "[address]@[address]"],
+    ["@@a@b@@", "@@[address]@@"],
+    ["@a a@ a@@b", "@a a@ a@@b"],
+    ["<a@b>, 'c@d'; \"e@f\":g@h", "<[address]>, '[address]'; \"[address]\":[address]"],
+    ["\n  no\taddress\r\n", "no address"],
+  ])("preserves redaction boundaries for %j", (value, expected) => {
+    expect(safeErrorText(value)).toBe(expected);
+  });
+
+  it("redacts unbounded provider text before truncating without quadratic unmatched scans", async () => {
+    const run = "a".repeat(200_000);
+    expect(safeErrorText(run)).toBe("a".repeat(300));
+    expect(safeErrorText(`${run}@example.com`)).toBe("[address]");
+    expect(safeErrorText(`${run}@@example.com`)).toBe("a".repeat(300));
+    const result = await postResendEmail("re_test", EMAIL, {
+      idempotencyKey: "long-error", timeoutMs: 1000,
+      fetchImpl: async () => new Response(`${run}@example.com ${run}`, { status: 422 }),
+    });
+    expect(result).toMatchObject({ ok: false, status: 422, retryable: false });
+    if (result.ok) throw new Error("Expected the provider failure");
+    expect(result.error).toBe(`Resend answered 422. [address] ${run}`.slice(0, 300));
+    expect(result.error).not.toContain("example.com");
+  });
 });
 
 const SECRET_BYTES = Buffer.from("resend-webhook-test-secret-bytes");

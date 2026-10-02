@@ -86,7 +86,11 @@ export function emailLink(
   path: string,
   params: Readonly<Record<string, string>> = {},
 ): string {
-  const url = new URL(path, `${siteUrl.replace(/\/+$/, "")}/`);
+  // Scan the suffix once; an unanchored slash regex can retry a long
+  // internal slash run from every starting position when it ends in text.
+  let baseEnd = siteUrl.length;
+  while (baseEnd > 0 && siteUrl[baseEnd - 1] === "/") baseEnd--;
+  const url = new URL(path, `${siteUrl.slice(0, baseEnd)}/`);
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
   }
@@ -120,8 +124,12 @@ export function paragraphHtml(paragraph: string): string {
         return escapeHtml(part).replace(/\n/g, "<br>");
       }
       // A sentence may end right after a link; the full stop is not part of it.
-      const trailing = /[.,;:)]+$/.exec(part)?.[0] ?? "";
-      const url = part.slice(0, part.length - trailing.length);
+      // Read only the suffix so punctuation inside a link cannot cause
+      // repeated scans of the same run.
+      let urlEnd = part.length;
+      while (urlEnd > 0 && ".,;:)".includes(part[urlEnd - 1])) urlEnd--;
+      const trailing = part.slice(urlEnd);
+      const url = part.slice(0, urlEnd);
       return `<a href="${escapeHtml(url)}" style="color:#1d4ed8">${escapeHtml(url)}</a>${escapeHtml(trailing)}`;
     })
     .join("");

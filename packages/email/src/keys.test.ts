@@ -27,6 +27,11 @@ const SAMPLES = [
   "no-at-sign",
   "",
   "@example.com",
+  "   ",
+  "\tSeller@Example.COM\t",
+  " Seller@Example.COM\n ",
+  "odd@@name@example.com",
+  "seller@",
 ];
 
 describe("normalizedEmailKey", () => {
@@ -49,5 +54,14 @@ describe("normalizedEmailKey", () => {
     const key = normalizedEmailKey("seller@example.com");
     expect(isRecipientKey(key)).toBe(true);
     expect(isRecipientKey("seller@example.com")).toBe(false);
+  });
+
+  it("trims only ASCII spaces with long trailing whitespace and malformed addresses", () => {
+    const spaces = " ".repeat(200_000);
+    expect(normalizedEmailAddress(`${spaces}First.Last+x@GoogleMail.com${spaces}`)).toBe("firstlast@gmail.com");
+    expect(normalizedEmailAddress(`not-an-address${spaces}`)).toBeNull();
+    expect(normalizedEmailAddress(spaces)).toBeNull();
+    expect(normalizedEmailAddress("\tSeller@Example.com\t")).toBe("\tseller@example.com\t");
+    expect(normalizedEmailAddress(`${"a@".repeat(100_000)}last.example`)).toBe(`${"a@".repeat(100_000)}last.example`);
   });
 });

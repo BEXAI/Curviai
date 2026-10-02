@@ -19,13 +19,18 @@ const GMAIL_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
 /** The normalized address the key is computed over, or null. */
 export function normalizedEmailAddress(email: string | null | undefined): string | null {
   // btrim() in SQL trims spaces only, not other whitespace.
-  const addr = (email ?? "").replace(/^ +| +$/g, "").toLowerCase();
-  const match = /@([^@]+)$/.exec(addr);
-  if (!match) {
+  const value = email ?? "";
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) === 32) start++;
+  while (end > start && value.charCodeAt(end - 1) === 32) end--;
+  const addr = value.slice(start, end).toLowerCase();
+  const at = addr.lastIndexOf("@");
+  if (at < 0 || at === addr.length - 1) {
     return null;
   }
-  let domain = match[1];
-  let local = addr.slice(0, addr.length - domain.length - 1).split("+")[0];
+  let domain = addr.slice(at + 1);
+  let local = addr.slice(0, at).split("+")[0];
   if (GMAIL_DOMAINS.has(domain)) {
     local = local.replaceAll(".", "");
     domain = "gmail.com";
