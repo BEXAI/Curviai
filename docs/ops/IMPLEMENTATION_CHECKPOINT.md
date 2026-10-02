@@ -1,6 +1,6 @@
 # Phase 18–20 implementation checkpoint
 
-Updated 2026-10-02 12:59 UTC. This records implemented and verified work, not acceptance of unperformed live checks. Never reset the shared implementation tree.
+Updated 2026-10-02 13:07 UTC. This records implemented and verified work, not acceptance of unperformed live checks. Never reset the shared implementation tree.
 
 ## Context recovery prompt
 
@@ -15,15 +15,15 @@ After recovery: read this checkpoint, inspect Git and active agents, refresh eac
 User authorized implementation of all three plans, orchestrated agents, frequent tested main merges to BEXAI/Curviai and automatic Render deployments, and Supabase updates in project `tmwvjmvzjvpeagatjmud`. No new credentials, paid provisioning/generation, real email campaigns, public plugin submission, destructive data loss or new Phase21 features are implied.
 
 - Original `/Users/nathaniel/Developer/Curviai`: preserved clean main `31992a9` at last check; verify again before final fast-forward.
-- Shared `/tmp/curvi-phases-18-20`, branch `codex/complete-phases-18-20`, release baseline `02a0ae0`, DB commit `7082ec4`, checkpoint HEAD `0dbf1e1`. Many reviewed changes still uncommitted. Root owns Git/publication.
-- Publication `/tmp/curvi-publication`, branch `codex/security-dependency-refresh`, based on PR4 head `26ac003`. Eleven changed files are dependency-only candidate; phase18 owns local checks/build. Do not mutate during checks. Rebase onto merged main after checks.
+- Shared `/tmp/curvi-phases-18-20`, branch `codex/complete-phases-18-20`, release baseline `02a0ae0`, DB commit `7082ec4`, checkpoint HEAD `0dbf1e1`. Full implementation saved in commit928908d; only later release evidence may be pending. Root owns Git/publication.
+- Publication `/tmp/curvi-publication`, branch `codex/security-dependency-refresh`, based on PR4 head `26ac003`. Security batch committed/pushed as5460eb6, PR5 open withCIpending; all local checks passed and checkout is released.
 - Node22: `/tmp/node-v22.23.3-darwin-arm64/bin`; pnpm10.26.1. pnpm store `/Users/nathaniel/Library/pnpm/store/v10`. No environment/secret files read.
 
 ## Active ownership
 
 | Agent | Scope |
 |---|---|
-| phase18 | Security-only publication candidate: lint/types/unit/build/e2e. Main implementation frozen. |
+| phase18 | Complete: security candidate and growth/pipeline verification frozen. |
 | phase19 | Implementing fail-closed assistant screening readiness for old/unverified intake recipes; pipeline child owns worker guard, parent owns copy/docs. |
 | phase19/p19_branch_reuse | Completed full post-upgrade tests/types and Sharp type fixes. |
 | phase20 | Renewal correction frozen,49focused tests/types/lint pass; independent review approved. Includes early phase transition guard against incorrect billing date. |
@@ -77,3 +77,9 @@ No broad seed/auth-hook activation. Missing settings mostly use safe defaults; b
 At12:54UTC: security candidate lint/types and4,318unit tests(3skips) pass; productionbuild/browser running. Candidate audit still shows4high/3moderate advisories from the retained legacy Trigger stack; do not claim this intermediate batch has a zero audit. Full feature implementation removes Trigger and audits0. Separate prepared release checkout `/tmp/curvi-feature-release` is based on PR4 and not yet overlaid with feature code.
 
 Feature candidate `/tmp/curvi-feature-release` now has initial source overlay and frozen dependencies installed. It is based on PR5 head; resync from final shared implementation after all active corrections finish, including renewal notice guard and assistant recipe readiness, before testing or committing. Root handles candidate exclusively; no final feature tests run there yet. Live recipe proposal `/tmp/curvi-migration-review/intake-v8-rollout-PREPARED-NOT-EXECUTED.sql` is NOT approved for execution absent funded live eval evidence. Never activate based only on localmocktests.
+
+## Final frozen feature snapshot
+
+At13:07UTC all agents completed and froze their work. `/tmp/curvi-feature-release` matches shared source928908d, with three implementation commits e7b34e9(packages/worker),5d7ac68(application),0797a80(operations/docs), based on securityPR5head5460eb6. Final lint/types,6,633unit tests(5optionalPGskips),productionbuild/192browser tests pass. Finalaudit0/433deps andGitleaks0/1,689sourcefiles. Evidence docs updated after these tests. No localserver remains. Root will push/open a stackedfeaturePR againstsecuritybranch, then retarget/rebaseonto main afterPR5 merges, preserving exacttestedcode.
+
+Renewal correction49focusedtests andindependentreviewcomplete. Screening24worker+124webtests andactualPG-litehold/replayproofcomplete. Liveintake remains@7; assistantgeneration failsclosed untilrealv8evalandtargetedactivation. PreparedSQLisnotexecuted. Allops/UIownershipreleased. Originalcheckoutstillcleanmain31992a9 at13:04UTC.
