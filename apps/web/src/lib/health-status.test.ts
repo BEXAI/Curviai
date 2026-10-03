@@ -63,7 +63,7 @@ describe("severityOf", () => {
     ["storage_not_configured", "degraded"],
     ["fal_balance_low", "degraded"],
     ["cron_never_ran:stale-jobs", "degraded"],
-    ["cron_overdue:backup", "degraded"],
+    ["cron_overdue:stale-jobs", "degraded"],
     ["cron_check_failed", "degraded"],
     ["memory_high", "degraded"],
     ["db_size_high", "degraded"],
@@ -76,7 +76,6 @@ describe("severityOf", () => {
     ["fal_admin_key_missing", "info"],
     ["llm_credits_expiring:openai", "info"],
     ["shot_concurrency_invalid", "info"],
-    ["restore_drill_overdue", "info"],
     ["trigger_secret_ignored", "info"],
   ])("%s is %s", (code, severity) => {
     expect(severityOf(code, { checkoutOpen: true })).toBe(severity);

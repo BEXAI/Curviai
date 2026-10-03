@@ -22,6 +22,8 @@ const service = (name: string) => blueprint.services.find((entry) => entry.name 
 
 /** Finite exceptions, each documented in the inventory. Never a prefix exemption. */
 const EXTERNAL_ENV = new Set([
+  "BACKUP_DATABASE_URL", "BACKUP_AGE_RECIPIENT", "BACKUP_R2_ACCOUNT_ID", "BACKUP_R2_BUCKET",
+  "BACKUP_R2_ACCESS_KEY_ID", "BACKUP_R2_SECRET_ACCESS_KEY", "HEALTHCHECKS_BACKUP_URL",
   "ALLOW_DEMO_MODE", "APPDATA", "CI", "CURVI_API_KEY", "CURVI_API_URL", "CURVI_CONFIG_DIR",
   "CURVI_DEMO_ACQUISITION", "CURVI_RSS_TEST", "GITHUB_RUN_ID", "INIT_CWD", "NEXT_MANUAL_SIG_HANDLE",
   "NEXT_PUBLIC_ENV_LABEL", "NEXT_RUNTIME", "OPS_OPERATOR_EMAIL", "OPS_RELEASE_EMAIL", "OPS_SITE_URL", "PORT", "RENDER_API_KEY",
@@ -78,7 +80,7 @@ function missingNames(names: Iterable<string>, declared = deploymentNames): stri
   return [...names].filter((name) => !EXTERNAL_ENV.has(name) && !declared.has(name)).sort();
 }
 function misplacedSecrets(input: Blueprint): string[] {
-  const allowed = { Curviai: new Set([...deploymentNames].filter((key) => !BACKUP_ENV.includes(key) && key !== "HEALTHCHECKS_TICK_URL")), "curvi-backup": new Set(BACKUP_ENV), "curvi-tick": new Set(["HEALTHCHECKS_TICK_URL"]) };
+  const allowed = { Curviai: new Set([...deploymentNames].filter((key) => !BACKUP_ENV.includes(key) && key !== "HEALTHCHECKS_TICK_URL")), "curvi-tick": new Set(["HEALTHCHECKS_TICK_URL"]) };
   return input.services.flatMap((item) => keys(item.envVars).filter((key) => !allowed[item.name as keyof typeof allowed]?.has(key)).map((key) => `${item.name}:${key}`));
 }
 
@@ -96,7 +98,8 @@ describe("production deploy configuration", () => {
     expect(blueprint.envVarGroups).toHaveLength(1);
     expect(keys(blueprint.envVarGroups[0].envVars).sort()).toEqual([...SHARED_ENV].sort());
     expect(blueprint.envVarGroups[0].envVars.find((item) => item.key === "CRON_SECRET")).toEqual({ key: "CRON_SECRET", generateValue: true });
-    expect(keys(service("curvi-backup").envVars).sort()).toEqual([...BACKUP_ENV].sort());
+    expect(service("curvi-backup")).toBeUndefined();
+    for (const name of BACKUP_ENV) expect(deploymentNames.has(name), name).toBe(false);
     expect(keys(service("curvi-tick").envVars)).toEqual(["HEALTHCHECKS_TICK_URL"]);
     for (const item of blueprint.services) expect(item.envVars.filter((entry) => entry.fromGroup)).toEqual([{ fromGroup: "curvi-common" }]);
     expect(misplacedSecrets(blueprint)).toEqual([]);
@@ -115,20 +118,23 @@ describe("production deploy configuration", () => {
     expect([...deploymentNames].filter((name) => EXTERNAL_ENV.has(name))).toEqual([]);
     expect(new Set(keys(service("Curviai").envVars)).size).toBe(keys(service("Curviai").envVars).length);
   });
-  it("maps the two cron services to registered work and installs their commands", () => {
-    expect(blueprint.services.filter((item) => item.type === "cron").map((item) => item.name).sort()).toEqual(["curvi-backup", "curvi-tick"]);
-    expect(CRON_JOBS.find((job) => job.name === "backup")).toBeDefined();
+  it("maps the tick service to registered work without provisioning backups", () => {
+    expect(blueprint.services.map((item) => item.name).sort()).toEqual(["Curviai", "curvi-tick"]);
+    expect(blueprint.services.filter((item) => item.type === "cron").map((item) => item.name)).toEqual(["curvi-tick"]);
+    expect(CRON_JOBS.map((job) => job.name)).not.toContain("backup");
     expect(CRON_JOBS.filter((job) => "run" in job).length).toBeGreaterThan(0);
-    expect(service("curvi-backup").schedule).toBe("15 9 * * *");
-    expect(service("curvi-tick").schedule).toBe(`*/${tick.everyMinutes} * * * *`);
+    const item = service("curvi-tick");
+    expect(item.schedule).toBe(`*/${tick.everyMinutes} * * * *`);
+    expect(item.runtime).toBe("docker");
+    expect(item.dockerfilePath).toBe("./ops/cron/Dockerfile");
+    expect(item.dockerCommand).toBe("/usr/local/bin/curvi-tick");
     const docker = readFileSync(new URL("ops/cron/Dockerfile", root), "utf8");
-    for (const name of ["backup", "tick"]) {
-      const item = service(`curvi-${name}`);
-      expect(item.runtime).toBe("docker");
-      expect(item.dockerfilePath).toBe("./ops/cron/Dockerfile");
-      expect(item.dockerCommand).toBe(`/usr/local/bin/curvi-${name}`);
-      expect(docker).toContain(`COPY ops/cron/${name}.sh /usr/local/bin/curvi-${name}`);
-    }
+    expect(docker).toContain("COPY ops/cron/tick.sh /usr/local/bin/curvi-tick");
+    const commands = [...docker.matchAll(/^CMD (.+)$/gm)].map((match) => JSON.parse(match[1]) as string[]);
+    expect(commands).toEqual([[item.dockerCommand]]);
+    expect(docker).toContain("COPY ops/cron/backup.sh /usr/local/bin/curvi-backup");
+    expect(docker).toMatch(/^ENTRYPOINT \[\]$/m);
+    expect(docker).toMatch(/^USER postgres$/m);
   });
   it("documents founder env-example verification without reading the protected file", () => {
     expect(inventory).toContain("`.env.example` was not read");

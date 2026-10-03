@@ -1,5 +1,7 @@
 # Pipeline, recovery and release handoff
 
+Updated 2026-10-03: the user retired encrypted-backup planning and its release gates. Local disk and GitHub preserve source code, not live database rows, Auth state or stored objects. No database recovery capability is claimed. Existing backup data and security controls remain untouched; no backup service, key or credential is to be provisioned under this plan. Historical implementation and test evidence below remains dated evidence, not an active backup requirement.
+
 Local implementation in `/tmp/curvi-phases-18-20`, verified on Node 22.23.3. No provider generation, production migration, release command, configuration write or paid call was made by this lane.
 
 ## Delivered
@@ -17,7 +19,7 @@ Local implementation in `/tmp/curvi-phases-18-20`, verified on Node 22.23.3. No 
 
 ## Commands and target contract
 
-`pnpm ops:migrate --env prod [--backup-now] [--seed]` requires `OPS_SITE_URL`, `DATABASE_URL`, `CRON_SECRET`. Backup-now additionally requires `RENDER_API_KEY` and `RENDER_BACKUP_CRON_ID`. It accepts only a valid completed backup whose start is less than one hour old, refuses active/unknown Render backup activity, waits for a new report when requested, runs the existing Drizzle migrator, verifies exact database bookkeeping, and requires current health. Seed mode prints recipe hashes/model drift and primitive switch drift before seeding; no operator email or prompt bodies are printed.
+`pnpm ops:migrate --env prod [--seed]` requires `OPS_SITE_URL`, `DATABASE_URL`, `CRON_SECRET`. The encrypted-backup prerequisite and trigger were retired on 2026-10-03. Review migration-specific data effects, compatible app/workers, writer isolation and reversibility. It runs the existing Drizzle migrator, verifies exact database bookkeeping, and requires current health. Seed mode prints recipe hashes/model drift and primitive switch drift before seeding; no operator email or prompt bodies are printed.
 
 `pnpm release --env prod [--staging-smoke] [--disable-auto-deploy]` requires `OPS_SITE_URL`, `CRON_SECRET`, `OPS_RELEASE_TOKEN`, `OPS_RELEASE_EMAIL`, `RENDER_API_KEY`, `RENDER_SERVICE_ID`. It requires a clean pushed SHA with a successful latest push CI run, a matching fresh applied migration timestamp, optional same-SHA staging smoke, a 30-second pause cache wait and a global idle count. It preserves the existing auto-deploy policy by default (the latest user instruction supersedes the old P20-19 default); the explicit `--disable-auto-deploy` option leaves it off. It deploys the exact commit, validates Render's full SHA and application's SHA, schema, providers and public pages, then creates a local release tag. No tag push. Failure offers rollback to the captured prior live deploy only after explicit confirmation. Every pause-write attempt has a clear in finally; SIGINT/SIGTERM abort waits and clear. Long builds refresh the expiring pause. If a clear request itself cannot reach the app, the server's seeded 30-minute expiry remains the backstop.
 
@@ -27,7 +29,7 @@ The release guard requires authenticated `health.details.release = { appliedWhen
 
 Migration policy lint checks every SQL migration after immutable baseline **0044**, without rewriting frozen hashes. DROP, RENAME, ALTER TYPE and platform_settings UPDATE/DELETE require a statement-specific `-- contract:` comment. Dynamic DDL is checked conservatively as part of its DO statement. Historical 0043/0044 restrictive policy replacements remain unchanged.
 
-Render's backup trigger cancels active runs. The CLI checks the latest start/end event and refuses missing evidence, but Render offers no atomic check-and-start operation; avoid racing a scheduled backup. Official API shapes checked 2026-10-02: [service update](https://api-docs.render.com/reference/update-service), [create deploy](https://api-docs.render.com/reference/create-deploy), [rollback](https://api-docs.render.com/reference/rollback-deploy), [cron trigger](https://api-docs.render.com/reference/run-cron-job), [events](https://api-docs.render.com/reference/list-events), [OpenAPI schema](https://api-docs.render.com/openapi/render-public-api-1.json).
+Historical 2026-10-02 API research: Render's backup trigger cancels active runs. That trigger is retired from the current migration flow; this record is not a setup instruction. Official API shapes checked 2026-10-02: [service update](https://api-docs.render.com/reference/update-service), [create deploy](https://api-docs.render.com/reference/create-deploy), [rollback](https://api-docs.render.com/reference/rollback-deploy), [cron trigger](https://api-docs.render.com/reference/run-cron-job), [events](https://api-docs.render.com/reference/list-events), [OpenAPI schema](https://api-docs.render.com/openapi/render-public-api-1.json).
 
 ## Evidence
 
@@ -57,7 +59,7 @@ Commands: `pnpm ops:memory-test --concurrency 2 --budget-mb 2048` and `pnpm ops:
 ## Remaining gates
 
 - Root integration validation: full lint/typecheck/test/e2e, actual authorized deployment and fresh protected health.
-- Staging crash/drain and migration/release acceptance, completed backup and restore acceptance; no destructive drill in production.
+- Staging crash/drain and migration/release acceptance; no destructive drill in production.
 - P20-36 shared Postgres breaker, P35 priority/fairness, P64 intermediate checkpoints and P65 target-product, encoded-white and scene-count fixes remain gated P2 (golden photos and funded provider evaluation required). No flags enabled for them.
 - P20-47 workspace-cap signal query is owned by the cron lane; use `spend_cap_counters` key `caps:workspace:<uuid>:<UTC YYYY-MM-DD>` and compare total_micros with `costCaps.workspaceExpectedDailyMicrosByTier[tier] * costCaps.workspaceDailyMultiplier`.
 

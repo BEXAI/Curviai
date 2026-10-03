@@ -1,5 +1,7 @@
 # Customer readiness handoff
 
+Updated 2026-10-03: the user retired encrypted-backup planning and its release gates. Local disk and GitHub preserve source code, not live database rows, Auth state or stored objects. No database recovery capability is claimed. Existing backup data and security controls remain untouched; no backup service, key or credential is to be provisioned under this plan. Historical implementation and test evidence below remains dated evidence, not an active backup requirement.
+
 Verified locally on 2026-10-02 in `/tmp/curvi-phases-18-20` with Node 22.23.3. This records implementation and local proof, not production activation.
 
 ## Delivered
@@ -39,11 +41,11 @@ The shared full-suite pass found old synchronous page-render expectations and th
 
 The final combined Next rebuild and customer accessibility/readiness rerun passed **10 tests in 48.2 seconds**. The axe test now waits for Next's streamed nonempty document title as well as the page heading before auditing; the integrated run had otherwise sampled `/app` between those two render events. Log: `/tmp/curvi-customer-final-e2e.log`. Build and local port ownership are released again.
 
-P20-21 repository work is complete: `render.yaml` declares the web service, isolated encrypted-backup cron and shared HTTP tick cron; Docker installs both scripts. The tick keeps bearer/monitor credentials out of process arguments, bounds the POST, sends start/success/failure heartbeats and cleans temporary files on failure. Source AST scanning covers direct and injected names, seeded Stripe prices/portal configurations and staging CLI prefixes. It checks the launch inventory and rejects backup secrets on web or web secrets on a cron. `docs/LAUNCH_CHECKLIST.md` now contains the full scoped inventory and replaces the obsolete Trigger.dev Cloud setup.
+P20-21 repository work is complete: `render.yaml` declares the web service and shared HTTP tick cron. The encrypted-backup service plan was retired on 2026-10-03; retained backup tooling is archival reference only. The tick keeps bearer/monitor credentials out of process arguments, bounds the POST, sends start/success/failure heartbeats and cleans temporary files on failure. Source AST scanning covers direct and injected names, seeded Stripe prices/portal configurations and staging CLI prefixes. It checks the launch inventory and rejects backup secrets on web or web secrets on a cron. `docs/LAUNCH_CHECKLIST.md` now contains the full scoped inventory and replaces the obsolete Trigger.dev Cloud setup.
 
 The Blueprint passed local validation against Render's official [draft 2020-12 schema](https://render.com/schema/render.yaml.json), fetched 2026-10-02. `checksPass` automatic deployment is preserved. Render ignores `sync: false` within an environment group, so `curvi-common` uses a generated cron capability only for new installations; the adoption procedure requires preserving the existing secret before first sync. `--prod=false` explicitly installs the build toolchain even with `NODE_ENV=production`, per [pnpm 10 install documentation](https://pnpm.io/10.x/cli/install).
 
-P20-21 acceptance still requires the founder's Blueprint preview with no duplicate/suffixed resource or overwritten environment value, explicit cron adoption/provisioning, current dashboard values, real heartbeat/backup proof, and the protected `.env.example` update. That file was never read or changed. The Docker image itself was not built locally. No Blueprint or dashboard was applied by this agent.
+P20-21 acceptance still requires the founder's Blueprint preview with no duplicate/suffixed resource or overwritten environment value, explicit cron adoption/provisioning, current dashboard values, real tick heartbeat proof, and the protected `.env.example` update. That file was never read or changed. The Docker image itself was not built locally. No Blueprint or dashboard was applied by this agent.
 
 ## Next-phase planning
 

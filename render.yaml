@@ -215,35 +215,6 @@ services:
         sync: false
 
   - type: cron
-    name: curvi-backup
-    runtime: docker
-    repo: https://github.com/BEXAI/Curviai
-    branch: main
-    region: oregon
-    plan: 0.5c-512mb
-    autoDeployTrigger: checksPass
-    schedule: "15 9 * * *"
-    dockerfilePath: ./ops/cron/Dockerfile
-    dockerContext: .
-    dockerCommand: /usr/local/bin/curvi-backup
-    envVars:
-      - fromGroup: curvi-common
-      - key: BACKUP_DATABASE_URL
-        sync: false
-      - key: BACKUP_AGE_RECIPIENT
-        sync: false
-      - key: BACKUP_R2_ACCOUNT_ID
-        sync: false
-      - key: BACKUP_R2_BUCKET
-        sync: false
-      - key: BACKUP_R2_ACCESS_KEY_ID
-        sync: false
-      - key: BACKUP_R2_SECRET_ACCESS_KEY
-        sync: false
-      - key: HEALTHCHECKS_BACKUP_URL
-        sync: false
-
-  - type: cron
     name: curvi-tick
     runtime: docker
     repo: https://github.com/BEXAI/Curviai

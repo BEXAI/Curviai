@@ -35,7 +35,7 @@ Still required:
 
 ## Production safety gates
 
-- Encrypted off-platform backup with separate bucket credentials, correct lifecycle/lock rules, observed successful report, and successful decryption. Then perform a timed isolated restore drill with schema/grant checks before any app connects. See [BACKUP_RESTORE.md](ops/BACKUP_RESTORE.md) and [DISASTER_RECOVERY.md](ops/DISASTER_RECOVERY.md).
+- Review each pending migration for actual data changes, compatible application/workers, old-writer isolation and reversible or forward-repair behavior. Encrypted-backup setup and restore drills were retired by the user on 2026-10-03 and are no longer release blockers. Local disk/GitHub recover code only; they do not restore live database data. See [current policy](ops/BACKUP_RESTORE.md).
 - External uptime and heartbeat monitors, real alert delivery and recovery; protected Sentry scrubbed server/browser events and readable source maps. See [ALERTS.md](ops/ALERTS.md).
 - Adopt the ten-minute tick and confirm due jobs, lease renewal, partial failure reporting and first weekly Money/Operations/Triggers email. Retention requires a production dry run and a measured bounded delete pass; funnel history and billing consents remain excluded.
 - Apply the single R2 lifecycle config with **both** `anon/` and `tmp/` rules. Confirm legacy temporary-object sweep and real expiry; do not overwrite one rule by applying the other separately.

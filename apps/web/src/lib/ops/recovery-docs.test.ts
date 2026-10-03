@@ -22,18 +22,20 @@ describe("recovery and staging documentation", () => {
     expect(new Set(keys).size).toBeGreaterThan(20);
     for (const key of keys) expect(recovery, `Missing launch setting: ${key}`).toContain(`\`${key}\``);
   });
-  it("keeps schema/grant validation ahead of reconnecting the app and records pending acceptance", () => {
-    const schema = recovery.indexOf("3. **Authenticate/decrypt.**");
-    const acl = recovery.indexOf("6. **Validate before any app connection.**");
-    const reconnect = recovery.indexOf("9. **Reconnect in order.**");
-    expect(schema).toBeGreaterThan(0);
-    expect(acl).toBeGreaterThan(schema);
-    expect(reconnect).toBeGreaterThan(acl);
-    expect(recovery).toContain("pg_restore --data-only");
-    expect(recovery).toContain("acl_unchanged");
-    expect(recovery).toContain("ledger_functions_locked");
-    expect(recovery).toContain("founder has not yet walked");
+  it("keeps data review and schema/grant validation ahead of reconnecting without a backup prerequisite", () => {
+    const review = recovery.indexOf("4. **Review before changing data.**");
+    const validate = recovery.indexOf("5. **Validate before any app connection.**");
+    const reconnect = recovery.indexOf("6. **Reconnect in order.**");
+    expect(review).toBeGreaterThan(0);
+    expect(validate).toBeGreaterThan(review);
+    expect(reconnect).toBeGreaterThan(validate);
+    expect(recovery).toContain("migration history, row-level security, table grants, ledger function grants, tenant isolation");
+    expect(recovery).toContain("Code rollback alone does not roll back data.");
+    expect(recovery).toContain("Never place a live database dump, Auth data or secrets in GitHub.");
+    expect(recovery).toContain("Local disk and GitHub preserve source code, not live database rows");
     expect(recovery).toContain("no password-only in-app bypass");
+    expect(read("docs/ops/BACKUP_RESTORE.md")).toContain("retired");
+    expect(recovery).not.toContain("**Authenticate/decrypt.**");
   });
   it("staging explicitly selects free isolated resources without enabling provider canaries or OAuth", () => {
     const blueprint = read("render.staging.yaml");
