@@ -51,6 +51,8 @@ jobs:
       # Workspace packages plus the root e2e specs and playwright.config.ts.
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Migration maintenance responder
+        run: node --test ops/maintenance-server.test.mjs
 
   # PHASE_20 P20-03: ledger races on a real Postgres 17 (the PGlite suites
   # run on one connection). The suite creates its own database, applies

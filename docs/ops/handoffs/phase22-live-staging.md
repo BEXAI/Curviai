@@ -1,5 +1,7 @@
 # Live staging and publisher details
 
+Current rollout update, 2026-10-03: The user retired encrypted-backup planning and its release gates on 2026-10-03. No backup bucket, dump, age recipient, executor or restore drill is required for this rollout. Local disk/GitHub preserve code only; they do not restore live database rows, Auth state or stored objects. Existing backup data and unrelated security controls remain untouched. The applied-migration evidence below is preserved as history. Current remaining work is recorded in the database release gate section.
+
 Verified 2026-10-02 at 18:34:48 UTC. This supersedes earlier “no live migrations” observations in the dated Phase 21/22 checkpoints. It does not record a new deployment.
 
 ## Applied database changes
@@ -19,13 +21,13 @@ The [final proof result](../evidence/2026-10-02-staged-migrations/live-staged-fi
 
 The [SQL editor](https://supabase.com/dashboard/project/tmwvjmvzjvpeagatjmud/sql/6c495900-f01a-4118-a11b-0c09b498ff7f) now contains the saved [read-only final proof](../evidence/2026-10-02-staged-migrations/final-0045-0046-PROOF-READ-ONLY.sql), SHA256 `25a95082eeaf5afd1517900d7c6f028151fac6b28ff504d6e6789426344690b8`. Save is disabled and editor bytes match the local proof. Existing user SQL was preserved. No secrets or customer content were inspected.
 
-## Remaining database release gate
+## Remaining database release gate (2026-10-03)
 
-**0047 is unapplied.** Quiesce every old job writer, including web requests, workers, scheduled recovery and read-triggered reconciliation, then coordinate 0047 with the compatible application and worker deployment. The old deployed `dae0fb0` can retain `done` after a failed/canceled run with an existing report. The new trigger would record that incorrect terminal event even with no webhook endpoint configured. A momentary zero-active-job count cannot establish compatibility.
+Migrations **0045 and 0046 are applied and must not be replayed**. **0047, 0048 and 0049 remain UNAPPLIED**. The integrated release is reviewing an inert candidate handoff and a guarded atomic 0047–0049 transaction; neither a live writer fence nor SQL execution is established by that preparation. Required checks are the exact target/journal, compatible application and workers, isolation of every old writer, bounded transaction/postflight verification and explicit rollback or forward-repair limits. A momentary zero-job count is not writer isolation. Report irreversible data effects before executing them. Follow the reviewed [maintenance handoff](../MIGRATION_MAINTENANCE.md); its current preparation does not authorize reopening old writers early. Keep budgets unset and external webhook activation off until the compatible runtime and each feature's acceptance pass. No paid test is authorized by migration or deployment approval.
 
-The prerequisite PR 6 security gate remains unresolved. Do not deploy around it or weaken scanners. Once cleared, use the reviewed 0047 wrapper and full postflight, verify new process versions, and only then resume writers. Keep budgets unset until compatible budget handling is deployed. Public health still reports old-code cached 0044; direct journal evidence above is authoritative for the staged database.
+Historical compatibility finding from 2026-10-02: the then-deployed `dae0fb0` could retain `done` after a failed/canceled run with an existing report. The 0047 trigger would record that incorrect terminal event even without a configured endpoint. This is why web requests, inline workers, scheduled recovery and read-triggered reconciliation must all be covered by the writer handoff. The old PR 6 security/access statements and cached 0044 health observations were dated checkpoints, not current release evidence. Do not weaken scanners or substitute Git history for database recovery.
 
-## Legal source and publishing preparation
+## Historical legal source and publishing preparation (2026-10-02)
 
 The founder authorized public use of AIManagement Inc. and 131 Continental Drive, Suite 305, Newark New Castle, DE 19713. Shared Terms and Privacy now use those exact details. Delaware incorporation and establishment in 2025 are user-provided facts. Governing law remains unset; publisher verification and action-time legal attestations remain separate. No acceptance records or verified-name manifest placeholders changed.
 

@@ -1,5 +1,13 @@
 # Phase 22: launch the Curvi ChatGPT plugin
 
+## Current rollout policy (2026-10-03)
+
+The user retired encrypted-backup planning and its release gates on 2026-10-03. No backup bucket, dump, age recipient, executor or restore drill is required for this rollout. Local disk/GitHub preserve code only; they do not restore live database rows, Auth state or stored objects. Existing backup data and unrelated security controls remain untouched.
+
+Migrations **0045 and 0046 are applied and must not be replayed**. **0047, 0048 and 0049 remain UNAPPLIED**. The integrated release is reviewing an inert candidate handoff and a guarded atomic 0047–0049 transaction; neither a live writer fence nor SQL execution is established by that preparation. Required checks are the exact target/journal, compatible application and workers, isolation of every old writer, bounded transaction/postflight verification and explicit rollback or forward-repair limits. A momentary zero-job count is not writer isolation. Report irreversible data effects before executing them. See [the maintenance handoff](../ops/MIGRATION_MAINTENANCE.md) for the candidate sequence and [the current backup policy](../ops/BACKUP_RESTORE.md). Paid evaluation still awaits its separate cap; dedicated reviewer identity and secure sign-in remain separate gates.
+
+The original 2026-10-02 status, observations and implementation evidence below remain dated history. They do not reimpose retired backup gates or supersede current migration state. Exact-head CI and live acceptance still require their own recorded evidence.
+
 Status: **authorized for implementation, deployment, submission and publication, 2026-10-02**. The user's goal is a fully functional Curvi plugin that delivers assets inside ChatGPT and earns OpenAI approval. Approval belongs to OpenAI; this phase is not approved, submitted or publicly available until the corresponding external evidence is recorded. The earlier three proposals are preserved in [Phase 23](PHASE_23.md), which remains planning only.
 
 This plan supersedes Phase 19's launch sequencing where stated below. Its implemented OAuth, tools, pipeline, signed links, viewer and package are the starting point. Phase 21 continues in parallel; its budgets must apply to assistant generation, while its resolution cases and private completion webhooks do not require additional ChatGPT tools or MCP Events.

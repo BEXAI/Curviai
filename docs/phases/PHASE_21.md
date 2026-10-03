@@ -1,5 +1,13 @@
 # Phase 21: seller confidence and integration delivery
 
+## Current rollout policy (2026-10-03)
+
+The user retired encrypted-backup planning and its release gates on 2026-10-03. No backup bucket, dump, age recipient, executor or restore drill is required for this rollout. Local disk/GitHub preserve code only; they do not restore live database rows, Auth state or stored objects. Existing backup data and unrelated security controls remain untouched.
+
+Migrations **0045 and 0046 are applied and must not be replayed**. **0047, 0048 and 0049 remain UNAPPLIED**. The integrated release is reviewing an inert candidate handoff and a guarded atomic 0047–0049 transaction; neither a live writer fence nor SQL execution is established by that preparation. Required checks are the exact target/journal, compatible application and workers, isolation of every old writer, bounded transaction/postflight verification and explicit rollback or forward-repair limits. A momentary zero-job count is not writer isolation. Report irreversible data effects before executing them. See [the maintenance handoff](../ops/MIGRATION_MAINTENANCE.md) for the candidate sequence and [the current backup policy](../ops/BACKUP_RESTORE.md). Paid evaluation still awaits its separate cap; dedicated reviewer identity and secure sign-in remain separate gates.
+
+The original 2026-10-02 status, observations and implementation evidence below remain dated history. They do not reimpose retired backup gates or supersede current migration state. Exact-head CI and live acceptance still require their own recorded evidence.
+
 Status: **authorized for implementation and deployment, 2026-10-02**. The user's subsequent request to orchestrate and deploy Phase 21 accepts all three candidates below, including optional owner budgets. Implementation proceeds on the tested Phase 18–20 PR #6 prerequisite (`fc44989f30e70d113873acb1dbca927d3b63fea0`). Dependent main merges remain gated by that prerequisite's outstanding CodeQL disposition approval. No alert dismissal, security bypass, new spending, credentials, paid generation or arbitrary third-party webhook delivery is authorized by this phase.
 
 ## Accepted implementation decisions

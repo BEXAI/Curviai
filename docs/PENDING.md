@@ -81,6 +81,14 @@ Other later work includes Shopify embedded app/billing and auto-packs, Amazon pu
 
 ## Phase 21 and Phase 22 continuation
 
+The user retired encrypted-backup planning and its release gates on 2026-10-03. No backup bucket, dump, age recipient, executor or restore drill is required for this rollout. Local disk/GitHub preserve code only; they do not restore live database rows, Auth state or stored objects. Existing backup data and unrelated security controls remain untouched.
+
+Migrations **0045 and 0046 are applied and must not be replayed**. **0047, 0048 and 0049 remain UNAPPLIED**. The integrated release is reviewing an inert candidate handoff and a guarded atomic 0047–0049 transaction; neither a live writer fence nor SQL execution is established by that preparation. Required checks are the exact target/journal, compatible application and workers, isolation of every old writer, bounded transaction/postflight verification and explicit rollback or forward-repair limits. A momentary zero-job count is not writer isolation. Report irreversible data effects before executing them. Follow the reviewed [maintenance handoff](ops/MIGRATION_MAINTENANCE.md) once its checks pass. Paid evaluation remains paused pending its numeric cap, and dedicated reviewer identity/secure sign-in remain unresolved acceptance steps.
+
+### Historical implementation checkpoints (2026-10-02)
+
+The following original phase snapshots preserve their test counts and then-pending publication/access states. They are not current SQL instructions or a reason to replay 0045/0046.
+
 Phase21 code for resolution cases, optional owner credit budgets and private completion webhooks is published in [draft PR8](https://github.com/BEXAI/Curviai/pull/8), stacked on PR6. The frozen local gate passes6,800 unit tests, lint/types, full195 browser checks and9 rebuilt affected privacy/legal checks. Hosted CI also passes, including all14 PostgreSQL17 concurrency tests with zero skips. Exact main/deploy proof and reviewed migration0045–0047 application remain pending. No live endpoint or budget has been activated. See [Phase21 checkpoint](ops/PHASE_21_CHECKPOINT.md).
 
 Phase22 now authorizes full plugin implementation and official submission/publication, with actual approval left to OpenAI. It includes the viewer before first submission, existing-pack rendering, bounded authenticated link refresh, partial-output handling and strict package checks. Source, local fixtures, production tests, actual ChatGPT evidence and portal decisions are distinct milestones. Public business name/address and their publication are authorized. Verified platform publishing identity, governing law, counsel review, secure test/reviewer access, owned sample assets, bounded funded evaluation and exact action-time attestations remain pending. See [Phase22 checkpoint](ops/PHASE_22_CHECKPOINT.md). The three earlier future proposals are preserved in [Phase23](phases/PHASE_23.md), planning only.

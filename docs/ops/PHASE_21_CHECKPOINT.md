@@ -1,5 +1,13 @@
 # Phase 21 implementation checkpoint
 
+## Current policy and migration state (2026-10-03)
+
+The user retired encrypted-backup planning and its release gates on 2026-10-03. No backup bucket, dump, age recipient, executor or restore drill is required for this rollout. Local disk/GitHub preserve code only; they do not restore live database rows, Auth state or stored objects. Existing backup data and unrelated security controls remain untouched.
+
+Migrations **0045 and 0046 are applied and must not be replayed**. **0047, 0048 and 0049 remain UNAPPLIED**. The integrated release is reviewing an inert candidate handoff and a guarded atomic 0047–0049 transaction; neither a live writer fence nor SQL execution is established by that preparation. Required checks are the exact target/journal, compatible application and workers, isolation of every old writer, bounded transaction/postflight verification and explicit rollback or forward-repair limits. A momentary zero-job count is not writer isolation. Report irreversible data effects before executing them. See [MIGRATION_MAINTENANCE.md](MIGRATION_MAINTENANCE.md). Paid evaluation and dedicated reviewer identity/secure sign-in gates remain.
+
+The checkpoint below is historical evidence from its stated 2026-10-02 times, including then-pending PR/security/access states. Use the current release evidence for those outcomes; do not treat these snapshots as new actions or repeat applied migrations.
+
 Updated 2026-10-02 15:45 UTC. Resume this task after context recovery; inspect Git and active agents before duplicating work.
 
 ## Authority and current state

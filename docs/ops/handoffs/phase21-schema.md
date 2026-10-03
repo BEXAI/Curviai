@@ -1,5 +1,9 @@
 # Phase 21 database handoff
 
+Current rollout update, 2026-10-03: The user retired encrypted-backup planning and its release gates on 2026-10-03. No backup bucket, dump, age recipient, executor or restore drill is required for this rollout. Local disk/GitHub preserve code only; they do not restore live database rows, Auth state or stored objects. Existing backup data and unrelated security controls remain untouched.
+
+Migrations **0045 and 0046 are applied and must not be replayed**. **0047, 0048 and 0049 remain UNAPPLIED**. The integrated release is reviewing an inert candidate handoff and a guarded atomic 0047–0049 transaction; neither a live writer fence nor SQL execution is established by that preparation. Required checks are the exact target/journal, compatible application and workers, isolation of every old writer, bounded transaction/postflight verification and explicit rollback or forward-repair limits. A momentary zero-job count is not writer isolation. Report irreversible data effects before executing them. See [MIGRATION_MAINTENANCE.md](../MIGRATION_MAINTENANCE.md). The original schema-owner status and local evidence below are historical; live 0045/0046 proof is in [the staging handoff](phase22-live-staging.md).
+
 Status: SQL candidates frozen after implementation, local checks and independent security review (no additional high-severity issue). PostgreSQL 17 hosted concurrency proof remains a release gate. No SQL in this handoff has been applied to a live database by the schema owner. Existing migrations through 0044 are unchanged.
 
 ## Additive migration candidates
@@ -29,7 +33,7 @@ All eight new tables have RLS, restrictive `no_oauth_clients`, explicit anon/aut
 - Resolved cases expire after 180 days; events and private notes cascade. Deleting a workspace/job cascades the case. Source media lifetime is never extended. Customer exports exclude operator notes.
 - Budget audit expires after 365 days. Current preferences remain until workspace deletion. Workspace deletion cascades both tables.
 - Completion events and dependent deliveries expire after 30 days. Delivery attempts expire after 72 hours. Endpoint deletion cancels/removes dependent deliveries; workspace deletion cascades all endpoint/event/delivery records. Customer exports exclude signing ciphertext and private destination internals.
-- Apply 0045, 0046, 0047 in journal order using the root's reviewed transaction and preflight/postflight evidence. Budgets remain disabled; no receiver activation is implied.
+- 0045 and 0046 are already applied; preserve their journal entries and never replay them. Review unapplied 0047–0049 in journal order using the coordinated maintenance sequence and exact preflight/postflight evidence. Budgets remain disabled; no receiver activation is implied.
 - `logical_run_id DEFAULT gen_random_uuid() NOT NULL` can rewrite `generation_jobs` under an exclusive table lock. Preflight row count/table size and use bounded lock and statement timeouts. Do not label this change lock-free.
 - Before commit, transaction rollback restores the prior schema. After commit, prefer app rollback with additive tables/columns retained, budgets disabled, and webhook worker/endpoint activation off. Do not drop customer case/audit/outbox data or rewrite an applied migration. Any urgent SQL correction should be an additional reviewed migration.
 
