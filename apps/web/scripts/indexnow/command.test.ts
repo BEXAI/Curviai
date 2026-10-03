@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({ collect: vi.fn<() => Promise<Inventory>>() }))
 vi.mock("./inventory", async (original) => ({ ...await original<typeof import("./inventory")>(), collectInventory: mocks.collect }));
 import { runIndexNow } from "./command";
 
-const KEY = "dummy-approved-test-proof-1234";
+const KEY = "testtesttesttest";
 const PAGE = "https://curvi.ai/pricing";
 const sample = (hash = "a"): Inventory => ({ observations: [{ url: PAGE, kind: "page", fingerprint: hash.repeat(64) }], excluded: [] });
 let parent: string;

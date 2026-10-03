@@ -3,7 +3,7 @@ import { initializeState, refreshState, retryEntry, recordIndexing, retryAfterMs
 import { INDEXNOW_ENDPOINT, indexNowKeyLocation, type IndexNowState } from "./model";
 import type { Inventory, Observation } from "./inventory";
 
-const KEY = "dummy-approved-test-proof-1234";
+const KEY = "testtesttesttest";
 const T0 = new Date("2026-10-03T00:00:00.000Z");
 const T1 = new Date("2026-10-03T01:00:00.000Z");
 const PAGE = "https://curvi.ai/pricing";
