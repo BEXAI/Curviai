@@ -430,8 +430,8 @@ test.describe("below the hero", () => {
     await page.goto("/");
     // The page wrapper clips overflow without becoming a scroll container.
     const tile = page.locator("#home-pricing-title").locator("xpath=ancestor::section").locator(".reveal").first();
-    const before = Number(await tile.evaluate((element) => getComputedStyle(element).opacity));
-    expect(before).toBeLessThan(0.5);
+    // The scroll timeline can initialize after load; await the same initial opacity.
+    await expect.poll(async () => Number(await tile.evaluate((element) => getComputedStyle(element).opacity)), { timeout: 5000 }).toBeLessThan(0.5);
     await tile.evaluate((element) => element.scrollIntoView({ block: "center" }));
     await expect.poll(async () => Number(await tile.evaluate((element) => getComputedStyle(element).opacity))).toBe(1);
 
