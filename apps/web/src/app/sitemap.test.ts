@@ -30,7 +30,7 @@ describe("public sitemap", () => {
   it.each([false, true])("lists the store audit only while its page is available: %s", async (enabled) => {
     auditEnabled.mockResolvedValue(enabled);
     const urls = (await sitemap()).map((entry) => entry.url);
-    expect(urls.includes("https://curvi.ai/tools/store-image-audit")).toBe(enabled);
+    expect(urls.some((url) => url === "https://curvi.ai/tools/store-image-audit")).toBe(enabled);
   });
 
   it("contains unique production paths without private, token or artificial freshness entries", async () => {
