@@ -8,7 +8,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryCapStore } from "@curvi/ai/testing";
-import { events, freePreviews, members, products, sourceMedia, workspaces } from "@curvi/db/schema";
+import { events, freePreviews, members, products, retiredSourceObjects, sourceMedia, workspaces } from "@curvi/db/schema";
 import { createTestDb, type TestDb } from "@curvi/db/testing";
 import { and, eq, type Db } from "@curvi/db";
 import { encodePng } from "@curvi/pipeline";
@@ -285,6 +285,15 @@ describe("claimFreePreview", () => {
       cacheKeyFor: async (ws: string) => `ws/${ws}/cache/cutout/${"c".repeat(64)}.png`,
     };
   }
+
+  it("refuses a claim whose copied destination was retired before its reference commits", async () => {
+    const owner = await newOwner();
+    const key = claimedSourceKey(owner.workspaceId, previewId, "png");
+    await db.insert(retiredSourceObjects).values({ workspaceId: owner.workspaceId, r2Key: key });
+    expect(await claimFreePreview(claimDeps(), { previewId, userId: owner.userId })).toEqual({ kind: "refused", reason: "missing_files" });
+    expect(await db.select().from(products).where(eq(products.workspaceId, owner.workspaceId))).toEqual([]);
+    expect(await rowOf(previewId)).toMatchObject({ status: "done", claimedWorkspaceId: null });
+  });
 
   it("moves the photo and its cutout into the new workspace once, as its first product", async () => {
     const owner = await newOwner();

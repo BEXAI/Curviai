@@ -10,6 +10,7 @@ import { demoApiFixture, mainImagePng, type DemoApiFixture } from "@/lib/api-v1/
 import { tierName } from "@/lib/entitlements";
 import { JOB_ERROR_COPY, jobErrorLineFor, publicJobError } from "@/lib/job-copy";
 import { MemoryRateLimitStore, setRateLimitStoreForTests } from "@/lib/rate-limit";
+import { DEMO_WORKSPACE_ID } from "@/lib/services/demo";
 import { INSUFFICIENT_CREDITS_MESSAGE, NO_BILLABLE_SHOTS_MESSAGE, RESTARTING_MESSAGE } from "@/lib/services/errors";
 import { BRAND_COLOR_UPGRADE_MESSAGE, INVALID_OPTIONS_MESSAGE, OPTIONS_UNAVAILABLE_MESSAGE } from "@/lib/services/output-options";
 import type { CreateJobRejection, JobView } from "@/lib/services/types";
@@ -220,6 +221,7 @@ describe("strings an assistant can be sent", () => {
     const created = await handleMcpPost(rpc("create_pack", { channels: ["amazon.main"], photos: [{ data: png }] }));
     const packId = ((await created.json()) as { result: { structuredContent: { pack_id: string } } }).result.structuredContent.pack_id;
     for (let i = 0; i < 12; i += 1) {
+      await fixture.service.getJob(DEMO_WORKSPACE_ID, packId);
       successes.push(...(await textsOf("get_pack", { pack_id: packId })));
     }
     expectClean(successes, "successes");

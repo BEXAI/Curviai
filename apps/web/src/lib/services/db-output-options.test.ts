@@ -520,7 +520,7 @@ async function deliveredPack(
     jobId: job.id,
     shotType: "sweep_brand",
     approved: false,
-    qc: { shotId: shot.id, status: "needs_review", pass: false, credits: shot.credits, shot },
+    qc: { shotId: shot.id, status: "needs_review", pass: false, credits: shot.credits, shot, sourceSelection: { version: 1, sourceMediaId: shot.sourceMediaId, target: null, exclude: [], otherItems: false } },
   });
   await db.insert(packFiles).values({
     workspaceId: ws,

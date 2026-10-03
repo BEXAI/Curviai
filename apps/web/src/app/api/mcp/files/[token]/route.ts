@@ -10,7 +10,7 @@
 
 import { getMcpLinkBackend } from "@/lib/mcp-links-backend";
 import { checkMcpLink, linkRedirect, linkUnavailable } from "@/lib/mcp-links";
-import { presignDownload } from "@/lib/r2";
+import { attachmentDisposition, presignDownload } from "@/lib/r2";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,6 +20,13 @@ export async function GET(request: Request, context: { params: Promise<{ token: 
   const check = await checkMcpLink(request, token, "file", { backend: getMcpLinkBackend });
   if (!check.ok) {
     return check.response;
+  }
+  if (check.file.kind === "report") {
+    if (check.file.reportBody === undefined) return linkUnavailable();
+    return new Response(check.file.reportBody, { headers: {
+      "Content-Type": "application/json; charset=utf-8", "Content-Disposition": attachmentDisposition(check.file.filename),
+      "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
+    } });
   }
   let location: string;
   try {

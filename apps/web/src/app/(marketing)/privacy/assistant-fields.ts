@@ -56,6 +56,13 @@ export const ASSISTANT_FIELDS: Readonly<Record<string, string>> = {
   "left_out[].reason": "the channels a pack would leave out and why",
   quote: "a signed code for an estimate",
   quote_valid_minutes: "how long it is valid",
+  credit_budget: "your workspace's optional monthly credit budget",
+  "credit_budget.monthly_limit": "its monthly limit",
+  "credit_budget.remaining": "remaining headroom",
+  "credit_budget.held": "active credit holds",
+  "credit_budget.consumed": "delivered credits used this month",
+  "credit_budget.period_start": "the UTC period start and end",
+  "credit_budget.period_end": "the UTC period start and end",
 
   // list_channels
   "channels[].id": "the channels Curvi offers",

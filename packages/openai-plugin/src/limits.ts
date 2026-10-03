@@ -70,6 +70,10 @@ export const ASSET_LIMITS = {
   maxPx: 4_096,
 } as const;
 
+/** Screenshot dimensions from submission-errors, checked 2026-10-02.
+ * The 5 MiB file bound is Curvi's local package policy, not a portal claim. */
+export const SCREENSHOT_LIMITS = { width: 706, minHeight: 400, maxHeight: 860, maxBytes: 5 * 1024 * 1024 } as const;
+
 /** Archive limits (O4). */
 export const ARCHIVE_LIMITS = {
   maxCompressedBytes: 100 * 1000 * 1000,

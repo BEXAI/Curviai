@@ -7,6 +7,7 @@ import { Button, Card, CardContent, Input, Label, Select, Textarea, cn } from "@
 import { DEFAULT_BUNDLE, lookPresetFor, type OutputPlanFlags } from "@curvi/pipeline/output-options";
 import type { TierKey } from "@curvi/pipeline/seed";
 import { OutOfCreditsDialog } from "@/components/app/paywall";
+import { CreditBudgetEstimate } from "@/components/app/credit-budget-estimate";
 import {
   ANGLE_ROLES,
   MAX_ENDORSEMENTS,
@@ -1723,6 +1724,7 @@ export function NewPackForm({
                   {overBalance}
                 </p>
               ) : null}
+              <CreditBudgetEstimate creditsNeeded={estimate.total} />
             </div>
             <Button
               variant="secondary"
@@ -1775,6 +1777,7 @@ export function NewPackForm({
                 {creditBalanceLine(creditBalance)}
               </p>
               {overBalance ? <p className="mt-1 text-xs text-amber-700">{overBalance}</p> : null}
+              <CreditBudgetEstimate creditsNeeded={estimate.total} />
             </div>
           ) : null}
           <button

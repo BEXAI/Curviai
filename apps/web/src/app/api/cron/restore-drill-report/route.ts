@@ -1,11 +1,10 @@
 /**
  * POST /api/cron/restore-drill-report
- * pnpm ops:restore-drill (docs/phases/PHASE_20.md P20-11) reports here from
- * the founder's laptop after a drill passed every check: which backup, how
- * long each step took and whether it finished inside the recovery target.
- * The route stores it as platform_settings `restore_drill:last` and records
- * the drill's success, so GET /api/health shows restore_drill_overdue (info)
- * once the last drill is older than the seeded maxAgeDays. Protected by
+ * Retained legacy restore tooling reports a drill that passed every check:
+ * which backup, step durations and whether it met the tool's recovery target.
+ * The route stores platform_settings `restore_drill:last` and preserves the
+ * success record. The drill plan was retired on 2026-10-03; no active health
+ * or release requirement is derived from these records. Protected by
  * CRON_SECRET (lib/cron-auth). In demo mode there is nothing to record.
  */
 
@@ -38,7 +37,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const db = getDb();
     const recorded = await recordRestoreDrillReport(db, body.value);
-    // Health shows restore_drill_overdue once this goes stale (lib/cron-health.ts).
+    // Preserve the legacy success record without a freshness requirement.
     await recordCronSuccess(db, RESTORE_DRILL_RUN);
     console.info(
       JSON.stringify({

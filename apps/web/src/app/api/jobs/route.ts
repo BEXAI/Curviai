@@ -39,6 +39,9 @@ import {
 export const dynamic = "force-dynamic";
 
 const JobRequest = z.object({
+  // The accepted-request receipt is computed by the server, never supplied
+  // by a browser. Reject it explicitly instead of stripping an unknown key.
+  requestFingerprint: z.never().optional(),
   productId: productIdSchema,
   channels: z.array(z.string().min(1).max(64)).min(1).max(24),
   mode: z.enum(["listing", "concept"]),
@@ -200,6 +203,7 @@ const REJECTED_STATUS = {
   needs_photo: 400,
   no_media: 400,
   insufficient_credits: 402,
+  credit_budget_exceeded: 409,
   upgrade_required: 402,
   feature_unavailable: 422,
   unavailable: 503,

@@ -5,7 +5,6 @@ import { grossMargin, priceFloor } from "@curvi/pipeline/economics";
 import { costCaps, funnelDigest, orphan, serviceListLimits, tiers, weeklyReport } from "@curvi/pipeline/seed";
 import { customerWorkspace, operatorWorkspaceIds } from "@/lib/customer-metrics";
 import { readDatabaseSize } from "@/lib/config-health";
-import { readCronSuccesses } from "@/lib/cron-health";
 import { isR2Configured } from "@/lib/env";
 import { privateBucket, r2Client } from "@/lib/r2";
 
@@ -30,7 +29,7 @@ export async function readR2TotalBytes():Promise<number|null> {
 export interface WeeklyMetrics {
   excludedWorkspaces:number;allPackCogsUsd:number;mrrUsd:number;unknownPriceSubscriptions:number;churnRate:number|null;topUpsUsd:number;cogsUsd:number;grossMargin:number|null;
   packs:{started:number;done:number;failed:number;needsReview:number;shots:number;medianSeconds:number|null;longestQueueSeconds:number|null};
-  alertsOpened:number;backupAgeDays:number|null;drillAgeDays:number|null;dailySpendUsd:number;dailyCapUsd:number;llmSpendUsd:number;
+  alertsOpened:number;dailySpendUsd:number;dailyCapUsd:number;llmSpendUsd:number;
   databaseBytes:number|null;r2Bytes:number|null;paidPacksMonth:number;activeRunners:number;nearListLimitWorkspaces:number;payingCustomers:number;uncategorizedSupportRequests:number;
 }
 
@@ -41,7 +40,7 @@ export class DbMetricsReader {
     const excluded=await operatorWorkspaceIds(db);
     const customer=(column:ReturnType<typeof sql>)=>customerWorkspace(excluded,column);
     const monthStart=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),1));
-    const [subscriptions,jobs,shots,payments,other,counters,successes,databaseBytes,r2Bytes]=await Promise.all([
+    const [subscriptions,jobs,shots,payments,other,counters,databaseBytes,r2Bytes]=await Promise.all([
       db.execute(sql`select tier,cadence,status,created_at,period_end from subscriptions
         where ${customer(sql`workspace_id`)} and (status='active' or (status='canceled' and period_end>=${since.toISOString()}::timestamptz and period_end<${now.toISOString()}::timestamptz))`),
       db.execute(sql`select count(*)::int as started,count(*) filter(where status='done')::int as done,
@@ -66,7 +65,6 @@ export class DbMetricsReader {
         (select coalesce(sum(cogs_micros),0) from generation_jobs where created_at>=${since.toISOString()}::timestamptz and created_at<${now.toISOString()}::timestamptz) as all_pack_cogs`),
       db.execute(sql`select key,total_micros from spend_cap_counters where key=${`caps:global:${now.toISOString().slice(0,10)}`}
         or (key like 'llm|day|%' and split_part(key,'|',3)>=${since.toISOString().slice(0,10)} and split_part(key,'|',3)<=${now.toISOString().slice(0,10)} and split_part(key,'|',6)='cost_micros')`),
-      readCronSuccesses(db),
       (this.options.databaseBytes??(()=>readDatabaseSize(db)))().catch(()=>null),
       (this.options.storageBytes??readR2TotalBytes)().catch(()=>null),
     ]);
@@ -85,19 +83,17 @@ export class DbMetricsReader {
       if(row.key.startsWith('caps:global:'))dailySpendUsd+=number(row.total_micros)/1e6;
       else llmSpendUsd+=number(row.total_micros)/1e6;
     }
-    const age=(key:string)=>successes[key]?Math.max(0,(now.getTime()-Date.parse(successes[key]))/DAY):null;
     const cogsUsd=number(j.cogs)/1e6;
     return {excludedWorkspaces:excluded.length,allPackCogsUsd:number(o.all_pack_cogs)/1e6,mrrUsd,unknownPriceSubscriptions,churnRate:cohort?churned/cohort:null,topUpsUsd:number(rowsOf<{topups:unknown}>(payments)[0]?.topups),cogsUsd,
       grossMargin:grossMargin(number(j.credits)*priceFloor().net.netRevenuePerCredit,cogsUsd),
       packs:{started:number(j.started),done:number(j.done),failed:number(j.failed),needsReview:number(s.review),shots:number(s.total),medianSeconds:j.median==null?null:number(j.median),longestQueueSeconds:j.queue==null?null:Math.max(0,number(j.queue))},
-      alertsOpened:number(o.alerts),backupAgeDays:age('backup'),drillAgeDays:age('restore-drill'),dailySpendUsd,dailyCapUsd:costCaps.globalDailyHardStopMicros/1e6,llmSpendUsd,
+      alertsOpened:number(o.alerts),dailySpendUsd,dailyCapUsd:costCaps.globalDailyHardStopMicros/1e6,llmSpendUsd,
       databaseBytes,r2Bytes,paidPacksMonth:number(o.paid_packs),activeRunners:number(o.runners),nearListLimitWorkspaces:number(o.near_limits),payingCustomers:number(o.paying),uncategorizedSupportRequests:number(o.support)};
   }
 }
 
 export function weeklyMetricLines(m:WeeklyMetrics):string[] {
   const money=(n:number)=>`$${n.toFixed(2)}`,percent=(n:number|null)=>n===null?'not available':`${(n*100).toFixed(1)}%`;
-  const age=(n:number|null)=>n===null?'no recorded success':`${n.toFixed(1)} days`;
   const size=(n:number|null)=>n===null?'not available':`${(n/1024/1024).toFixed(1)} MB`;
   const fired=(condition:boolean)=>condition?'REVIEW':'not reached';
   return ['','Money',`Customer metrics exclude ${m.excludedWorkspaces} operator-owned workspaces.`,`MRR at seed prices: ${money(m.mrrUsd)}${m.unknownPriceSubscriptions?` (${m.unknownPriceSubscriptions} subscriptions lack a known price)`:''}`,
@@ -106,7 +102,7 @@ export function weeklyMetricLines(m:WeeklyMetrics):string[] {
     `Packs started: ${m.packs.started}; done: ${m.packs.done}; failed: ${m.packs.failed}; failure rate: ${percent(m.packs.started?m.packs.failed/m.packs.started:null)}`,
     `Shots needing review: ${m.packs.needsReview} of ${m.packs.shots} (${percent(m.packs.shots?m.packs.needsReview/m.packs.shots:null)})`,
     `Median duration: ${m.packs.medianSeconds===null?'not available':`${Math.round(m.packs.medianSeconds)} seconds`}; longest queue wait: ${m.packs.longestQueueSeconds===null?'not available':`${Math.round(m.packs.longestQueueSeconds)} seconds`}`,
-    `Alerts opened: ${m.alertsOpened}; backup age: ${age(m.backupAgeDays)}; restore drill age: ${age(m.drillAgeDays)}`,
+    `Alerts opened: ${m.alertsOpened}`,
     `Today's provider spend: ${money(m.dailySpendUsd)}; seed daily hard stop: ${money(m.dailyCapUsd)}`,
     `LLM spend in UTC day counters: ${money(m.llmSpendUsd)}; database: ${size(m.databaseBytes)}; total R2 objects: ${size(m.r2Bytes)}`,'','Triggers',
     `Second active runner: ${fired(m.activeRunners>1)} (${m.activeRunners} observed)`,

@@ -16,6 +16,7 @@ import type { GalleryFilters, GalleryItem } from "@/lib/library";
 import type { ReusePrefill } from "@/lib/reuse";
 import type { PreflightBox, PreflightOutcome } from "@/lib/preflight/types";
 import type { SellerAnswer, SellerProfile } from "@/lib/seller-profile";
+import type { CreditBudgetView } from "@/lib/billing/credit-planning";
 
 export type {
   ComplianceCheckView,
@@ -299,8 +300,9 @@ export interface CreateJobInput {
   maxCredits?: number;
   /** Earlier Idempotency-Keys a retry of this same request may have used
    * (PHASE_19 P19-16: an assistant's derived key of the previous 10 minute
-   * window). A replay under one of them answers first; a conflict under one
-   * is ignored, and the request goes on under idempotencyKey. */
+   * window). A matching receipt replays first. A provably different request
+   * is skipped, but a legacy receipt whose input cannot be verified returns
+   * a conflict rather than risking another credit hold. */
   previousIdempotencyKeys?: string[];
   /** "assistant" for a pack started through /api/mcp (PHASE_19 P19-29):
    * the worker then stops it at intake when the product is one of OpenAI's
@@ -320,6 +322,7 @@ export type CreateJobRejectionReason =
   | "empty_plan"
   | "unknown_product"
   | "insufficient_credits"
+  | "credit_budget_exceeded"
   | "role_forbidden"
   | "needs_photo"
   | "no_media"
@@ -365,6 +368,16 @@ export type CreateJobResult =
   | { outcome: "conflict"; existingJobId?: string }
   | CreateJobRejection;
 
+/** Internal upload ownership receipt, passed separately from request data.
+ * The caller starts false. The service sets true before persistence may
+ * publish a source key, because a commit can succeed while its acknowledgment
+ * fails. Once true, request cleanup must never delete those objects, even on
+ * rejection or an unexpected exception. Normal retention collects any
+ * unreferenced objects left by a rolled-back transaction. */
+export interface CreateJobLifecycle {
+  retainUploads: boolean;
+}
+
 /**
  * What estimateJob reads (PHASE_19 P19-16): a createJob request whose photos
  * are not stored. Each upload names the key and hash createJob would get for
@@ -399,6 +412,8 @@ export type EstimateJobResult =
       creditsNeeded: number;
       /** The workspace's balance now. */
       creditsAvailable: number;
+      /** Current owner budget headroom; reservation rechecks it under the workspace lock. */
+      creditBudget?: CreditBudgetView;
       /** The requested specs the pack would make files for. */
       channels: string[];
       leftOut: EstimateLeftOut[];
@@ -418,6 +433,7 @@ export type ShotOpRejection =
   | "channel_full"
   | "conflict"
   | "insufficient_credits"
+  | "credit_budget_exceeded"
   | "unavailable"
   | "invalid_upload"
   | "demo";
@@ -495,8 +511,16 @@ export interface JobFilesView {
 }
 
 export interface JobFileDownload {
-  url: string;
+  url: string | null;
   filename: string;
+  /** Fresh selected JSON for an explicit browser download. */
+  body?: string;
+  bytes?: number;
+}
+
+export interface JobFileDownloadOptions {
+  /** Defaults to readOnly: never create objects while listing MCP tools. */
+  report?: "inline" | "snapshot" | "readOnly";
 }
 
 export interface SaveResult {
@@ -546,6 +570,12 @@ export interface LibraryView {
   truncated: boolean;
 }
 
+/** Internal read policy. Snapshot callers must not recover jobs, settle
+ * credits or advance demo work as a side effect of retrieving a result. */
+export interface ServiceReadOptions {
+  reconcile?: boolean;
+}
+
 export interface Services {
   readonly mode: ServiceMode;
   /** The caller's workspace, or null when nobody is signed in (db mode only). */
@@ -568,14 +598,16 @@ export interface Services {
   listProductLibrary(workspaceId: string): Promise<ProductLibraryEntry[]>;
   getProduct(workspaceId: string, productId: string): Promise<ProductSummary | null>;
   listRecentJobs(workspaceId: string, limit?: number): Promise<JobSummary[]>;
-  /** Reading a job advances the demo simulation by one tick. */
-  getJob(workspaceId: string, jobId: string): Promise<JobView | null>;
-  createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult>;
+  /** Default reads recover stale jobs and advance the demo simulation.
+   * reconcile: false returns the current snapshot without either effect. */
+  getJob(workspaceId: string, jobId: string, options?: ServiceReadOptions): Promise<JobView | null>;
+  createJob(workspaceId: string, input: CreateJobInput, lifecycle?: CreateJobLifecycle): Promise<CreateJobResult>;
   /** What createJob would hold for the same request, the balance and the
-   * channels left out, computed the same way and writing nothing: no
-   * product, no photo, no job, no hold (PHASE_19 P19-16, estimate_pack).
+   * channels left out, without creating a product, photo, job or hold
+   * (PHASE_19 P19-16, estimate_pack). Default balance reads recover stale
+   * jobs; reconcile: false leaves jobs and credits unchanged.
    * Refuses exactly as createJob refuses before its hold. */
-  estimateJob(workspaceId: string, input: EstimateJobInput): Promise<EstimateJobResult>;
+  estimateJob(workspaceId: string, input: EstimateJobInput, options?: ServiceReadOptions): Promise<EstimateJobResult>;
   /** The workspace's credit balance, or null when the caller is not a
    * member of it (PHASE_19 P19-16). Never the "current" workspace: an
    * assistant names the workspace its connection is bound to. */
@@ -595,7 +627,7 @@ export interface Services {
   listJobFiles(workspaceId: string, jobId: string): Promise<JobFilesView | null>;
   /** A freshly signed download url for one delivered file of a job in this
    * workspace, or null when the file does not exist or is not stored. */
-  getJobFileDownload(workspaceId: string, jobId: string, fileId: string): Promise<JobFileDownload | null>;
+  getJobFileDownload(workspaceId: string, jobId: string, fileId: string, options?: JobFileDownloadOptions): Promise<JobFileDownload | null>;
   /** The readable compliance report of a job in this workspace, or null
    * when the job does not exist there. A job whose report is not ready or
    * not stored answers a view with available false and a notice. */

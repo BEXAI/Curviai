@@ -11,6 +11,8 @@ import { getServices, isDbMode } from "@/lib/services";
 import { getDb } from "@/lib/services/db";
 import { getSessionUser } from "@/lib/supabase/server";
 import { submitSupport, supportInput, SUPPORT_FAILURE, SUPPORT_SUCCESS } from "@/lib/support";
+import { getCaseStore } from "@/lib/cases";
+import { caseError } from "@/lib/cases/http";
 import { turnstileMode, verifyTurnstile, TURNSTILE_MESSAGE } from "@/lib/turnstile";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +46,16 @@ export async function POST(request: Request) {
   const services = getServices();
   const workspace = user ? await services.getCurrentWorkspace() : null;
   const actor = user?.email && user.email_confirmed_at ? { userId: user.id, email: user.email, workspaceId: workspace?.id ?? null } : null;
+  // A signed-in pack report is one durable case intake. Do this before the
+  // email path so a retry or existing open case never sends duplicate mail.
+  if (actor?.workspaceId && parsed.data.topic === "pack" && parsed.data.job) {
+    try {
+      const result = await getCaseStore().create({ workspaceId: actor.workspaceId, userId: actor.userId }, parsed.data.job, {
+        category: "other", description: parsed.data.message, requestId: parsed.data.requestId,
+      }, parsed.data.requestId);
+      return NextResponse.json({ notice: result.created ? "Your pack report was received. You can follow its progress in Pack help." : "There is already an open case for this pack. Continue the conversation in Pack help.", casePath: `/app/jobs/${parsed.data.job}/cases#case-${result.case.id}` }, { headers: { "Cache-Control": "no-store" } });
+    } catch (error) { return caseError(error); }
+  }
   const db = getDb();
   const config = emailConfigFromEnv();
   const inbox = optionalEnv("SUPPORT_INBOX") ?? LEGAL_FACTS.support.email;

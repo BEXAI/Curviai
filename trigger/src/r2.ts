@@ -116,17 +116,21 @@ export function buildR2Handoff(): PackFileHandoff | null {
   };
 }
 
-export function packFileKey(workspaceId: string, jobId: string, filename: string): string {
-  return `ws/${workspaceId}/jobs/${jobId}/pack/${filename}`;
+/** A full pack's objects belong to its generating run. A superseded run
+ * may finish an upload after a replacement delivers, so sharing object
+ * keys between runs would bypass the database's delivery fence. */
+export function packFileKey(workspaceId: string, jobId: string, runKey: string, filename: string): string {
+  return `ws/${workspaceId}/jobs/${jobId}/pack/run-${encodeURIComponent(runKey)}/${filename}`;
 }
 
 export function assetFileKey(
   workspaceId: string,
   jobId: string,
+  runKey: string,
   channel: string,
   filename: string,
 ): string {
-  return `ws/${workspaceId}/jobs/${jobId}/files/${channel}/${filename}`;
+  return `ws/${workspaceId}/jobs/${jobId}/files/${channel}/run-${encodeURIComponent(runKey)}/${filename}`;
 }
 
 /** Key of an extra scene version's file (PHASE_16 workstream 6). The
@@ -135,11 +139,12 @@ export function assetFileKey(
 export function variationFileKey(
   workspaceId: string,
   jobId: string,
+  runKey: string,
   variation: number,
   channel: string,
   filename: string,
 ): string {
-  return `ws/${workspaceId}/jobs/${jobId}/files/${channel}/variation-${variation}/${filename}`;
+  return `ws/${workspaceId}/jobs/${jobId}/files/${channel}/variation-${variation}-run-${encodeURIComponent(runKey)}/${filename}`;
 }
 
 /** Key of a file a pack follow up delivers (a retried shot or an added

@@ -12,6 +12,7 @@ import { NextResponse } from "next/server";
 import { recordFunnel } from "@/lib/funnel";
 import { resolveSignedIn } from "@/lib/http/services";
 import { isUuid } from "@/lib/validation/ids";
+import { attachmentDisposition } from "@/lib/r2";
 
 export const dynamic = "force-dynamic";
 
@@ -30,13 +31,18 @@ export async function GET(
     return resolved.response;
   }
   const { services } = resolved;
-  const download = await services.getJobFileDownload(resolved.workspace.id, id, fileId);
-  if (!download) {
+  const download = await services.getJobFileDownload(resolved.workspace.id, id, fileId, { report: "inline" });
+  if (!download || (download.body === undefined && !download.url)) {
     return NextResponse.json({ error: NOT_FOUND }, { status: 404 });
   }
   // The server side funnel (P18-02): a download, and the workspace's first.
   await recordFunnel({ workspaceId: resolved.workspace.id, name: "download", first: true, props: { kind: "file" } });
-  const response = NextResponse.redirect(download.url, 302);
+  const response = download.body !== undefined
+    ? new NextResponse(download.body, { headers: {
+        "Content-Type": "application/json; charset=utf-8", "Content-Disposition": attachmentDisposition(download.filename),
+        "X-Content-Type-Options": "nosniff",
+      } })
+    : NextResponse.redirect(download.url!, 302);
   response.headers.set("Cache-Control", "no-store");
   return response;
 }

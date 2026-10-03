@@ -94,6 +94,7 @@ describe("toolOverLimit", () => {
   it("maps the reads to mcp.read and estimate_pack to imports.photo, and leaves the rest to their actions", () => {
     expect(MCP_TOOL_RATE_POLICIES).toEqual({
       get_pack: "mcp.read",
+      show_pack: "mcp.read",
       list_channels: "mcp.read",
       get_profile: "mcp.read",
       estimate_pack: "imports.photo",
@@ -107,6 +108,7 @@ describe("toolOverLimit", () => {
       expect(await toolOverLimit("get_pack", { caller: polling, headers: headers() })).toBeNull();
     }
     expect((await toolOverLimit("get_pack", { caller: polling, headers: headers() }))?.status).toBe(429);
+    expect((await toolOverLimit("show_pack", { caller: polling, headers: headers() }))?.status).toBe(429);
     expect(await toolOverLimit("create_pack", { caller: polling, headers: headers() })).toBeNull();
     expect(await toolOverLimit("check_main_image", { caller: polling, headers: headers() })).toBeNull();
     expect(await toolOverLimit("get_pack", { caller: caller("oauth", "other"), headers: headers() })).toBeNull();

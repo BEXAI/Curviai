@@ -3,13 +3,14 @@
  * safe fetch exactly as a product link import is (lib/url-import/image), or
  * base64 bytes checked the same way (allowed type proven by magic bytes,
  * the 25 MB cap and the 80 megapixel cap). Stored photos land under the
- * workspace's source prefix, named after their sha256 (apiSourceKey), so a
- * retried request sends the same keys and replays. The pack's server side
+ * workspace's source prefix, named after their sha256 plus a fresh request
+ * suffix. The immutable request fingerprint uses the original photo hashes,
+ * so retries replay even though each attempt owns different objects.
+ * The pack's server side
  * ingest then checks each photo again, as it does a browser upload, and
  * writes the cleaned bytes back to the same key. A photo is therefore only
- * written when its key is empty (putSourceObjectIfAbsent): a retry, or a
- * later pack sending the same photo, never puts the raw upload with its
- * EXIF back over the cleaned copy.
+ * written when its key is empty (putSourceObjectIfAbsent). One request can
+ * never delete or write raw EXIF back over another request's cleaned copy.
  *
  * Photos attached in ChatGPT (PHASE_19 P19-15) arrive as OpenAI's file
  * object, { download_url, file_id, mime_type?, file_name? }
@@ -26,7 +27,7 @@
  * each), and the request's order and de-duplication are kept.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { apiSourceKey, putSourceObjectIfAbsent } from "@/lib/r2";
 import { r2TrustStorage } from "@/lib/trust/storage";
 import { IMAGE_MAX_BYTES, PIXEL_CAP_MEGAPIXELS, withinPixelCap } from "@/lib/upload-validation";
@@ -357,8 +358,8 @@ const STORAGE_FAILURE: SetFailure = {
 /**
  * Reads each photo and, when store is true, writes it to the workspace's
  * source prefix. With store false (the in memory demo, which keeps no
- * files) the photo is still read and checked, and its key is named the same
- * way, so a demo replay behaves as production does.
+ * files) the photo is still read and checked with the same request-owned
+ * keys and logical hashes, so a demo replay behaves as production does.
  *
  * Photos are read PACK_PHOTO_FETCH_CONCURRENCY at a time under one
  * deadline. The first refusal in the request's order is answered, no new
@@ -373,6 +374,11 @@ export async function storePackPhotos(
 ): Promise<StorePhotosResult> {
   const deadlineAt = Date.now() + (options.deadlineMs ?? PACK_PHOTO_SET_DEADLINE_MS);
   const put = options.put ?? ((ws, photo, k) => putSourceObjectIfAbsent(ws, photo.body, photo.contentType, k));
+  // Cleanup may only remove this attempt's objects. Content-addressed keys
+  // shared across requests let a refused request delete another pack's
+  // source, and can attach two new products' photos to only the first one.
+  // Keep the hash for logical replay and dedupe within this attempt only.
+  const attempt = randomUUID();
   const claimed = new Set<string>();
   let refused = false;
   type Slot = { ok: true; key: string; sha256: string; created: boolean } | SetFailure;
@@ -386,7 +392,7 @@ export async function storePackPhotos(
         refused = true;
         return setFailure(read, index, source, options.audience);
       }
-      const key = apiSourceKey(workspaceId, read.photo.sha256);
+      const key = `${apiSourceKey(workspaceId, read.photo.sha256)}-${attempt}`;
       let created = false;
       // The same photo twice is stored once; nothing more is stored once the
       // request is refused.
@@ -482,8 +488,7 @@ export async function readPackPhotos(
 /**
  * Takes back photos a refused request wrote, so a request refused for its
  * role, plan, credits or product leaves no raw, never ingested bytes under
- * src/. Only keys the request itself created are passed in: a key that was
- * already stored belongs to an earlier pack. Best effort; a failure is
+ * src/. Only this attempt's unique keys are passed in. Best effort; a failure is
  * logged, never thrown.
  */
 export async function discardStoredPhotos(keys: readonly string[], deps: PhotoDeps = {}): Promise<void> {

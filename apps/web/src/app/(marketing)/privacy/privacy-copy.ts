@@ -46,6 +46,7 @@ export const assistantPrivacy = {
     "product titles, pack ids, pack status and how far a pack has got",
     "the channels each pack is for, file names and types, image previews and download links, and how long the links work",
     "credits held and credits used, the credits a pack would need, your workspace's credit balance, and a signed code for an estimate and how long it is valid",
+    "your workspace's optional monthly credit budget, its monthly limit, remaining headroom, active credit holds, delivered credits used this month, and the UTC period start and end",
     "image check results, the size of a checked photo and the rules it was checked against",
     "stored product fidelity measurements for delivered files: average color difference, largest color difference, share of exactly matching pixels, number of pixels compared, measurement limits, type of image measured, and whether the file is the original upload",
     "the channels a pack would leave out and why",

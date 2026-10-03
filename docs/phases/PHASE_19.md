@@ -4,6 +4,10 @@ Date: 2026-10-01. Source: a founder request to list Curvi in ChatGPT, with guida
 
 This file is written for the AI developer who will build it and for the founder, who owns every account step. Read it in full before the first change (CLAUDE.md rule 1). Every external fact below was read on 2026-10-01. Re-check each one and date it in docs/verification.md before relying on it (rule 7). OpenAI renamed these docs twice this year, and some pages disagree with each other; the conflicts are called out where they matter.
 
+## Phase 22 continuation, 2026-10-02
+
+[Phase 22](PHASE_22.md) now owns completion of the actual ChatGPT launch, submission and review follow-through using this implementation. Its explicit in-chat asset goal supersedes decision6 and runbookE8's delayed viewer launch: the reviewed pack viewer is included before the first submission, with a separate read-only`show_pack` tool for reopening an existing pack. The historical reasoning below is retained. OAuth containment, screening evaluation, identity/reviewer access, explicit credit confirmation and external approval gates remain in force. No source change alone establishes a successful ChatGPT connection or publication.
+
 ## Goal
 
 A seller using ChatGPT (or Codex) attaches a product photo, says where they sell and what background they want, and gets finished Curvi images back in the chat: previews, download links and the compliance result. Curvi never redraws the product (rule 3). The plugin is tested privately in ChatGPT developer mode, then submitted, approved and published in the plugin directory that ChatGPT and Codex share. It must work on every ChatGPT and Codex surface where it is listed, because review runs the test cases there (O5).

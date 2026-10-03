@@ -40,7 +40,6 @@ export interface McpAuthBackend {
 }
 
 const globalScope = globalThis as typeof globalThis & {
-  __curviMcpAuthBackend?: McpAuthBackend;
   __curviMcpSessionChecker?: SessionChecker;
   __curviDemoMcpConnections?: MemoryMcpConnectionStore;
 };
@@ -183,17 +182,9 @@ export function demoMcpConnectionStore(): MemoryMcpConnectionStore {
  * less is the demo (getServices() refuses demo mode in production first,
  * throwing DemoModeRefusedError, which the caller answers with a 503). */
 export function getMcpAuthBackend(): McpAuthBackend {
-  if (globalScope.__curviMcpAuthBackend) {
-    return globalScope.__curviMcpAuthBackend;
-  }
   if (isDbMode()) {
     return new DbMcpAuthBackend();
   }
   getServices();
   return new MemoryMcpAuthBackend({ memberships: [DEMO_MCP_MEMBERSHIP], connections: demoMcpConnectionStore() });
-}
-
-/** Test hook: swap the backend (null returns to the env default). */
-export function setMcpAuthBackendForTests(backend: McpAuthBackend | null): void {
-  globalScope.__curviMcpAuthBackend = backend ?? undefined;
 }

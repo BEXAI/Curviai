@@ -67,9 +67,9 @@ import {
  * 512 characters (O7), and never a request to call get_pack in a loop.
  */
 export const MCP_INSTRUCTIONS =
-  "Curvi turns a real product photo into marketplace and ad images. It never redraws the product; it changes only the background, size and surroundings. It does not draw new images or write listing text. " +
-  "To make images, pick channels and a background (list_channels), call estimate_pack with the photo and tell the user the credits, then call create_pack with its quote and max_credits. " +
-  "A pack takes a few minutes; call get_pack when the user asks. check_main_image checks main images and uses no credits.";
+  "Curvi turns real product photos into marketplace and ad images without redrawing the product. It changes the background, size and surroundings. It does not draw new images or write listing text. " +
+  "Pick channels with list_channels, call estimate_pack and tell the user the credits, then create_pack with its quote and max_credits. " +
+  "Packs take a few minutes. Use get_pack for status when asked, or show_pack to open existing previews and files. check_main_image checks main images without credits.";
 
 /** Every tool asks for the same sign in: Curvi's OAuth with the two OIDC
  * scopes it uses (decision 2; Supabase offers no custom scopes, SB4). */
@@ -112,8 +112,8 @@ export interface ToolDefinition {
    * the host refuses an app's call to a tool without "app"). */
   visibility: ReadonlyArray<"model" | "app">;
   /** The MCP Apps UI that renders the result (`_meta.ui.resourceUri`, M5):
-   * the pack viewer, on create_pack only (P19-19; O11: only the render tool
-   * names the template, so the viewer is not drawn again on every call). */
+   * the pack viewer, on create_pack and show_pack. Data-only get_pack
+   * never names the template, so polling does not draw another viewer. */
   resourceUri?: string;
   /** Top level arguments that carry chat attachments (O2 openai/fileParams). */
   fileParams?: readonly string[];
@@ -161,6 +161,8 @@ const GetPackArgs = z
   })
   .strict();
 
+const ShowPackArgs = GetPackArgs.pick({ pack_id: true });
+
 const ListChannelsArgs = z.object({}).strict();
 
 const GetProfileArgs = z.object({}).strict();
@@ -193,7 +195,7 @@ export const SHORT_LIVED_PACK_LINKS: PackLinkProvider = {
     const entries = await Promise.all(
       files.map(async (file) => {
         const download = file.downloadUrl
-          ? await ctx.caller.services.getJobFileDownload(workspaceId, packId, file.id)
+          ? await ctx.caller.services.getJobFileDownload(workspaceId, packId, file.id, { report: "readOnly" })
           : null;
         return [file.id, { preview_url: null, download_url: download?.url ?? null }] as const;
       }),
@@ -246,10 +248,16 @@ function viewResult(tool: string, view: z.ZodType, body: unknown, summary?: stri
   return { status: 200, body: parsed.data, ...(summary ? { summary } : {}) };
 }
 
-/** get_pack: the pack, and its files with links once it is finished (or
- * when asked). */
-async function packView(ctx: ApiContext, packId: string, includeFiles: boolean): Promise<ApiResult> {
-  const got = await getPack(ctx, packId);
+/** The authorized pack and delivered files, shared by get_pack's data
+ * reads and show_pack's viewer entry point. Neither starts a job. */
+async function packView(
+  ctx: ApiContext,
+  packId: string,
+  includeFiles: boolean,
+  tool: "get_pack" | "show_pack" = "get_pack",
+): Promise<ApiResult> {
+  // Tool retrieval must not trigger the web read path's stale-job settlement.
+  const got = await getPack(ctx, packId, { reconcile: false });
   if (got.status !== 200) {
     return got;
   }
@@ -263,7 +271,7 @@ async function packView(ctx: ApiContext, packId: string, includeFiles: boolean):
     }
   }
   const chat = packChatOf(pack, { ...(images ? { images } : {}), linksValidMinutes: packLinks.validMinutes });
-  return viewResult("get_pack", PackChat, chat, chat.message);
+  return viewResult(tool, PackChat, chat, chat.message);
 }
 
 /** get_profile (PHASE_19 P19-11): the account and workspace behind an OAuth
@@ -373,7 +381,7 @@ const CORE_TOOLS: readonly ToolDefinition[] = [
     name: "get_pack",
     title: "Get a pack",
     description:
-      "Use this to see how a pack is going and to get its finished images. Returns each image's status and channel check, with preview and download links that work for 24 hours. Uses no credits.",
+      "Use this to read a pack's progress or refresh its file links. Returns each image's status and channel check, with preview and download links that work for 24 hours. Does not open a viewer; use show_pack when the user wants to see an existing pack. Uses no credits.",
     scope: "packs:read",
     args: GetPackArgs,
     argsNoFiles: GetPackArgs,
@@ -383,6 +391,23 @@ const CORE_TOOLS: readonly ToolDefinition[] = [
     // The pack viewer polls get_pack, and only get_pack (decision 6, M5).
     visibility: ["model", "app"],
     run: async (ctx, args: z.infer<typeof GetPackArgs>) => packView(ctx, args.pack_id, args.include_files === true),
+  },
+  {
+    name: "show_pack",
+    title: "Show a pack",
+    description:
+      "Use this when the user wants to open an existing Curvi pack and see its previews or download its delivered images, ZIP and report. Takes the pack_id already returned by Curvi. Shows progress if it is still running. Uses no credits and never starts or repeats generation.",
+    scope: "packs:read",
+    args: ShowPackArgs,
+    argsNoFiles: ShowPackArgs,
+    output: PackChat,
+    // Reads this workspace's stored job and delivered files without changing
+    // jobs, credits or files. The read never contacts an arbitrary URL.
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+    status: { invoking: "Opening your pack", invoked: "Pack opened" },
+    visibility: ["model"],
+    ...(PACK_VIEWER_TEMPLATE ? { resourceUri: PACK_VIEWER_TEMPLATE } : {}),
+    run: async (ctx, args: z.infer<typeof ShowPackArgs>) => packView(ctx, args.pack_id, true, "show_pack"),
   },
   {
     name: "check_main_image",

@@ -78,6 +78,10 @@ export class FakeElement {
     return [this, ...this.children.flatMap((child) => child.all())];
   }
 
+  contains(node: FakeElement): boolean {
+    return this.all().includes(node);
+  }
+
   find(predicate: (element: FakeElement) => boolean): FakeElement[] {
     return this.all().filter(predicate);
   }

@@ -575,7 +575,7 @@ describe("tools/list carries every documented field (O1, O2, O4, M4)", () => {
     const bearer = await token();
     const { body } = await send(rpc("tools/list", {}, { bearer, protocol }));
     const tools = toolsByName(body);
-    expect([...tools.keys()]).toEqual(["list_channels", "estimate_pack", "create_pack", "get_pack", "check_main_image", "get_profile"]);
+    expect([...tools.keys()]).toEqual(["list_channels", "estimate_pack", "create_pack", "get_pack", "show_pack", "check_main_image", "get_profile"]);
     if (protocol === "modern") {
       // M2: tools/list is cacheable; it depends on the caller once sign in is on.
       expect(body.result).toMatchObject({ resultType: "complete", ttlMs: expect.any(Number), cacheScope: "private" });
@@ -792,7 +792,7 @@ describe("clients of both protocol generations, and API keys", () => {
     const initialized = await send(rpc("notifications/initialized", {}, { bearer, protocol, notification: true }));
     expect(initialized.response.status).toBe(202);
     const listed = await send(rpc("tools/list", {}, { bearer, protocol }));
-    expect(listed.body.result?.tools).toHaveLength(6);
+    expect(listed.body.result?.tools).toHaveLength(7);
     expect(listed.body.result?.resultType).toBeUndefined();
     const called = await send(rpc("tools/call", { name: "list_channels", arguments: {} }, { bearer, protocol }));
     expect(called.body.result).toMatchObject({ isError: false, structuredContent: expect.any(Object) });
@@ -810,6 +810,7 @@ describe("clients of both protocol generations, and API keys", () => {
         "estimate_pack",
         "create_pack",
         "get_pack",
+        "show_pack",
         "check_main_image",
       ]);
       const called = await send(rpc("tools/call", { name: "list_channels", arguments: {} }, { bearer: fixture.key, protocol }), { oauthEnabled });

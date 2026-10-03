@@ -120,6 +120,7 @@ export async function settleJob(
     const rows = await tx
       .update(generationJobs)
       .set({
+        logicalRunOutcome: opts.undelivered,
         status: sql`case when ${delivered} then 'done' else ${opts.undelivered}::text end`,
         error: sql`case when ${delivered} then ${generationJobs.error} else ${opts.error}::text end`,
         // A fresh run key that no runner holds: the run this settle stopped

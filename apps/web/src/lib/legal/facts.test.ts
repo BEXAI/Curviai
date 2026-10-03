@@ -60,6 +60,12 @@ describe("LEGAL_FACTS sources", () => {
 });
 
 describe("LEGAL_FACTS numbers follow the features that ship them", () => {
+  it("uses the same Phase 21 windows as operational retention", () => {
+    expect(LEGAL_FACTS.retention.resolvedCaseDays).toBe(seed.packCasesPolicy.resolvedRetentionDays);
+    expect(LEGAL_FACTS.retention.creditBudgetAuditDays).toBe(seed.creditPlanningPolicy.auditRetentionDays);
+    expect(LEGAL_FACTS.retention.completionWebhookDays).toBe(seed.webhookPolicy.retentionDays);
+  });
+
   it("states the renewal consent years once P20-07 seeds renewalNotices", () => {
     const years = field(seedExport("renewalNotices"), "consentRecordYears");
     expect(LEGAL_FACTS.retention.consentRecordYears).toBe(typeof years === "number" ? years : null);

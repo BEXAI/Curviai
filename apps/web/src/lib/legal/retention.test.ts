@@ -19,6 +19,9 @@ const TODAY: LegalFacts = {
     consentRecordYearsAfterPlanEnds: null,
     freePreviewDays: null,
     logDays: null,
+    resolvedCaseDays: null,
+    creditBudgetAuditDays: null,
+    completionWebhookDays: null,
   },
 };
 
@@ -33,6 +36,9 @@ const SHIPPED: LegalFacts = {
     consentRecordYearsAfterPlanEnds: 1,
     freePreviewDays: 2,
     logDays: 29,
+    resolvedCaseDays: 181,
+    creditBudgetAuditDays: 366,
+    completionWebhookDays: 32,
   },
 };
 
@@ -70,6 +76,9 @@ describe("retentionRows", () => {
       "temporary_files",
       "free_preview",
       "assistant_connections",
+      "resolution_cases",
+      "credit_budgets",
+      "completion_webhooks",
       "account",
       "renewal_consent",
       "billing_emails",
@@ -87,6 +96,11 @@ describe("retentionRows", () => {
       "We keep them for up to 180 days, so data you delete can remain in them until then.",
     );
     expect(row(SHIPPED, "logs")?.howLong).toBe("We keep them for up to 29 days.");
+    expect(row(SHIPPED, "resolution_cases")?.howLong).toContain("after 181 days");
+    expect(row(SHIPPED, "resolution_cases")?.howLong).toContain("does not extend the lifetime of your original photos");
+    expect(row(SHIPPED, "credit_budgets")?.howLong).toContain("change history for 366 days");
+    expect(row(SHIPPED, "completion_webhooks")?.howLong).toContain("after 32 days");
+    expect(row(SHIPPED, "completion_webhooks")?.howLong).toContain("do not store receiver response bodies");
   });
 
   it("keeps the renewal consent and billing email rows for consentRecordYears, past account deletion", () => {

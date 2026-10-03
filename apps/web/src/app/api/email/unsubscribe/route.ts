@@ -35,7 +35,8 @@ async function tokenFromBody(request: Request): Promise<string | null> {
   if (!read.ok || read.text.length === 0) {
     return null;
   }
-  const type = (request.headers.get("content-type") ?? "").toLowerCase();
+  const contentType = request.headers.get("content-type") ?? "";
+  const type = contentType.toLowerCase();
   try {
     if (type.includes("application/json")) {
       const body = JSON.parse(read.text) as { token?: unknown; t?: unknown };
@@ -43,7 +44,7 @@ async function tokenFromBody(request: Request): Promise<string | null> {
       return typeof token === "string" ? token : null;
     }
     if (type.includes("multipart/form-data")) {
-      const form = await new Response(read.text, { headers: { "content-type": type } }).formData();
+      const form = await new Response(read.text, { headers: { "content-type": contentType } }).formData();
       const token = form.get("token") ?? form.get("t");
       return typeof token === "string" ? token : null;
     }

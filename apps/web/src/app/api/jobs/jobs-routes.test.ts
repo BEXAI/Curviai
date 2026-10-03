@@ -74,6 +74,11 @@ describe("POST /api/jobs", () => {
     expect((await post(jobBody({ productId: "new" }), { "idempotency-key": "k-2" })).status).toBe(201);
   });
 
+  it("refuses a client-supplied request fingerprint before calling the service", async () => {
+    expect((await post(jobBody({ requestFingerprint: "a".repeat(64) }))).status).toBe(400);
+    expect(services.createJob).not.toHaveBeenCalled();
+  });
+
   it.each(["abc", "", "NEW", "1234"])("rejects product id %j with 400 before the service (Update.md 4.7)", async (productId) => {
     const response = await post(jobBody({ productId }));
     expect(response.status).toBe(400);

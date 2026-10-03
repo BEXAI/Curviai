@@ -31,15 +31,15 @@
       "kind": "review_positive",
       "prompt": "Make an Amazon main image and a Shopify product image of this on white.",
       "attachment": "sample_photo",
-      "tools": ["estimate_pack", "create_pack", "get_pack"],
-      "expected": "States the credits and asks to confirm, starts the pack and says it takes a few minutes, then, when asked, shows preview and download links and whether each image passes its channel's rules. The product is not redrawn, and stored fidelity measurements describe any color difference."
+      "tools": ["estimate_pack", "create_pack", "get_pack", "show_pack"],
+      "expected": "States the credits and asks to confirm, starts the pack and says it takes a few minutes, then shows its delivered images in the pack viewer with image, ZIP and report download links and each image's channel check. The product is not redrawn, and stored fidelity measurements describe any color difference."
     },
     {
       "id": "review-positive-5",
       "kind": "review_positive",
       "prompt": "Keep this photo's background and size it for Etsy and eBay.",
       "attachment": "sample_photo",
-      "tools": ["estimate_pack", "create_pack", "get_pack"],
+      "tools": ["estimate_pack", "create_pack", "get_pack", "show_pack"],
       "expected": "Same flow with the original background kept, sized for both channels."
     },
     {
@@ -135,8 +135,8 @@
       "kind": "phrasing",
       "prompt": "Is my pack finished yet? Show me the images and the download links.",
       "attachment": null,
-      "tools": ["get_pack"],
-      "expected": "Run after a pack was started in the same chat. get_pack reports progress, or the finished images with preview and download links."
+      "tools": ["get_pack", "show_pack"],
+      "expected": "Run after a pack was started in the same chat. get_pack reports progress. show_pack displays the existing pack and its delivered images with image, ZIP and report download links, without making a new pack."
     },
     {
       "id": "phrasing-10",

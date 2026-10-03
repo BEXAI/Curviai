@@ -506,7 +506,7 @@ Rule: `badgeAllowed` is true only for social exports. Marketplace bound files ar
 | Social showcase posting | n8n cloud or Make pulling opted in gallery items to Buffer | 1 post per day | $20 to $40 |
 | SEO pages | Build time generation from the spec registry and categories | Monthly regeneration | $0 |
 | Review requests | Loops: after 3 packs plus a positive NPS, ask for a Shopify App Store or G2 review | | included |
-| Backups | Supabase daily backups plus weekly R2 lifecycle copy | | included |
+| Code recovery | Local disk and GitHub; encrypted-backup planning retired by user on 2026-10-03 | Does not restore live database data | No backup service planned |
 
 Total no code ops budget: about $100 to $250 per month (estimates; verify at signup).
 

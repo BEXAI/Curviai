@@ -10,13 +10,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { platformSettings, sql, type Db } from "@curvi/db";
 import {
-  backup as backupPolicy,
   billingReconcile,
   billingNoticePolicy,
   canaryPolicy,
   funnelDigest,
   tick,
-  restoreDrill as restoreDrillPolicy,
 } from "@curvi/pipeline/seed";
 import type { SqlExecutor } from "@/lib/service-health";
 import { isR2Configured, optionalEnv } from "@/lib/env";
@@ -54,7 +52,7 @@ export interface CronJobDefinition {
    * twice this many minutes, unless maxAgeMinutes says otherwise. */
   intervalMinutes: number;
   /** Freshness override: overdue once the last success is older than this
-   * many minutes (the backup's seeded maxAgeHours, P20-10). */
+   * many minutes. */
   maxAgeMinutes?: number;
   /** Due every this many minutes (the tick). */
   every?: number;
@@ -74,7 +72,7 @@ const scheduledRun = (name: string) => async (ctx: CronJobContext): Promise<void
 
 /**
  * The scheduled jobs and how often they should run. Phase 20 lanes add
- * their entries here (billing-reconcile, backup, provider-canary,
+ * their entries here (billing-reconcile, provider-canary,
  * renewal-notices), then Lane 10 turns the list into the tick registry.
  */
 export const CRON_JOBS = [
@@ -104,9 +102,8 @@ export const CRON_JOBS = [
   { name: "ops-alerts", intervalMinutes: tick.everyMinutes, every: tick.everyMinutes, run: scheduledRun("ops-alerts") },
   { name: "upstash-keepalive", intervalMinutes: 24 * 60, every: 24 * 60, run: scheduledRun("upstash-keepalive"), monitor: () => Boolean(optionalEnv("UPSTASH_REDIS_REST_URL") && optionalEnv("UPSTASH_REDIS_REST_TOKEN")) },
   { name: "provider-canary", intervalMinutes: canaryPolicy.keyProbeEveryMinutes, every: canaryPolicy.keyProbeEveryMinutes, run: scheduledRun("provider-canary"), monitor: () => optionalEnv("CURVI_PROVIDER_CANARY_ENABLED") === "1" },
-  // P20-10: the curvi-backup Render cron (09:15 UTC) reports through
-  // POST /api/cron/backup-report; stale after the seeded maxAgeHours.
-  { name: "backup", intervalMinutes: 24 * 60, maxAgeMinutes: backupPolicy.maxAgeHours * 60 },
+  // Optional bounded tail: critical generation, billing and retention run first.
+  { name: "completion-webhooks", intervalMinutes: tick.everyMinutes, every: tick.everyMinutes, run: scheduledRun("completion-webhooks"), monitor: () => Boolean(optionalEnv("MCP_LINK_KEYS")) },
 ] as const;
 
 // Every entry must fit the registry type (a type error here otherwise).
@@ -119,17 +116,13 @@ export type CronName = (typeof CRON_JOBS)[number]["name"];
 /** The part of a job the freshness check reads. */
 export type CronJob = Pick<CronJobDefinition, "name" | "intervalMinutes" | "maxAgeMinutes" | "monitor">;
 
-/**
- * Runs that record their last success the way a cron does but that no
- * scheduler starts, so they are not in CRON_JOBS and never warn
- * cron_never_ran: the founder's restore drill (P20-11), recorded by
- * POST /api/cron/restore-drill-report. restoreDrillWarning turns a stale one
- * into its own code, restore_drill_overdue (info).
- */
+/** Legacy reports remain recordable after the backup plan's retirement.
+ * They are not scheduled or monitored by the active cron registry. */
+export const BACKUP_RUN = "backup";
 export const RESTORE_DRILL_RUN = "restore-drill";
 
-/** Every name recordCronSuccess accepts. */
-export type RecordedRunName = CronName | typeof RESTORE_DRILL_RUN;
+/** Every name recordCronSuccess accepts, including historical reports. */
+export type RecordedRunName = CronName | typeof BACKUP_RUN | typeof RESTORE_DRILL_RUN;
 
 const TIME_OF_DAY = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -264,34 +257,4 @@ export function cronFreshness(
       state,
     };
   });
-}
-
-const DAY_MS = 24 * 60 * 60_000;
-
-/**
- * restore_drill_overdue (info, lib/health-status.ts) when no passing restore
- * drill was recorded, or the last one is older than the seeded maxAgeDays
- * (P20-11); null while the last drill is recent. It reads the successes the
- * cron check already loaded, so it costs no extra query.
- */
-export function restoreDrillWarning(
-  successes: Record<string, string>,
-  now: Date,
-  maxAgeDays: number = restoreDrillPolicy.maxAgeDays,
-): { code: "restore_drill_overdue"; message: string } | null {
-  const last = successes[RESTORE_DRILL_RUN];
-  if (!last) {
-    return {
-      code: "restore_drill_overdue",
-      message: "No restore drill has been recorded yet. Run pnpm ops:restore-drill (docs/ops/BACKUP_RESTORE.md).",
-    };
-  }
-  const ageMs = Math.max(0, now.getTime() - Date.parse(last));
-  if (ageMs <= maxAgeDays * DAY_MS) {
-    return null;
-  }
-  return {
-    code: "restore_drill_overdue",
-    message: `The last restore drill passed ${Math.floor(ageMs / DAY_MS)} days ago. Run one at least every ${maxAgeDays} days.`,
-  };
 }

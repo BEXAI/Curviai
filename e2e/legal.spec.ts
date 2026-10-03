@@ -18,6 +18,11 @@ test("the terms carry every section, the support line and the credit terms", asy
     await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
   }
   await expect(page.getByTestId("terms-who-we-are")).toContainText("We reply within two business days.");
+  await expect(page.getByTestId("terms-who-we-are")).toContainText(
+    "Curvi is run by AIManagement Inc., 131 Continental Drive, Suite 305, Newark New Castle, DE 19713.",
+  );
+  await expect(page.getByTestId("terms-who-we-are").getByTestId("legal-pending")).toHaveCount(0);
+  await expect(page.getByTestId("terms-governing-law").getByTestId("legal-pending")).toBeVisible();
   await expect(page.getByTestId("terms-credits")).toContainText("Credits you do not use stay in your balance");
   await expect(page.locator("body")).not.toContainText("rollover policy");
 });
@@ -29,6 +34,10 @@ test("the privacy policy shows retention as a table with the purge window", asyn
   await expect(page.getByTestId("retention-source_uploads")).toContainText("30 days old");
   await expect(page.getByTestId("retention-pack_files")).toContainText("while your account is open");
   await expect(page.locator("body")).not.toContainText("thirty days");
+  await expect(page.getByTestId("privacy-contact")).toContainText(
+    "Curvi is run by AIManagement Inc., 131 Continental Drive, Suite 305, Newark New Castle, DE 19713.",
+  );
+  await expect(page.getByTestId("privacy-contact").getByTestId("legal-pending")).toHaveCount(0);
   await page.getByTestId("privacy-processors").getByRole("link", { name: "subprocessors page" }).click();
   await expect(page).toHaveURL(/\/legal\/subprocessors$/);
 });

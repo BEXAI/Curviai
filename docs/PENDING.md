@@ -31,11 +31,11 @@ Still required:
 - Real transactional activation/renewal/price-change notice delivery and dedupe verification. Prepare a price-change dry run before any approved send; the CLI sends notices and does not update Stripe prices. Billing consents and notice retention must remain intact after workspace deletion.
 - Live payment and refund proof only when separately authorized, with the operator workspace excluded from growth/economics metrics. No live purchase is recorded by this implementation task.
 - Actual unit-economics samples, not fixture averages, before deciding generative-still price or enabling founding/referral offers. Credits currently have no expiry while the account remains open; changing that policy would require a separate credit-lot design.
-- Founder entity name, postal address, governing law and legal text approval; counsel review and any approved refund promise. `LEGAL_FACTS` stays the source for terms/privacy/help retention facts. Do not claim legal setup or review completed.
+- The founder supplied and authorized publishing AIManagement Inc. and its postal address on 2026-10-02; `LEGAL_FACTS` now supplies them to terms and privacy. Governing law, counsel review and any approved refund promise remain pending. These public business details do not establish a verified OpenAI publisher or constitute acceptance of legal agreements. `LEGAL_FACTS` stays the source for terms/privacy/help retention facts. Do not claim legal setup or review completed.
 
 ## Production safety gates
 
-- Encrypted off-platform backup with separate bucket credentials, correct lifecycle/lock rules, observed successful report, and successful decryption. Then perform a timed isolated restore drill with schema/grant checks before any app connects. See [BACKUP_RESTORE.md](ops/BACKUP_RESTORE.md) and [DISASTER_RECOVERY.md](ops/DISASTER_RECOVERY.md).
+- Review each pending migration for actual data changes, compatible application/workers, old-writer isolation and reversible or forward-repair behavior. Encrypted-backup setup and restore drills were retired by the user on 2026-10-03 and are no longer release blockers. Local disk/GitHub recover code only; they do not restore live database data. See [current policy](ops/BACKUP_RESTORE.md).
 - External uptime and heartbeat monitors, real alert delivery and recovery; protected Sentry scrubbed server/browser events and readable source maps. See [ALERTS.md](ops/ALERTS.md).
 - Adopt the ten-minute tick and confirm due jobs, lease renewal, partial failure reporting and first weekly Money/Operations/Triggers email. Retention requires a production dry run and a measured bounded delete pass; funnel history and billing consents remain excluded.
 - Apply the single R2 lifecycle config with **both** `anon/` and `tmp/` rules. Confirm legacy temporary-object sweep and real expiry; do not overwrite one rule by applying the other separately.
@@ -54,7 +54,7 @@ Still required:
 
 ## Assistant and growth gates
 
-The assistant API/MCP and plugin code are implemented locally. Remote OAuth server/hook configuration, real ChatGPT Developer Mode, identity/review submission, listing publication and registry ownership proof are separate acceptance steps in [Phase 19](phases/PHASE_19.md). Keep public assistant gates off until their evidence is recorded.
+The assistant API/MCP and plugin code are implemented locally. Remote OAuth server/hook configuration, real ChatGPT Developer Mode, identity/review submission and listing publication continue under the authorized [Phase 22 launch plan](phases/PHASE_22.md), reusing [Phase 19](phases/PHASE_19.md). Registry ownership proof retains its existing separate acceptance gate. Keep public assistant gates off until their evidence is recorded.
 
 P19-29 is not accepted live: on 2026-10-02 production still has `intake_normalizer@7` active at 100%, with version 8 absent. Assistant generation intentionally fails closed with temporary screening-unavailable copy until the funded version 8 eval and approved database rollout succeed. The guard also refuses an unsupported standby or compiled-only recipe fallback, releases held credits and leaves ordinary web/REST packs unchanged. Listing tools or returning a credit estimate does not establish screening readiness. Prepared SQL and green mock tests are not authorization to promote the recipe.
 
@@ -77,3 +77,20 @@ Other later work includes Shopify embedded app/billing and auto-packs, Amazon pu
 - [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md): production variable/service inventory and verified rollout steps.
 - [STAGING.md](ops/STAGING.md): isolated staging and opt-in smoke workflows.
 - [verification.md](verification.md): dated production facts, observations and unresolved checks.
+
+
+## Phase 21 and Phase 22 continuation
+
+The user retired encrypted-backup planning and its release gates on 2026-10-03. No backup bucket, dump, age recipient, executor or restore drill is required for this rollout. Local disk/GitHub preserve code only; they do not restore live database rows, Auth state or stored objects. Existing backup data and unrelated security controls remain untouched.
+
+Migrations **0045 and 0046 are applied and must not be replayed**. **0047, 0048 and 0049 remain UNAPPLIED**. The integrated release is reviewing an inert candidate handoff and a guarded atomic 0047–0049 transaction; neither a live writer fence nor SQL execution is established by that preparation. Required checks are the exact target/journal, compatible application and workers, isolation of every old writer, bounded transaction/postflight verification and explicit rollback or forward-repair limits. A momentary zero-job count is not writer isolation. Report irreversible data effects before executing them. Follow the reviewed [maintenance handoff](ops/MIGRATION_MAINTENANCE.md) once its checks pass. Paid evaluation remains paused pending its numeric cap, and dedicated reviewer identity/secure sign-in remain unresolved acceptance steps.
+
+### Historical implementation checkpoints (2026-10-02)
+
+The following original phase snapshots preserve their test counts and then-pending publication/access states. They are not current SQL instructions or a reason to replay 0045/0046.
+
+Phase21 code for resolution cases, optional owner credit budgets and private completion webhooks is published in [draft PR8](https://github.com/BEXAI/Curviai/pull/8), stacked on PR6. The frozen local gate passes6,800 unit tests, lint/types, full195 browser checks and9 rebuilt affected privacy/legal checks. Hosted CI also passes, including all14 PostgreSQL17 concurrency tests with zero skips. Exact main/deploy proof and reviewed migration0045–0047 application remain pending. No live endpoint or budget has been activated. See [Phase21 checkpoint](ops/PHASE_21_CHECKPOINT.md).
+
+Phase22 now authorizes full plugin implementation and official submission/publication, with actual approval left to OpenAI. It includes the viewer before first submission, existing-pack rendering, bounded authenticated link refresh, partial-output handling and strict package checks. Source, local fixtures, production tests, actual ChatGPT evidence and portal decisions are distinct milestones. Public business name/address and their publication are authorized. Verified platform publishing identity, governing law, counsel review, secure test/reviewer access, owned sample assets, bounded funded evaluation and exact action-time attestations remain pending. See [Phase22 checkpoint](ops/PHASE_22_CHECKPOINT.md). The three earlier future proposals are preserved in [Phase23](phases/PHASE_23.md), planning only.
+
+Phase22 source commit `55bbce4` passes lint/types,6,842 unit tests, production build and199 browser tests, with no source-scan secret findings. Five code/review lanes are complete. Hosted Phase22 checks, prerequisite security disposition, live deployment/access and the actual ChatGPT/review steps remain open.

@@ -74,7 +74,6 @@ describe("GET /api/health", () => {
       "no_cutout_provider",
       "recipe_drift",
       ...monitoredCrons().map(job => `cron_never_ran:${job.name}`),
-      "restore_drill_overdue",
     ]);
     expect(body.details).toBeUndefined();
     // select 1, the migration read, then the recipes, cron and database

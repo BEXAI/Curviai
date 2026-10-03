@@ -29,7 +29,7 @@ export const PACK_VIEWER_SETTINGS: Omit<ViewerConfig, "origin"> = {
   maxCarousel: 8,
   protocolVersion: MCP_APPS_PROTOCOL_VERSION,
   appName: "curvi-pack-viewer",
-  appVersion: "1",
+  appVersion: "2",
 };
 
 /** The size budget, in bytes (PHASE_19 P19-19). */
@@ -81,8 +81,10 @@ main{padding:16px;display:flex;flex-direction:column;gap:12px}
 .caption{display:flex;flex-direction:column;min-width:0}
 .title,.meta{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .title{font-weight:var(--font-weight-medium,500)}
-.meta{font-size:var(--font-text-sm-size,13px)}
+.meta,.check,.fidelity{font-size:var(--font-text-sm-size,13px)}
+.check,.fidelity{overflow-wrap:anywhere}
 button{font:inherit;cursor:pointer;border-radius:999px;padding:6px 14px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+button:disabled{cursor:wait;opacity:.65}
 button:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
 .action{align-self:flex-start}
 .foot{display:flex;flex-wrap:wrap;gap:8px}

@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@curvi/db";
 import { createTestDb } from "@curvi/db/testing";
-import { dataRetention } from "@curvi/pipeline/seed";
+import { creditPlanningPolicy, dataRetention, packCasesPolicy, webhookPolicy } from "@curvi/pipeline/seed";
 import { counterRetentionDays, runRetention } from "./retention";
 
 const NOW = new Date("2026-10-02T12:00:00Z");
@@ -11,6 +12,55 @@ beforeAll(async () => { test = await createTestDb(); });
 afterAll(async () => { await test.client.close(); });
 
 describe("operational retention", () => {
+  it("purges resolved case children, old budget changes and webhook deliveries while keeping active cases and current settings", async () => {
+    const c = test.client;
+    const ws = randomUUID(), user = randomUUID(), product = randomUUID(), endpoint = randomUUID();
+    await c.query("insert into workspaces(id,name) values($1,'Phase 21 retention')", [ws]);
+    await c.query("insert into members(workspace_id,user_id,role) values($1,$2,'owner')", [ws,user]);
+    await c.query("insert into products(id,workspace_id,title,mode) values($1,$2,'Mug','listing')", [product,ws]);
+    const caseRows: { id: string; status: string; age: number }[] = [];
+    for (const [status,age] of [["resolved",packCasesPolicy.resolvedRetentionDays+1],["resolved",packCasesPolicy.resolvedRetentionDays],["received",packCasesPolicy.resolvedRetentionDays+1]] as const) {
+      const id = randomUUID(), job = randomUUID();
+      caseRows.push({ id,status,age });
+      await c.query("insert into generation_jobs(id,workspace_id,product_id,status) values($1,$2,$3,'generating')", [job,ws,product]);
+      await c.query("insert into pack_cases(id,workspace_id,job_id,reporter_user_id,category,status,description,request_id,created_at,resolved_at) values($1,$2,$3,$4,'fidelity',$5,'Please review the product label.',$6,$7,$8)",
+        [id,ws,job,user,status,randomUUID(),ago(age+30),status === "resolved" ? ago(age) : null]);
+      await c.query("insert into pack_case_events(workspace_id,case_id,actor_kind,message,request_id) values($1,$2,'system','Report received.',$3)", [ws,id,randomUUID()]);
+      await c.query("insert into pack_case_notes(workspace_id,case_id,actor_user_id,message) values($1,$2,$3,'Private investigation details.')", [ws,id,user]);
+    }
+    await c.query("insert into workspace_credit_budgets(workspace_id,monthly_limit,updated_by,updated_at) values($1,40,$2,$3)", [ws,user,ago(creditPlanningPolicy.auditRetentionDays+1)]);
+    for (const age of [creditPlanningPolicy.auditRetentionDays,creditPlanningPolicy.auditRetentionDays+1]) {
+      await c.query("insert into workspace_credit_budget_audit(workspace_id,actor_user_id,new_limit,created_at) values($1,$2,40,$3)", [ws,user,ago(age)]);
+    }
+    const receiver = await c.query<{revision:number}>("insert into webhook_endpoints(id,workspace_id,created_by,name,url,key_id,encrypted_secret) values($1,$2,$3,'Receiver','https://receiver.example/events','fixture-key','fixture-ciphertext') returning revision", [endpoint,ws,user]);
+    const eventIds: string[] = [];
+    for (const age of [webhookPolicy.retentionDays+1,webhookPolicy.retentionDays]) {
+      const job = randomUUID(), event = randomUUID();
+      eventIds.push(event);
+      const inserted = await c.query<{logical_run_id:string}>("insert into generation_jobs(id,workspace_id,product_id,status) values($1,$2,$3,'generating') returning logical_run_id", [job,ws,product]);
+      await c.query("insert into pack_completion_events(id,workspace_id,job_id,logical_run_id,outcome,pack_status,occurred_at) values($1,$2,$3,$4,'done','done',$5)", [event,ws,job,inserted.rows[0].logical_run_id,ago(age)]);
+      await c.query("insert into webhook_deliveries(workspace_id,endpoint_id,event_id,endpoint_revision,status,attempts,last_error) values($1,$2,$3,$4,'exhausted',6,'timeout')", [ws,endpoint,event,receiver.rows[0].revision]);
+    }
+
+    const dry = await runRetention({ db:test.db as unknown as Db,now:NOW,dryRun:true });
+    for (const name of ["pack_cases","workspace_credit_budget_audit","pack_completion_events"]) expect(dry.tables[name]).toMatchObject({ matched:1,deleted:0 });
+    expect((await c.query("select id from pack_case_notes where workspace_id=$1",[ws])).rows).toHaveLength(3);
+    const report = await runRetention({ db:test.db as unknown as Db,now:NOW });
+    for (const name of ["pack_cases","workspace_credit_budget_audit","pack_completion_events"]) expect(report.tables[name].deleted).toBe(1);
+    for (const table of ["pack_cases","pack_case_events","pack_case_notes"]) expect((await c.query(`select id from ${table} where workspace_id=$1`,[ws])).rows).toHaveLength(2);
+    expect((await c.query<{ id: string }>("select id from pack_cases where workspace_id=$1",[ws])).rows.map((row)=>row.id)).not.toContain(caseRows[0].id);
+    expect((await c.query("select monthly_limit from workspace_credit_budgets where workspace_id=$1",[ws])).rows).toHaveLength(1);
+    expect((await c.query("select id from workspace_credit_budget_audit where workspace_id=$1",[ws])).rows).toHaveLength(1);
+    expect((await c.query("select id from webhook_endpoints where workspace_id=$1",[ws])).rows).toHaveLength(1);
+    expect((await c.query<{ event_id: string }>("select event_id from webhook_deliveries where workspace_id=$1",[ws])).rows).toEqual([{ event_id:eventIds[1] }]);
+    expect((await runRetention({ db:test.db as unknown as Db,now:NOW })).tables.pack_cases.deleted).toBe(0);
+
+    await c.query("delete from workspaces where id=$1",[ws]);
+    for (const table of ["pack_cases","pack_case_events","pack_case_notes","workspace_credit_budgets","workspace_credit_budget_audit","webhook_endpoints","pack_completion_events","webhook_deliveries"]) {
+      expect((await c.query(`select workspace_id from ${table} where workspace_id=$1`,[ws])).rows).toHaveLength(0);
+    }
+  });
+
   it("keeps funnel claims, billing evidence, recent rows and unfinished job steps; dry run changes nothing", async () => {
     const c = test.client;
     const ws = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";

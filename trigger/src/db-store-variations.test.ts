@@ -91,7 +91,7 @@ describe("scene versions in DbJobStore", () => {
     expect(own.length).toBeGreaterThan(0);
     expect(extra.every((v) => v.picked === false)).toBe(true);
     expect(own.every((v) => v.picked === true)).toBe(true);
-    expect(extra.every((v) => v.r2Key.startsWith(`ws/${ws}/jobs/${jobId}/files/`) && v.r2Key.includes("/variation-2/"))).toBe(true);
+    expect(extra.every((v) => v.r2Key.startsWith(`ws/${ws}/jobs/${jobId}/files/`) && v.r2Key.includes("/variation-2-run-"))).toBe(true);
     // No file overwrites another.
     expect(new Set(variantRows.map((v) => v.r2Key)).size).toBe(variantRows.length);
 

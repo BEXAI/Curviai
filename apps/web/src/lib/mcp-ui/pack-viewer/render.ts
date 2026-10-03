@@ -19,6 +19,7 @@ export interface ViewerActions {
   seeAll(): void;
   /** A preview failed to load. */
   linkFailed(): void;
+  refresh(): void;
 }
 
 /** Replaces the root's children with the view. Self contained. */
@@ -54,11 +55,13 @@ export function renderPackViewer(doc: Document, root: HTMLElement, view: ViewerV
   if (view.status !== null) {
     const status = make("p", view.tone === "error" ? "status error" : "status", view.status);
     status.setAttribute("role", view.tone === "error" ? "alert" : "status");
+    status.setAttribute("aria-live", view.tone === "error" ? "assertive" : "polite");
     parts.push(status);
   }
   if (view.progress !== null && view.progress.total > 0) {
     const bar = make("div", "bar");
     bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-label", view.progressLabel);
     bar.setAttribute("aria-valuemin", "0");
     bar.setAttribute("aria-valuemax", String(view.progress.total));
     bar.setAttribute("aria-valuenow", String(view.progress.done));
@@ -78,7 +81,9 @@ export function renderPackViewer(doc: Document, root: HTMLElement, view: ViewerV
         image.setAttribute("alt", item.title);
         image.setAttribute("loading", "lazy");
         image.setAttribute("decoding", "async");
-        image.addEventListener("error", () => actions.linkFailed());
+        image.addEventListener("error", () => {
+          if (root.contains(image)) actions.linkFailed();
+        });
         entry.appendChild(image);
       }
       const caption = make("div", "caption");
@@ -86,10 +91,14 @@ export function renderPackViewer(doc: Document, root: HTMLElement, view: ViewerV
       if (item.meta !== null) {
         caption.appendChild(make("span", "meta", item.meta));
       }
+      if (item.check !== null) caption.appendChild(make("span", "check", item.check));
+      if (item.fidelity !== null) caption.appendChild(make("span", "fidelity", item.fidelity));
       entry.appendChild(caption);
       const url = item.downloadUrl;
       if (url !== null) {
-        entry.appendChild(button(view.downloadLabel, "action", () => actions.open(url)));
+        const download = button(item.downloadLabel, "action", () => actions.open(url));
+        download.setAttribute("aria-label", `${item.downloadLabel}: ${item.meta ?? item.title}`);
+        entry.appendChild(download);
       }
       list.appendChild(entry);
     }
@@ -98,8 +107,14 @@ export function renderPackViewer(doc: Document, root: HTMLElement, view: ViewerV
   if (view.note !== null) {
     parts.push(make("p", "note", view.note));
   }
-  if (view.seeAll !== null || (view.showOpenButton && view.openInCurvi !== null)) {
+  if (view.showRefresh || view.seeAll !== null || (view.showOpenButton && view.openInCurvi !== null)) {
     const footer = make("div", "foot");
+    if (view.showRefresh) {
+      const refresh = button(view.refreshLabel, "refresh", () => actions.refresh());
+      refresh.setAttribute("data-action", "refresh");
+      if (view.refreshing) refresh.setAttribute("disabled", "");
+      footer.appendChild(refresh);
+    }
     if (view.seeAll !== null) {
       footer.appendChild(button(view.seeAll, "link", () => actions.seeAll()));
     }
@@ -112,4 +127,5 @@ export function renderPackViewer(doc: Document, root: HTMLElement, view: ViewerV
 
   root.replaceChildren(...parts);
   root.setAttribute("data-layout", view.layout);
+  root.setAttribute("aria-busy", String(view.refreshing));
 }

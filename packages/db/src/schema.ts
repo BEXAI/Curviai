@@ -338,6 +338,9 @@ export const generationJobs = pgTable(
     // Unique per workspace (0019): two workspaces sending the same key never
     // collide, so a conflict never reveals another workspace's job.
     idempotencyKey: text("idempotency_key"),
+    // Immutable canonical input receipt. Only server connections may write
+    // it; legacy jobs have no receipt and cannot prove an exact replay.
+    requestFingerprint: text("request_fingerprint"),
     // The requested channels and mode, so idempotency replays can verify the
     // body matches and the progress board can show real channels.
     channels: jsonb("channels").$type<string[]>(),
@@ -362,6 +365,9 @@ export const generationJobs = pgTable(
     // the job from done back to generating. A cancel or settle changes it.
     // Null on rows from before 0019: those runs are checked by status alone.
     runKey: text("run_key"),
+    // Stable across fencing/recovery; a new terminal-to-active attempt rotates it.
+    logicalRunId: uuid("logical_run_id").notNull().defaultRandom(),
+    logicalRunOutcome: text("logical_run_outcome").$type<"done" | "failed" | "canceled">(),
     // The seller's note exactly as typed, and the structured intent intake
     // parsed from it (0020), so follow ups and retries keep what the seller
     // asked for. Both null on jobs without a note or from before 0020.
@@ -406,6 +412,7 @@ export const generationJobs = pgTable(
       .on(t.status, t.heartbeatAt)
       .where(sql`${t.status} IN ('queued', 'analyzing', 'planning', 'generating', 'qc', 'packaging')`),
     uniqueIndex("generation_jobs_workspace_idempotency_key_uq").on(t.workspaceId, t.idempotencyKey),
+    check("generation_jobs_request_fingerprint_format", sql`${t.requestFingerprint} IS NULL OR ${t.requestFingerprint} ~ '^[0-9a-f]{64}$'`),
     check(
       "generation_jobs_output_options_object",
       sql`${t.outputOptions} IS NULL OR jsonb_typeof(${t.outputOptions}) = 'object'`,
@@ -419,6 +426,7 @@ export const generationJobs = pgTable(
       sql`${t.restartPayload} IS NULL OR jsonb_typeof(${t.restartPayload}) = 'object'`,
     ),
     check("generation_jobs_restart_count_range", sql`${t.restartCount} >= 0`),
+    check("generation_jobs_logical_outcome", sql`${t.logicalRunOutcome} IS NULL OR ${t.logicalRunOutcome} IN ('done','failed','canceled')`),
     check("generation_jobs_runner_id_length", sql`${t.runnerId} IS NULL OR char_length(${t.runnerId}) <= 64`),
   ],
 );
@@ -1799,3 +1807,164 @@ export type NewDisposableEmailDomain = typeof disposableEmailDomains.$inferInser
 
 // --- workspace_invites (triggered): workspace_invites ---
 // --- end workspace_invites ---
+
+// Phase 21 resolution history contains no source media or signed download URLs.
+export type PackCaseCategory = "fidelity" | "compliance" | "missing_output" | "credits" | "other";
+export type PackCaseStatus = "received" | "reviewing" | "awaiting_seller" | "resolved";
+export const packCases = pgTable("pack_cases", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  jobId: uuid("job_id").notNull().references(() => generationJobs.id, { onDelete: "cascade" }),
+  reporterUserId: uuid("reporter_user_id").notNull(),
+  category: text("category").$type<PackCaseCategory>().notNull(),
+  status: text("status").$type<PackCaseStatus>().notNull().default("received"),
+  description: text("description").notNull(),
+  shotId: text("shot_id"),
+  versionId: uuid("version_id").references(() => assetVariants.id, { onDelete: "set null" }),
+  feedbackId: uuid("feedback_id").references(() => packFeedback.id, { onDelete: "set null" }),
+  sourceSupportRequestId: uuid("source_support_request_id"),
+  requestId: uuid("request_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("pack_cases_request_uq").on(t.workspaceId, t.reporterUserId, t.requestId),
+  uniqueIndex("pack_cases_open_category_uq").on(t.workspaceId, t.jobId, t.category).where(sql`${t.status} <> 'resolved'`),
+  index("pack_cases_workspace_updated_idx").on(t.workspaceId, t.updatedAt),
+  index("pack_cases_resolved_at_idx").on(t.resolvedAt),
+  check("pack_cases_category_check", sql`${t.category} IN ('fidelity','compliance','missing_output','credits','other')`),
+  check("pack_cases_status_check", sql`${t.status} IN ('received','reviewing','awaiting_seller','resolved')`),
+  check("pack_cases_description_length", sql`char_length(btrim(${t.description})) BETWEEN 10 AND 2000`),
+  check("pack_cases_shot_length", sql`${t.shotId} IS NULL OR char_length(${t.shotId}) BETWEEN 1 AND 160`),
+  check("pack_cases_resolution_check", sql`(${t.status} = 'resolved') = (${t.resolvedAt} IS NOT NULL)`),
+]);
+export const packCaseEvents = pgTable("pack_case_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  caseId: uuid("case_id").notNull().references(() => packCases.id, { onDelete: "cascade" }),
+  actorUserId: uuid("actor_user_id"),
+  actorKind: text("actor_kind").$type<"seller" | "operator" | "system">().notNull(),
+  status: text("status").$type<PackCaseStatus>(),
+  message: text("message").notNull(),
+  requestId: uuid("request_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("pack_case_events_request_uq").on(t.caseId, t.requestId),
+  index("pack_case_events_workspace_case_idx").on(t.workspaceId, t.caseId, t.createdAt),
+  check("pack_case_events_actor_check", sql`${t.actorKind} IN ('seller','operator','system')`),
+  check("pack_case_events_status_check", sql`${t.status} IS NULL OR ${t.status} IN ('received','reviewing','awaiting_seller','resolved')`),
+  check("pack_case_events_message_length", sql`char_length(btrim(${t.message})) BETWEEN 1 AND 2000`),
+]);
+/** Operator notes never have a customer SELECT policy or serializer. */
+export const packCaseNotes = pgTable("pack_case_notes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  caseId: uuid("case_id").notNull().references(() => packCases.id, { onDelete: "cascade" }),
+  actorUserId: uuid("actor_user_id").notNull(),
+  message: text("message").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("pack_case_notes_workspace_case_idx").on(t.workspaceId, t.caseId, t.createdAt),
+  check("pack_case_notes_message_length", sql`char_length(btrim(${t.message})) BETWEEN 1 AND 2000`),
+]);
+
+/** Optional calendar-month ceiling. Missing row or null limit means disabled. */
+export const workspaceCreditBudgets = pgTable("workspace_credit_budgets", {
+  workspaceId: uuid("workspace_id").primaryKey().references(() => workspaces.id, { onDelete: "cascade" }),
+  monthlyLimit: numeric("monthly_limit", { precision: 12, scale: 1, mode: "number" }),
+  updatedBy: uuid("updated_by").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [check("workspace_credit_budgets_limit", sql`${t.monthlyLimit} IS NULL OR (${t.monthlyLimit} >= 0 AND ${t.monthlyLimit} <= 1000000000)`)]);
+export const workspaceCreditBudgetAudit = pgTable("workspace_credit_budget_audit", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  actorUserId: uuid("actor_user_id").notNull(),
+  priorLimit: numeric("prior_limit", { precision: 12, scale: 1, mode: "number" }),
+  newLimit: numeric("new_limit", { precision: 12, scale: 1, mode: "number" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("workspace_credit_budget_audit_workspace_created_idx").on(t.workspaceId, t.createdAt),
+  check("workspace_credit_budget_audit_limits", sql`(${t.priorLimit} IS NULL OR (${t.priorLimit} >= 0 AND ${t.priorLimit} <= 1000000000)) AND (${t.newLimit} IS NULL OR (${t.newLimit} >= 0 AND ${t.newLimit} <= 1000000000))`),
+]);
+
+export type PackCompletionOutcome = "done" | "failed" | "canceled";
+export type WebhookDeliveryStatus = "pending" | "leased" | "succeeded" | "exhausted" | "canceled";
+export type WebhookDeliveryError = "unsafe_destination" | "dns_failed" | "timeout" | "response_too_large" | "redirect_refused" | "network_failed" | "http_error" | "key_unavailable" | "expired" | "disabled";
+/** Destination and encrypted signing material are server-only. */
+export const webhookEndpoints = pgTable("webhook_endpoints", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  createdBy: uuid("created_by").notNull(),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  enabled: boolean("enabled").notNull().default(false),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  keyId: text("key_id").notNull(),
+  encryptedSecret: text("encrypted_secret").notNull(),
+  revision: integer("revision").notNull().default(1),
+  verificationAttemptedAt: timestamp("verification_attempted_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("webhook_endpoints_workspace_idx").on(t.workspaceId),
+  check("webhook_endpoints_name_length", sql`char_length(btrim(${t.name})) BETWEEN 1 AND 80`),
+  check("webhook_endpoints_url_length", sql`char_length(${t.url}) BETWEEN 9 AND 2048 AND ${t.url} LIKE 'https://%'`),
+  check("webhook_endpoints_key_length", sql`char_length(${t.keyId}) BETWEEN 1 AND 100 AND char_length(${t.encryptedSecret}) BETWEEN 1 AND 4096`),
+  check("webhook_endpoints_revision", sql`${t.revision} > 0`),
+  check("webhook_endpoints_activation", sql`NOT ${t.enabled} OR (${t.verifiedAt} IS NOT NULL AND ${t.revokedAt} IS NULL)`),
+]);
+export const packCompletionEvents = pgTable("pack_completion_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  jobId: uuid("job_id").notNull().references(() => generationJobs.id, { onDelete: "cascade" }),
+  logicalRunId: uuid("logical_run_id").notNull(),
+  outcome: text("outcome").$type<PackCompletionOutcome>().notNull(),
+  packStatus: text("pack_status").$type<PackCompletionOutcome>().notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("pack_completion_events_job_run_uq").on(t.jobId, t.logicalRunId),
+  index("pack_completion_events_workspace_created_idx").on(t.workspaceId, t.createdAt),
+  check("pack_completion_events_outcome", sql`${t.outcome} IN ('done','failed','canceled') AND ${t.packStatus} IN ('done','failed','canceled')`),
+]);
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  endpointId: uuid("endpoint_id").notNull().references(() => webhookEndpoints.id, { onDelete: "cascade" }),
+  eventId: uuid("event_id").notNull().references(() => packCompletionEvents.id, { onDelete: "cascade" }),
+  endpointRevision: integer("endpoint_revision").notNull(),
+  status: text("status").$type<WebhookDeliveryStatus>().notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  replayCount: integer("replay_count").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  leaseToken: uuid("lease_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  lastStatusCode: integer("last_status_code"),
+  lastError: text("last_error").$type<WebhookDeliveryError>(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull().default(sql`now() + interval '72 hours'`),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("webhook_deliveries_endpoint_event_uq").on(t.endpointId, t.eventId),
+  index("webhook_deliveries_workspace_created_idx").on(t.workspaceId, t.createdAt),
+  index("webhook_deliveries_due_idx").on(t.status, t.nextAttemptAt),
+  index("webhook_deliveries_expiry_idx").on(t.expiresAt),
+  check("webhook_deliveries_status", sql`${t.status} IN ('pending','leased','succeeded','exhausted','canceled')`),
+  check("webhook_deliveries_counts", sql`${t.attempts} >= 0 AND ${t.replayCount} >= 0 AND ${t.endpointRevision} > 0`),
+  check("webhook_deliveries_http_status", sql`${t.lastStatusCode} IS NULL OR ${t.lastStatusCode} BETWEEN 100 AND 599`),
+  check("webhook_deliveries_error", sql`${t.lastError} IS NULL OR ${t.lastError} IN ('unsafe_destination','dns_failed','timeout','response_too_large','redirect_refused','network_failed','http_error','key_unavailable','expired','disabled')`),
+  check("webhook_deliveries_lease", sql`(${t.status} = 'leased') = (${t.leaseToken} IS NOT NULL AND ${t.leaseExpiresAt} IS NOT NULL)`),
+]);
+
+/** Keys selected for source retention are never reused. Kept until the
+ * workspace is deleted, including after successful R2 deletion, so an
+ * ambiguous/late storage response cannot delete a newly accepted reference. */
+export const retiredSourceObjects = pgTable("retired_source_objects", {
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  r2Key: text("r2_key").notNull(),
+  retiredAt: timestamp("retired_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.workspaceId, t.r2Key] }),
+  check("retired_source_objects_workspace_key", sql`starts_with(${t.r2Key}, 'ws/' || ${t.workspaceId}::text || '/') AND length(${t.r2Key}) > length('ws/' || ${t.workspaceId}::text || '/') AND position('..' in ${t.r2Key}) = 0 AND position(chr(92) in ${t.r2Key}) = 0 AND octet_length(${t.r2Key}) <= 1024`),
+]);

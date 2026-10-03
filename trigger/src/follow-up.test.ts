@@ -20,6 +20,7 @@ import {
   followUpShotsWithoutOverlays,
   numberFollowUpFiles,
   runPackFollowUp,
+  SOURCE_SELECTION_UNAVAILABLE,
   type PackFollowUpInput,
 } from "./follow-up";
 import {
@@ -160,6 +161,7 @@ describe("runPackFollowUp with an in memory store", () => {
     workspaceId: "ws-1",
     reason: "retry",
     shots: [shot],
+    sourceSelections: { m1: { version: 1, sourceMediaId: "m1", target: null, exclude: [], otherItems: false } },
     creditBudget: 0.5,
     channels: ["amazon"],
     sku: "MUG1",
@@ -180,6 +182,46 @@ describe("runPackFollowUp with an in memory store", () => {
     // Numbered after the two files amazon.secondary already holds.
     expect(store.followUps[0].files[0]).toMatchObject({ ref: shot.id, specId: "amazon.secondary", file: expect.stringMatching(/^MUG1\.PT03\./) });
     expect(store.states.at(-1)?.state).toBe("done");
+  });
+
+  it.each([undefined, { m1: { version: 2 } }, { m1: { version: 1, sourceMediaId: "other", target: null, exclude: [], otherItems: false } }])(
+    "refuses unreadable or missing source selections before generation",
+    async (sourceSelections) => {
+      const store = new InMemoryJobStore();
+      const generate = vi.fn();
+      const summary = await runPackFollowUp(input({ sourceSelections: sourceSelections as PackFollowUpInput["sourceSelections"] }), {
+        ...buildRuntimeDeps(), store, generator: { generate },
+      });
+      expect(summary).toMatchObject({ state: "stopped", error: SOURCE_SELECTION_UNAVAILABLE, chargedCredits: 0, releasedCredits: 0.5 });
+      expect(generate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("restores exact inventory pieces, exclusions and kept-photo guards and persists them again", async () => {
+    const selection = {
+      version: 1 as const, basis: "first_run" as const, sourceMediaId: "m1", exclude: ["blue bowl"], otherItems: true,
+      target: {
+        label: "red mug", box: { x: 0.1, y: 0.1, width: 0.3, height: 0.6 },
+        keep: [{ x: 0.1, y: 0.1, width: 0.3, height: 0.6 }], touching: true,
+        others: [{ label: "blue bowl", box: { x: 0.6, y: 0.2, width: 0.3, height: 0.5 } }],
+      },
+    };
+    const store = new InMemoryJobStore();
+    const seen: ShotGenerateArgs[] = [];
+    const summary = await runPackFollowUp(input({ sourceSelections: { m1: selection } }), {
+      ...buildRuntimeDeps(), store,
+      generator: { generate: async (args) => { seen.push(args); throw new ShotUnavailableError("fixture refusal"); } },
+    });
+    expect(summary.chargedCredits).toBe(0);
+    expect(seen[0].target).toEqual(selection.target);
+    expect(seen[0].otherItems).toBe(true);
+    expect(store.assets.at(-1)?.sourceSelection).toEqual(selection);
+    const generate = vi.fn();
+    const unreadable = { ...selection, target: { ...selection.target, newSelectionRule: true } };
+    expect(await runPackFollowUp(input({ sourceSelections: { m1: unreadable } }), {
+      ...buildRuntimeDeps(), store: new InMemoryJobStore(), generator: { generate },
+    })).toMatchObject({ state: "stopped", error: SOURCE_SELECTION_UNAVAILABLE });
+    expect(generate).not.toHaveBeenCalled();
   });
 
   it("hands the stored output options to every shot and stops before any spend on unreadable ones", async () => {
@@ -344,6 +386,7 @@ describe("runPackFollowUp against the ledger", () => {
       workspaceId: ws,
       reason: "retry",
       shots: [shot],
+      sourceSelections: { [shot.sourceMediaId]: { version: 1, sourceMediaId: shot.sourceMediaId, target: null, exclude: [], otherItems: false } },
       creditBudget: shot.credits,
       channels: ["amazon", "shopify"],
       sku: "MUG1",
@@ -501,6 +544,7 @@ describe("runPackFollowUp carries the first run's context (reviewer items 2 and 
     workspaceId: "ws-ctx",
     reason: "add_angle",
     shots: [shotFor("s04_alt_angle_white")],
+    sourceSelections: { m1: { version: 1, sourceMediaId: "m1", target: null, exclude: [], otherItems: false } },
     creditBudget: 0.5,
     channels: ["amazon", "meta"],
     sku: "MUG1",

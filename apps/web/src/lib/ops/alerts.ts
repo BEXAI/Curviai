@@ -110,7 +110,10 @@ export async function evaluateOpsAlerts(db: Db, options: OpsAlertSignals & {
       await tx.insert(platformSettings).values({ key: MEMORY_KEY, value: ticks, updatedAt: now }).onConflictDoUpdate({ target: platformSettings.key, set: { value: ticks, updatedAt: now } });
       if (ticks >= opsAlertPolicy.memoryHighTicks) add("memory_high", "all", { consecutiveTicks: ticks });
       for (const code of new Set(options.healthWarnings)) {
-        if (code === "db_size_high" || code === "restore_drill_overdue" || /^(cron_overdue|cron_never_ran):/.test(code)) add("health_warning", code);
+        // Older runtimes may still report the retired backup plan. Keep its
+        // alert history without opening or renewing those requirements.
+        if (code === "cron_overdue:backup" || code === "cron_never_ran:backup") continue;
+        if (code === "db_size_high" || /^(cron_overdue|cron_never_ran):/.test(code)) add("health_warning", code);
       }
     }
     if (options.reconciledJobs !== undefined) {

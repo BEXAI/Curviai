@@ -6,6 +6,7 @@
 
 import type { Shot } from "../schemas";
 import { growthPlatformSettingSeedRows } from "./growth";
+import { creditPlanningPolicy } from "./credit-planning";
 
 export const creditCosts = {
   /** White main, cutout, resize or sweep. */
@@ -472,6 +473,8 @@ export interface PlatformSettingSeedRow {
  * grant_signup_credits function pays once a user's email is confirmed. */
 export const platformSettingSeedRows: PlatformSettingSeedRow[] = [
   { key: "free_signup_credits", value: tierByKey("free").creditsOnce },
+  { key: "credit_budget_period", value: creditPlanningPolicy.period, keepStored: true },
+  { key: "credit_budget_max_monthly", value: creditPlanningPolicy.maxMonthlyCredits, keepStored: true },
   // Operator switches are never seeded (P20-20): the output options kill
   // switch is ops:output_options_enabled, read through opsSwitch with its
   // default in operations.ts, and the loader refuses any ops: row.

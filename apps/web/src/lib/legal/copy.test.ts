@@ -79,6 +79,12 @@ describe("founder supplied facts (decision 9)", () => {
   });
 
   it("prints the facts once the founder sets them", () => {
+    expect(entitySentence(LEGAL_FACTS)).toBe(
+      "Curvi is run by AIManagement Inc., 131 Continental Drive, Suite 305, Newark New Castle, DE 19713.",
+    );
+    expect(LEGAL_FACTS.entity.governingLaw).toBeNull();
+    expect(isPending(governingLawSentence(LEGAL_FACTS))).toBe(true);
+    expect(pendingLegalFacts(LEGAL_FACTS)).toEqual(["entity.governingLaw"]);
     expect(entitySentence(SET)).toBe(
       "Curvi is run by Curvi Example LLC, 1 Example Street, Springfield, IL 62701, United States.",
     );

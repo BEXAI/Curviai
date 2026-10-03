@@ -13,6 +13,9 @@ import {
 } from "@/components/app/billing-actions";
 import { CancelFlow } from "@/components/app/cancel-flow";
 import { BillingHistory } from "@/components/app/billing-history";
+import { CreditPlanning } from "@/components/app/credit-planning";
+import { readCreditPlanning, demoCreditPlanning } from "@/lib/billing/credit-planning";
+import { getDb } from "@/lib/services/db";
 import { ScheduledPlanButton } from "@/components/app/scheduled-plan";
 import { RenewalTerms } from "@/components/marketing/renewal-terms";
 import { hasStripeApiKey, isCheckoutOpen } from "@/lib/env";
@@ -41,7 +44,7 @@ import { firstRenewal, showTaxLine, TAX_LINE } from "@/lib/billing/renewal-terms
 import { isStripeTaxEnabled } from "@/lib/billing/stripe";
 import { needsCardUpdate, pastDueMessage } from "@/lib/billing/subscription-status";
 import { CREDIT_TERMS_SENTENCE } from "@/lib/marketing-facts";
-import { getServices } from "@/lib/services";
+import { getServices, isDbMode } from "@/lib/services";
 
 export const metadata: Metadata = { title: "Billing" };
 
@@ -86,6 +89,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   const planName = tierDisplayName(workspace.plan);
   const stripeLive = isCheckoutOpen();
   const canBill = canManageBilling(workspace.role);
+  const planning = canBill ? isDbMode() ? await readCreditPlanning(getDb(), workspace.id) : demoCreditPlanning(workspace.creditBalance) : null;
   // The portal needs only the API key and a customer (portal/route.ts), so
   // a subscriber can update a card or cancel even while checkout is closed
   // by a readiness problem (law and copy review major 6).
@@ -247,6 +251,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
         </div>
       </section>
 
+      {planning ? <CreditPlanning initial={planning} canChange={workspace.role === "owner"} demo={!isDbMode()} /> : null}
       <BillingHistory canViewInvoices={canBill} />
 
       {cancelPlan ? (

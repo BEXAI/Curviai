@@ -32,11 +32,17 @@ vi.mock("@/lib/jobs/enqueue", () => ({
 const storedObjects = vi.hoisted(() => new Map<string, Buffer>());
 vi.mock("@/lib/r2", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/r2")>();
-  return { ...actual, getObjectBytes: vi.fn(async (key: string) => storedObjects.get(key) ?? null) };
+  return { ...actual,
+    getObjectBytes: vi.fn(async (key: string) => storedObjects.get(key) ?? null),
+    getObjectBytesBounded: vi.fn(async (key: string) => storedObjects.get(key) ?? null),
+  };
 });
 
 import { publicJobError } from "@/lib/job-copy";
 import { DbService, ProvisioningError } from "./db";
+import { storePackPhotos } from "@/lib/api-v1/photos";
+import { jobRequestFingerprint } from "./job-request";
+import type { CreateJobInput } from "./types";
 
 // DbService against the real migrations in PGlite: the stale run reconciler
 // (Update.md 3.1 and 3.2), the transactional createJob (6.3), the board's
@@ -130,6 +136,161 @@ afterAll(async () => {
 
 beforeEach(() => {
   enqueued.length = 0;
+});
+
+describe("DbService accepted request receipts", () => {
+  it("refuses semantic changes under the same key and replays after mutable product edits", async () => {
+    const w = await makeWorkspace(500);
+    const input: CreateJobInput = {
+      productId: "new", channels: ["amazon.main"], mode: "listing", idempotencyKey: `receipt-${w.id}`,
+      newProductTitle: "Mug", userDescription: "Blue ceramic mug", sku: "MUG",
+      boxContents: ["Mug"], comparisonFacts: ["300 ml"], endorsements: ["Best mug"],
+      uploads: [
+        { key: srcKey(w.id, "front"), sha256: SHA, kind: "image", angle: "front" },
+        { key: srcKey(w.id, "back"), sha256: "b".repeat(64), kind: "image", angle: "back" },
+      ],
+    };
+    const svc = service(w.user);
+    const first = await svc.createJob(w.id, input);
+    expect(first.outcome).toBe("created");
+    if (first.outcome !== "created") return;
+    const changes: Array<Partial<CreateJobInput>> = [
+      { newProductTitle: "Cup" }, { sku: "CUP" }, { boxContents: ["Mug", "Lid"] },
+      { comparisonFacts: ["500 ml"] }, { endorsements: ["Top pick"] }, { answers: { mood: "gym" } },
+      { sellerAnswers: { key: input.uploads![0].key, picks: { target: "item:2" } } },
+      { uploads: [{ ...input.uploads![0], angle: "back" }, input.uploads![1]] },
+      { uploads: [{ ...input.uploads![0], targetBox: { x: 0, y: 0, width: 0.5, height: 1 } }, input.uploads![1]] },
+      { uploads: input.uploads!.slice(0, 1) }, { uploads: [] }, { uploads: [...input.uploads!].reverse() },
+    ];
+    for (const change of changes) {
+      expect(await svc.createJob(w.id, { ...input, ...change }), JSON.stringify(change)).toEqual({ outcome: "conflict", existingJobId: first.job.id });
+    }
+    await db.update(products).set({ title: "Renamed later", sku: "LATER", boxContents: ["Other details"] }).where(eq(products.id, first.job.productId));
+    expect(await svc.createJob(w.id, input)).toMatchObject({ outcome: "replayed", job: { id: first.job.id } });
+    expect(first.job).not.toHaveProperty("requestFingerprint");
+    expect((await countRows(w.id)).jobs).toBe(1);
+    expect(enqueued).toHaveLength(1);
+  });
+
+  it("returns an existing-pack conflict for a legacy row without inventing missing request data", async () => {
+    const w = await makeWorkspace(500);
+    const input: CreateJobInput = { productId: "new", channels: ["amazon.main"], mode: "listing", idempotencyKey: `legacy-${w.id}`,
+      uploads: [{ key: srcKey(w.id, "legacy"), sha256: SHA, kind: "image" }] };
+    const svc = service(w.user);
+    const first = await svc.createJob(w.id, input);
+    expect(first.outcome).toBe("created");
+    if (first.outcome !== "created") return;
+    await db.update(generationJobs).set({ requestFingerprint: null }).where(eq(generationJobs.id, first.job.id));
+    const before = await balanceOf(w.id);
+    expect(await svc.createJob(w.id, input)).toEqual({ outcome: "conflict", existingJobId: first.job.id });
+    expect(await balanceOf(w.id)).toBe(before);
+    expect((await countRows(w.id)).jobs).toBe(1);
+  });
+
+  it("keeps the same API photo on two new products and replays retries with fresh upload keys", async () => {
+    const w = await makeWorkspace(500);
+    const svc = service(w.user);
+    const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=", "base64");
+    const upload = async () => {
+      const photos = await storePackPhotos(w.id, [{ data: bytes.toString("base64") }], { store: false });
+      if (!photos.ok) throw new Error(photos.message);
+      return photos.uploads;
+    };
+    const base = { productId: "new", channels: ["amazon.main"], mode: "listing" as const, origin: "api" as const };
+    const firstInput = { ...base, idempotencyKey: `photo-a-${w.id}`, uploads: await upload() };
+    const secondInput = { ...base, idempotencyKey: `photo-b-${w.id}`, uploads: await upload() };
+    const first = await svc.createJob(w.id, firstInput);
+    const second = await svc.createJob(w.id, secondInput);
+    expect(first.outcome).toBe("created");
+    expect(second.outcome).toBe("created");
+    if (first.outcome !== "created" || second.outcome !== "created") return;
+    expect(firstInput.uploads[0].key).not.toBe(secondInput.uploads[0].key);
+    const media = await db.select().from(sourceMedia).where(eq(sourceMedia.workspaceId, w.id));
+    expect(new Set(media.map((row) => row.productId))).toEqual(new Set([first.job.productId, second.job.productId]));
+    expect(await svc.createJob(w.id, { ...firstInput, uploads: await upload() })).toMatchObject({ outcome: "replayed", job: { id: first.job.id } });
+    for (const productId of [first.job.productId, second.job.productId]) {
+      expect(await svc.createJob(w.id, { ...base, productId, idempotencyKey: `reuse-${productId}` })).toMatchObject({ outcome: "created" });
+    }
+    expect((await countRows(w.id)).jobs).toBe(4);
+  });
+
+  it("returns the previous window's legacy pack without another hold or enqueue", async () => {
+    const w = await makeWorkspace(500);
+    const input: CreateJobInput = {
+      productId: "new", channels: ["amazon.main"], mode: "listing", origin: "api", audience: "assistant",
+      idempotencyKey: `previous-${w.id}`,
+      uploads: [{ key: srcKey(w.id, "previous-attempt"), sha256: SHA, kind: "image" }],
+    };
+    const svc = service(w.user);
+    const first = await svc.createJob(w.id, input);
+    expect(first.outcome).toBe("created");
+    if (first.outcome !== "created") throw new Error("fixture pack was not created");
+    await db.update(generationJobs).set({ requestFingerprint: null }).where(eq(generationJobs.id, first.job.id));
+    const before = await balanceOf(w.id);
+    const lifecycle = { retainUploads: false };
+    const retry = await svc.createJob(w.id, {
+      ...input, idempotencyKey: `current-${w.id}`, previousIdempotencyKeys: [input.idempotencyKey],
+      uploads: [{ ...input.uploads![0], key: srcKey(w.id, "current-attempt") }],
+    }, lifecycle);
+    expect(retry).toEqual({ outcome: "conflict", existingJobId: first.job.id });
+    expect(lifecycle.retainUploads).toBe(false);
+    expect(await balanceOf(w.id)).toBe(before);
+    expect(await countRows(w.id)).toEqual({ products: 2, media: 1, jobs: 1 });
+    const ledger = await db.select().from(creditLedger).where(eq(creditLedger.workspaceId, w.id));
+    expect(ledger.filter(row => row.reason === "reserve")).toHaveLength(1);
+    expect(enqueued).toHaveLength(1);
+  });
+
+  it("replays a matching previous receipt and skips a proven different request", async () => {
+    const w = await makeWorkspace(500);
+    const input: CreateJobInput = {
+      productId: "new", channels: ["amazon.main"], mode: "listing", origin: "api",
+      idempotencyKey: `previous-${w.id}`, newProductTitle: "Mug",
+      uploads: [{ key: srcKey(w.id, "first-attempt"), sha256: SHA, kind: "image" }],
+    };
+    const svc = service(w.user);
+    const first = await svc.createJob(w.id, input);
+    expect(first.outcome).toBe("created");
+    if (first.outcome !== "created") throw new Error("fixture pack was not created");
+    const next = {
+      ...input, idempotencyKey: `current-${w.id}`, previousIdempotencyKeys: [input.idempotencyKey],
+      uploads: [{ ...input.uploads![0], key: srcKey(w.id, "next-attempt") }],
+    };
+    const before = await balanceOf(w.id);
+    expect(await svc.createJob(w.id, next)).toMatchObject({ outcome: "replayed", job: { id: first.job.id } });
+    expect(await balanceOf(w.id)).toBe(before);
+    expect(await svc.createJob(w.id, { ...next, newProductTitle: "Different request" })).toMatchObject({ outcome: "created" });
+    expect((await countRows(w.id)).jobs).toBe(2);
+    expect(enqueued).toHaveLength(2);
+  });
+
+  it("fails closed if storage returns a malformed previous receipt", async () => {
+    const w = await makeWorkspace(500);
+    const input: CreateJobInput = {
+      productId: "new", channels: ["amazon.main"], mode: "listing", origin: "api",
+      idempotencyKey: `previous-${w.id}`,
+      uploads: [{ key: srcKey(w.id, "malformed-receipt"), sha256: SHA, kind: "image" }],
+    };
+    const svc = service(w.user);
+    const first = await svc.createJob(w.id, input);
+    expect(first.outcome).toBe("created");
+    if (first.outcome !== "created") throw new Error("fixture pack was not created");
+    const [stored] = await db.select().from(generationJobs).where(eq(generationJobs.id, first.job.id));
+    const before = await balanceOf(w.id);
+    // The current schema prevents malformed writes. Simulate an unexpected
+    // legacy storage value at the read boundary without weakening that check.
+    const read = vi.spyOn(db.query.generationJobs, "findFirst").mockResolvedValueOnce({ ...stored, requestFingerprint: "invalid" });
+    try {
+      expect(await svc.createJob(w.id, {
+        ...input, idempotencyKey: `current-${w.id}`, previousIdempotencyKeys: [input.idempotencyKey],
+      })).toEqual({ outcome: "conflict", existingJobId: first.job.id });
+    } finally {
+      read.mockRestore();
+    }
+    expect(await balanceOf(w.id)).toBe(before);
+    expect((await countRows(w.id)).jobs).toBe(1);
+    expect(enqueued).toHaveLength(1);
+  });
 });
 
 describe("DbService.getJob stale run reconciler", () => {
@@ -384,21 +545,21 @@ describe("DbService.createJob writes everything or nothing (Update.md 6.3)", () 
       .insert(generationJobs)
       .values({ workspaceId: w.id, productId: w.productId, status: "queued", idempotencyKey: key, channels: CHANNELS, mode: "listing" })
       .returning();
-    // The winner saved the same photo on its product.
+    // The winner saved the same photo on its product and persisted the
+    // complete accepted request before this request reached the insert.
     await db
       .insert(sourceMedia)
       .values({ workspaceId: w.id, productId: w.productId, r2Key: srcKey(w.id, "late"), kind: "image", sha256: SHA });
     const before = await countRows(w.id);
+    const input: CreateJobInput = {
+      productId: "new", channels: CHANNELS, mode: "listing", idempotencyKey: key,
+      uploads: [{ key: srcKey(w.id, "late"), sha256: SHA, kind: "image" }],
+    };
+    await db.update(generationJobs).set({ requestFingerprint: jobRequestFingerprint(input) }).where(eq(generationJobs.id, winner.id));
     const svc = service(w.user);
     const spy = vi.spyOn(svc as unknown as { replayFor: () => Promise<unknown> }, "replayFor").mockResolvedValueOnce(null);
 
-    const result = await svc.createJob(w.id, {
-      productId: "new",
-      channels: CHANNELS,
-      mode: "listing",
-      idempotencyKey: key,
-      uploads: [{ key: srcKey(w.id, "late"), sha256: SHA, kind: "image" }],
-    });
+    const result = await svc.createJob(w.id, input);
 
     expect(spy).toHaveBeenCalledTimes(2);
     expect(result.outcome).toBe("replayed");

@@ -22,6 +22,9 @@ export type RetentionRowKey =
   | "temporary_files"
   | "free_preview"
   | "assistant_connections"
+  | "resolution_cases"
+  | "credit_budgets"
+  | "completion_webhooks"
   | "account"
   | "renewal_consent"
   | "billing_emails"
@@ -79,6 +82,27 @@ export function retentionRows(facts: LegalFacts): RetentionRow[] {
     howLong:
       "We keep them until you close your account, including after you disconnect, so a disconnected assistant cannot come back without asking you.",
   });
+  if (r.resolvedCaseDays !== null) {
+    rows.push({
+      key: "resolution_cases",
+      what: "Pack help reports, replies and related internal notes",
+      howLong: `We keep open reports while your workspace exists. We delete resolved reports and their history after ${countOf(r.resolvedCaseDays, "day")}, or when the workspace is deleted. A report does not extend the lifetime of your original photos.`,
+    });
+  }
+  if (r.creditBudgetAuditDays !== null) {
+    rows.push({
+      key: "credit_budgets",
+      what: "Optional credit budget settings and changes",
+      howLong: `We keep the current setting while your workspace exists and its change history for ${countOf(r.creditBudgetAuditDays, "day")}. Deleting the workspace deletes both.`,
+    });
+  }
+  if (r.completionWebhookDays !== null) {
+    rows.push({
+      key: "completion_webhooks",
+      what: "Completion webhook settings and delivery records",
+      howLong: `We keep endpoint settings until you remove them or delete the workspace. We delete completion events and delivery records after ${countOf(r.completionWebhookDays, "day")}. We do not store receiver response bodies.`,
+    });
+  }
   rows.push({
     key: "account",
     what: "Your account and workspace",

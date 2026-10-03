@@ -143,7 +143,7 @@ describe("each check fails when its rule is broken", () => {
     ["reviewer instructions in the ZIP", (m) => (m.extensions["com.openai"].reviewer_instructions = "Sign in"), "reviewer_instructions: is refused"],
     ["hooks", (m) => (m.extensions["com.openai"].hooks = "./hooks/hooks.json"), 'extensions["com.openai"].hooks: is not part of this plugin'],
     ["an app manifest", (m) => (m.extensions["com.openai"].apps = "./.app.json"), 'extensions["com.openai"].apps: is not part of this plugin'],
-    ["screenshots", (m) => (ui(m).screenshots = ["./assets/one.png"]), "interface.screenshots: must be left out"],
+    ["screenshots without UI evidence", (m) => (ui(m).screenshots = ["./assets/one.png"]), "interface.screenshots: needs a supplied MCP snapshot"],
     ["a light brand color under 2:1 on white", (m) => (ui(m).brandColor = "#FCE7F3"), "interface.brandColor: has"],
     ["a dark brand color under 2:1 on #212121", (m) => (ui(m).brandColorDark = "#384153"), "interface.brandColorDark: has"],
     ["a brand color the site does not define", (m) => (ui(m).brandColor = "#123456"), "is not one of the site's brand tokens"],

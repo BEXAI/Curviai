@@ -8,6 +8,20 @@ const variation = { ...original, assetId: "a2", r2Key: "ws/w/jobs/j/files/variat
 const fidelity = { meanDeltaE: 0.84, maxDeltaE: 3.2, exactByteShare: 0.4123, maskArea: 52000, threshold: 3, maxDeltaELimit: 10, kind: "main", exact: false };
 
 describe("picked compliance reports", () => {
+  it.each([undefined, 1, 2])("preserves the stored version %s and nested metadata while replacing only picked files", (version) => {
+    const fresh = { ...old, ref: "picked-ref", checks: [{ ...old.checks[0], measured: 150, provenance: { method: "pixel-check" } }] };
+    const raw = { ...(version === undefined ? {} : { version }), channels: ["shopify"], files: [old],
+      intent: { featured: ["Mug"], removed: [], futureIntent: { sellerConfirmed: true } },
+      inventory: [{ photo: 1, items: [{ label: "Mug", color: "blue", shape: "round", status: "featured", confidence: 0.99 }] }],
+      dropped: [{ file: "extra.jpg", channel: "shopify", specId: "shopify.product", reason: "file limit", ref: "dropped-ref", futureReason: { limit: 8 } }],
+      producer: { revision: "future-compatible" },
+    };
+    const selected = pickedComplianceReport(raw, [{ ...original, picked: false }, variation],
+      [{ id: variation.assetId, qc: { fileReports: { [variation.r2Key]: fresh } } }]);
+    expect(selected).toEqual({ ...raw, files: [fresh] });
+    if (version === undefined) expect(selected).not.toHaveProperty("version");
+  });
+
   it("follows picks using each exact delivered file's checks, including followups", () => {
     const fresh = { ...old, checks: [{ name: "bytes", pass: true, measured: 150, limit: "<= 200" }], fidelity };
     const qc = { fileReports: { [variation.r2Key]: fresh } };

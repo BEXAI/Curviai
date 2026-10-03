@@ -1,5 +1,7 @@
 # Phase 10: full stack update, batch 1 (truthful, billable, reliable)
 
+Historical phase plan: its migration 0011–0013 rollout instructions and then-required dump are retained as evidence of that past rollout. The user retired encrypted-backup planning on 2026-10-03; these are not current prerequisites or instructions to replay migrations. See [current migration policy](../ops/RUNBOOK.md). Local disk/GitHub preserve code only, not live database data.
+
 Date: 2026-09-28. Branch: `full-stack-update`. Source: the nine agent discovery sweep of 2026-09-28 (215 findings, file:line evidence each), grouped into 11 plan sections. This batch implements the code side of milestones M0 (truthful and safe to sell), M1 (first dollar) and M2 (reliable delivery) that needs no external account and no pricing decision.
 
 ## Out of scope for this batch

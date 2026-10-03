@@ -57,7 +57,7 @@ import {
   type SubscriptionSyncOutcome,
   type SubscriptionUpdate,
 } from "./stripe-webhook";
-import type { EndpointCheck } from "./signals";
+import type { EndpointCheck, ReconcileCursor } from "./signals";
 
 /** Stripe's limit on `types` in one events.list call (docs/verification.md). */
 export const STRIPE_EVENT_TYPES_PER_LIST = 20;
@@ -129,19 +129,16 @@ export interface ReconcileResult {
   /** Events for a workspace that no longer exists. */
   acknowledged: ReconcileFailure[];
   failed: ReconcileFailure[];
-  /** More events were in the window than one run reads; the oldest
-   * maxEvents were processed, and the next run carries on from
-   * `resumeFrom` (security review 8, law and copy review 18). */
+  /** Discovery or replay still has work in the frozen window. */
   truncated: boolean;
-  /** Created time (ISO) of the last event processed when truncated, so the
-   * next run starts there; null when the whole window was processed. */
+  /** Human-readable progress only; event IDs, not seconds, resume work. */
   resumeFrom: string | null;
+  cursor: ReconcileCursor | null;
   /** Created time of the newest handled event in the window. */
   newestEventAt: string | null;
 }
 
-/** One run lists at most this many times maxEvents before it stops paging
- * (a bound on memory; the next runs carry on from resumeFrom). */
+/** One discovery pass lists at most this many times maxEvents. */
 export const RECONCILE_LIST_FACTOR = 10;
 
 export interface ReconcileInput {
@@ -150,6 +147,10 @@ export interface ReconcileInput {
   priceTable: PriceTable;
   /** Events created at or after this time are replayed. */
   since: Date;
+  /** Freeze out the current second so newly arriving events wait for the
+   * next window instead of shifting this pass's chronological boundary. */
+  until?: Date;
+  cursor?: ReconcileCursor | null;
   /** At most this many events a run (seed billingReconcile.maxEventsPerRun). */
   maxEvents: number;
   /** Read only lookups, so subscription replays write Stripe's current state. */
@@ -169,48 +170,66 @@ export interface ReconcileInput {
   logger?: Pick<Console, "warn">;
 }
 
-function chunks<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
-}
-
 /**
- * Lists the handled events since `since`. Stripe pages newest first, so the
- * whole window is listed (up to `cap`, past which the newest are left for
- * a later run) and the caller sorts it oldest first.
+ * Find the oldest event before applying any newer partial window. Discovery
+ * persists its starting_after cursor at the cap. Once the bottom is reached,
+ * ending_before walks back toward newer events, reversing each page into
+ * chronological order. Event IDs preserve progress inside one created second.
+ * Stripe documents both directions at https://docs.stripe.com/api/pagination.
  */
-async function listEvents(
-  stripe: ReconcileStripeClient,
-  since: Date,
-  cap: number,
-): Promise<{ events: Stripe.Event[]; truncated: boolean }> {
-  const gte = Math.floor(since.getTime() / 1000);
+async function nextBatch(input: ReconcileInput, initial: ReconcileCursor): Promise<{
+  events: Stripe.Event[]; cursor: ReconcileCursor | null; newestEventAt: string | null;
+}> {
+  const cursor = { ...initial };
+  // One ordered stream is essential for grant/refund ordering. If the handled
+  // set outgrows Stripe's filter limit, scan all types and ignore the others.
+  const types = HANDLED_STRIPE_EVENTS.length <= STRIPE_EVENT_TYPES_PER_LIST ? { types: [...HANDLED_STRIPE_EVENTS] } : {};
+  const params = { ...types, created: {
+    gte: Math.floor(Date.parse(cursor.since) / 1000), lt: Math.floor(Date.parse(cursor.until) / 1000),
+  } };
+  const at = (event: Stripe.Event) => new Date(event.created * 1000).toISOString();
   const collected: Stripe.Event[] = [];
-  let truncated = false;
-  for (const types of chunks(HANDLED_STRIPE_EVENTS, STRIPE_EVENT_TYPES_PER_LIST)) {
-    let startingAfter: string | undefined;
+  if (cursor.phase === "seek") {
+    const cap = input.maxEvents * RECONCILE_LIST_FACTOR;
     for (;;) {
-      if (collected.length >= cap) {
-        truncated = true;
-        break;
+      const page = await input.stripe.events.list({ ...params,
+        limit: Math.min(STRIPE_LIST_PAGE_SIZE, cap - collected.length),
+        ...(cursor.position ? { starting_after: cursor.position } : {}),
+      }, { ...STRIPE_LOOKUP_OPTIONS });
+      if (!page.data.length) {
+        if (cursor.newestEventId) throw new Error("The billing discovery cursor no longer resolves inside its window.");
+        return { events: [], cursor: null, newestEventAt: null };
       }
-      const page = await stripe.events.list(
-        {
-          types: [...types],
-          created: { gte },
-          limit: Math.min(STRIPE_LIST_PAGE_SIZE, cap - collected.length),
-          ...(startingAfter ? { starting_after: startingAfter } : {}),
-        },
-        { ...STRIPE_LOOKUP_OPTIONS },
-      );
+      cursor.newestEventId ??= page.data[0].id;
+      cursor.newestEventAt ??= at(page.data[0]);
       collected.push(...page.data);
       const last = page.data[page.data.length - 1];
-      if (!page.has_more || !last) break;
-      startingAfter = last.id;
+      cursor.position = last.id;
+      cursor.positionAt = at(last);
+      if (!page.has_more) break;
+      if (collected.length >= cap) return { events: [], cursor, newestEventAt: cursor.newestEventAt };
     }
+    const events = collected.reverse().slice(0, input.maxEvents);
+    const last = events[events.length - 1];
+    cursor.phase = "replay";
+    cursor.position = last.id;
+    cursor.positionAt = at(last);
+    return { events, cursor: last.id === cursor.newestEventId ? null : cursor, newestEventAt: cursor.newestEventAt };
   }
-  return { events: collected, truncated };
+  while (collected.length < input.maxEvents) {
+    const page = await input.stripe.events.list({ ...params, ending_before: cursor.position!,
+      limit: Math.min(STRIPE_LIST_PAGE_SIZE, input.maxEvents - collected.length),
+    }, { ...STRIPE_LOOKUP_OPTIONS });
+    if (!page.data.length) throw new Error("The billing replay cursor no longer resolves inside its window.");
+    for (const event of [...page.data].reverse()) {
+      collected.push(event);
+      cursor.position = event.id;
+      cursor.positionAt = at(event);
+      if (event.id === cursor.newestEventId) return { events: collected, cursor: null, newestEventAt: cursor.newestEventAt };
+    }
+    if (!page.has_more) throw new Error("The billing replay ended before its original newest event.");
+  }
+  return { events: collected, cursor, newestEventAt: cursor.newestEventAt };
 }
 
 function metadataWorkspace(metadata: unknown): string | null {
@@ -248,20 +267,16 @@ function errorMessage(error: unknown): string {
   return text.slice(0, 200);
 }
 
-/** Replays the handled Stripe events since `since`, oldest first. When the
- * window holds more than maxEvents, the oldest maxEvents are processed and
- * `resumeFrom` says where the next run starts. */
+/** Replays a bounded batch, oldest first, with durable event-ID progress. */
 export async function reconcileStripe(input: ReconcileInput): Promise<ReconcileResult> {
-  const listed = await listEvents(input.stripe, input.since, input.maxEvents * RECONCILE_LIST_FACTOR);
-  // Oldest first, so a grant lands before a refund of it; events from the
-  // same second keep Stripe's order reversed.
-  const all = listed.events
-    .map((event, index) => ({ event, index }))
-    .sort((a, b) => a.event.created - b.event.created || b.index - a.index)
-    .map(({ event }) => event);
-  const ordered = all.slice(0, input.maxEvents);
-  const truncated = listed.truncated || all.length > ordered.length;
-  const lastProcessed = ordered[ordered.length - 1];
+  if (!Number.isSafeInteger(input.maxEvents) || input.maxEvents < 1) throw new Error("Use a positive reconcile event limit.");
+  const initial: ReconcileCursor = input.cursor ?? {
+    version: 1, phase: "seek", since: input.since.toISOString(),
+    until: new Date(Math.floor((input.until ?? new Date()).getTime() / 1000) * 1000).toISOString(),
+    position: null, positionAt: null, newestEventId: null, newestEventAt: null,
+  };
+  const batch = await nextBatch(input, initial);
+  const ordered = batch.events;
 
   const result: ReconcileResult = {
     scanned: ordered.length,
@@ -271,15 +286,12 @@ export async function reconcileStripe(input: ReconcileInput): Promise<ReconcileR
     appliedEvents: [],
     acknowledged: [],
     failed: [],
-    truncated,
-    resumeFrom: truncated && lastProcessed ? new Date(lastProcessed.created * 1000).toISOString() : null,
-    newestEventAt: null,
+    truncated: batch.cursor !== null,
+    resumeFrom: batch.cursor?.positionAt ?? null,
+    cursor: batch.cursor,
+    newestEventAt: batch.newestEventAt,
   };
-  const newest = all[all.length - 1];
-  if (newest) {
-    result.newestEventAt = new Date(newest.created * 1000).toISOString();
-  }
-  if (truncated) {
+  if (result.truncated) {
     (input.logger ?? console).warn(
       JSON.stringify({ msg: "billing reconcile: more events than one run reads, the next run carries on", resumeFrom: result.resumeFrom }),
     );
@@ -355,6 +367,13 @@ export async function reconcileStripe(input: ReconcileInput): Promise<ReconcileR
         );
       }
     }
+  }
+  // A processing failure must not move the cursor past a missing grant (or a
+  // failed referral/acknowledgment). Successful writes dedupe on the retry.
+  if (result.failed.length > 0) {
+    result.cursor = initial;
+    result.truncated = true;
+    result.resumeFrom = initial.positionAt ?? initial.since;
   }
   return result;
 }

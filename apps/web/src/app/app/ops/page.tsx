@@ -18,6 +18,7 @@ export default async function OpsOverviewPage() {
     <p className="text-sm text-ink-600">Memory {(view.report.runtime.memory.rssBytes / 1048576).toFixed(0)} MiB. Runner: {view.health.packs ? `${view.health.packs.running} running, ${view.health.packs.waiting} waiting, ${view.health.packs.overdue} overdue` : "idle"}.</p>
     {view.health.degradedBy.length ? <p className="text-sm text-amber-700">{view.health.degradedBy.join(", ")}</p> : null}
     {view.report.warnings.length ? <ul className="mt-3 list-disc pl-5 text-sm">{view.report.warnings.map((warning) => <li key={warning.code}>{warning.message} <span className="text-ink-500">({warning.code})</span></li>)}</ul> : <p>All reported checks passed.</p>}</header>
+    <section><h2 className="text-lg font-semibold">Pack resolution cases</h2><p className="mt-2 text-sm text-ink-600">Review seller reports, share the next action and keep internal notes private.</p><Link href="/app/ops/cases" className="mt-2 inline-block underline">Review cases</Link></section>
     <section><h2 className="text-lg font-semibold">Spend today</h2><p>{dollars(view.spendMicros)} spent. Alert at {dollars(costCaps.globalDailyAlertMicros)}. Hard stop {dollars(view.hardStopMicros)}.</p></section>
     <section><h2 className="text-lg font-semibold">Switches</h2><div className="mt-3 grid gap-3 lg:grid-cols-2">{view.switches.map((entry) => {
       const on = typeof entry.value === "object" && entry.value ? entry.value.on : entry.value;

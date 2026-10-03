@@ -185,13 +185,15 @@ describe("transport", () => {
     expect(authenticate).toHaveBeenCalledTimes(1);
     expect(authenticate).toHaveBeenCalledWith(expect.any(Headers), null);
 
-    const denied = await handleMcpPost(rpc("tools/call", { name: "get_pack", arguments: { pack_id: "x" } }), { authenticate });
-    const body = (await denied.json()) as {
-      result: { isError: boolean; structuredContent?: unknown; content: Array<{ text: string }> };
-    };
-    expect(body.result.isError).toBe(true);
-    expect(body.result.structuredContent).toBeUndefined();
-    expect(body.result.content[0]?.text).toBe(MCP_COPY.insufficientScope);
+    for (const name of ["get_pack", "show_pack"]) {
+      const denied = await handleMcpPost(rpc("tools/call", { name, arguments: { pack_id: "x" } }), { authenticate });
+      const body = (await denied.json()) as {
+        result: { isError: boolean; structuredContent?: unknown; content: Array<{ text: string }> };
+      };
+      expect(body.result.isError).toBe(true);
+      expect(body.result.structuredContent).toBeUndefined();
+      expect(body.result.content[0]?.text).toBe(MCP_COPY.insufficientScope);
+    }
     expect(withScope(checksOnly, "packs:write")).toMatchObject({ ok: false, error: { status: 403 } });
     expect(withScope(checksOnly, "checks")).toBe(checksOnly);
   });
@@ -251,6 +253,7 @@ describe("discovery", () => {
       "estimate_pack",
       "create_pack",
       "get_pack",
+      "show_pack",
       "check_main_image",
     ]);
     const create = list.result.tools.find((t) => t.name === "create_pack");
@@ -305,6 +308,8 @@ describe("tools against the demo services", () => {
     let finished = false;
     let last: PackChat | null = null;
     for (let i = 0; i < 20 && !finished; i += 1) {
+      // Production progresses in the worker, never in the read-only tool.
+      await fixture.service.getJob(DEMO_WORKSPACE_ID, pack.pack_id);
       const got = await call("get_pack", { pack_id: pack.pack_id });
       expect(got.body.result?.isError).toBe(false);
       last = PackChat.parse(got.body.result?.structuredContent);
@@ -371,6 +376,7 @@ describe("tools against the demo services", () => {
       estimate_pack: "packs:write",
       create_pack: "packs:write",
       get_pack: "packs:read",
+      show_pack: "packs:read",
       check_main_image: "checks",
       list_channels: null,
       // Offered to OAuth callers only (PHASE_19 P19-11, mcp-oauth.test.ts).

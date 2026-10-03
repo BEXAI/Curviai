@@ -17,6 +17,7 @@ import {
   members,
   packFiles,
   products,
+  retiredSourceObjects,
   signupGrants,
   sourceMedia,
   workspaces,
@@ -110,6 +111,7 @@ function reviewShot(ws: string): Shot {
  * that marks the pack delivered.
  */
 async function deliveredPack(ws: string, productId: string, opts: { storeShot?: boolean } = {}): Promise<string> {
+  await db.insert(sourceMedia).values({ workspaceId: ws, productId, r2Key: `ws/${ws}/src/mug.jpg`, kind: "image", sha256: "a".repeat(64) }).onConflictDoNothing();
   const [job] = await db
     .insert(generationJobs)
     .values({ workspaceId: ws, productId, status: "packaging", mode: "listing", channels: CHANNELS })
@@ -135,6 +137,7 @@ async function deliveredPack(ws: string, productId: string, opts: { storeShot?: 
       status: "needs_review",
       pass: false,
       repairHint: "The edge was soft.",
+      sourceSelection: { version: 1, sourceMediaId: reviewShot(ws).sourceMediaId, target: null, exclude: [], otherItems: false },
       credits: creditCosts.deterministic,
       ...(opts.storeShot === false ? {} : { shot: reviewShot(ws) }),
     },
@@ -270,6 +273,17 @@ describe("DbService.cancelJob", () => {
 });
 
 describe("DbService.retryShot", () => {
+  it("refuses a retired original before moving the run or reserving credits", async () => {
+    const { ws, productId } = await workspaceWith(20);
+    const jobId = await deliveredPack(ws, productId);
+    const before = await balance(ws);
+    await db.insert(retiredSourceObjects).values({ workspaceId: ws, r2Key: reviewShot(ws).sourceMediaId });
+    expect(await service().retryShot(ws, jobId, "s04_alt_angle_white")).toMatchObject({ outcome: "rejected", reason: "not_retryable" });
+    expect(await balance(ws)).toBe(before);
+    expect((await jobRow(jobId)).status).toBe("done");
+    expect(followUps.fn).not.toHaveBeenCalled();
+  });
+
   it("holds the shot's seed price against the job and queues it exactly as planned", async () => {
     const { ws, productId } = await workspaceWith(20);
     const jobId = await deliveredPack(ws, productId);
@@ -548,8 +562,8 @@ describe("regenerate a delivered scene", () => {
     const { ws, productId } = await workspaceWith(30);
     const id = await deliveredPack(ws, productId);
     const shot: Shot = { ...reviewShot(ws), id: "scene", type: "lifestyle", method: "composite_generate", scene: "A linen table", credits: creditCosts.generativeStill, channels: ["amazon.secondary"] };
-    await db.insert(sourceMedia).values({ workspaceId: ws, productId, kind: "image", sha256: "a".repeat(64), r2Key: shot.sourceMediaId });
-    const [asset] = await db.insert(assets).values({ workspaceId: ws, jobId: id, shotType: shot.type, approved: true, qc: { shotId: shot.id, status: "passed", pass: true, shot, credits: shot.credits } }).returning();
+    await db.insert(sourceMedia).values({ workspaceId: ws, productId, kind: "image", sha256: "a".repeat(64), r2Key: shot.sourceMediaId }).onConflictDoNothing();
+    const [asset] = await db.insert(assets).values({ workspaceId: ws, jobId: id, shotType: shot.type, approved: true, qc: { shotId: shot.id, status: "passed", pass: true, shot, credits: shot.credits, sourceSelection: { version: 1, sourceMediaId: shot.sourceMediaId, target: null, exclude: [], otherItems: false } } }).returning();
     await db.insert(assetVariants).values({ workspaceId: ws, assetId: asset.id, channelSpecId: "amazon.secondary", filename: "scene.jpg", r2Key: `ws/${ws}/jobs/${id}/files/amazon/scene.jpg`, picked: true });
     await db.insert(jobSteps).values({ workspaceId: ws, jobId: id, shotId: shot.id, stage: "lifestyle", status: "done" });
     const svc = new DbService({ db: db as unknown as Db, getUserId: async () => OWNER, getSupabase: async () => null, cutoutCached: async () => cached });

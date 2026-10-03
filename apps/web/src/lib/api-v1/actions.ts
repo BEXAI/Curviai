@@ -46,10 +46,12 @@ import { RESTARTING_MESSAGE } from "@/lib/services/errors";
 import { OPTIONS_UNAVAILABLE_MESSAGE } from "@/lib/services/output-options";
 import type {
   CreateJobInput,
+  CreateJobLifecycle,
   CreateJobRejection,
   CreateJobResult,
   EstimateJobInput,
   JobView,
+  ServiceReadOptions,
 } from "@/lib/services/types";
 import { RETRY_AFTER_SECONDS } from "@/lib/services/workspace-response";
 import { checkRows, flattenOnWhite, measurePixels, summaryLine } from "@/lib/tools/main-image-analysis";
@@ -282,6 +284,7 @@ const REJECTED_STATUS: Record<CreateJobRejection["reason"], number> = {
   needs_photo: 400,
   no_media: 400,
   insufficient_credits: 402,
+  credit_budget_exceeded: 409,
   upgrade_required: 402,
   feature_unavailable: 422,
   unavailable: 503,
@@ -617,6 +620,7 @@ export async function createPack(
     return errorResult(400, "idempotency_key_required", API_COPY.idempotencyMissing);
   }
 
+  const lifecycle: CreateJobLifecycle = { retainUploads: false };
   let result: CreateJobResult;
   try {
     result = await caller.services.createJob(workspaceId, {
@@ -632,18 +636,18 @@ export async function createPack(
       // Every create_pack through /api/mcp: the worker screens it for
       // OpenAI's prohibited goods (PHASE_19 P19-29). The REST API does not.
       ...(assistant ? { audience: "assistant" as const } : {}),
-    });
+    }, lifecycle);
   } catch (err) {
-    await discardStoredPhotos(created, ctx.photos);
+    if (!lifecycle.retainUploads) await discardStoredPhotos(created, ctx.photos);
     if (err instanceof InlineRunnerClosedError) {
       return errorResult(503, "unavailable", RESTARTING_MESSAGE);
     }
     throw err;
   }
-  if (result.outcome !== "created") {
-    // Only a new pack uses the photos this request wrote: a replay or a
-    // conflict answers with the pack the key already made, and a refusal
-    // makes none. Photos that were already stored are never in `created`.
+  if (result.outcome !== "created" && !lifecycle.retainUploads) {
+    // Cleanup owns only uploads that could not have been published. Once
+    // persistence begins, even a refused or interrupted request may have
+    // committed sources that another pack already uses.
     await discardStoredPhotos(created, ctx.photos);
   }
 
@@ -742,13 +746,17 @@ export async function estimatePack(ctx: ApiContext, rawBody: unknown): Promise<A
   if (!measured.ok) {
     return measured.result;
   }
-  const estimate = await caller.services.estimateJob(workspaceId, {
-    productId: request.productId ?? "new",
-    channels,
-    mode: "listing",
-    ...(measured.uploads.length > 0 ? { uploads: measured.uploads } : {}),
-    ...jobFieldsOf(request),
-  });
+  const estimate = await caller.services.estimateJob(
+    workspaceId,
+    {
+      productId: request.productId ?? "new",
+      channels,
+      mode: "listing",
+      ...(measured.uploads.length > 0 ? { uploads: measured.uploads } : {}),
+      ...jobFieldsOf(request),
+    },
+    { reconcile: false },
+  );
   if (estimate.outcome === "rejected") {
     return rejectedResult(estimate, channels, caller);
   }
@@ -761,6 +769,7 @@ export async function estimatePack(ctx: ApiContext, rawBody: unknown): Promise<A
   const body = estimateChatOf({
     creditsNeeded: estimate.creditsNeeded,
     creditsAvailable: estimate.creditsAvailable,
+    creditBudget: estimate.creditBudget,
     channels: estimate.channels,
     leftOut: estimate.leftOut,
     quote,
@@ -770,11 +779,13 @@ export async function estimatePack(ctx: ApiContext, rawBody: unknown): Promise<A
 }
 
 /** GET /api/v1/packs/{id} and the get_pack tool. */
-export async function getPack(ctx: ApiContext, id: string): Promise<ApiResult> {
+export async function getPack(ctx: ApiContext, id: string, options?: ServiceReadOptions): Promise<ApiResult> {
   if (!isUuid(id)) {
     return errorResult(404, "not_found", API_COPY.packNotFound);
   }
-  const job = await ctx.caller.services.getJob(ctx.caller.principal.workspaceId, id);
+  const job = options
+    ? await ctx.caller.services.getJob(ctx.caller.principal.workspaceId, id, options)
+    : await ctx.caller.services.getJob(ctx.caller.principal.workspaceId, id);
   if (!job) {
     return errorResult(404, "not_found", API_COPY.packNotFound);
   }
@@ -796,16 +807,16 @@ export async function listPackFiles(ctx: ApiContext, id: string): Promise<ApiRes
   const expiresAt = new Date(now.getTime() + DOWNLOAD_URL_TTL_SECONDS * 1000).toISOString();
   const files = await Promise.all(
     view.files.map(async (file) => {
-      const download = file.downloadUrl ? await ctx.caller.services.getJobFileDownload(workspaceId, id, file.id) : null;
+      const download = file.downloadUrl ? await ctx.caller.services.getJobFileDownload(workspaceId, id, file.id, { report: "snapshot" }) : null;
       return {
         id: file.id,
         name: download?.filename ?? file.name,
         channel: file.channel,
         specId: file.specId,
         kind: file.kind,
-        bytes: file.bytes,
+        bytes: download?.bytes ?? file.bytes,
         url: download?.url ?? null,
-        expiresAt: download ? expiresAt : null,
+        expiresAt: download?.url ? expiresAt : null,
       };
     }),
   );

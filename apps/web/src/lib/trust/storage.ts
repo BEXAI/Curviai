@@ -36,16 +36,28 @@ export interface TrustStorage {
   deleteMany(keys: string[]): Promise<string[]>;
 }
 
+export interface StoredObjectPage {
+  objects: StoredObjectInfo[];
+  /** Opaque storage cursor, null only when the prefix is exhausted. */
+  continuationToken: string | null;
+}
+
+export interface PagedTrustStorage extends TrustStorage {
+  listPage(prefix: string, limit: number, continuationToken?: string | null): Promise<StoredObjectPage>;
+}
+
 /** DeleteObjects takes at most 1000 keys per request. */
 const DELETE_BATCH = 1000;
+/** Bound metadata/retention operations; streaming downloads keep their own policy. */
+const STORAGE_OPERATION_TIMEOUT_MS = 10_000;
 
-export function r2TrustStorage(): TrustStorage {
+export function r2TrustStorage(): PagedTrustStorage {
   const client = r2Client();
   const Bucket = privateBucket();
   return {
     async head(key) {
       try {
-        const res = await client.send(new HeadObjectCommand({ Bucket, Key: key }));
+        const res = await client.send(new HeadObjectCommand({ Bucket, Key: key }), { abortSignal: AbortSignal.timeout(STORAGE_OPERATION_TIMEOUT_MS) });
         return { bytes: Number(res.ContentLength ?? 0) };
       } catch (err) {
         const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
@@ -67,26 +79,33 @@ export function r2TrustStorage(): TrustStorage {
     async put(key, body, contentType) {
       await client.send(new PutObjectCommand({ Bucket, Key: key, Body: body, ContentType: contentType }));
     },
+    async listPage(prefix, limit, continuationToken) {
+      if (!Number.isInteger(limit) || limit < 1) throw new Error("Storage page size must be positive");
+      const res = await client.send(new ListObjectsV2Command({
+        Bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken ?? undefined,
+        MaxKeys: Math.min(1000, limit),
+      }), { abortSignal: AbortSignal.timeout(STORAGE_OPERATION_TIMEOUT_MS) });
+      if (res.IsTruncated && !res.NextContinuationToken) throw new Error("Storage returned an incomplete page without a cursor");
+      return {
+        objects: (res.Contents ?? []).flatMap((item) => item.Key
+          ? [{ key: item.Key, bytes: Number(item.Size ?? 0), lastModified: item.LastModified ?? null }]
+          : []),
+        continuationToken: res.IsTruncated ? res.NextContinuationToken! : null,
+      };
+    },
     async list(prefix, limit) {
       const found: StoredObjectInfo[] = [];
-      let token: string | undefined;
-      do {
-        const res = await client.send(
-          new ListObjectsV2Command({
-            Bucket,
-            Prefix: prefix,
-            ContinuationToken: token,
-            MaxKeys: Math.min(1000, limit - found.length),
-          }),
-        );
-        for (const item of res.Contents ?? []) {
-          if (item.Key) {
-            found.push({ key: item.Key, bytes: Number(item.Size ?? 0), lastModified: item.LastModified ?? null });
-          }
-        }
-        token = res.IsTruncated ? res.NextContinuationToken : undefined;
-      } while (token && found.length < limit);
-      return found.slice(0, limit);
+      let token: string | null = null;
+      while (found.length < limit) {
+        const page = await this.listPage(prefix, limit - found.length, token);
+        found.push(...page.objects);
+        if (!page.continuationToken) break;
+        if (page.continuationToken === token) throw new Error("Storage cursor did not advance");
+        token = page.continuationToken;
+      }
+      return found;
     },
     async deleteMany(keys) {
       const failed: string[] = [];
@@ -98,6 +117,7 @@ export function r2TrustStorage(): TrustStorage {
               Bucket,
               Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
             }),
+            { abortSignal: AbortSignal.timeout(STORAGE_OPERATION_TIMEOUT_MS) },
           );
           for (const error of res.Errors ?? []) {
             if (error.Key) {
@@ -115,7 +135,7 @@ export function r2TrustStorage(): TrustStorage {
 }
 
 /** In memory TrustStorage for tests and for the demo flow. */
-export class MemoryTrustStorage implements TrustStorage {
+export class MemoryTrustStorage implements PagedTrustStorage {
   readonly objects = new Map<string, { body: Buffer; contentType: string; lastModified: Date }>();
   /** Keys whose delete should fail, to test partial failures. */
   readonly failDeletes = new Set<string>();
@@ -149,11 +169,28 @@ export class MemoryTrustStorage implements TrustStorage {
     this.objects.set(key, { body, contentType, lastModified: new Date() });
   }
 
+  async listPage(prefix: string, limit: number, continuationToken?: string | null): Promise<StoredObjectPage> {
+    if (!Number.isInteger(limit) || limit < 1) throw new Error("Storage page size must be positive");
+    const remaining = [...this.objects.entries()]
+      .filter(([key]) => key.startsWith(prefix) && (!continuationToken || key > continuationToken))
+      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    const page = remaining.slice(0, Math.min(limit, 1000));
+    return {
+      objects: page.map(([key, value]) => ({ key, bytes: value.body.length, lastModified: value.lastModified })),
+      continuationToken: remaining.length > page.length ? page.at(-1)![0] : null,
+    };
+  }
+
   async list(prefix: string, limit: number) {
-    return [...this.objects.entries()]
-      .filter(([key]) => key.startsWith(prefix))
-      .slice(0, limit)
-      .map(([key, value]) => ({ key, bytes: value.body.length, lastModified: value.lastModified }));
+    const found: StoredObjectInfo[] = [];
+    let token: string | null = null;
+    while (found.length < limit) {
+      const page = await this.listPage(prefix, limit - found.length, token);
+      found.push(...page.objects);
+      if (!page.continuationToken) break;
+      token = page.continuationToken;
+    }
+    return found;
   }
 
   async deleteMany(keys: string[]) {

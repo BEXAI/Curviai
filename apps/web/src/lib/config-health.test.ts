@@ -142,15 +142,18 @@ describe("buildConfigReport with the database", () => {
   it("warns on recipe drift and crons that never ran, then clears once seeded and run", async () => {
     const before = await buildConfigReport(baseDeps({ mode: "db", databaseOk: true, db: () => db }));
     expect(before.warnings.map((w) => w.code)).toEqual([
-      "recipe_drift", ...CRON_JOBS.filter((job: CronJobDefinition) => !job.monitor || job.monitor()).map((job) => `cron_never_ran:${job.name}`), "restore_drill_overdue",
+      "recipe_drift", ...CRON_JOBS.filter((job: CronJobDefinition) => !job.monitor || job.monitor()).map((job) => `cron_never_ran:${job.name}`),
     ]);
     expect(before.recipes?.drift.every((d) => d.issue === "missing")).toBe(true);
+    expect(before.warnings.map((w) => w.code)).not.toContain("cron_never_ran:backup");
+    expect(before.warnings.map((w) => w.code)).not.toContain("restore_drill_overdue");
 
     await loadRecipes(db as unknown as Db, recipeSeedRows);
     for (const job of CRON_JOBS) await recordCronSuccess(db as unknown as Db, job.name, NOW);
     await recordCronSuccess(db as unknown as Db, "stale-jobs", new Date(NOW.getTime() - 5 * 60_000));
-    await recordCronSuccess(db as unknown as Db, "backup", new Date(NOW.getTime() - 60 * 60_000));
-    await recordCronSuccess(db as unknown as Db, "restore-drill", new Date(NOW.getTime() - 3 * 24 * 60 * 60_000));
+    // Historical reports remain stored, but their age imposes no health requirement.
+    await recordCronSuccess(db as unknown as Db, "backup", new Date("2020-01-01T00:00:00Z"));
+    await recordCronSuccess(db as unknown as Db, "restore-drill", new Date("2020-01-01T00:00:00Z"));
     await recordCronSuccess(db as unknown as Db, "purge-source-media", new Date(NOW.getTime() - 3 * 24 * 60 * 60_000));
     await recordCronSuccess(db as unknown as Db, "funnel-digest", new Date(NOW.getTime() - 60 * 60_000));
     await recordCronSuccess(db as unknown as Db, "provider-balance", new Date(NOW.getTime() - 5 * 60_000));

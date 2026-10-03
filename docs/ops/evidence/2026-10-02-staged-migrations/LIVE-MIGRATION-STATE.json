@@ -1,0 +1,40 @@
+{
+  "project": "tmwvjmvzjvpeagatjmud",
+  "verified_at": "2026-10-02T18:34:48Z",
+  "do_not_replay": [
+    "0045",
+    "0046"
+  ],
+  "applied": [
+    {
+      "migration": "0045_pack_resolution_cases",
+      "source_sha256": "1906760bd9b890f72922bb3dc9a75ab58e82081a3637fc7384a922d953f45380",
+      "executed_at": "2026-10-02T18:27:07Z"
+    },
+    {
+      "migration": "0046_workspace_credit_budgets",
+      "source_sha256": "7a90bfdeda33f6659d70f0b31ef89b7eb51ceab3d11276ac05a43091fb7d2983",
+      "executed_at": "2026-10-02T18:30:57Z"
+    }
+  ],
+  "journal_count": 47,
+  "all_journal_hashes_verified": true,
+  "rls_tables": 5,
+  "configured_budgets": 0,
+  "enabled_budgets": 0,
+  "all_30_role_reserve_permissions_unchanged": true,
+  "tenant_select_policy_manual_review": "passed",
+  "unapplied": [
+    {
+      "migration": "0047_pack_completion_webhooks",
+      "reason": "Requires compatible app and worker deployment with all old job writers quiesced; prerequisite PR6 security gate remains unresolved."
+    }
+  ],
+  "editor": {
+    "url": "https://supabase.com/dashboard/project/tmwvjmvzjvpeagatjmud/sql/6c495900-f01a-4118-a11b-0c09b498ff7f",
+    "current_sql": "final-0045-0046-PROOF-READ-ONLY.sql",
+    "sha256": "25a95082eeaf5afd1517900d7c6f028151fac6b28ff504d6e6789426344690b8",
+    "saved": true
+  },
+  "frozen_artifact_naming_note": "PREPARED-NOT-EXECUTED filenames are historical preparation bytes. Their execution status is this record; do not replay."
+}

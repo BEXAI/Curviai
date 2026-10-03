@@ -1,6 +1,6 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { actAsAuthenticated, actAsSuperuser, createTestDb } from "./test-helpers";
+import { actAsAuthenticated, actAsServiceRole, actAsSuperuser, createTestDb } from "./test-helpers";
 
 const WS = "00000000-0000-4000-8000-000000004101";
 const OWNER = "00000000-0000-4000-8000-000000004102";
@@ -21,6 +21,7 @@ describe("runner_columns: server owned recovery leases", () => {
   afterAll(async () => { await client.close(); });
 
   it("leaves old jobs nullable and lets the server set the runner fields", async () => {
+    await actAsServiceRole(client);
     const rows = await client.query("select heartbeat_at, runner_id, started_at, finished_at from generation_jobs");
     expect(rows.rows).toEqual([{ heartbeat_at: null, runner_id: null, started_at: null, finished_at: null }]);
     await client.query("update generation_jobs set runner_id = $1, heartbeat_at = now(), started_at = now(), finished_at = now()", ["r".repeat(64)]);
@@ -35,14 +36,20 @@ describe("runner_columns: server owned recovery leases", () => {
   });
 
   it("blocks member writes to every runner column, including inserts", async () => {
+    const fields = "heartbeat_at, runner_id, started_at, finished_at, error";
+    const before = (await client.query(`select ${fields} from generation_jobs`)).rows;
     await actAsAuthenticated(client, OWNER);
     for (const column of ["heartbeat_at", "runner_id", "started_at", "finished_at"]) {
-      await expect(client.query(`update generation_jobs set ${column} = null`)).rejects.toThrow("runner metadata can only be changed by the server");
+      expect((await client.query(`update generation_jobs set ${column} = null`)).affectedRows).toBe(0);
     }
     await expect(client.query(
       "insert into generation_jobs (workspace_id, product_id, runner_id) values ($1, $2, 'forged')", [WS, PRODUCT],
     )).rejects.toThrow("runner metadata can only be changed by the server");
-    await client.query("update generation_jobs set error = 'Existing member policy still applies'");
+    // 0049 removes all direct member job writes, including ordinary fields.
+    expect((await client.query("update generation_jobs set error = 'forged note'")).affectedRows).toBe(0);
+    expect((await client.query(`select ${fields} from generation_jobs`)).rows).toEqual(before);
+    await actAsSuperuser(client);
+    expect((await client.query(`select ${fields} from generation_jobs`)).rows).toEqual(before);
   });
 
   it("indexes only live jobs by status and heartbeat and reuses the restart payload", async () => {

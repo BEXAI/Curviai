@@ -4,6 +4,7 @@ import {
   actAs,
   actAsAnon,
   actAsAuthenticated,
+  actAsServiceRole,
   actAsSuperuser,
   createAppUserRole,
   createTestDb,
@@ -64,6 +65,15 @@ const EXPECTED_TABLES = [
   "billing_consents",
   "ops_alerts",
   "disposable_email_domains",
+  "pack_cases",
+  "pack_case_events",
+  "pack_case_notes",
+  "workspace_credit_budgets",
+  "workspace_credit_budget_audit",
+  "webhook_endpoints",
+  "pack_completion_events",
+  "webhook_deliveries",
+  "retired_source_objects",
 ];
 
 const USER_A = "00000000-0000-4000-8000-00000000000a";
@@ -225,24 +235,67 @@ describe("row level security isolation", () => {
     await actAsSuperuser(client);
   });
 
-  it("lets an owner insert a generation job", async () => {
-    await actAs(client, USER_A);
-    const [job] = await db
-      .insert(generationJobs)
-      .values({ workspaceId: wsA, productId: productA, idempotencyKey: "owner-job-1" })
-      .returning();
-    expect(job.workspaceId).toBe(wsA);
-    expect(job.status).toBe("queued");
-    await actAsSuperuser(client);
+  it("keeps job creation server-only while members read only their workspace jobs", async () => {
+    try {
+      await actAsServiceRole(client);
+      const created = await client.query<{ id: string; workspace_id: string; status: string }>(
+        "insert into generation_jobs (workspace_id, product_id) values ($1, $2), ($3, $4) returning id, workspace_id, status",
+        [wsA, productA, wsB, productB],
+      );
+      const jobA = created.rows.find((row) => row.workspace_id === wsA)!;
+      const jobB = created.rows.find((row) => row.workspace_id === wsB)!;
+      expect(created.rows.map((row) => row.status)).toEqual(["queued", "queued"]);
+
+      for (const [userId, workspaceId, productId, ownJobId] of [
+        [USER_A, wsA, productA, jobA.id],
+        [USER_B, wsB, productB, jobB.id],
+        [USER_CLIENT, wsA, productA, jobA.id],
+      ]) {
+        await actAsAuthenticated(client, userId);
+        await expect(client.query(
+          "insert into generation_jobs (workspace_id, product_id) values ($1, $2)",
+          [workspaceId, productId],
+        )).rejects.toThrow(/row-level security/);
+        expect((await client.query(
+          "update generation_jobs set error = 'member edit' where id = $1", [ownJobId],
+        )).affectedRows).toBe(0);
+        expect((await client.query(
+          "select id, error from generation_jobs where id in ($1, $2)", [jobA.id, jobB.id],
+        )).rows).toEqual([{ id: ownJobId, error: null }]);
+      }
+      await actAsServiceRole(client);
+      expect((await client.query(
+        "select error from generation_jobs where id in ($1, $2)", [jobA.id, jobB.id],
+      )).rows).toEqual([{ error: null }, { error: null }]);
+    } finally {
+      await actAsSuperuser(client);
+    }
   });
 
-  it("rejects duplicate idempotency keys", async () => {
-    await actAsSuperuser(client);
-    await expect(
-      db
-        .insert(generationJobs)
-        .values({ workspaceId: wsA, productId: productA, idempotencyKey: "owner-job-1" }),
-    ).rejects.toThrow(/idempotency_key/);
+  it("rejects duplicate server idempotency keys within a workspace", async () => {
+    try {
+      await actAsServiceRole(client);
+      const key = "server-job-idempotency";
+      await client.query(
+        "insert into generation_jobs (workspace_id, product_id, idempotency_key) values ($1, $2, $3)",
+        [wsA, productA, key],
+      );
+      await expect(client.query(
+        "insert into generation_jobs (workspace_id, product_id, idempotency_key) values ($1, $2, $3)",
+        [wsA, productA, key],
+      )).rejects.toMatchObject({ code: "23505", constraint: "generation_jobs_workspace_idempotency_key_uq" });
+      // A second tenant may use the same caller-supplied key independently.
+      await client.query(
+        "insert into generation_jobs (workspace_id, product_id, idempotency_key) values ($1, $2, $3)",
+        [wsB, productB, key],
+      );
+      const saved = await client.query<{ workspace_id: string }>(
+        "select workspace_id from generation_jobs where idempotency_key = $1", [key],
+      );
+      expect(saved.rows.map((row) => row.workspace_id).sort()).toEqual([wsA, wsB].sort());
+    } finally {
+      await actAsSuperuser(client);
+    }
   });
 });
 

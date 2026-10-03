@@ -23,7 +23,7 @@
  */
 
 import type { JobRecipeVariant } from "@curvi/db";
-import { applyAddedOverlays, badgeEligible, buildPack, type NormalizedBox, type Shot } from "@curvi/pipeline";
+import { analyzeInventory, chooseInventoryTarget, deterministicLabel, noteSignals, unionBox, applyAddedOverlays, badgeEligible, buildPack, type NormalizedBox, type Shot } from "@curvi/pipeline";
 import { channelFileLimit, getSpec, hasSpec } from "@curvi/specs";
 import { ADDED_OVERLAYS_REASON, planFlagsOf, type ResolvedOutputOptions } from "@curvi/pipeline/output-options";
 import {
@@ -34,9 +34,11 @@ import {
   parseRunOutput,
   recordShotFailure,
   runShot,
+  runOutOfTime,
   selectedFamilies,
   SHOT_CHANNEL_FULL,
   SHOT_NOT_DELIVERED,
+  SHOT_OUT_OF_TIME,
   storeForRun,
   type BrandStyle,
   type PipelineDeps,
@@ -48,6 +50,9 @@ import {
 } from "./pipeline-runner";
 import type { JobRecipes } from "./recipes";
 import { JobLedgerPlan, type LedgerAction } from "./state";
+import { readSourceSelection, SourceSelectionUnavailableError, type SourceSelection } from "./source-selection";
+export { readSourceSelection, SourceSelectionUnavailableError, SOURCE_SELECTION_UNAVAILABLE } from "./source-selection";
+export type { SourceSelection } from "./source-selection";
 
 export type PackFollowUpReason = "retry" | "add_angle" | "regenerate";
 
@@ -100,6 +105,12 @@ export interface PackFollowUpInput {
    * or watermarks on (intake version 5). Their original_photo shots are
    * left off the specs that refuse those, as a first run leaves them. */
   addedOverlays?: string[];
+  /** Versioned server-resolved selections. Optional only for reading old
+   * queue payloads, which the worker refuses before generation. */
+  sourceSelections?: Record<string, SourceSelection>;
+  /** Newly added photos without upload intake. Resolve them from the same
+   * cutout the priced shot reuses; never reinterpret an existing source. */
+  resolveAddedSources?: string[];
 }
 
 export interface PackFollowUpSummary {
@@ -226,8 +237,8 @@ export async function runPackFollowUp(
   };
   // Back to done: the pack was delivered by its first run. A job a cancel or
   // a settle already finished is left as it is (setJobState refuses).
-  const backToDone = async (): Promise<void> => {
-    await store.setJobState(input.jobId, "done", { costMicros: input.baseCostMicros + costMicros, baseCostMicros: input.baseCostMicros });
+  const backToDone = async (runOutcome: "done" | "failed" = "done"): Promise<void> => {
+    await store.setJobState(input.jobId, "done", { costMicros: input.baseCostMicros + costMicros, baseCostMicros: input.baseCostMicros, runOutcome });
   };
   const summarize = (state: PackFollowUpSummary["state"], error?: string): PackFollowUpSummary => ({
     jobId: input.jobId,
@@ -252,6 +263,36 @@ export async function runPackFollowUp(
       throw new Error(OUTPUT_OPTIONS_UNREADABLE);
     }
     await assertLive();
+    const selections = [...new Set(input.shots.map((shot) => shot.sourceMediaId))].map((key) =>
+      readSourceSelection(input.sourceSelections?.[key], key),
+    );
+    for (const key of input.resolveAddedSources ?? []) {
+      const selection = selections.find((value) => value.sourceMediaId === key);
+      if (input.reason !== "add_angle" || !selection || selection.target || !deps.generator.inventoryCutout) {
+        throw new SourceSelectionUnavailableError();
+      }
+      await assertLive();
+      if (runOutOfTime(deps)) throw new Error(SHOT_OUT_OF_TIME);
+      const shot = input.shots.find((value) => value.sourceMediaId === key)!;
+      const cutout = await deps.generator.inventoryCutout({ jobId: input.jobId, workspaceId: input.workspaceId, mediaId: key, shotId: shot.id });
+      costMicros += cutout.costMicros;
+      if (!cutout.cutout) throw new SourceSelectionUnavailableError();
+      const inventory = analyzeInventory(cutout.cutout);
+      const decision = chooseInventoryTarget({
+        objects: inventory.objects, products: [],
+        signals: noteSignals(null, { featureOnly: null, exclude: selection.exclude, mustKeep: [], styleNotes: null }),
+      });
+      if (decision.featured.length === 0 || decision.touching || ["ambiguous", "conflict", "none"].includes(decision.rule)) {
+        throw new SourceSelectionUnavailableError();
+      }
+      const featured = decision.featured.map((index) => inventory.objects[index]);
+      const keep = featured.map((object) => object.box);
+      selection.target = {
+        label: featured.map(deterministicLabel).join(" and "), box: unionBox(keep), keep,
+        others: decision.removed.map((index) => ({ label: deterministicLabel(inventory.objects[index]), box: inventory.objects[index].box })),
+      };
+      selection.basis = "added_cutout_inventory";
+    }
     const recipes = await followUpRecipes(input, deps);
     const ctx: ShotContext = {
       jobId: input.jobId,
@@ -261,6 +302,12 @@ export async function runPackFollowUp(
       mode: input.mode ?? "listing",
       brandColors: input.brandColors,
       runKey: input.runKey,
+      selectionBasis: Object.fromEntries(selections.map((selection) => [selection.sourceMediaId, selection.basis])),
+      targets: Object.fromEntries(selections.flatMap((selection) =>
+        selection.target ? [[selection.sourceMediaId, selection.target]] : [],
+      )),
+      exclude: [...new Set(selections.flatMap((selection) => selection.exclude))],
+      otherItems: selections.filter((selection) => selection.otherItems).map((selection) => selection.sourceMediaId),
       ...(recipes ? { recipes } : {}),
       ...(input.brand ? { brand: input.brand } : {}),
       ...(parsedOutput.output ? { output: parsedOutput.output } : {}),
@@ -403,7 +450,7 @@ export async function runPackFollowUp(
       console.error(`[follow-up] release sweep failed for job ${input.jobId}`, sweepErr);
     }
     try {
-      await backToDone();
+      await backToDone("failed");
     } catch (stateErr) {
       console.error(`[follow-up] could not mark job ${input.jobId} done again`, stateErr);
     }

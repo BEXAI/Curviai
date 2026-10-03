@@ -262,3 +262,28 @@ export const opsAlertPolicy = {
   maxNotificationsPerTick: 50,
   galleryPageSize: 50,
 } as const;
+
+/** P21-03: private completion delivery stays inside the existing tick. */
+export const webhookPolicy = {
+  maxEndpoints: 3,
+  managementPerHour: 12,
+  maxNameChars: 80,
+  maxUrlChars: 2048,
+  maxRequestBytes: 4096,
+  maxResponseBytes: 4096,
+  maxHeaderBytes: 8192,
+  connectTimeoutMs: 2000,
+  totalTimeoutMs: 5000,
+  databaseTimeoutMs: 1000,
+  lockTimeoutMs: 250,
+  leaseSeconds: 30,
+  batchSize: 3,
+  batchBudgetMs: 18_000,
+  maxAttempts: 6,
+  maxReplays: 2,
+  retryMinutes: [10, 30, 120, 360, 720, 1440],
+  deliveryHours: 72,
+  retentionDays: 30,
+  verificationCooldownSeconds: 60,
+  receiverWindowSeconds: 300,
+} as const;

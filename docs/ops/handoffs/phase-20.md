@@ -1,5 +1,7 @@
 # Phase 20 implementation handoff — 2026-10-02
 
+Updated 2026-10-03: the user retired encrypted-backup planning and its release gates. Local disk and GitHub preserve source code, not live database rows, Auth state or stored objects. No database recovery capability is claimed. Existing backup data and security controls remain untouched; no backup service, key or credential is to be provisioned under this plan. Historical implementation and test evidence below remains dated evidence, not an active backup requirement.
+
 Checkout: `/tmp/curvi-phases-18-20`, branch `codex/complete-phases-18-20`. Parent owns all publication, live configuration and deployment. This handoff covers the Phase 20 data/billing/operator/pack lane; it is not a declaration that the phase or production acceptance is complete. Full 66-item matrix is in `docs/phases/PHASE_20.md`. Other owners' evidence: `customer.md`, `schema.md` and their delivery/worker handoffs.
 
 ## Implemented by this lane
@@ -42,7 +44,7 @@ Final combined web suite: **131 tests in 11 files passed**. Packager ads: **four
 - Real Stripe monthly/annual schedule transition, release/Keep current plan, renewal/price-change notices and invoice/PDF access; captured test-mode fixtures and external PostgreSQL race suite. Verify actual boundary event billing reason. No payment or mailbox acceptance claimed.
 - Operator MFA enrollment, live pause/unpause/refusal with two audit rows, stale/forced recovery, provider reset and funded canary. Existing breaker interface exposes reason/reset/probe but no reliable expiry; overview does not invent one.
 - Real picked-version ZIP/PDF smoke after deployment. Legacy versions cannot reconstruct absent post-packaging measurements, so the report marks those checks unmeasured.
-- Live health/deployment/migration/backup/restore/monitor evidence belongs to parent and schema/delivery owners. Original ops-key cleanup remains deferred until every reader has spent a release in production.
+- Live health/deployment/migration/monitor evidence belongs to parent and schema/delivery owners. Original ops-key cleanup remains deferred until every reader has spent a release in production.
 - Model retirement warnings were found missing during audit; Phase 18 owner subsequently implemented P20-22 with 70 seed/58 web tests and TypeScript/lint passing. Planner v4/v5 are inactive at zero traffic, pending real eval and canary promotion.
 - P20-47 cap/margin alert inputs are now wired by the scheduler owner with three fixture tests; incomplete historical QC omits margin telemetry and intentionally does not resolve an existing alert.
 - Triggered P2 features remain disabled/unimplemented where their trigger has not been recorded. No arbitrary invite, batching, listing-text, customer-MFA, checkpoint or priority/fairness feature was activated.

@@ -41,6 +41,7 @@ import {
   type SpendCaps,
 } from "@curvi/ai";
 import { createHash } from "node:crypto";
+import type { SourceSelection } from "./source-selection";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -378,6 +379,9 @@ export interface StoredAsset {
   /** The planned shot itself, so a shot that needs review can be run again
    * later exactly as planned (pack follow ups, trigger/src/follow-up.ts). */
   shot?: Shot;
+  /** Exact server-resolved product choice for this source, including an
+   * explicit null target when the first run intentionally used it whole. */
+  sourceSelection?: SourceSelection;
 }
 
 /** The plan as the progress board needs it: every shot the pack will try,
@@ -749,6 +753,10 @@ export interface InventoryCutoutArgs {
   jobId: string;
   workspaceId: string;
   mediaId: string;
+  /** Follow-up inventory is work for this priced shot, so its cutout must
+   * retain the shot's image-asset spend cap. First-run shared inventory has
+   * no shot assignment yet. */
+  shotId?: string;
   /** Read the cutout from the upload's cache only, never calling a provider:
    * for a photo no shot of the pack cuts out (a kept photo, PHASE_15 item
    * 12). A miss comes back with no cutout. */
@@ -776,6 +784,8 @@ export interface ShotContext {
   /** The product each photo is for, by media id (docs/phases/PHASE_13.md).
    * A photo without an entry is used whole, as before. */
   targets?: Record<string, ProductTarget>;
+  /** Provenance carried by a follow up's persisted source selections. */
+  selectionBasis?: Record<string, SourceSelection["basis"]>;
   /** What the seller asked to leave out, from the parsed note. The QC judge
    * sees it as data next to the target's label. */
   exclude?: string[];
@@ -3124,6 +3134,7 @@ export async function recordShotFailure(
 
 function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext, shot: Shot): StoredAsset {
   const file = outcome.packAssets?.find((a) => a.specId === outcome.specId) ?? outcome.packAssets?.[0];
+  const basis = ctx.selectionBasis ? ctx.selectionBasis[shot.sourceMediaId] : "first_run";
   return {
     jobId: ctx.jobId,
     workspaceId: ctx.workspaceId,
@@ -3143,6 +3154,14 @@ function toStoredAsset(outcome: ShotOutcome, ctx: ShotContext, shot: Shot): Stor
     digitalSource: outcome.digitalSource,
     encoded: file ? { buffer: file.buffer, format: file.format ?? "png" } : undefined,
     shot,
+    sourceSelection: {
+      version: 1,
+      sourceMediaId: shot.sourceMediaId,
+      ...(basis ? { basis } : {}),
+      target: ctx.targets?.[shot.sourceMediaId] ?? null,
+      exclude: [...(ctx.exclude ?? [])],
+      otherItems: ctx.otherItems?.includes(shot.sourceMediaId) ?? false,
+    },
   };
 }
 

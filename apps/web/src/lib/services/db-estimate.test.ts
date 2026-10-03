@@ -14,6 +14,8 @@ import { eq, loadChannelSpecs, type Db } from "@curvi/db";
 import type { IngestOutcome } from "@/lib/trust/ingest";
 import { DbService } from "./db";
 import { INSUFFICIENT_CREDITS_MESSAGE } from "./errors";
+import { setCreditBudget } from "@/lib/billing/credit-planning";
+import { CREDIT_BUDGET_MESSAGE } from "@/lib/billing/credit-budget";
 import type { CreateJobInput, EstimateJobInput } from "./types";
 
 vi.mock("@/lib/jobs/enqueue", async (importOriginal) => ({
@@ -221,6 +223,28 @@ describe("DbService.estimateJob", () => {
 });
 
 describe("DbService.createJob caps and keys (P19-16)", () => {
+  it("quotes current headroom and rolls back a new pack whose owner budget refuses the hold", async () => {
+    const { ws, productId } = await workspaceWith("pro", 2000);
+    await setCreditBudget(db as unknown as Db, ws, OWNER, 0);
+    const input: EstimateJobInput = { productId, channels: CHANNELS, mode: "listing" };
+    const before = await counts(ws);
+    expect(await service().estimateJob(ws, input)).toMatchObject({ outcome: "estimated", creditsAvailable: 2000, creditBudget: { monthlyLimit: 0, remaining: 0 } });
+    expect(await service().createJob(ws, toCreate(input))).toMatchObject({ outcome: "rejected", reason: "credit_budget_exceeded", message: CREDIT_BUDGET_MESSAGE });
+    expect(await counts(ws)).toEqual(before);
+  });
+
+  it("replays an accepted pack without another hold even after the owner lowers the budget", async () => {
+    const { ws, productId } = await workspaceWith("pro", 2000);
+    const input = toCreate({ productId, channels: ["amazon.main"], mode: "listing" });
+    const first = await service().createJob(ws, input);
+    expect(first.outcome).toBe("created");
+    const before = await counts(ws);
+    await setCreditBudget(db as unknown as Db, ws, OWNER, 0);
+    const retry = await service().createJob(ws, input);
+    expect(retry.outcome).toBe("replayed");
+    expect(await counts(ws)).toEqual(before);
+  });
+
   it("refuses a hold above maxCredits before anything is written or held", async () => {
     const { ws, productId } = await workspaceWith("pro", 2000);
     const estimate = await service().estimateJob(ws, { productId, channels: CHANNELS, mode: "listing" });

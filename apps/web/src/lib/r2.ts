@@ -224,3 +224,31 @@ export async function getObjectBytes(key: string): Promise<Buffer | null> {
     return null;
   }
 }
+
+/** Bounded metadata read. The abort covers both the GET and its response
+ * stream, so callers can safely hold a short database lock while reading. */
+export async function getObjectBytesBounded(key: string, maxBytes: number, signal: AbortSignal): Promise<Buffer | null> {
+  const response = await r2Client().send(new GetObjectCommand({ Bucket: privateBucket(), Key: key }), { abortSignal: signal });
+  if (!response.Body) return null;
+  const reader = response.Body.transformToWebStream().getReader();
+  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    signal.throwIfAborted();
+    if ((response.ContentLength ?? 0) > maxBytes) throw new Error("Stored report exceeds its byte limit.");
+    const chunks: Buffer[] = [];
+    let length = 0;
+    for (;;) {
+      const part = await reader.read();
+      signal.throwIfAborted();
+      if (part.done) break;
+      length += part.value.byteLength;
+      if (length > maxBytes) throw new Error("Stored report exceeds its byte limit.");
+      chunks.push(Buffer.from(part.value));
+    }
+    return Buffer.concat(chunks, length);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    void reader.cancel().catch(() => undefined);
+  }
+}

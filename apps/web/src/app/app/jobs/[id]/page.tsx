@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { JobProgressBoard } from "@/components/app/job-progress-board";
 import { PackFeedbackCard } from "@/components/app/pack-feedback-card";
 import { SharePanel } from "@/components/app/share-panel";
@@ -22,6 +23,7 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
       <PackFeedbackCard jobId={id} />
       {/* Appears once the pack has finished images (plan 9.6.1). */}
       <SharePanel jobId={id} />
+      <p className="mt-6 text-sm"><Link href={`/app/jobs/${id}/cases`} className="underline">Get help with this pack</Link></p>
     </>
   );
 }

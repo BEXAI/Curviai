@@ -164,6 +164,22 @@ export default async function SettingsPage() {
         </CardContent>
       </Card>
 
+      {workspace.role === "owner" || workspace.role === "admin" ? (
+        <Card data-testid="webhooks-link">
+          <CardHeader>
+            <CardTitle>Pack completion webhooks</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-ink-500">
+              Let your own tools know when a pack finishes. Connect a receiver you control and check its delivery history.
+            </p>
+            <Link href="/app/settings/webhooks" className={buttonVariants({ variant: "outline", size: "sm" })}>
+              Manage webhooks
+            </Link>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {canInvite ? (
         <Card data-testid="referrals-link">
           <CardHeader>

@@ -31,21 +31,19 @@ import {
   and,
   type SourceMediaTargetBox,
 } from "@curvi/db";
+import { jobRequestFingerprint } from "./job-request";
 import {
   bundleOf,
   cutoutMediaIds,
-  keepMediaIdsFor,
-  normalizeOutputOptions,
-  outputOptionsKey,
   packNeedsCutout,
   type ResolvedOutputOptions,
 } from "@curvi/pipeline/output-options";
 import type { IngestImageFormat, SourceMediaIngest } from "@curvi/pipeline/ingest";
-import type { Shot } from "@curvi/pipeline/schemas";
+import { IntakeImageResult, type Shot } from "@curvi/pipeline/schemas";
 import { parseVariationShotId, variationShotId } from "@curvi/pipeline/variations";
 import { SOURCE_RETENTION_DAYS } from "@/lib/trust/purge";
 import { getSpec, hasSpec, refusesOverlays } from "@curvi/specs";
-import type { PackFollowUpInput, PackFollowUpReason } from "@curvi/trigger/follow-up";
+import { readSourceSelection, SourceSelectionUnavailableError, type SourceSelection, type PackFollowUpInput, type PackFollowUpReason } from "@curvi/trigger/follow-up";
 import {
   costCaps,
   creditCosts,
@@ -63,17 +61,19 @@ import { isAngleRole, printableEndorsements, printableSellerLines, type AngleRol
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   buildComplianceReportView,
-  pickedComplianceReport,
   REPORT_NOT_READY,
   REPORT_NOT_STORED,
   unavailableComplianceReport,
   type ComplianceReportView,
 } from "@/lib/compliance-report";
+import { existingReportKey, prepareReportSnapshot, readSelectedReport, readStoredReportBytes } from "@/lib/selected-report-download";
 import { checkBrandKitEntitlement, checkChannelEntitlements, tierKeyOf } from "@/lib/entitlements";
 import { isR2Configured, optionalEnv } from "@/lib/env";
 import { CONCEPT_MODE_AVAILABLE, opsSwitch, outputOptionsAvailable } from "@/lib/features";
 import { resolveGlobalHardStop } from "@curvi/trigger/db-runtime";
 import { getPackMaintenance } from "@/lib/pack-maintenance";
+import { readCreditBudget } from "@/lib/billing/credit-planning";
+import { creditBudgetRejection, isCreditBudgetExceeded } from "@/lib/billing/credit-budget";
 import { runnerId } from "@/lib/jobs/runner-owner";
 import { fidelityForVariant } from "./file-fidelity";
 import { queueView } from "@/lib/jobs/queue-view";
@@ -120,6 +120,7 @@ import { isUuid } from "@/lib/validation/ids";
 import { MAX_PACK_PHOTOS } from "@/lib/validation/seller-inputs";
 import { ingestUpload, type IngestOutcome } from "@/lib/trust/ingest";
 import { r2TrustStorage } from "@/lib/trust/storage";
+import { assertRegisteredSources, assertSourceKeysAvailable, SourceUnavailableError } from "@/lib/trust/source-retention";
 import {
   INSUFFICIENT_CREDITS_MESSAGE,
   NO_BILLABLE_SHOTS_MESSAGE,
@@ -140,6 +141,7 @@ import { overLimitSpec, shotVersionsOf, VERSION_COPY } from "@/lib/variation-pic
 import { readOutputDefaults, saveOutputDefaults } from "./output-defaults";
 import {
   hasPhotoBackgroundOverride,
+  INVALID_OPTIONS_MESSAGE,
   isNonDefaultOutput,
   outputEstimateInputs,
   parseStoredOutputOptions,
@@ -167,6 +169,7 @@ import type {
   BrandKitView,
   CancelJobResult,
   CreateJobInput,
+  CreateJobLifecycle,
   CreateJobRejection,
   CreateJobResult,
   CreateProductInput,
@@ -174,6 +177,7 @@ import type {
   EstimateJobResult,
   IntegrationView,
   JobFileDownload,
+  JobFileDownloadOptions,
   JobFilesView,
   JobFileView,
   JobStatus,
@@ -186,6 +190,7 @@ import type {
   RegisterSourceMediaInput,
   SaveResult,
   Services,
+  ServiceReadOptions,
   ShotOpResult,
   VersionPickResult,
   FavoriteResult,
@@ -240,6 +245,8 @@ export interface DbServiceDeps {
   /** Overrides the upload cutout cache check (tests): true when a fresh
    * cached cutout of this stored photo exists. Left out, R2 is read. */
   cutoutCached?: (workspaceId: string, r2Key: string) => Promise<boolean>;
+  /** In-lock object existence check, injectable for memory-only regressions. */
+  sourceObjectExists?: (key: string) => Promise<boolean>;
 }
 
 /** The shots of a follow up that need a cutout: all but the seller's kept
@@ -310,39 +317,6 @@ const MAX_PACK_MEDIA = MAX_PACK_PHOTOS;
 const MAX_LIBRARY_PRODUCTS = serviceListLimits.products;
 
 type ProductRow = typeof products.$inferSelect;
-
-/**
- * True when a stored job's options and a request's options are the same
- * choices (PHASE_15 item 25): no options and explicit defaults match, a
- * concept request always reads as the defaults, and anything unreadable on
- * either side does not match, so the key gets the conflict answer. The
- * options key leaves out keepMediaIds, so each photo the request uploads
- * must also be kept, or not, as the job keeps it: its own background choice
- * (P1 "Background per photo") changes which photos ship as themselves and
- * what is held, so a request that differs only there is not a replay.
- */
-function sameOutputOptions(
-  stored: unknown,
-  input: Pick<CreateJobInput, "mode" | "outputOptions" | "uploads">,
-): boolean {
-  try {
-    const parsed = parseStoredOutputOptions(stored);
-    const requested = input.mode === "concept" ? null : (input.outputOptions ?? null);
-    if (outputOptionsKey(parsed) !== outputOptionsKey(requested)) {
-      return false;
-    }
-    const photoKeys = (input.uploads ?? []).filter((u) => u.kind !== "video").map((u) => u.key);
-    const wanted = new Set(
-      input.mode === "concept"
-        ? []
-        : keepMediaIdsFor(normalizeOutputOptions(requested), photoKeys, photoBackgroundsOf(input.uploads)),
-    );
-    const kept = new Set(parsed?.keepMediaIds ?? []);
-    return photoKeys.every((key) => kept.has(key) === wanted.has(key));
-  } catch {
-    return false;
-  }
-}
 
 /** True when a planned original_photo (a kept photo) is headed for a spec
  * that refuses added text, borders or watermarks (refusesOverlays: eBay,
@@ -765,10 +739,21 @@ export class DbService implements Services {
     return isR2Configured() ? ingestUpload(r2TrustStorage(), key, kind) : null;
   }
 
-  private async creditBalance(workspaceId: string): Promise<number> {
+  private async assertSourceObjects(keys: readonly string[]): Promise<void> {
+    const distinct = [...new Set(keys)];
+    if (distinct.length === 0) return;
+    const exists = this.deps.sourceObjectExists ?? (isR2Configured()
+      ? async (key: string) => (await r2TrustStorage().head(key)) !== null
+      : null);
+    if (exists && (await Promise.all(distinct.map(exists))).some((found) => !found)) throw new SourceUnavailableError();
+  }
+
+  private async creditBalance(workspaceId: string, options: ServiceReadOptions = {}): Promise<number> {
     // Settle orphaned runs first, so a hold left by a crashed run never makes
     // the balance look lower than it is (Update.md 3.2).
-    await reconcileStaleJobs(this.db, { workspaceId });
+    if (options.reconcile !== false) {
+      await reconcileStaleJobs(this.db, { workspaceId });
+    }
     try {
       const result = (await this.db.execute(sql`select credit_balance(${workspaceId}::uuid) as balance`)) as unknown;
       // postgres-js returns the rows array; other drivers wrap it in { rows }.
@@ -918,7 +903,7 @@ export class DbService implements Services {
     }));
   }
 
-  async getJob(workspaceId: string, jobId: string): Promise<JobView | null> {
+  async getJob(workspaceId: string, jobId: string, options: ServiceReadOptions = {}): Promise<JobView | null> {
     if (!isUuid(jobId)) {
       return null;
     }
@@ -933,7 +918,7 @@ export class DbService implements Services {
     // Reconcile a run orphaned by an instance restart (Update.md 3.1). Only
     // the request that wins the conditional update releases the hold; every
     // request then reads the current row.
-    if (looksStale(job)) {
+    if (options.reconcile !== false && looksStale(job)) {
       await reconcileStaleJobs(this.db, { workspaceId, jobId: job.id });
       job = (await findJob()) ?? job;
     }
@@ -1591,7 +1576,10 @@ export class DbService implements Services {
           throw new FollowUpNotReadyError();
         }
         baseCostMicros = Number(moved[0].cogsMicros ?? 0);
+        await assertSourceKeysAvailable(tx, workspaceId, shots.map((shot) => shot.sourceMediaId));
         await prepare?.(tx);
+        await assertRegisteredSources(tx, workspaceId, job.productId, shots.map((shot) => shot.sourceMediaId));
+        await this.assertSourceObjects(shots.map((shot) => shot.sourceMediaId));
         try {
           await tx.execute(sql`select reserve_credits(${workspaceId}::uuid, ${credits}::numeric, ${job.id}::uuid)`);
         } catch (err) {
@@ -1613,6 +1601,7 @@ export class DbService implements Services {
         rerunIds = rows.map((r) => r.id);
       });
     } catch (err) {
+      if (err instanceof SourceUnavailableError) return { outcome: "rejected", reason: "not_retryable", message: err.message };
       if (err instanceof FollowUpNotReadyError) {
         return { outcome: "rejected", reason: "not_ready", message: NOT_READY_MESSAGE };
       }
@@ -1626,6 +1615,7 @@ export class DbService implements Services {
           message: `Not enough credits to run this again. It needs ${credits} ${credits === 1 ? "credit" : "credits"}.`,
         };
       }
+      if (err instanceof ReservationError && isCreditBudgetExceeded(err.original)) return creditBudgetRejection(credits);
       console.error(
         `[jobs] could not start a ${reason} follow up on job ${job.id}`,
         err instanceof ReservationError ? err.original : err,
@@ -1645,10 +1635,16 @@ export class DbService implements Services {
         output,
       });
       const saved = Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "runKey"));
-      const persisted = await this.db.update(generationJobs)
-        .set({ restartPayload: { ...saved, acceptedAt: new Date().toISOString() } })
-        .where(and(eq(generationJobs.id, job.id), eq(generationJobs.workspaceId, workspaceId), eq(generationJobs.runKey, runKey), eq(generationJobs.status, "generating")))
-        .returning({ id: generationJobs.id });
+      const persisted = await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+        const logoKeys = payload.brand?.logoKey ? [payload.brand.logoKey] : [];
+        await assertSourceKeysAvailable(tx, workspaceId, logoKeys);
+        await this.assertSourceObjects(logoKeys);
+        return tx.update(generationJobs)
+          .set({ restartPayload: { ...saved, acceptedAt: new Date().toISOString() } })
+          .where(and(eq(generationJobs.id, job.id), eq(generationJobs.workspaceId, workspaceId), eq(generationJobs.runKey, runKey), eq(generationJobs.status, "generating")))
+          .returning({ id: generationJobs.id });
+      });
       if (!persisted.length) throw new FollowUpNotReadyError();
       await enqueuePackFollowUp(payload);
     } catch (err) {
@@ -1657,6 +1653,9 @@ export class DbService implements Services {
         console.error(`[jobs] could not queue a ${reason} follow up on job ${job.id}`, err);
       }
       await this.abandonFollowUp(workspaceId, job.id, rerunIds, runKey);
+      if (err instanceof SourceSelectionUnavailableError) {
+        return { outcome: "rejected", reason: "not_retryable", message: err.message };
+      }
       return { outcome: "rejected", reason: "unavailable", message: restarting ? RESTARTING_MESSAGE : UNAVAILABLE_MESSAGE };
     }
     const view = await this.getJob(workspaceId, job.id);
@@ -1726,11 +1725,89 @@ export class DbService implements Services {
       socialBadge: socialBadgeByTier[tier] ?? false,
       existingFilesBySpec: await this.filesBySpec(workspaceId, job.id),
       baseCostMicros: run.baseCostMicros,
+      ...(await this.followUpSelections(workspaceId, job, run.shots, run.reason)),
       ...(run.output ? { output: run.output } : {}),
       ...(await this.reencodedSources(workspaceId, run.shots)),
       ...(run.output?.fit === "crop" ? await this.productBoxesFor(workspaceId, run.shots) : {}),
       ...(shotsReachOverlayRefusingSpecs(run.shots) ? await this.addedOverlaySources(workspaceId, run.shots) : {}),
     };
+  }
+
+  /** Reuse the worker's exact decision, never reclassify the original photo
+   * against today's models or the seller's edited product description. */
+  private async followUpSelections(
+    workspaceId: string,
+    job: typeof generationJobs.$inferSelect,
+    shots: Shot[],
+    reason: PackFollowUpReason,
+  ): Promise<Pick<PackFollowUpInput, "sourceSelections" | "resolveAddedSources">> {
+    const keys = [...new Set(shots.map((shot) => shot.sourceMediaId))];
+    const [rows, sources, preflights] = await Promise.all([
+      this.db.query.assets.findMany({
+        where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.jobId, job.id)),
+        orderBy: (t, { desc }) => [desc(t.createdAt)],
+      }),
+      this.db.query.sourceMedia.findMany({
+        where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), eq(t.productId, job.productId), inArray(t.r2Key, keys)),
+      }),
+      preflightRowsFor(this.db, workspaceId, keys),
+    ]);
+    const selections: Record<string, SourceSelection> = {};
+    const resolveAddedSources: string[] = [];
+    const priorSelections = reason === "add_angle" ? rows.flatMap((row) => {
+      const shot = storedShot(row.qc);
+      return shot && row.qc?.sourceSelection !== undefined ? [readSourceSelection(row.qc.sourceSelection, shot.sourceMediaId)] : [];
+    }) : [];
+    const priorExclude = [...new Set(priorSelections.flatMap((value) => [...value.exclude, ...(value.target?.others.map((other) => other.label) ?? [])]))];
+    for (const key of keys) {
+      const saved = rows.find((row) => storedShot(row.qc)?.sourceMediaId === key && row.qc?.sourceSelection !== undefined);
+      if (saved) {
+        selections[key] = readSourceSelection(saved.qc?.sourceSelection, key);
+        continue;
+      }
+      const source = sources.find((row) => row.r2Key === key);
+      if (!source) throw new SourceSelectionUnavailableError();
+      // A newly added Keep photo is explicitly used whole. Conservatively
+      // retain the other-items guard when intake cannot prove it is alone.
+      const keptAddition = reason === "add_angle" && shots.filter((shot) => shot.sourceMediaId === key).every((shot) => shot.type === "original_photo");
+      const preflight = preflights.get(key);
+      const intake = IntakeImageResult.safeParse(preflight?.intake?.image);
+      const singleIntake = preflight?.status === "ready" && intake.success && intake.data.sellableProduct && intake.data.screenshot !== true && intake.data.distinctProducts === 1 &&
+        (!intake.data.products || intake.data.products.length === 1);
+      const inventory = job.inventory?.photos.find((photo) => photo.mediaId === key);
+      const singleInventory = inventory?.items.length === 1 && inventory.intakeCount === 1 &&
+        inventory.countMatch === true && !inventory.touching &&
+        ["single_object", "single_product"].includes(inventory.rule) &&
+        inventory.unmatchedItems.length === 0 && inventory.unmatchedProducts.length === 0 &&
+        inventory.items[0].status !== "removed";
+      const hadPlannedSource = rows.some((row) => storedShot(row.qc)?.sourceMediaId === key);
+      if (reason === "add_angle" && !hadPlannedSource && !keptAddition && !source.targetBox && !inventory && !singleIntake) {
+        // Known multi-product intake is an ambiguity, not permission to
+        // reinterpret it as one connected cutout. Without intake, the
+        // priced shot's cutout supplies the existing geometric inventory.
+        if (intake.success) throw new SourceSelectionUnavailableError();
+        if (priorSelections.length === 0) throw new SourceSelectionUnavailableError();
+        selections[key] = { version: 1, sourceMediaId: key, target: null, exclude: priorExclude, otherItems: false };
+        resolveAddedSources.push(key);
+        continue;
+      }
+      // A legacy selected box or conflicting inventory cannot be replaced
+      // by a generic single-product preflight answer. Existing sources need
+      // reliable stored evidence; they never enter the added-photo fallback.
+      if (!keptAddition && (source.targetBox || (inventory ? !singleInventory : !singleIntake))) {
+        throw new SourceSelectionUnavailableError();
+      }
+      const label = singleInventory ? inventory!.items[0].label : intake.success ? intake.data.products?.[0]?.label : undefined;
+      selections[key] = {
+        version: 1,
+        sourceMediaId: key,
+        basis: keptAddition ? "added_original_photo" : singleInventory ? "single_product_inventory" : "single_product_intake",
+        target: label && !keptAddition ? { label, box: null, others: [] } : null,
+        exclude: priorExclude,
+        otherItems: keptAddition && !singleIntake,
+      };
+    }
+    return { sourceSelections: selections, ...(resolveAddedSources.length ? { resolveAddedSources } : {}) };
   }
 
   /**
@@ -1864,7 +1941,7 @@ export class DbService implements Services {
         await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
         const moved = await tx
           .update(generationJobs)
-          .set({ status: "done", runKey: sql`gen_random_uuid()::text`, restartPayload: null, runnerId: null, heartbeatAt: null, finishedAt: new Date(), updatedAt: new Date() })
+          .set({ status: "done", logicalRunOutcome: "failed", runKey: sql`gen_random_uuid()::text`, restartPayload: null, runnerId: null, heartbeatAt: null, finishedAt: new Date(), updatedAt: new Date() })
           .where(
             and(
               eq(generationJobs.id, jobId),
@@ -1899,61 +1976,31 @@ export class DbService implements Services {
    * can only match on the rest. Keys are unique per workspace (0019), so
    * only this workspace's jobs are looked at: another workspace using the
    * same key is neither a conflict nor visible here. */
-  private async replayFor(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult | null> {
+  private async replayFor(workspaceId: string, input: CreateJobInput, skipProvenMismatch = false): Promise<CreateJobResult | null> {
     const existing = await this.db.query.generationJobs.findFirst({
       where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.idempotencyKey, input.idempotencyKey)),
     });
     if (!existing) {
       return null;
     }
-    const sameBody =
-      (input.productId === "new" || existing.productId === input.productId) &&
-      (existing.mode ?? input.mode) === input.mode &&
-      JSON.stringify([...(existing.channels ?? input.channels)].sort()) ===
-        JSON.stringify([...input.channels].sort()) &&
-      sameOutputOptions(existing.outputOptions, input) &&
-      (existing.sellerNote ?? "") === (input.userDescription?.trim() ? input.userDescription : "") &&
-      (await this.uploadsRegisteredFor(workspaceId, existing, input));
+    // A legacy row never saved its complete input. Mutable product/source
+    // rows cannot prove that a retry is the same request, so return the
+    // existing pack as a conflict without creating another hold.
+    const verifiable = typeof existing.requestFingerprint === "string" && /^[0-9a-f]{64}$/.test(existing.requestFingerprint);
+    let sameBody = false;
+    try {
+      sameBody = verifiable && existing.requestFingerprint === jobRequestFingerprint(input);
+    } catch {
+      // Malformed options cannot match a previously accepted request.
+    }
     if (sameBody) {
       const job = await this.getJob(workspaceId, existing.id);
       if (job) {
         return { outcome: "replayed", job };
       }
     }
+    if (skipProvenMismatch && verifiable && !sameBody) return null;
     return { outcome: "conflict", existingJobId: existing.id };
-  }
-
-  /**
-   * True when every photo this request uploads was registered by the job
-   * the key already names: the first attempt saved each upload as source
-   * media on its product (or found it already saved before the job). A
-   * reused key sent with photos the workspace never saved, or saved later
-   * for another product, is a different request, so it answers as a
-   * conflict instead of replaying another product's pack.
-   */
-  private async uploadsRegisteredFor(
-    workspaceId: string,
-    existing: { productId: string; createdAt: Date },
-    input: Pick<CreateJobInput, "uploads">,
-  ): Promise<boolean> {
-    const keys = [
-      ...new Set((input.uploads ?? []).map((u) => u.key).filter((key) => isWorkspaceSourceKey(workspaceId, key))),
-    ];
-    if (keys.length === 0) {
-      return true;
-    }
-    const rows = await this.db
-      .select({ r2Key: sourceMedia.r2Key, productId: sourceMedia.productId, createdAt: sourceMedia.createdAt })
-      .from(sourceMedia)
-      .where(and(eq(sourceMedia.workspaceId, workspaceId), inArray(sourceMedia.r2Key, keys)));
-    const byKey = new Map(rows.map((row) => [row.r2Key, row]));
-    return keys.every((key) => {
-      const row = byKey.get(key);
-      return (
-        row !== undefined &&
-        (row.productId === existing.productId || row.createdAt.getTime() <= existing.createdAt.getTime())
-      );
-    });
   }
 
   /**
@@ -2149,8 +2196,9 @@ export class DbService implements Services {
   }
 
   /** estimate_pack (PHASE_19 P19-16): createJob's gate and hold for the same
-   * request, the balance and the channels left out, writing nothing. */
-  async estimateJob(workspaceId: string, input: EstimateJobInput): Promise<EstimateJobResult> {
+   * request, the balance and the channels left out. Snapshot callers opt
+   * out of the normal balance read's stale job recovery. */
+  async estimateJob(workspaceId: string, input: EstimateJobInput, options: ServiceReadOptions = {}): Promise<EstimateJobResult> {
     const gate = await this.packGate(workspaceId, input);
     if (!gate.ok) {
       return gate.rejection;
@@ -2182,7 +2230,8 @@ export class DbService implements Services {
     return {
       outcome: "estimated",
       creditsNeeded: hold.creditsReserved,
-      creditsAvailable: await this.creditBalance(workspaceId),
+      creditsAvailable: await this.creditBalance(workspaceId, options),
+      creditBudget: await readCreditBudget(this.db, workspaceId),
       channels: coverage.made,
       leftOut: [
         ...coverage.comingSoon.map((specId) => ({ specId, reason: "coming_soon" as const })),
@@ -2199,15 +2248,16 @@ export class DbService implements Services {
   }
 
   /** The replay or conflict answer for this request's key, after a replay
-   * under one of its previous keys (PHASE_19 P19-16). A conflict under a
-   * previous key is not this request's, so it is passed over. */
+   * under one of its previous keys (PHASE_19 P19-16). Only a provably
+   * different request under a previous key is passed over. Legacy receipts
+   * cannot prove that, so they conflict without taking another hold. */
   private async replayForAny(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult | null> {
     for (const key of input.previousIdempotencyKeys ?? []) {
       if (key === input.idempotencyKey) {
         continue;
       }
-      const earlier = await this.replayFor(workspaceId, { ...input, idempotencyKey: key });
-      if (earlier?.outcome === "replayed") {
+      const earlier = await this.replayFor(workspaceId, { ...input, idempotencyKey: key }, true);
+      if (earlier) {
         return earlier;
       }
     }
@@ -2220,11 +2270,11 @@ export class DbService implements Services {
    * uploads, photo requirement, the credit estimate and, for an assistant,
    * its credit cap (PHASE_19 P19-16). The product (when new), the uploads,
    * the job row and the credit hold are then written in one transaction, so
-   * a rejected or failed attempt leaves no empty product, no stray media and
-   * no job behind. Uploads insert with ON CONFLICT DO NOTHING against the
+   * rollback leaves no partial product, source, job or credit records.
+   * Uploads insert with ON CONFLICT DO NOTHING against the
    * (workspace_id, r2_key) unique index, so a retry never duplicates a photo.
    */
-  async createJob(workspaceId: string, input: CreateJobInput): Promise<CreateJobResult> {
+  async createJob(workspaceId: string, input: CreateJobInput, lifecycle?: CreateJobLifecycle): Promise<CreateJobResult> {
     const replay = await this.replayForAny(workspaceId, input);
     if (replay) {
       return replay;
@@ -2237,6 +2287,12 @@ export class DbService implements Services {
       return gate.rejection;
     }
     const { tier, existingProduct } = gate;
+    let requestFingerprint: string;
+    try {
+      requestFingerprint = jobRequestFingerprint(input);
+    } catch {
+      return { outcome: "rejected", reason: "invalid_options", message: INVALID_OPTIONS_MESSAGE };
+    }
     const today = new Date().toISOString().slice(0, 10);
     const counters = await this.db.select().from(spendCapCounters).where(inArray(spendCapCounters.key, [`caps:workspace:${workspaceId}:${today}`, `caps:global:${today}`]));
     const spent = (key: string) => Number(counters.find((r) => r.key === key)?.totalMicros ?? 0);
@@ -2364,12 +2420,16 @@ export class DbService implements Services {
       return { outcome: "rejected", reason: "unavailable", message: RESTARTING_MESSAGE };
     }
 
-    // Product, uploads, job and reservation commit together, so a rejected
-    // pack leaves no empty product or orphan uploads behind (Update.md 6.3).
+    // Product, source rows, job and reservation commit together, so rollback
+    // leaves no partial database records behind (Update.md 6.3).
     // The run key goes on the job row in the same transaction and rides the
     // payload, so the runner's liveness checks name this run (0019).
     const runKey = crypto.randomUUID();
     let created: { product: ProductRow; jobId: string; insertedMediaIds: string[]; payload: ReturnType<typeof buildGeneratePackInput> };
+    // A commit may become visible even if the driver loses its acknowledgment.
+    // Relinquish request cleanup before persistence can publish source keys.
+    // Rolled-back attempts leave unreferenced objects for normal retention.
+    if (lifecycle) lifecycle.retainUploads = true;
     try {
       created = await this.db.transaction(async (tx) => {
         // Lock the workspace row before anything else. The foreign key checks
@@ -2383,6 +2443,19 @@ export class DbService implements Services {
         // connection and serializes transactions, so the unit tests can check
         // the statement order but cannot reproduce the race itself.
         await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+        const sourceKeys = media.map((item) => item.r2Key);
+        const logoKeys = brandKit?.logoKey ? [brandKit.logoKey] : [];
+        await assertSourceKeysAvailable(tx, workspaceId, [...sourceKeys, ...logoKeys]);
+        // An upload key already registered to a different product cannot be
+        // silently borrowed: that product's retention policy would own it.
+        if (uploadRows.length) {
+          const registered = await tx.select({ productId: sourceMedia.productId }).from(sourceMedia)
+            .where(and(eq(sourceMedia.workspaceId, workspaceId), inArray(sourceMedia.r2Key, uploadRows.map((upload) => upload.key))));
+          if (registered.some((row) => row.productId !== existingProduct?.id)) throw new MediaConflictError();
+        }
+        if (existingProduct) await assertRegisteredSources(tx, workspaceId, existingProduct.id,
+          sourceKeys.filter((key) => !uploadRows.some((upload) => upload.key === key)));
+        await this.assertSourceObjects([...sourceKeys, ...logoKeys]);
         // A new product starts with this request's seller inputs; an existing
         // one takes only the ones this request sent.
         const product = existingProduct
@@ -2449,6 +2522,7 @@ export class DbService implements Services {
             productId: product.id,
             status: "queued",
             idempotencyKey: input.idempotencyKey,
+            requestFingerprint,
             channels: input.channels,
             mode: input.mode,
             runKey,
@@ -2508,6 +2582,14 @@ export class DbService implements Services {
         return { product, jobId: inserted.id, insertedMediaIds: insertedMedia.map((m) => m.id), payload };
       });
     } catch (err) {
+      if (err instanceof SourceUnavailableError) return { outcome: "rejected", reason: "invalid_upload", message: err.message };
+      if (err instanceof MediaConflictError) {
+        // A concurrent identical request may have registered this same key
+        // on its newly created product. Its immutable receipt decides replay.
+        const winner = await this.replayForAny(workspaceId, input);
+        if (winner) return winner;
+        return { outcome: "rejected", reason: "invalid_upload", message: "That photo is already saved to another product." };
+      }
       if (err instanceof ReservationError && isInsufficientCreditsError(err.original)) {
         // The transaction rolled back, so nothing was reserved or written.
         // Both numbers ride along for an assistant (PHASE_19 P19-14); the
@@ -2520,6 +2602,7 @@ export class DbService implements Services {
           creditsAvailable: await this.creditBalance(workspaceId),
         };
       }
+      if (err instanceof ReservationError && isCreditBudgetExceeded(err.original)) return creditBudgetRejection(creditsReserved);
       if (isUniqueViolation(err)) {
         // A concurrent request with the same Idempotency-Key committed first.
         const winner = await this.replayFor(workspaceId, input);
@@ -2550,10 +2633,11 @@ export class DbService implements Services {
       } else {
         console.error(`[jobs] could not queue job ${jobId} in workspace ${workspaceId}`, err);
       }
-      // A product this request created keeps no photos, so a retry as a new
-      // product saves them to the product it creates. Photos added to an
-      // existing product stay: a retry puts them on the same product.
-      await this.abandonJob(workspaceId, jobId, "The pack could not be queued.", existingProduct ? [] : insertedMediaIds);
+      // API sources were published at commit and can already be reused by
+      // another pack, including when this request created the product. Keep
+      // those rows and objects. Browser retries reuse their original upload
+      // keys, so release only still-unshared new-product rows for the retry.
+      await this.abandonJob(workspaceId, jobId, "The pack could not be queued.", existingProduct || input.origin === "api" ? [] : insertedMediaIds);
       return { outcome: "rejected", reason: "unavailable", message: restarting ? RESTARTING_MESSAGE : UNAVAILABLE_MESSAGE };
     }
 
@@ -2589,10 +2673,9 @@ export class DbService implements Services {
    * - Frees its Idempotency-Key either way. The caller answers with a
    *   refusal, so the seller's retry of the same form must create a fresh
    *   job, never replay this one as a started pack.
-   * - Deletes the photo rows in releaseMediaIds (the ones a new product pack
-   *   inserted), so a retry saves them to the product it creates instead of
-   *   leaving them on this one (the unique index keeps a photo on one
-   *   product).
+   * - Frees still-unshared photo rows in releaseMediaIds (a new browser
+   *   product pack inserted), so an ordinary retry can save them to its new
+   *   product. A source already accepted by another pack stays registered.
    */
   private async abandonJob(
     workspaceId: string,
@@ -2623,14 +2706,36 @@ export class DbService implements Services {
     }
     try {
       // Ids come from this request's insert ... returning, never from input.
-      await this.db
-        .delete(sourceMedia)
-        .where(
-          and(
-            eq(sourceMedia.workspaceId, workspaceId),
-            sql`${sourceMedia.id} = any(${`{${releaseMediaIds.join(",")}}`}::uuid[])`,
-          ),
-        );
+      // Acceptance may have reused them after this job committed but before
+      // enqueue failed. Decide under the same lock those writers hold, and
+      // keep any uncertain ownership instead of breaking an accepted pack.
+      await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+        await tx.execute(sql`delete from source_media sm
+          where sm.workspace_id = ${workspaceId}::uuid
+            and sm.id = any(${`{${releaseMediaIds.join(",")}}`}::uuid[])
+            and exists (select 1 from generation_jobs abandoned
+              where abandoned.id = ${jobId}::uuid and abandoned.workspace_id = sm.workspace_id
+                and abandoned.product_id = sm.product_id and abandoned.status = 'failed')
+            and not exists (select 1 from generation_jobs j
+              where j.workspace_id = sm.workspace_id and j.id <> ${jobId}::uuid
+                and (j.product_id = sm.product_id or exists (
+                  select 1 from (
+                    select j.restart_payload -> 'brand' ->> 'logoKey' as key
+                    union all select image ->> 'mediaId' from jsonb_array_elements(
+                      case when jsonb_typeof(j.restart_payload -> 'images') = 'array'
+                        then j.restart_payload -> 'images' else '[]'::jsonb end) image
+                    union all select shot ->> 'sourceMediaId' from jsonb_array_elements(
+                      case when jsonb_typeof(j.restart_payload -> 'shots') = 'array'
+                        then j.restart_payload -> 'shots' else '[]'::jsonb end) shot
+                  ) reference where reference.key in (sm.r2_key, sm.mask_r2_key))))
+            and not exists (select 1 from share_links s where s.before_media_id = sm.id)
+            and not exists (select 1 from brand_kits b where b.workspace_id = sm.workspace_id
+              and b.logo_r2_key in (sm.r2_key, sm.mask_r2_key))
+            and not exists (select 1 from source_media other
+              where other.workspace_id = sm.workspace_id and other.id <> sm.id
+                and (other.r2_key in (sm.r2_key, sm.mask_r2_key) or other.mask_r2_key in (sm.r2_key, sm.mask_r2_key)))`);
+      });
     } catch (err) {
       console.warn(`[jobs] could not free the photos of abandoned job ${jobId}`, err);
     }
@@ -2673,29 +2778,39 @@ export class DbService implements Services {
     const ingestRecord = checked?.ok ? await this.uploadIngestRecord(workspaceId, input.r2Key, checked.ingest) : null;
     // One row per uploaded object: registering the same upload again is a
     // no op, and an upload saved to another product stays there.
-    const inserted = await this.db
-      .insert(sourceMedia)
-      .values({
-        workspaceId,
-        productId: input.productId,
-        r2Key: input.r2Key,
-        kind: input.kind,
-        width: checked?.ok ? checked.width : (input.width ?? null),
-        height: checked?.ok ? checked.height : (input.height ?? null),
-        sha256: (checked?.ok ? checked.sha256 : null) ?? input.sha256,
-        ingest: ingestColumnOf(ingestRecord),
-      })
-      .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
-      .returning({ id: sourceMedia.id });
-    if (inserted.length === 0) {
-      const existing = await this.db.query.sourceMedia.findFirst({
-        where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.r2Key, input.r2Key)),
+    try {
+      return await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+        await assertSourceKeysAvailable(tx, workspaceId, [input.r2Key]);
+        await this.assertSourceObjects([input.r2Key]);
+        const inserted = await tx
+          .insert(sourceMedia)
+          .values({
+            workspaceId,
+            productId: input.productId,
+            r2Key: input.r2Key,
+            kind: input.kind,
+            width: checked?.ok ? checked.width : (input.width ?? null),
+            height: checked?.ok ? checked.height : (input.height ?? null),
+            sha256: (checked?.ok ? checked.sha256 : null) ?? input.sha256,
+            ingest: ingestColumnOf(ingestRecord),
+          })
+          .onConflictDoNothing({ target: [sourceMedia.workspaceId, sourceMedia.r2Key] })
+          .returning({ id: sourceMedia.id });
+        if (inserted.length === 0) {
+          const existing = await tx.query.sourceMedia.findFirst({
+            where: (t, { and, eq }) => and(eq(t.workspaceId, workspaceId), eq(t.r2Key, input.r2Key)),
+          });
+          if (existing && existing.productId !== input.productId) {
+            return { ok: false, reason: "conflict", notice: "That photo is already saved to another product." };
+          }
+        }
+        return { ok: true, notice: "Photo saved to this product." };
       });
-      if (existing && existing.productId !== input.productId) {
-        return { ok: false, reason: "conflict", notice: "That photo is already saved to another product." };
-      }
+    } catch (err) {
+      if (err instanceof SourceUnavailableError) return { ok: false, reason: "invalid_upload", notice: err.message };
+      throw err;
     }
-    return { ok: true, notice: "Photo saved to this product." };
   }
 
   async preflightUpload(workspaceId: string, input: PreflightUploadInput): Promise<PreflightOutcome> {
@@ -2765,7 +2880,7 @@ export class DbService implements Services {
     let storedReport: unknown = null;
     const reportRow = packRows.find((p) => p.kind === "report" && p.channel === null && isWorkspaceKey(workspaceId, p.r2Key));
     if (canSign && reportRow) {
-      try { const bytes = await getObjectBytes(reportRow.r2Key); storedReport = bytes ? JSON.parse(bytes.toString("utf8")) : null; } catch { /* Missing reports provide no fidelity claim. */ }
+      try { const bytes = await readStoredReportBytes(reportRow.r2Key); storedReport = bytes ? JSON.parse(bytes.toString("utf8")) : null; } catch { /* Missing reports provide no fidelity claim. */ }
     }
     const files: JobFileView[] = [];
     // DbJobStore records each asset's shot id in its qc verdict (as getJob
@@ -2828,7 +2943,7 @@ export class DbService implements Services {
     return { jobId: job.id, status: job.status as JobStatus, files, notice };
   }
 
-  async getJobFileDownload(workspaceId: string, jobId: string, fileId: string): Promise<JobFileDownload | null> {
+  async getJobFileDownload(workspaceId: string, jobId: string, fileId: string, options: JobFileDownloadOptions = {}): Promise<JobFileDownload | null> {
     const parsed = parseFileId(fileId);
     if (!parsed || !isUuid(jobId) || !isR2Configured()) {
       return null;
@@ -2854,6 +2969,19 @@ export class DbService implements Services {
       const pack = await this.db.query.packFiles.findFirst({
         where: (t, { and, eq }) => and(eq(t.id, parsed.id), eq(t.jobId, job.id), eq(t.workspaceId, workspaceId)),
       });
+      if (pack?.kind === "report" && isWorkspaceKey(workspaceId, pack.r2Key)) {
+        if (options.report === "snapshot") {
+          const snapshot = await prepareReportSnapshot(this.db, workspaceId, job.id, pack.id);
+          return snapshot ? { url: await presignDownload(snapshot.key, pack.filename), filename: pack.filename, bytes: snapshot.selected.body.length } : null;
+        }
+        const selected = await readSelectedReport(this.db, workspaceId, job.id, pack.id);
+        if (!selected) return null;
+        if (options.report === "inline") {
+          return { url: null, filename: pack.filename, body: selected.body.toString("utf8"), bytes: selected.body.length };
+        }
+        const key = await existingReportKey(selected);
+        return key ? { url: await presignDownload(key, pack.filename), filename: pack.filename } : null;
+      }
       file = pack ? { r2Key: pack.r2Key, filename: pack.filename } : null;
     }
     if (!file || !isWorkspaceKey(workspaceId, file.r2Key)) {
@@ -2881,32 +3009,11 @@ export class DbService implements Services {
     if (!servesFiles(job)) {
       return unavailableComplianceReport(meta, REPORT_NOT_READY);
     }
-    const reports = await this.db.query.packFiles.findMany({
-      where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId), eq(t.kind, "report")),
-    });
-    const row =
-      reports.find((r) => r.channel === null && isWorkspaceKey(workspaceId, r.r2Key)) ??
-      reports.find((r) => isWorkspaceKey(workspaceId, r.r2Key));
-    const bytes = row && isR2Configured() ? await getObjectBytes(row.r2Key).catch(() => null) : null;
-    let raw: unknown = null;
-    try {
-      raw = bytes ? JSON.parse(bytes.toString("utf8")) : null;
-    } catch {
-      raw = null;
-    }
     // A Keep pack's white required files had their background removed for
     // that file only, and the report says so.
     const keptBackground = readStoredOutputOptions(job.outputOptions)?.background === "keep";
-    const assetRows = await this.db.query.assets.findMany({
-      where: (t, { and, eq }) => and(eq(t.jobId, job.id), eq(t.workspaceId, workspaceId)),
-    });
-    const variantRows = assetRows.length ? await this.db.query.assetVariants.findMany({
-      where: (t, { and, eq, inArray }) => and(eq(t.workspaceId, workspaceId), eq(t.picked, true), inArray(t.assetId, assetRows.map((a) => a.id))),
-    }) : [];
-    const selected = pickedComplianceReport(raw, variantRows
-      .filter((v) => isWorkspaceKey(workspaceId, v.r2Key))
-      .map((v) => ({ ...v, workspaceId, jobId: job.id })), assetRows);
-    const view = selected ? buildComplianceReportView(selected, meta, { keptBackground }) : null;
+    const selected = await readSelectedReport(this.db, workspaceId, job.id).catch(() => null);
+    const view = selected ? buildComplianceReportView(selected.report, meta, { keptBackground }) : null;
     if (!view) {
       console.error(`[jobs] compliance report for job ${job.id} has no readable saved checks`);
       return unavailableComplianceReport(meta, REPORT_NOT_STORED);
@@ -2987,27 +3094,39 @@ export class DbService implements Services {
         return { ok: false, notice: checked.notice };
       }
     }
-    // No new logo keeps the current one, but never a key that fails the
-    // prefix check (a legacy row), which the 0011 constraint would reject.
-    const keptLogo =
-      existing?.logoR2Key && isWorkspaceSourceKey(workspaceId, existing.logoR2Key) ? existing.logoR2Key : null;
-    const values = {
-      name: input.name,
-      colors: input.colors,
-      fonts: { heading: input.fonts.heading, body: input.fonts.body },
-      stylePreset: input.stylePreset,
-      logoR2Key: input.logoKey ?? keptLogo,
-      updatedAt: new Date(),
-    };
-    if (!existing) {
-      await this.db.insert(brandKits).values({ workspaceId, ...values });
-    } else {
-      await this.db
-        .update(brandKits)
-        .set(values)
-        .where(and(eq(brandKits.id, existing.id), eq(brandKits.workspaceId, workspaceId)));
+    try {
+      return await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from workspaces where id = ${workspaceId}::uuid for update`);
+        const existing = await tx.query.brandKits.findFirst({ where: (t, { eq }) => eq(t.workspaceId, workspaceId) });
+        // No new logo keeps the current one, but never a key that fails the
+        // prefix check (a legacy row), which the 0011 constraint would reject.
+        const keptLogo =
+          existing?.logoR2Key && isWorkspaceSourceKey(workspaceId, existing.logoR2Key) ? existing.logoR2Key : null;
+        const values = {
+          name: input.name,
+          colors: input.colors,
+          fonts: { heading: input.fonts.heading, body: input.fonts.body },
+          stylePreset: input.stylePreset,
+          logoR2Key: input.logoKey ?? keptLogo,
+          updatedAt: new Date(),
+        };
+        const keys = values.logoR2Key ? [values.logoR2Key] : [];
+        await assertSourceKeysAvailable(tx, workspaceId, keys);
+        await this.assertSourceObjects(keys);
+        if (!existing) {
+          await tx.insert(brandKits).values({ workspaceId, ...values });
+        } else {
+          await tx
+            .update(brandKits)
+            .set(values)
+            .where(and(eq(brandKits.id, existing.id), eq(brandKits.workspaceId, workspaceId)));
+        }
+        return { ok: true, notice: "Brand kit saved." };
+      });
+    } catch (err) {
+      if (err instanceof SourceUnavailableError) return { ok: false, notice: err.message };
+      throw err;
     }
-    return { ok: true, notice: "Brand kit saved." };
   }
 
   /** PHASE_16 workstream 7: the same role, prefix and plan checks as

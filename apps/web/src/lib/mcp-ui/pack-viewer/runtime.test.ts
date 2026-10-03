@@ -68,6 +68,85 @@ afterEach(() => {
 });
 
 describe("the MCP Apps bridge", () => {
+  it("revalidates terminal conversation output and persists no asset URLs", async () => {
+    const setWidgetState = vi.fn();
+    const host = fakeHost({ openai: { toolOutput: finishedPack(1), setWidgetState } });
+    await connect(host);
+    expect(host.doc.root.byTag("img")).toHaveLength(0);
+    expect(text(host, "status")).toEqual([PACK_VIEWER_COPY.refreshing]);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(toolCalls(host).at(-1)?.params).toEqual({ name: "get_pack", arguments: { pack_id: PACK_ID } });
+    host.answer("tools/call", toolOk(finishedPack(1)));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.doc.root.byTag("img")).toHaveLength(1);
+    expect(setWidgetState).toHaveBeenLastCalledWith({ privateContent: { packId: PACK_ID, expanded: false } });
+    expect(JSON.stringify(setWidgetState.mock.calls)).not.toContain("/api/mcp/");
+  });
+
+  it("restores a saved handle using an authenticated read instead of saved business data", async () => {
+    const host = fakeHost({ openai: { widgetState: { privateContent: { packId: PACK_ID, expanded: true, files: finishedPack(1).images } } } });
+    await connect(host);
+    expect(host.doc.root.byTag("img")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(toolCalls(host).at(-1)?.params.arguments).toEqual({ pack_id: PACK_ID });
+    host.answer("tools/call", toolRefusal("Connect Curvi again in ChatGPT and choose a workspace."));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.doc.root.byTag("img")).toHaveLength(0);
+  });
+
+  it("ignores late results and errors for a previous pack", async () => {
+    for (const error of [false, true]) {
+      const host = fakeHost();
+      await connect(host);
+      notify(host, "ui/notifications/tool-result", toolOk(pack()));
+      await vi.advanceTimersByTimeAsync(5000);
+      const previous = toolCalls(host).at(-1)!;
+      const secondId = "10000000-0000-4000-8000-000000000001";
+      notify(host, "ui/notifications/tool-result", toolOk(pack({ pack_id: secondId, product: "Second product" })));
+      await vi.advanceTimersByTimeAsync(5000);
+      host.deliver({ jsonrpc: "2.0", id: previous.id, ...(error ? { error: { code: -1, message: "Old failure" } } : { result: toolOk(finishedPack(1)) }) });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(text(host, "product")).toEqual(["Second product"]);
+      expect(host.doc.root.byTag("img")).toHaveLength(0);
+      expect(toolCalls(host).at(-1)?.params.arguments).toEqual({ pack_id: secondId });
+      host.answer("tools/call", toolOk(finishedPack(1, { pack_id: secondId, product: "Second product" })));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(host.doc.root.byTag("img")).toHaveLength(1);
+    }
+  });
+
+  it("does not restart after teardown while initialization or polling is pending", async () => {
+    const host = fakeHost();
+    const observe = vi.fn();
+    host.win.ResizeObserver = class { observe = observe; disconnect = vi.fn(); };
+    await boot(host);
+    notify(host, "ui/resource-teardown", {});
+    host.answer("ui/initialize", { hostCapabilities: CAPS });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(observe).not.toHaveBeenCalled();
+    expect(toolCalls(host)).toHaveLength(0);
+
+    const mounted = fakeHost();
+    await connect(mounted);
+    notify(mounted, "ui/notifications/tool-result", toolOk(pack()));
+    await vi.advanceTimersByTimeAsync(5000);
+    notify(mounted, "ui/resource-teardown", {});
+    mounted.answer("tools/call", toolOk(finishedPack(1)));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mounted.doc.root.byTag("img")).toHaveLength(0);
+    expect(toolCalls(mounted)).toHaveLength(1);
+  });
+
+  it("bounds a legacy helper that never responds", async () => {
+    const callTool = vi.fn(() => new Promise(() => undefined));
+    const host = fakeHost({ openai: { callTool, toolOutput: finishedPack(1) } });
+    await connect(host, {});
+    await vi.advanceTimersByTimeAsync(150_000);
+    expect(callTool).toHaveBeenCalledTimes(3);
+    expect(text(host, "note")).toEqual([PACK_VIEWER_COPY.askAssistant]);
+    expect(host.doc.root.byTag("img")).toHaveLength(0);
+  });
+
   it("initializes as the 2026-01-26 spec says, then waits for the go ahead", async () => {
     const host = fakeHost();
     await boot(host);
@@ -77,7 +156,7 @@ describe("the MCP Apps bridge", () => {
       id: 1,
       method: "ui/initialize",
       params: {
-        appInfo: { name: "curvi-pack-viewer", version: "1" },
+        appInfo: { name: "curvi-pack-viewer", version: "2" },
         appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
         protocolVersion: "2026-01-26",
       },
@@ -191,7 +270,11 @@ describe("rendering untrusted results", () => {
     notify(host, "ui/notifications/tool-result", toolOk(pack({ product: markup, message: markup, status: "generating" })));
     expect(text(host, "product")).toEqual([markup]);
     expect(text(host, "status")).toEqual([markup]);
-    notify(host, "ui/notifications/tool-result", toolOk(pack({ product: markup, status: "failed", finished: true, error: markup })));
+    const failed = toolOk(pack({ product: markup, status: "failed", finished: true, error: markup }));
+    notify(host, "ui/notifications/tool-result", failed);
+    await vi.advanceTimersByTimeAsync(5_000);
+    host.answer("tools/call", failed);
+    await vi.advanceTimersByTimeAsync(0);
     expect(text(host, "status")).toEqual([markup]);
     for (const element of host.doc.created) {
       expect(ALLOWED_TAGS.has(element.tagName), element.tagName).toBe(true);
@@ -213,6 +296,49 @@ describe("rendering untrusted results", () => {
 });
 
 describe("layouts and actions", () => {
+  it("refreshes expired files once despite repeated clicks and handles refusal without old links", async () => {
+    const host = fakeHost();
+    await connect(host);
+    await finishWith(host, 1);
+    const oldPreview = host.doc.root.byTag("img")[0]!;
+    oldPreview.fire("error");
+    const refresh = host.doc.root.buttons(PACK_VIEWER_COPY.refresh)[0]!;
+    refresh.fire("click");
+    refresh.fire("click");
+    expect(toolCalls(host)).toHaveLength(2);
+    expect(host.doc.root.buttons(PACK_VIEWER_COPY.refreshing)[0]!.getAttribute("disabled")).toBe("");
+    expect(host.doc.root.getAttribute("aria-busy")).toBe("true");
+    const fresh = finishedPack(1, { images: [{ ...finishedPack(1).images![0]!, preview_url: `${ORIGIN}/api/mcp/preview/fresh` }] });
+    host.answer("tools/call", toolOk(fresh));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.doc.root.byTag("img")[0]!.getAttribute("src")).toContain("/fresh");
+    oldPreview.fire("error");
+    expect(host.doc.root.byTag("img")[0]!.getAttribute("src")).toContain("/fresh");
+    expect(host.doc.root.getAttribute("aria-busy")).toBe("false");
+    await vi.advanceTimersByTimeAsync(5000);
+    host.doc.root.buttons(PACK_VIEWER_COPY.refresh)[0]!.fire("click");
+    host.answer("tools/call", toolRefusal("Connect Curvi again in ChatGPT and choose a workspace."));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.doc.root.byTag("img")).toHaveLength(0);
+    expect(host.doc.root.buttons(PACK_VIEWER_COPY.download)).toHaveLength(0);
+  });
+
+  it("shows accessible image, ZIP and report actions beside partial cancellation", async () => {
+    const host = fakeHost();
+    await connect(host);
+    const partial = toolOk(finishedPack(1, { status: "canceled", error: "This pack stopped with one delivered image." }));
+    notify(host, "ui/notifications/tool-result", partial);
+    await vi.advanceTimersByTimeAsync(5000);
+    host.answer("tools/call", partial);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(text(host, "status")).toEqual(["This pack stopped with one delivered image."]);
+    expect(host.doc.root.byClass("status")[0]!.getAttribute("role")).toBe("alert");
+    expect(host.doc.root.buttons(PACK_VIEWER_COPY.downloadZip)[0]!.getAttribute("aria-label")).toContain("pack.zip");
+    expect(host.doc.root.buttons(PACK_VIEWER_COPY.downloadReport)[0]!.getAttribute("aria-label")).toContain("report.pdf");
+    expect(text(host, "check")).toEqual([PACK_VIEWER_COPY.checkPassed]);
+    expect(text(host, "fidelity")).toEqual([PACK_VIEWER_COPY.fidelityUnavailable]);
+  });
+
   it("draws one or two images as a card and three to eight as a carousel", async () => {
     for (const [n, layout] of [
       [1, "card"],
@@ -224,9 +350,10 @@ describe("layouts and actions", () => {
       await connect(host);
       await finishWith(host, n);
       expect(host.doc.root.getAttribute("data-layout"), String(n)).toBe(layout);
-      expect(host.doc.root.byTag("li"), String(n)).toHaveLength(n);
+      expect(host.doc.root.byTag("li"), String(n)).toHaveLength(n + 2);
       expect(host.doc.root.buttons(PACK_VIEWER_COPY.download), String(n)).toHaveLength(n);
-      expect(host.doc.root.buttons(`See all ${n + 2} files`), String(n)).toHaveLength(1);
+      expect(host.doc.root.buttons(PACK_VIEWER_COPY.downloadZip)).toHaveLength(1);
+      expect(host.doc.root.buttons(PACK_VIEWER_COPY.downloadReport)).toHaveLength(1);
     }
   });
 
@@ -261,16 +388,14 @@ describe("layouts and actions", () => {
   it("asks for fullscreen for See all and lists every file there, with Open in Curvi", async () => {
     const host = fakeHost();
     await connect(host);
-    await finishWith(host, 3);
-    host.doc.root.buttons("See all 5 files")[0]!.fire("click");
+    await finishWith(host, 9);
+    host.doc.root.buttons("See all 11 files")[0]!.fire("click");
     expect(host.requests("ui/request-display-mode").map((message) => message.params)).toEqual([{ mode: "fullscreen" }]);
     host.answer("ui/request-display-mode", { mode: "fullscreen" });
     await vi.advanceTimersByTimeAsync(0);
     expect(host.doc.root.getAttribute("data-layout")).toBe("grid");
     expect(host.doc.root.byTag("li").map((element: FakeElement) => element.byClass("title")[0]!.textContent)).toEqual([
-      "amazon.main",
-      "amazon.main",
-      "amazon.main",
+      ...Array(9).fill("amazon.main"),
       "pack.zip",
       "report.pdf",
     ]);
@@ -286,9 +411,9 @@ describe("layouts and actions", () => {
     const setOpenInAppUrl = vi.fn();
     const host = fakeHost({ openai: { setOpenInAppUrl } });
     await connect(host, CAPS, { availableDisplayModes: ["inline"] });
-    await finishWith(host, 1);
+    await finishWith(host, 9);
     expect(setOpenInAppUrl).toHaveBeenCalledWith({ href: `${ORIGIN}/app/jobs/${PACK_ID}` });
-    host.doc.root.buttons("See all 3 files")[0]!.fire("click");
+    host.doc.root.buttons("See all 11 files")[0]!.fire("click");
     expect(host.requests("ui/request-display-mode")).toHaveLength(0);
     expect(host.doc.root.getAttribute("data-layout")).toBe("grid");
     expect(host.doc.root.buttons(PACK_VIEWER_COPY.openInCurvi)).toHaveLength(0);
@@ -318,7 +443,11 @@ describe("layouts and actions", () => {
   it("says when some images did not pass their checks", async () => {
     const host = fakeHost();
     await connect(host);
-    notify(host, "ui/notifications/tool-result", toolOk(finishedPack(2, { images: [...finishedPack(2).images!.slice(0, 1), { ...finishedPack(2).images![1]!, passes_channel_rules: false }] })));
+    const partial = toolOk(finishedPack(2, { images: [...finishedPack(2).images!.slice(0, 1), { ...finishedPack(2).images![1]!, passes_channel_rules: false }] }));
+    notify(host, "ui/notifications/tool-result", partial);
+    await vi.advanceTimersByTimeAsync(5_000);
+    host.answer("tools/call", partial);
+    await vi.advanceTimersByTimeAsync(0);
     expect(text(host, "note")).toEqual([PACK_VIEWER_COPY.someFailed]);
   });
 });

@@ -67,7 +67,7 @@ describe("operator alerts", () => {
       await evaluateOpsAlerts(asDb(), { now: NOW, notify, healthWarnings: ["memory_high"] });
       expect(sent).toHaveLength(0);
     }
-    await evaluateOpsAlerts(asDb(), { now: NOW, notify, healthWarnings: ["memory_high", "db_size_high", "cron_overdue:backup", "restore_drill_overdue"], reconciledJobs: 1,
+    await evaluateOpsAlerts(asDb(), { now: NOW, notify, healthWarnings: ["memory_high", "db_size_high", "cron_overdue:stale-jobs"], reconciledJobs: 1,
       workspaceCaps: [{ workspaceId, usedMicros: 100, limitMicros: 100 }], shotMargins: [{ shotType: "lifestyle", grossMargin: economics.minGrossMargin - 0.01 }] });
     expect(sent.map((item) => item.rule)).toEqual(expect.arrayContaining(["memory_high", "health_warning", "reconciled_jobs", "workspace_day_cap", "shot_margin"]));
     const before = (await db.select().from(opsAlerts).where(eq(opsAlerts.status, "open"))).length;
@@ -75,6 +75,21 @@ describe("operator alerts", () => {
     expect((await db.select().from(opsAlerts).where(eq(opsAlerts.status, "open"))).length).toBe(before);
     await evaluateOpsAlerts(asDb(), { now: NOW, notify, healthWarnings: [], reconciledJobs: 0, workspaceCaps: [], shotMargins: [] });
     expect(await db.select().from(opsAlerts).where(eq(opsAlerts.status, "open"))).toEqual([]);
+  });
+
+  it("retires legacy backup alerts while preserving history and active cron warnings", async () => {
+    const retired = ["cron_overdue:backup", "cron_never_ran:backup", "restore_drill_overdue"];
+    for (const subject of retired) await db.insert(opsAlerts).values({ rule: "health_warning", subject, openedAt: ago(60), updatedAt: ago(60) });
+    const report = await evaluateOpsAlerts(asDb(), { now: NOW, notify,
+      healthWarnings: [...retired, "cron_overdue:stale-jobs", "cron_never_ran:billing-reconcile"] });
+    expect(report).toMatchObject({ opened: 2, resolved: 3 });
+    const rows = await db.select().from(opsAlerts);
+    expect(rows).toHaveLength(5);
+    expect(rows.filter((row) => retired.includes(row.subject)).every((row) => row.status === "resolved")).toBe(true);
+    expect(rows.filter((row) => row.status === "open").map((row) => row.subject).sort()).toEqual([
+      "cron_never_ran:billing-reconcile", "cron_overdue:stale-jobs",
+    ]);
+    expect(sent.filter((item) => retired.includes(item.subject)).every((item) => item.status === "resolved")).toBe(true);
   });
 
   it("detects signup and withheld-grant bursts, a gallery submission and Not yet feedback", async () => {

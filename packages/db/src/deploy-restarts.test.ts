@@ -1,15 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { eq } from "drizzle-orm";
-import { actAs, actAsSuperuser, createAppUserRole, createTestDb, type TestDb } from "./test-helpers";
+import { actAs, actAsServiceRole, actAsSuperuser, createAppUserRole, createTestDb, type TestDb } from "./test-helpers";
 import { generationJobs, products, workspaces } from "./schema";
 
 // Migration deploy_restarts (docs/phases/PHASE_18.md P18-23): restart_count
 // and restart_payload on generation_jobs. No new table, so the existing
-// policies keep covering them: another workspace never sees them, and a
-// trigger keeps every client connection, owners included, from writing
-// them or moving run_key to a restart: key. The restart pickup trusts all
-// three, so only the server may set them.
+// SELECT policies hide them from another workspace. Migration 0049 removes
+// member writes entirely; the protected-field INSERT trigger remains another
+// guard. The restart pickup trusts these fields, so only the server sets them.
 
 const OWNER_A = "00000000-0000-4000-8000-0000000028a1";
 const CLIENT_A = "00000000-0000-4000-8000-0000000028a3";
@@ -82,6 +81,7 @@ describe("deploy_restarts", () => {
   });
 
   it("lets the server set and clear them", async () => {
+    await actAsServiceRole(client);
     await db
       .update(generationJobs)
       .set({ restartCount: 1, restartPayload: payload, runKey: "restart:abc", status: "queued" })
@@ -101,31 +101,32 @@ describe("deploy_restarts", () => {
   });
 
   it("refuses an owner's client connection that writes them or a restart run key", async () => {
+    const before = await row();
     await actAs(client, OWNER_A);
-    await expect(client.query("update generation_jobs set restart_count = 0 where id = $1", [jobA])).rejects.toThrow(
-      "can only be changed by the server",
-    );
-    await expect(
-      client.query(`update generation_jobs set restart_payload = '{"creditBudget": 999}'::jsonb where id = $1`, [jobA]),
-    ).rejects.toThrow("can only be changed by the server");
-    await expect(
-      client.query("update generation_jobs set run_key = 'restart:forged', status = 'queued' where id = $1", [jobA]),
-    ).rejects.toThrow("can only be changed by the server");
+    // Without an UPDATE policy, RLS hides every row from the write before
+    // protected-column triggers run. SELECT remains available to members.
+    for (const statement of [
+      "update generation_jobs set restart_count = 0 where id = $1",
+      `update generation_jobs set restart_payload = '{"creditBudget": 999}'::jsonb where id = $1`,
+      "update generation_jobs set run_key = 'restart:forged', status = 'queued' where id = $1",
+      "update generation_jobs set error = 'owner note' where id = $1",
+    ]) {
+      expect((await client.query(statement, [jobA])).affectedRows).toBe(0);
+    }
     await expect(
       client.query(
         `insert into generation_jobs (workspace_id, product_id, run_key, restart_count) values ($1, $2, 'restart:x', 1)`,
         [wsA, productA],
       ),
     ).rejects.toThrow("can only be changed by the server");
-    // Other columns stay as the 0001 policies allow.
-    await client.query("update generation_jobs set error = 'owner note' where id = $1", [jobA]);
+    expect(await row()).toEqual(before);
     await actAsSuperuser(client);
-    expect(await row()).toMatchObject({ restartCount: 1, restartPayload: null, runKey: "run-2", error: "owner note" });
+    expect(await row()).toEqual(before);
   });
 
   it("keeps a client seat read only", async () => {
     await actAs(client, CLIENT_A);
-    await client.query("update generation_jobs set restart_count = 5 where id = $1", [jobA]).catch(() => undefined);
+    expect((await client.query("update generation_jobs set restart_count = 5 where id = $1", [jobA])).affectedRows).toBe(0);
     await actAsSuperuser(client);
     expect((await row()).restartCount).toBe(1);
   });

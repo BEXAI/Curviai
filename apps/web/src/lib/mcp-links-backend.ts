@@ -16,6 +16,7 @@ import { isWorkspaceKey } from "@/lib/r2";
 import { getServices, isDbMode } from "@/lib/services";
 import { getDb, servesFiles } from "@/lib/services/db";
 import { isUuid } from "@/lib/validation/ids";
+import { readSelectedReport } from "./selected-report-download";
 import type { LinkSubject, LinkedFile, McpLinkBackend } from "./mcp-links";
 
 function rowsOf<T>(result: unknown): T[] {
@@ -89,7 +90,11 @@ class DbMcpLinkBackend implements McpLinkBackend {
     if (!pack || !isWorkspaceKey(workspaceId, pack.r2Key)) {
       return null;
     }
-    return { key: pack.r2Key, filename: pack.filename, kind: pack.kind === "report" ? "report" : "zip" };
+    if (pack.kind === "report") {
+      const selected = await readSelectedReport(this.db, workspaceId, jobId, pack.id);
+      return selected ? { key: pack.r2Key, filename: pack.filename, kind: "report", reportBody: selected.body.toString("utf8") } : null;
+    }
+    return { key: pack.r2Key, filename: pack.filename, kind: "zip" };
   }
 }
 
