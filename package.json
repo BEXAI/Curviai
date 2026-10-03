@@ -27,6 +27,7 @@
     "ops:memory-test": "pnpm --filter @curvi/web ops:memory-test",
     "smoke": "playwright test --config=playwright.smoke.config.ts",
     "ops:migrate": "pnpm --filter @curvi/web ops:migrate",
+    "ops:indexnow": "pnpm --filter @curvi/web ops:indexnow",
     "release": "pnpm --filter @curvi/web release"
   },
   "devDependencies": {
