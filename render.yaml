@@ -79,6 +79,9 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      # Optional approved public ownership proof; unset keeps the route off.
+      - key: INDEXNOW_KEY
+        sync: false
       - key: LIFECYCLE_EMAIL_FROM
         sync: false
       - key: LIFECYCLE_FOUNDER_NAME
