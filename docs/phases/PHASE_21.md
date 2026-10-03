@@ -18,7 +18,7 @@ These are code-grounded opportunities, not measured demand or promised revenue. 
 
 Any remaining Phase 18–20 defect or acceptance check stays in its original phase. In particular, failing CI/build/browser checks, tenant isolation, ledger reconciliation, product-pixel fidelity, interrupted-run settlement and security regressions must be fixed there. This plan cannot relabel those defects as future improvements.
 
-Live proof also remains there: funded quality/evaluation gates in P18; actual client install, OAuth, attachment and publication proof in P19; and P20 billing, cross-device auth, CAPTCHA/mail, operator MFA, backup/restore, Blueprint adoption, cron/monitoring and staging smoke checks. The existing phase acceptance matrices and release checklist determine which have passed. This document is not a new live-status audit. The 2026-10-02 final rollout review confirmed that scheduled-renewal notice accuracy and assistant intake screening readiness remain Phase 20 and Phase 19 corrections respectively; neither is promoted into these proposals.
+Live proof also remains there: funded quality/evaluation gates in P18; actual client install, OAuth, attachment and publication proof in P19; and P20 billing, cross-device auth, CAPTCHA/mail, operator MFA, Blueprint adoption, cron/monitoring and staging smoke checks. The existing phase acceptance matrices and release checklist determine which have passed. This document is not a new live-status audit. The 2026-10-02 final rollout review confirmed that scheduled-renewal notice accuracy and assistant intake screening readiness remain Phase 20 and Phase 19 corrections respectively; neither is promoted into these proposals.
 
 The following reviewed deferrals keep their existing triggers and scope:
 

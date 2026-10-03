@@ -1,12 +1,11 @@
 /**
  * POST /api/cron/backup-report
- * The nightly backup (ops/cron/backup.sh on the curvi-backup Render cron,
- * docs/phases/PHASE_20.md P20-10) reports here after the encrypted file is
- * in R2: its key, size, sha256, row counts and ledger total. The route
- * stores the report as platform_settings `backup:last` and records the
- * cron's success, so GET /api/health warns cron_overdue:backup once the
- * newest backup is older than the seeded maxAgeHours. Protected by
- * CRON_SECRET (lib/cron-auth). In demo mode there is nothing to record.
+ * Retained legacy tooling reports an encrypted file's key, size, sha256,
+ * row counts and ledger total here. The route stores the report as
+ * platform_settings `backup:last` and preserves its success record. The
+ * backup plan was retired on 2026-10-03; these records impose no active
+ * schedule or health requirement. Protected by CRON_SECRET (lib/cron-auth).
+ * In demo mode there is nothing to record.
  *
  * GET /api/cron/backup-report (CRON_SECRET) answers the recorded backup's
  * key, size and sha256, so the restore drill restores that exact file and
@@ -44,7 +43,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const db = getDb();
     const recorded = await recordBackupReport(db, body.value);
-    // Health warns when this goes stale (lib/cron-health.ts).
+    // Preserve the legacy success record without scheduling or monitoring it.
     await recordCronSuccess(db, "backup");
     console.info(
       JSON.stringify({

@@ -242,7 +242,7 @@ What it sends: server request errors, every `console.error` line (warnings stay 
 
 PHASE_20 removes the Trigger.dev SDK and cloud task wrappers. Packs run inside the bounded web runner. Keep `TRIGGER_SECRET_KEY` unset and remove any retired dashboard value; it is no longer a worker-routing control. The `@curvi/trigger` workspace remains as shared tested pipeline code.
 
-The production Blueprint now describes one `curvi-tick` scheduler plus the separate encrypted backup scheduler. See the combined production inventory below for the exact separation of environment variables and the safe adoption procedure. Do not create a new worker or duplicate existing cron services. First prove the tick, health heartbeat and per-job successes, then retire the old dashboard cron commands. The first real backup/restore and Monday report remain live acceptance checks.
+The production Blueprint describes one `curvi-tick` scheduler. The encrypted-backup scheduler plan was retired on 2026-10-03. See the combined production inventory below for the exact separation of environment variables and the safe adoption procedure. Do not create a new worker or duplicate existing cron services. First prove the tick, health heartbeat and per-job successes, then retire the old dashboard cron commands. The first real Monday report remains a live acceptance check.
 
 ## 15. Uptime monitor
 
@@ -251,8 +251,8 @@ The production Blueprint now describes one `curvi-tick` scheduler plus the separ
 **Do:**
 
 1. **Monitor A**, UptimeRobot Free (decision 14; its terms allow commercial use): a Keyword monitor on `https://curvi.ai/api/health` every 5 minutes, keyword `"ok":true`, alert when the keyword does not exist, by push (the mobile app) and email. The body match is required, not optional: after an instance has started, a database outage answers 200 with `"ok":false` (step 8 explains why), so a monitor that only checks the status code never sees it.
-2. **Monitor B:** a second keyword monitor on the same URL, keyword `"status":"ok"`, email. It also fires for degraded warnings that leave `ok` true: packs paused for a provider, a dead cron, a stale backup, high memory, a nearly full database (`status` and `degradedBy` in the body, P20-15).
-3. **healthchecks.io** Hobbyist (free): a `curvi-backup` check pinged by the backup cron on success (P20-10, `HEALTHCHECKS_BACKUP_URL`), period 1 day. After the first ping, confirm it shows "up": a wrong check id still answers 200.
+2. **Monitor B:** a second keyword monitor on the same URL, keyword `"status":"ok"`, email. It also fires for degraded warnings that leave `ok` true: packs paused for a provider, a dead cron, high memory, a nearly full database (`status` and `degradedBy` in the body, P20-15).
+3. **healthchecks.io:** configure the tick heartbeat with the approved monitor plan and verify that the actual check shows "up" after a scheduled run. No backup monitor is required.
 4. **Render:** email notifications for failed deploys on.
 
 **Verify** (both safe on production): a temporary UptimeRobot keyword monitor on `https://curvi.ai/api/health` with a keyword that never appears alerts within 10 minutes, then delete it; a temporary healthchecks.io check that is never pinged emails within 30 minutes, then delete it. Record both, dated, in docs/verification.md. The staging 503 drill (both monitors fire) joins the Release 4 gate.
@@ -429,7 +429,7 @@ No new environment variables and no migration. Two existing ones gain a use:
 
 What changes for the founder:
 
-1. **`/api/health` warnings now cover drift.** Besides `storage_not_configured`, `no_llm_provider` and `no_image_provider`, it can list `no_cutout_provider`, `recipe_drift` (the recipes table differs from the seed in the deployed build, so production runs other prompts or models), `recipe_check_failed`, `cron_never_ran:<name>`, `cron_overdue:<name>` (last success older than twice the interval: stale-jobs every 10 minutes, purge-source-media daily, billing-reconcile every `billingReconcile.everyMinutes`; the backup instead after the seeded `backup.maxAgeHours`, 26 hours), `cron_check_failed`, `shot_concurrency_invalid` and `memory_high` (RSS at 85 percent of the container limit or more). Warnings never change `ok` or the status code, but since PHASE_20 P20-15 they set `status` to `degraded` (a `cron_never_ran` or `cron_overdue` warning among them; docs/ops/ALERTS.md lists each code's severity). Until all four crons (stale-jobs, purge-source-media, billing-reconcile and backup) have run, their `cron_never_ran` warnings are expected and `status` reads `degraded`, so the short smoke test in step 16 reads `"warnings":[]` only after that.
+1. **`/api/health` warnings now cover drift.** Besides `storage_not_configured`, `no_llm_provider` and `no_image_provider`, it can list `no_cutout_provider`, `recipe_drift` (the recipes table differs from the seed in the deployed build, so production runs other prompts or models), `recipe_check_failed`, `cron_never_ran:<name>`, `cron_overdue:<name>` (last success older than twice the interval: stale-jobs every 10 minutes, purge-source-media daily, billing-reconcile every `billingReconcile.everyMinutes`), `cron_check_failed`, `shot_concurrency_invalid` and `memory_high` (RSS at 85 percent of the container limit or more). Warnings never change `ok` or the status code, but since PHASE_20 P20-15 they set `status` to `degraded` (a `cron_never_ran` or `cron_overdue` warning among them; docs/ops/ALERTS.md lists each code's severity). Confirm every enabled registered job has an observed success. Missing required cron successes keep health degraded; retired backup/drill monitoring is not a current requirement. Other warnings must be evaluated individually, so a successful cron run alone does not establish `"warnings":[]`.
 2. **Read the detail:** `curl -s -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/health` adds `details`: each warning in plain words, the recipe differences (model ids and body hashes, never prompts), key presence per stage (env var names only), each cron's last success, shot concurrency and memory. A wrong secret gets the public body.
 3. **Probe the provider keys after each deploy:** `curl -s -H "Authorization: Bearer $CRON_SECRET" https://curvi.ai/api/health/providers`. Each configured provider gets one free metadata call (model lookup for Anthropic, Gemini and OpenAI, the credit balance for BFL; the fal cutout has no free probe and shows as skipped), and the reply lists `ok`, the HTTP status and the latency per provider; the top level `ok` is true only when every configured key was accepted. A 401 means the key was refused; a 403 usually means the key is not allowed or has no credit left. Nothing is generated and nothing is spent. This route used to be public; if an uptime monitor polled it, point that monitor at `/api/health` instead.
 4. **Clear a recipe drift warning** by running `pnpm db:seed` against the database from the deployed commit (it upserts the seed rows), or, when a table edit was deliberate, by moving the same change into packages/pipeline/src/seed/recipes.ts.
@@ -845,7 +845,7 @@ No migration and no new variable on Render. What changes before live Stripe keys
 
 ## Phase 20 billing terms (P20-05 to P20-08)
 
-Migration `billing_terms` (take a pg_dump first, then pnpm db:migrate, staging first, before the web deploy). What changes before live Stripe keys (docs/phases/PHASE_20.md P20-05 to P20-08):
+Migration `billing_terms` was part of the historical billing rollout. Preserve its applied journal entry; do not replay it. For pending migrations, review data effects and writer compatibility, then use the guarded migration process before the compatible web deploy. No backup prerequisite remains. What changes before live Stripe keys (docs/phases/PHASE_20.md P20-05 to P20-08):
 
 1. **Credits never expire** (P20-05): one credit sentence everywhere; the migration clears the unused top up expiry.
 2. **Plan cards list only what runs; Agency off self serve** (P20-08): do not create Agency prices (docs/STRIPE_SETUP.md section 1).
@@ -857,19 +857,11 @@ Migration `billing_terms` (take a pg_dump first, then pnpm db:migrate, staging f
 | `STRIPE_PORTAL_UPGRADE_CONFIG_STARTER`, `_STARTER_ANNUAL`, `_GROWTH`, `_GROWTH_ANNUAL`, `_PRO` | web (checkout route) | Those subscribers get the default configuration (Switch plan off) and cannot upgrade online; `/api/health` warns `stripe_portal_upgrade_config_missing` once checkout is open. | The `bpc_...` ids of the five upgrade only portal configurations (docs/STRIPE_SETUP.md section 5). |
 | `BILLING_EMAIL_FROM` | web (Stripe webhook, billing reconcile) | Checkout stays closed (with `RESEND_API_KEY`, it is a readiness requirement); `/api/health` warns `billing_email_not_configured` (info until billing is meant to be live, degraded after). | The sender of billing emails, an address on the verified `updates.curvi.ai`, for example `Curvi Billing <billing@updates.curvi.ai>`. Needs `RESEND_API_KEY`. |
 
-## Phase 20 nightly backup (p20/data, P20-10)
+## Retired backup planning
 
-No migration. Supabase Free keeps no restorable backup, so a Render cron job, `curvi-backup`, dumps the database every night at 09:15 UTC, encrypts it to the founder's age public key and stores it in its own R2 bucket, `curvi-backups` (daily copies 35 days, monthly copies 180 days, the newest 7 days locked). It reports to `POST /api/cron/backup-report`, which records `backup:last`; `/api/health` warns `cron_never_ran:backup` until the first report and `cron_overdue:backup` once the newest is older than 26 hours. Every setup step, with its commands, is in docs/ops/BACKUP_RESTORE.md, "Setting it up"; the short list is in docs/PENDING.md, "Phase 20 founder steps: nightly backup".
+On 2026-10-03 the user removed encrypted-backup planning and release gates. P20-10 and P20-11 are retired; no bucket, age recipient, backup cron, monitor or restore drill must be provisioned. Local disk and GitHub preserve code only, not live database rows or stored objects. Existing backup data and unrelated security controls remain untouched. See [current policy and historical reference](ops/BACKUP_RESTORE.md).
 
-| Name | Read by | Unset means | Meaning |
-| --- | --- | --- | --- |
-| `BACKUP_DATABASE_URL` | ops/cron/backup.sh (cron only) | The backup refuses to start (exit 2) and pings healthchecks.io `/fail`; health turns degraded after 26 hours. | The Supabase session pooler string, port 5432, user `postgres.<ref>`. A secret. Never on the web service. |
-| `BACKUP_AGE_RECIPIENT` | ops/cron/backup.sh | As above. | The founder's age public key (`age1...`). The private key lives only in the password manager. |
-| `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY` | ops/cron/backup.sh | As above. | The account, the backup bucket and a token scoped to that bucket only (object read and write). The web service never holds it, so the app cannot write or delete backups. |
-| `HEALTHCHECKS_BACKUP_URL` | ops/cron/backup.sh | No ping; health still warns when the backup goes stale. | The healthchecks.io ping URL of the `curvi-backup` check. |
-| `NEXT_PUBLIC_SITE_URL`, `CRON_SECRET` | ops/cron/backup.sh, for the report | The backup refuses to start. | The same values the web service has. |
-
-**Restore drill (P20-11).** Once before live Stripe keys and then monthly, the founder runs `pnpm ops:restore-drill` on the laptop into a fresh local Supabase stack (never staging or production; the script refuses both and any database `DATABASE_URL` points at). It restores the newest backup, runs nine checks, posts the timing to `POST /api/cron/restore-drill-report` and destroys the stack. `/api/health` shows `restore_drill_overdue` (info) until the first drill and after 35 days without one. It reads `CRON_SECRET` and a read only `BACKUP_R2_*` token from the shell only; nothing goes on Render. Steps: docs/ops/BACKUP_RESTORE.md, "The restore drill".
+Migrations retain their own checks for target identity, exact journal, compatible app/workers, old-writer isolation and reversibility. Report irreversible data effects before executing them. Do not upload live database dumps or secrets to GitHub.
 
 ## Production environment inventory
 
@@ -879,7 +871,7 @@ The `curvi-common` group contains only the site URL, `NODE_ENV` and `CRON_SECRET
 
 Production automatic deploys remain `autoDeployTrigger: checksPass`, matching the latest authorized workflow. The guarded `pnpm release` CLI is available for a future explicit release policy choice; do not assume its pre-deploy drain runs on an automatic Render deploy. Before first Blueprint sync: set Blueprint Auto Sync to No, compare Generate Blueprint with this file, match service names/types, and inspect the preview. Proceed only when it adopts the existing services without new or suffixed copies and without overwriting environment values. Applying this Blueprint or provisioning cron resources requires the separate founder operation.
 
-`curvi-backup` remains daily at 09:15 UTC. `curvi-tick` calls `/api/cron/tick` every ten minutes, with a start/success/failure heartbeat, and replaces the two legacy dashboard scheduler services only after its first live success and job freshness are verified. It holds no database, Stripe, provider or backup credentials. The web service cannot write the encrypted backup bucket. Verify the Docker base Postgres major against the source database before a real backup.
+`curvi-tick` calls `/api/cron/tick` every ten minutes, with a start/success/failure heartbeat, and replaces the two legacy dashboard scheduler services only after its first live success and job freshness are verified. It holds no database, Stripe or provider credentials. The retired backup plan does not authorize deleting existing services/data or widening web-service access.
 
 **Founder verification required:** `.env.example` was not read or changed because it is protected in this task. Copy the inventory names and safe empty/default placeholders to it by hand, then enable a separate hard completeness check. The repository test deliberately verifies the source/Blueprint/checklist inventory without opening that protected file. Live adoption, current dashboard values, cron provisioning and heartbeat delivery remain unverified.
 
@@ -942,7 +934,7 @@ Official syntax and behavior: [Render Blueprint reference](https://render.com/do
 | `OPS_EMAILS` | web only | Comma-separated operator allowlist; missing denies operator access. |
 | `OPS_RELEASE_TOKEN` | web only | Scoped deploy-pending capability shared only with founder release CLI; unset endpoint returns404. |
 | `PHOTOROOM_API_KEY` | web only | Optional legacy adapter key; no active seed route requires it. Leave unset unless explicitly configured. |
-| `R2_ACCESS_KEY_ID` | web only | Private product bucket access key; never reuse the backup bucket token. |
+| `R2_ACCESS_KEY_ID` | web only | Private product bucket access key; scoped only to the intended asset bucket. |
 | `R2_ACCOUNT_ID` | web only | Private object store account. Required for real file delivery. |
 | `R2_BUCKET_PRIVATE` | web only | Private product bucket; unset defaults to curvi-private. |
 | `R2_SECRET_ACCESS_KEY` | web only | Private product bucket secret; missing disables real file delivery. |
@@ -981,13 +973,6 @@ Official syntax and behavior: [Render Blueprint reference](https://render.com/do
 | `UPSTASH_REDIS_REST_TOKEN` | web only | Rate-limit backend token; keep paired with its URL. |
 | `UPSTASH_REDIS_REST_URL` | web only | Optional shared rate-limit backend URL; absent uses supported database/local fallbacks. |
 | `VISITS_HASH_KEY` | web only | Server-only visit hashing key; missing disables durable visitor hashing/counts. |
-| `BACKUP_AGE_RECIPIENT` | backup cron only | Age public recipient; required. Private decryption key never belongs on Render. |
-| `BACKUP_DATABASE_URL` | backup cron only | Session pooler database URL for pg_dump, not the web transaction-pooler URL. |
-| `BACKUP_R2_ACCESS_KEY_ID` | backup cron only | Access key scoped to the backup bucket only; required. |
-| `BACKUP_R2_ACCOUNT_ID` | backup cron only | Backup bucket account ID; required. |
-| `BACKUP_R2_BUCKET` | backup cron only | Separate encrypted-backup bucket name; required. |
-| `BACKUP_R2_SECRET_ACCESS_KEY` | backup cron only | Secret scoped to the backup bucket only; required. |
-| `HEALTHCHECKS_BACKUP_URL` | backup cron only | Optional private backup heartbeat URL; missing leaves external backup monitoring disabled. |
 | `HEALTHCHECKS_TICK_URL` | tick cron only | Optional private tick heartbeat URL; missing leaves external tick monitoring disabled. |
 | `ALLOW_DEMO_MODE` | local/test only | Never set on production. Allows explicit test demo mode. |
 | `APPDATA` | CLI host supplied | Windows CLI config root; unset uses the OS home fallback. |
@@ -1007,7 +992,6 @@ Official syntax and behavior: [Render Blueprint reference](https://render.com/do
 | `OPS_SITE_URL` | founder machine only | Canonical HTTP target for guarded migration/release scripts. |
 | `PORT` | Render supplied | Web server listening port; local start defaults3000. |
 | `RENDER_API_KEY` | founder machine only | Render control-plane credential; never in web/cron env. |
-| `RENDER_BACKUP_CRON_ID` | founder machine only | Existing backup job ID used by guarded migration backup step. |
 | `RENDER_GIT_COMMIT` | Render supplied | Deploy commit used by health and Sentry releases. |
 | `RENDER_SERVICE_ID` | founder machine only | Existing web service ID for guarded release CLI. |
 | `SMOKE_ALLOW_PACKS` | GitHub/local smoke only | Explicit paid staging pack opt-in; unset keeps generation off. |
@@ -1019,8 +1003,8 @@ Official syntax and behavior: [Render Blueprint reference](https://render.com/do
 | `SMOKE_USER_EMAIL` | GitHub/local smoke only | Staging login fixture only; never production customer credentials. |
 | `SMOKE_USER_PASSWORD` | GitHub/local smoke only | Staging login fixture password only. |
 | `SMOKE_WORKSPACE_EXCLUDED` | GitHub/local smoke only | Required operator-workspace exclusion proof for production synthetic packs. |
-| `STAGING_DATABASE_URL` | founder restore-drill only | Staging identity denylist for restore guards; never a production deployment credential. |
-| `STAGING_SUPABASE_URL` | founder restore-drill only | Staging project identity used to reject an unsafe restore target. |
+| `STAGING_DATABASE_URL` | founder staging tools only | Separate staging database identity; never a production deployment credential. |
+| `STAGING_SUPABASE_URL` | founder staging tools only | Separate staging project identity; retained restore tooling also refuses this target. |
 | `STRIPE_E2E` | local test only | Explicit Stripe test-mode E2E opt-in; unset skips real-stack test. |
 | `TEST_DATABASE_URL` | isolated test/CI only | Disposable PostgreSQL race-test target; never production. |
 | `TRIGGER_SECRET_KEY` | retired | Ignored diagnostic only; remove from Render. No Trigger.dev worker is deployed. |
@@ -1031,6 +1015,21 @@ Official syntax and behavior: [Render Blueprint reference](https://render.com/do
 | `STAGING_OPS_RELEASE_EMAIL` | founder/local or host supplied only | Audited operator identity for staging releases. |
 | `STAGING_RENDER_API_KEY` | founder/local or host supplied only | Render control-plane key used only by the founder staging CLI. |
 | `STAGING_RENDER_SERVICE_ID` | founder/local or host supplied only | Existing staging web service ID. |
-| `STAGING_RENDER_BACKUP_CRON_ID` | founder/local or host supplied only | Existing staging backup ID, only if a separate staging backup exists. |
-| `BACKUP_TIMESTAMP` | founder/local or host supplied only | Test fixture clock override for backup-script tests; leave unset for real backups. |
 | `TMPDIR` | founder/local or host supplied only | Host temporary directory; cron scripts default to /tmp. |
+
+### Retired tooling environment names
+
+These names remain in legacy scripts/tests for older-release compatibility. They are excluded from the active deployment plan; do not create keys, request a public age recipient, provision storage or transmit a backup to fill them.
+
+| Variable | Scope | Status |
+| --- | --- | --- |
+| `BACKUP_AGE_RECIPIENT` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |
+| `BACKUP_DATABASE_URL` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |
+| `BACKUP_R2_ACCESS_KEY_ID` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |
+| `BACKUP_R2_ACCOUNT_ID` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |
+| `BACKUP_R2_BUCKET` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |
+| `BACKUP_R2_SECRET_ACCESS_KEY` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |
+| `HEALTHCHECKS_BACKUP_URL` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |
+| `RENDER_BACKUP_CRON_ID` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |
+| `STAGING_RENDER_BACKUP_CRON_ID` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |
+| `BACKUP_TIMESTAMP` | retired tooling only | Optional archival compatibility reference; not required or provisioned for the current rollout. |

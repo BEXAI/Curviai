@@ -19,7 +19,7 @@ it("reads actual billing, jobs, cost and operational fixtures into all three rep
  await c.query("insert into platform_settings(key,value) values('cron:backup:last_success','{\"at\":\"2026-10-04T13:00:00Z\"}')");
  const metrics=await new DbMetricsReader(test.db as unknown as Db,{now:NOW,databaseBytes:async()=>weeklyReport.databaseDecisionBytes+1,storageBytes:async()=>1234}).read();
  expect(metrics.mrrUsd).toBe(tierByKey("starter").annualUsdPerMonth);
- expect(metrics).toMatchObject({topUpsUsd:12.5,cogsUsd:0.1,dailySpendUsd:2.5,llmSpendUsd:0.125,backupAgeDays:1,drillAgeDays:null,paidPacksMonth:1,payingCustomers:1,r2Bytes:1234});
+ expect(metrics).toMatchObject({topUpsUsd:12.5,cogsUsd:0.1,dailySpendUsd:2.5,llmSpendUsd:0.125,paidPacksMonth:1,payingCustomers:1,r2Bytes:1234});
  expect(metrics.packs).toMatchObject({started:1,done:1,failed:0,needsReview:1,shots:2,medianSeconds:240,longestQueueSeconds:660});
  const text=weeklyMetricLines(metrics).join("\n");
  for(const heading of ["Money","Operations","Triggers"])expect(text).toContain(`\n${heading}\n`);
@@ -27,4 +27,8 @@ it("reads actual billing, jobs, cost and operational fixtures into all three rep
  expect(text).toContain("Queue wait over 10 minutes: REVIEW");
  expect(text).toContain("Database past 300 MB: REVIEW");
  expect(text).not.toContain("demo");
+ expect(text).not.toMatch(/backup|restore drill/i);
+ expect(metrics).not.toHaveProperty("backupAgeDays");
+ expect(metrics).not.toHaveProperty("drillAgeDays");
+ expect((await c.query("select key from platform_settings where key='cron:backup:last_success'")).rows).toHaveLength(1);
 });

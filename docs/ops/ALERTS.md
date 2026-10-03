@@ -11,8 +11,8 @@ Local alert code and tests do not establish monitor or mailbox delivery. Confirm
 | Channel | Watches | Fires when | Reaches the founder by | Set up |
 | --- | --- | --- | --- | --- |
 | Monitor A (UptimeRobot, keyword) | `https://curvi.ai/api/health` every 5 minutes | the body does not contain `"ok":true`: the site is down, times out, answers 5xx (a 503 during a bad deploy, or while draining), or reports `ok: false` (the database stopped answering after boot) | push and email | founder, "Monitors" below |
-| Monitor B (UptimeRobot, keyword) | the same URL every 5 minutes | the body does not contain `"status":"ok"`: anything monitor A sees, plus every degraded warning (packs paused, a dead cron, a stale backup, high memory, a full database) | email | founder, "Monitors" below |
-| healthchecks.io | the nightly backup cron (P20-10, `HEALTHCHECKS_BACKUP_URL`), and the tick cron (P20-38) | a ping does not arrive within the check's period plus grace | email | founder, "Monitors" below |
+| Monitor B (UptimeRobot, keyword) | the same URL every 5 minutes | the body does not contain `"status":"ok"`: anything monitor A sees, plus every degraded warning (packs paused, a dead cron, high memory, a full database) | email | founder, "Monitors" below |
+| healthchecks.io | the tick cron (P20-38) | a ping does not arrive within the check's period plus grace | email | founder, "Monitors" below |
 | Render | deploys | a deploy fails to build or start | email (Render's notification settings) | founder |
 | Founder email (Resend) | spend, LLM traffic, provider quota, credit expiry | see "Founder emails" | email to `FOUNDER_ALERT_EMAIL` from `FOUNDER_ALERT_FROM` | `RESEND_API_KEY`, `FOUNDER_ALERT_EMAIL`, `FOUNDER_ALERT_FROM` on Render |
 | Sentry (Developer plan, free) | server errors, every `console.error`, pack crashes and time caps, and a copy of every founder email | a new issue | email (an issue alert rule) | `SENTRY_DSN` and the alert rule, "Sentry" below |
@@ -34,14 +34,14 @@ Local alert code and tests do not establish monitor or mailbox delivery. Confirm
 
 ## Health codes
 
-`/api/health` lists warnings as short codes. Severity: down (the site or its data path is broken, `ok` is false), degraded (packs, payments, backups or alerts are at risk), info (a look is due, nothing is broken). A code that has no row in the severity table counts as degraded, so a new warning is never silently ignored. A code ending in `:*` stands for a family, such as `cron_overdue:stale-jobs`.
+`/api/health` lists warnings as short codes. Severity: down (the site or its data path is broken, `ok` is false), degraded (packs, payments or alerts are at risk), info (a look is due, nothing is broken). A code that has no row in the severity table counts as degraded, so a new warning is never silently ignored. A code ending in `:*` stands for a family, such as `cron_overdue:stale-jobs`.
 
 ### Down
 
 | Code | Means | First action |
 | --- | --- | --- |
 | `database_failed` | The app's `select 1` failed or took longer than 2 seconds. Before this instance's first full pass it answers 503 (a deploy that cannot reach the database never gets traffic); after it, 200 with `ok: false`. | Supabase dashboard: project status, paused project (Free pauses after a week of inactivity), connection limits. Check `DATABASE_URL` points at the transaction pooler. |
-| `schema_behind` | The database lacks a migration this build ships; the instance answers 503 so it never takes traffic. | Apply the missing migration after a fresh backup (docs/LAUNCH_CHECKLIST.md; the guarded `ops:migrate` command), or roll the deploy back. |
+| `schema_behind` | The database lacks a migration this build ships; the instance answers 503 so it never takes traffic. | Review the missing migration's data effects, compatible writers and required isolation, then apply it through the guarded migration process or use a schema-compatible app rollback. See docs/ops/RUNBOOK.md. |
 | `draining` | The instance received SIGTERM (a deploy, restart or spin down) and is finishing or settling its packs. | Usually nothing: the new instance takes over. If it lasts more than a few minutes, check Render's events for a stuck deploy. |
 
 ### Degraded
@@ -56,8 +56,8 @@ Local alert code and tests do not establish monitor or mailbox delivery. Confirm
 | `no_*_provider` | No key is set for a stage: `no_llm_provider`, `no_image_provider` or `no_cutout_provider`. | Set the key named in the detailed report on Render (Save only, then deploy). |
 | `storage_not_configured` | R2 credentials are missing, so packs cannot be stored. | Set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and the bucket on Render. |
 | `fal_balance_low` | A fal account's newest balance reading is under its seeded line (P20-16, from PHASE_18 P18-03's balance rows). | Top up that fal account before it runs dry. |
-| `cron_never_ran:*` | A scheduled route (`stale-jobs`, `purge-source-media`, PHASE_18's `funnel-digest`, `provider-balance` and `lifecycle`, `billing-reconcile`, `backup`, and the tick cron) has never recorded a successful run. | Check the Render cron service exists, its command calls the route with `CRON_SECRET`, and its last run's log. The leased tick invokes registered due jobs; verify the adopted tick service and optional integration configuration. |
-| `cron_overdue:*` | That cron's last success is older than twice its interval; the backup instead once the newest backup is older than the seeded `backup.maxAgeHours` (26 hours, P20-10). | Open the cron service in Render: failed runs, a changed `CRON_SECRET`, or a paused service. For the backup, see healthchecks.io too. |
+| `cron_never_ran:*` | A scheduled route (`stale-jobs`, `purge-source-media`, PHASE_18's `funnel-digest`, `provider-balance` and `lifecycle`, `billing-reconcile`, and the tick cron) has never recorded a successful run. | Check the Render cron service exists, its command calls the route with `CRON_SECRET`, and its last run's log. The leased tick invokes registered due jobs; verify the adopted tick service and optional integration configuration. |
+| `cron_overdue:*` | That enabled cron's last success is older than its configured maximum age. | Open the cron service in Render: failed runs, a changed `CRON_SECRET`, or a paused service. |
 | `cron_check_failed` | The cron run times could not be read from `platform_settings`. | Usually a database problem; see `database_failed`. |
 | `memory_high` | The process uses at least 85 percent of the container's memory limit. An out of memory kill fails running packs. | Render's memory graph. Lower `CURVI_INLINE_PACK_CONCURRENCY` or move up a plan (docs/LAUNCH_CHECKLIST.md, Render plan upgrade). |
 | `db_size_high` | The database holds at least 70 percent of the Supabase Free plan's 500 MB (seed `healthLimits`). Past 500 MB Supabase turns it read only and every write fails. | Find the large tables (`select relname, pg_total_relation_size(relid) from pg_catalog.pg_statio_user_tables order by 2 desc limit 10;`), prune old rows with a reviewed retention dry run and bounded pass, or decide on Supabase Pro (founder decision 11). |
@@ -84,7 +84,7 @@ Local alert code and tests do not establish monitor or mailbox delivery. Confirm
 | `fal_admin_key_missing` | A fal inference key is set without the Admin key that reads its balance (PHASE_18 P18-03). | Create an Admin scope key in fal and set `FAL_ADMIN_KEY` (and `FAL_ADMIN_KEY_BACKUP`). |
 | `llm_credits_expiring:*` | The seeded credit window is in its reminder period. | Decide before the expiry date (PHASE_17 founder decision 4). |
 | `shot_concurrency_invalid` | `CURVI_SHOT_CONCURRENCY` is not a whole number, so the default applies. | Fix or remove the variable. |
-| `restore_drill_overdue` | The newest recorded restore drill is older than 35 days (P20-11; seed `restoreDrill.maxAgeDays` in operations.ts). | Run the restore drill and record it. |
+| `restore_drill_overdue` | Retired diagnostic from older releases; the backup/drill plan was withdrawn on 2026-10-03. | Verify the deployed commit against the current policy. Do not provision a drill or write a fake success record to clear this historical warning. |
 | `trigger_secret_ignored` | `TRIGGER_SECRET_KEY` is set but ignored (P20-18). | Remove it from Render. |
 
 ## Founder emails
@@ -111,13 +111,13 @@ Each goes to `FOUNDER_ALERT_EMAIL` once per period, deduplicated across instance
 
 1. **Monitor A.** UptimeRobot, Keyword monitor, URL `https://curvi.ai/api/health`, interval 5 minutes, keyword `"ok":true`, alert when the keyword does not exist. Alert contacts: the mobile app (push) and email.
 2. **Monitor B.** A second keyword monitor on the same URL, keyword `"status":"ok"`, alert when it does not exist. Alert contact: email.
-3. **healthchecks.io.** A check named `curvi-backup` with a period of 1 day and a grace time that covers the backup's run time (start with 2 hours), email alerts on. Put its ping URL in `HEALTHCHECKS_BACKUP_URL` on the backup cron service only (P20-10). After the first run, confirm the check shows "up": a wrong check id still answers HTTP 200. Create the `curvi-tick` check for its seeded ten-minute schedule with an appropriate grace period; only the tick launcher holds `HEALTHCHECKS_TICK_URL`. Pinging one check more than 5 times a minute may be rate limited.
+3. **healthchecks.io.** Create the `curvi-tick` check for its seeded ten-minute schedule with an appropriate grace period; only the tick launcher holds `HEALTHCHECKS_TICK_URL`. After the first scheduled run, confirm the check shows "up": a wrong check id can still answer HTTP 200. Pinging one check more than 5 times a minute may be rate limited. No backup check is required under the policy retired on 2026-10-03.
 4. **Render.** Turn on email notifications for failed deploys.
 5. **Sentry.** Create the project (Next.js), set `SENTRY_DSN` on Render, and add an issue alert rule that emails on every new issue. Founder alert copies open a new issue per period, so each one emails.
 
 Checks that are safe on production (P20-17 acceptance; the staging 503 drill joins the Release 4 gate):
 
-- healthchecks.io: create a temporary check with a short period (for example 5 minutes, grace 5 minutes) and never ping it, or pause the backup's ping; an alert email should arrive within 30 minutes. Then delete the temporary check.
+- healthchecks.io: create a temporary check with a short period (for example 5 minutes, grace 5 minutes) and never ping it; an alert email should arrive within 30 minutes. Then delete the temporary check.
 - UptimeRobot: create a temporary keyword monitor on `https://curvi.ai/api/health` with a keyword that never appears; an alert should arrive within 10 minutes. Then delete it.
 
 ## Resend: sending without a verified domain
@@ -126,6 +126,6 @@ Checked 2026-10-01 (docs/verification.md, PHASE_20): the shared `resend.dev` tes
 
 ## Durable cockpit alerts (P20-47)
 
-The tick evaluates seeded failed-pack/failure-rate, stale-job, queue-wait, signup/withheld-grant, gallery submission and unusable-feedback rules. Health samples add repeated memory, database size, restore and cron warnings. Reconciliation, workspace-cap and margin rules use supplied telemetry; if a sample is absent its rule is not falsely resolved. The tick supplies current UTC cap and margin samples through `ops/alert-signals.ts`; incomplete historical QC omits margin telemetry rather than clearing an existing alert.
+The tick evaluates seeded failed-pack/failure-rate, stale-job, queue-wait, signup/withheld-grant, gallery submission and unusable-feedback rules. Health samples add repeated memory, database size and active cron warnings. Reconciliation, workspace-cap and margin rules use supplied telemetry; if a sample is absent its rule is not falsely resolved. The tick supplies current UTC cap and margin samples through `ops/alert-signals.ts`; incomplete historical QC omits margin telemetry rather than clearing an existing alert.
 
 Each rule/subject has a durable open/resolved history. Delivery uses a lease, deterministic idempotency key and retries; a deduped send is not evidence of mailbox receipt. Open the cockpit, inspect the linked job/workspace and resolve the cause, then confirm the next evaluation records recovery and the recovery notification arrives. The seeded provider canary stays off without `CURVI_PROVIDER_CANARY_ENABLED=1`; do not enable paid probes during an unapproved incident investigation.

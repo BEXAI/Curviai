@@ -1,8 +1,8 @@
 /**
  * Health status: ok, degraded or down (docs/phases/PHASE_20.md P20-15).
  *
- * A keyword monitor on `"ok":true` misses fal running dry, a dead cron or a
- * stale backup, because warnings never change `ok`. This module turns the
+ * A keyword monitor on `"ok":true` misses fal running dry or a dead cron,
+ * because warnings never change `ok`. This module turns the
  * checks and warning codes of GET /api/health into one status:
  * - down: today's `ok: false` cases (database failed, schema behind,
  *   draining);
@@ -60,7 +60,7 @@ export const SEVERITY_TABLE: readonly SeverityRule[] = [
   { code: DOWN_CODES.schema, severity: "down" },
   { code: DOWN_CODES.draining, severity: "down" },
 
-  // Degraded: packs, payments, backups or alerts are at risk.
+  // Degraded: packs, payments or alerts are at risk.
   { code: "packs_paused:*", severity: "degraded" },
   { code: "scenes_paused", severity: "degraded" },
   // P20-19's pause switch.
@@ -76,7 +76,6 @@ export const SEVERITY_TABLE: readonly SeverityRule[] = [
   // P20-16, from P18-03's balance rows.
   { code: "fal_balance_low", severity: "degraded" },
   { code: "cron_never_ran:*", severity: "degraded" },
-  // The backup included (P20-10).
   { code: "cron_overdue:*", severity: "degraded" },
   { code: "cron_check_failed", severity: "degraded" },
   { code: "memory_high", severity: "degraded" },
@@ -112,8 +111,6 @@ export const SEVERITY_TABLE: readonly SeverityRule[] = [
   { code: "fal_admin_key_missing", severity: "info" },
   { code: "llm_credits_expiring:*", severity: "info" },
   { code: "shot_concurrency_invalid", severity: "info" },
-  // P20-11.
-  { code: "restore_drill_overdue", severity: "info" },
   // P20-18.
   { code: "trigger_secret_ignored", severity: "info" },
 ];

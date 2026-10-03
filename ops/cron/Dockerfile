@@ -1,11 +1,12 @@
-# The image for Curvi's cron jobs on Render (docs/phases/PHASE_20.md P20-10;
-# P20-38's tick runs from the same image with its own command).
+# The image for Curvi's active tick on Render (PHASE_20 P20-38).
+# Legacy encrypted-backup tooling remains available only by explicit command.
 #
 # Build context: the repository root (Render's default), Dockerfile path
-# ./ops/cron/Dockerfile. The default command runs the nightly backup.
+# ./ops/cron/Dockerfile. The default command runs the tick.
 #
-# pg_dump refuses to dump a server newer than its own major version. Keep
-# PG_MAJOR at the production server's major or newer: run
+# For the retained legacy tooling, pg_dump refuses to dump a server newer
+# than its own major version. Keep PG_MAJOR at the production server's
+# major or newer: run
 # SHOW server_version; in the Supabase SQL editor (17 at the time of
 # writing). Debian bookworm ships age 1.1.1 and rclone 1.60.1; R2 needs
 # rclone 1.59 or newer.
@@ -25,4 +26,4 @@ RUN chmod 0755 /usr/local/bin/curvi-backup /usr/local/bin/curvi-tick
 ENTRYPOINT []
 USER postgres
 WORKDIR /tmp
-CMD ["/usr/local/bin/curvi-backup"]
+CMD ["/usr/local/bin/curvi-tick"]

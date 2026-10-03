@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@curvi/db";
 import { createTestDb } from "@curvi/db/testing";
-import { backup, billingReconcile, restoreDrill } from "@curvi/pipeline/seed";
+import { billingReconcile } from "@curvi/pipeline/seed";
 import {
   CRON_JOBS,
+  BACKUP_RUN,
   RESTORE_DRILL_RUN,
-  restoreDrillWarning,
   cronFreshness,
   cronJobProblems,
   cronSettingKey,
@@ -36,44 +36,27 @@ describe("cronFreshness", () => {
     expect(cronFreshness({}, NOW, BASE_JOBS).map((s) => s.ageMinutes)).toEqual([null, null]);
   });
 
-  it("goes overdue after the backup's seeded maxAgeHours, not twice its daily interval (P20-10)", () => {
-    const backupJob = CRON_JOBS.filter((job) => job.name === "backup");
-    expect(backupJob).toEqual([{ name: "backup", intervalMinutes: 1440, maxAgeMinutes: backup.maxAgeHours * 60 }]);
-    const limit = backup.maxAgeHours * 60;
-    expect(cronFreshness({ backup: minutesAgo(limit) }, NOW, backupJob)[0].state).toBe("fresh");
-    expect(cronFreshness({ backup: minutesAgo(limit + 1) }, NOW, backupJob)[0]).toMatchObject({
-      state: "overdue",
-      ageMinutes: limit + 1,
-    });
-    expect(cronFreshness({}, NOW, backupJob)[0].state).toBe("never");
+  it("honors a job's explicit freshness override", () => {
+    const jobs = [{ name: "custom-job", intervalMinutes: 1440, maxAgeMinutes: 1800 }];
+    expect(cronFreshness({ "custom-job": minutesAgo(1800) }, NOW, jobs)[0].state).toBe("fresh");
+    expect(cronFreshness({ "custom-job": minutesAgo(1801) }, NOW, jobs)[0]).toMatchObject({ state: "overdue", ageMinutes: 1801 });
+    expect(cronFreshness({}, NOW, jobs)[0].state).toBe("never");
     expect(cronJobProblems({ name: "x", intervalMinutes: 5, maxAgeMinutes: 0 })).toEqual([
       "maxAgeMinutes must be a positive whole number",
     ]);
   });
-});
 
-describe("restoreDrillWarning (P20-11)", () => {
-  const daysAgo = (d: number) => minutesAgo(d * 24 * 60);
-
-  it("warns until a drill is recorded, stays quiet for the seeded days, then warns again", () => {
-    expect(restoreDrillWarning({}, NOW)).toEqual({
-      code: "restore_drill_overdue",
-      message: "No restore drill has been recorded yet. Run pnpm ops:restore-drill (docs/ops/BACKUP_RESTORE.md).",
-    });
-    expect(restoreDrillWarning({ [RESTORE_DRILL_RUN]: daysAgo(restoreDrill.maxAgeDays) }, NOW)).toBeNull();
-    expect(restoreDrillWarning({ [RESTORE_DRILL_RUN]: daysAgo(restoreDrill.maxAgeDays + 2) }, NOW)).toEqual({
-      code: "restore_drill_overdue",
-      message: `The last restore drill passed ${restoreDrill.maxAgeDays + 2} days ago. Run one at least every ${restoreDrill.maxAgeDays} days.`,
-    });
-  });
-
-  it("is not a cron: never in CRON_JOBS, so no cron_never_ran for it", () => {
-    expect(CRON_JOBS.map((job) => job.name)).not.toContain(RESTORE_DRILL_RUN);
+  it("does not schedule or monitor retired backup and restore reports", () => {
+    for (const name of [BACKUP_RUN, RESTORE_DRILL_RUN] as const) {
+      expect(CRON_JOBS.map((job) => job.name)).not.toContain(name);
+      expect(cronFreshness({}, NOW).map((job) => job.name)).not.toContain(name);
+      expect(cronFreshness({ [name]: minutesAgo(1_000_000) }, NOW).map((job) => job.name)).not.toContain(name);
+    }
   });
 });
 
 describe("the CRON_JOBS registry (P20-38 contract)", () => {
-  it("keeps today's two jobs, PHASE_18's three, the billing reconcile (P20-02) and the backup (P20-10), and every entry is well formed", () => {
+  it("keeps the active jobs and every entry is well formed", () => {
     expect(BASE_JOBS.map((job) => job.name)).toEqual(["stale-jobs", "purge-source-media"]);
     expect(CRON_JOBS.map((job) => job.name)).toEqual([
       "stale-jobs",
@@ -90,7 +73,6 @@ describe("the CRON_JOBS registry (P20-38 contract)", () => {
       "ops-alerts",
       "upstash-keepalive",
       "provider-canary",
-      "backup",
     ]);
     expect(cronFreshness({}, NOW).filter((job) => ["funnel-digest", "provider-balance", "lifecycle"].includes(job.name))).toEqual([
       { name: "funnel-digest", intervalMinutes: 10080, lastSuccess: null, ageMinutes: null, state: "never" },
@@ -153,6 +135,13 @@ describe("recording and reading cron runs", () => {
     const rows = await client.query<{ key: string }>(`select key from platform_settings where key = $1`, [cronSettingKey("stale-jobs")]);
     expect(rows.rows).toHaveLength(1);
     expect(cronFreshness(successes, NOW, BASE_JOBS).map((s) => s.state)).toEqual(["fresh", "fresh"]);
+  });
+
+  it("preserves legacy backup and restore success records without monitoring them", async () => {
+    for (const name of [BACKUP_RUN, RESTORE_DRILL_RUN] as const) {
+      await recordCronSuccess(db as unknown as Db, name, NOW);
+    }
+    expect(await readCronSuccesses(db)).toMatchObject({ backup: NOW.toISOString(), "restore-drill": NOW.toISOString() });
   });
 
   it("never throws when the write fails", async () => {

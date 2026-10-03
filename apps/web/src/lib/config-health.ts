@@ -11,8 +11,7 @@
  *   the live wiring registers, trigger/src/provider-probes.ts);
  * - recipe drift: active recipes rows against the compiled seed
  *   (lib/recipe-drift.ts);
- * - cron freshness: each scheduled route's last success (lib/cron-health.ts),
- *   and the last passing restore drill (P20-11, restore_drill_overdue);
+ * - cron freshness: each scheduled route's last success (lib/cron-health.ts);
  * - billing: Stripe readiness, a quiet webhook and the webhook endpoint
  *   check (lib/billing/billing-health.ts, PHASE_20 P20-01 and P20-02);
  * - CURVI_SHOT_CONCURRENCY, the container memory limit and current RSS;
@@ -38,7 +37,7 @@ import { readFalBalances, type StoredFalBalance } from "@curvi/trigger/provider-
 import type { LiveProviderTarget, StageKeyReport } from "@curvi/trigger/provider-probes";
 import { stageKeyReport } from "@curvi/trigger/provider-probes";
 import { DEFAULT_SHOT_CONCURRENCY, parseShotConcurrency } from "@curvi/trigger/shot-concurrency";
-import { CRON_JOBS, cronFreshness, readCronSuccesses, restoreDrillWarning, type CronJob, type CronStatus } from "@/lib/cron-health";
+import { CRON_JOBS, cronFreshness, readCronSuccesses, type CronJob, type CronStatus } from "@/lib/cron-health";
 import { readLifecycleEmailWarning } from "@/lib/email/health";
 import { llmCreditWarnings, readLlmSpend } from "@/lib/llm-spend";
 import { compareRecipes, readRecipeRows, type RecipeDrift, type RecipeLike } from "@/lib/recipe-drift";
@@ -325,9 +324,6 @@ export async function buildConfigReport(deps: ConfigReportDeps): Promise<ConfigR
           });
         }
       }
-      // P20-11: the founder's restore drill records its last pass the same way.
-      const drill = restoreDrillWarning(cronRead.value, now);
-      if (drill) warnings.push(drill);
     } else {
       logger.warn("[health] cron freshness check could not read platform_settings:", describeError(cronRead.reason));
       warnings.push({ code: "cron_check_failed", message: "The cron run times could not be read." });

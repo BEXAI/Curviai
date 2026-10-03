@@ -1,5 +1,7 @@
 # Phase 18–20 implementation checkpoint
 
+Updated 2026-10-03: the user retired encrypted-backup planning and its release gates. Local disk and GitHub preserve source code, not live database rows, Auth state or stored objects. No database recovery capability is claimed. Existing backup data and security controls remain untouched; no backup service, key or credential is to be provisioned under this plan. Historical implementation and test evidence below remains dated evidence, not an active backup requirement.
+
 Updated 2026-10-02 13:50 UTC. Preserve the shared implementation and continue execution after context recovery. This records evidence, not acceptance of unperformed live checks.
 
 ## Context recovery prompt
@@ -71,7 +73,7 @@ Live recipe metadata: intake7 active100, intake8 absent; planner3 active100,4/5 
 4. Recheck original checkout, safely fast-forward main and install frozen dependencies as needed. Preserve any user changes.
 5. Deliver concise PR/live DB/testing evidence and explicit remaining live gates. Phase21 proposals only: resolution cases, workspace credit planning/optional budgets, private completion webhooks (`docs/phases/PHASE_21.md`).
 
-Remaining live acceptance: funded model/recipe evaluation and controlled activation; OAuth/public plugin setup; real Stripe/mail/auth/MFA; backup/restore; paid staging and Blueprint/cron/monitor adoption;7-day CSP evidence; conditional P2 triggers. These are not silently accepted by local tests. Detailed matrices and founder steps are in docs/PENDING.md and the phase documents.
+Remaining live acceptance: funded model/recipe evaluation and controlled activation; OAuth/public plugin setup; real Stripe/mail/auth/MFA; paid staging and Blueprint/cron/monitor adoption;7-day CSP evidence; conditional P2 triggers. These are not silently accepted by local tests. Detailed matrices and founder steps are in docs/PENDING.md and the phase documents.
 
 
 ## Final local gate completed13:50UTC
