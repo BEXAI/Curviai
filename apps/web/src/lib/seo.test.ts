@@ -420,7 +420,7 @@ describe("robots", () => {
     const groups = Array.isArray(rules) ? rules : [rules];
     expect(groups.length).toBeGreaterThan(1);
     for (const group of groups) {
-      expect(group.disallow).toEqual(["/app/", "/api/"]);
+      expect(group.disallow).toEqual(["/app$", "/app?", "/app/", "/api$", "/api?", "/api/"]);
     }
     const named = groups.flatMap((group) => (Array.isArray(group.userAgent) ? group.userAgent : []));
     expect(named).toEqual(

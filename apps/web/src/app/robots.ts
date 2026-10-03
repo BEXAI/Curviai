@@ -36,7 +36,10 @@ const AI_CRAWLERS = [
   "CCBot",
 ];
 
-const DISALLOW = ["/app/", "/api/"];
+// A trailing slash alone misses the namespace root (/app), including its
+// query-string variants. Keep the boundary explicit so public names such
+// as /application are not accidentally excluded. RFC 9309 section 2.2.3.
+const DISALLOW = ["/app$", "/app?", "/app/", "/api$", "/api?", "/api/"];
 
 export default function robots(): MetadataRoute.Robots {
   return {
