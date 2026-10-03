@@ -59,3 +59,39 @@ test("the sitemap lists the guides", async ({ request }) => {
     expect(body).toContain(`https://curvi.ai${guide.path}</loc>`);
   }
 });
+
+test("robots retains crawler preferences and excludes private namespace roots", async ({ request }) => {
+  const response = await request.get("/robots.txt");
+  expect(response.status()).toBe(200);
+  const body = await response.text();
+  expect(body).toContain("User-Agent: GPTBot");
+  expect(body).toContain("Sitemap: https://curvi.ai/sitemap.xml");
+  // Both wildcard and named AI crawler groups must carry the exclusions.
+  for (const rule of ["/app$", "/app?", "/app/", "/api$", "/api?", "/api/"]) {
+    expect(body.split(`Disallow: ${rule}\n`)).toHaveLength(3);
+  }
+});
+
+test.describe("public sitemap discovery without JavaScript", () => {
+  test.use({ javaScriptEnabled: false });
+
+  for (const route of [
+    { path: "/terms", heading: "Terms of service" },
+    { path: "/privacy", heading: "Privacy policy" },
+    { path: "/legal/subprocessors", heading: "Subprocessors" },
+    { path: "/tools/store-image-audit", heading: "Shopify Store Image Audit" },
+  ]) {
+    test(`${route.path} is a canonical, rendered sitemap destination`, async ({ page, request }) => {
+      const sitemapResponse = await request.get("/sitemap.xml");
+      expect(sitemapResponse.status()).toBe(200);
+      expect(await sitemapResponse.text()).toContain(`https://curvi.ai${route.path}</loc>`);
+      const response = await page.goto(route.path);
+      expect(response?.status()).toBe(200);
+      expect(response?.headers()["x-robots-tag"] ?? "").not.toContain("noindex");
+      await expect(page.getByRole("heading", { level: 1, name: route.heading })).toBeVisible();
+      await expect(page.locator('link[rel="canonical"]')).toHaveAttribute("href", `http://localhost:3000${route.path}`);
+      const robotsTags = await page.locator('meta[name="robots"]').evaluateAll((tags) => tags.map((tag) => tag.getAttribute("content")));
+      expect(robotsTags.join(",")).not.toContain("noindex");
+    });
+  }
+});
