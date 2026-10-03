@@ -28,7 +28,11 @@ const share: PublicShare = {
 const view = vi.hoisted(() => ({
   current: null as null | { store: string; claimToken: string | null; takedownToken: string | null },
   calls: [] as unknown[],
+  headers: new Headers({ "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" }),
+  recordView: vi.fn(async () => undefined),
 }));
+
+vi.mock("next/headers", () => ({ headers: async () => view.headers }));
 
 vi.mock("next/navigation", () => ({
   notFound: () => {
@@ -43,7 +47,7 @@ vi.mock("next/link", () => ({
 }));
 vi.mock("@/lib/shares", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/shares")>()),
-  getShareStore: () => ({ getPublic: async () => share, recordView: async () => undefined }),
+  getShareStore: () => ({ getPublic: async () => share, recordView: view.recordView }),
 }));
 vi.mock("@/lib/prospects/runtime", () => ({
   loadProspectShareView: async (_slug: string, claim: unknown) => {
@@ -67,6 +71,27 @@ async function render(claim?: string): Promise<string> {
 beforeEach(() => {
   view.current = null;
   view.calls = [];
+  view.recordView.mockClear();
+  view.headers = new Headers({ "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" });
+});
+
+describe("share view counting", () => {
+  it("counts a real browser page view", async () => {
+    await render();
+    expect(view.recordView).toHaveBeenCalledWith("prospect23");
+  });
+
+  it.each(["CurviIndexNowBot/1.0 (+https://curvi.ai)", "bingbot/2.0", ""])("does not count crawler or unidentified visits: %s", async (userAgent) => {
+    view.headers.set("user-agent", userAgent);
+    await render();
+    expect(view.recordView).not.toHaveBeenCalled();
+  });
+
+  it("does not count browser prefetches", async () => {
+    view.headers.set("sec-purpose", "prefetch;prerender");
+    await render();
+    expect(view.recordView).not.toHaveBeenCalled();
+  });
 });
 
 describe("a prospect's share page", () => {

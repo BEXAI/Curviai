@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { headers } from "next/headers";
 import { cache } from "react";
 import { buttonVariants } from "@curvi/ui";
 import { BeforeAfterSlider } from "@/components/marketing/before-after-slider";
@@ -15,6 +16,7 @@ import { SignupLink } from "@/components/marketing/signup-link";
 import { ProspectClaimCta, ProspectFooter } from "@/components/marketing/prospect-claim";
 import { prospectShareTitle } from "@/lib/prospects/copy";
 import { loadProspectShareView } from "@/lib/prospects/runtime";
+import { visitSkipReason } from "@/lib/visits/bots";
 
 // Published and unpublished at any moment by the owner, so never cached.
 export const dynamic = "force-dynamic";
@@ -58,7 +60,7 @@ export default async function SharePage({ params, searchParams }: Params) {
     notFound();
   }
   const prospect = await loadProspect(share.slug, (await searchParams)?.claim ?? null);
-  if (!share.illustration) {
+  if (!share.illustration && visitSkipReason(new Headers(await headers())) === null) {
     await getShareStore().recordView(share.slug);
   }
 

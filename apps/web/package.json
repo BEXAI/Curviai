@@ -16,6 +16,7 @@
     "billing:price-notice": "tsx scripts/billing-price-notice.ts",
     "ops:memory-test": "node --import tsx scripts/memory-test.ts",
     "ops:migrate": "node --import tsx scripts/ops-migrate.ts",
+    "ops:indexnow": "node --import tsx scripts/indexnow/cli.ts",
     "release": "node --import tsx scripts/release.ts"
   },
   "dependencies": {
