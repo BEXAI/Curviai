@@ -39,6 +39,8 @@ export function AppNav({ signedIn = false, operator = false }: { signedIn?: bool
     const scrollX = window.scrollX;
     const scrollY = window.scrollY;
     const body = document.body;
+    const root = document.documentElement;
+    const previousRootStyle = { minHeight: root.style.minHeight, overflow: root.style.overflow };
     const previousStyle = {
       position: body.style.position,
       top: body.style.top,
@@ -54,6 +56,10 @@ export function AppNav({ signedIn = false, operator = false }: { signedIn?: bool
       const headerBottom = button.current?.closest("header")?.getBoundingClientRect().bottom
         ?? button.current?.getBoundingClientRect().bottom ?? 56;
       menu.style.setProperty("--app-menu-top", `${headerBottom + 8}px`);
+      // Preserve the document's scroll extent while its body is out of flow.
+      // Otherwise history saves zero for an entry left with the menu open.
+      root.style.minHeight = `${root.scrollHeight}px`;
+      root.style.overflow = "hidden";
       body.style.position = "fixed";
       body.style.top = `${-scrollY}px`;
       body.style.left = `${-scrollX}px`;
@@ -68,6 +74,7 @@ export function AppNav({ signedIn = false, operator = false }: { signedIn?: bool
       if (!scrollLocked) return;
       scrollLocked = false;
       Object.assign(body.style, previousStyle);
+      Object.assign(root.style, previousRootStyle);
       window.scrollTo({ left: scrollX, top: scrollY, behavior: "instant" });
     };
     const visibleControls = () => Array.from(menu.querySelectorAll<HTMLElement>("a[href], button:not([disabled])"))

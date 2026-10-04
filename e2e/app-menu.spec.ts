@@ -86,7 +86,7 @@ test.describe("compact mobile app menu", () => {
   }
 
   for (const viewport of [{ width: 320, height: 480 }, { width: 667, height: 375 }]) {
-    test(`scrolls inside the panel at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    test(`scrolls inside the panel at ${viewport.width}x${viewport.height}`, async ({ page, browserName }) => {
       await page.setViewportSize(viewport);
       await page.goto("/app/new");
       await openMobileMenu(page);
@@ -95,12 +95,18 @@ test.describe("compact mobile app menu", () => {
       expect(await menu(page).evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
 
       const pageY = await page.evaluate(() => window.scrollY);
-      await menu(page).hover();
-      await page.mouse.wheel(0, 800);
+      if (browserName === "webkit") {
+        // Playwright cannot synthesize mouse wheels in mobile WebKit.
+        // Exercise focus-driven scrolling to the last reachable link there.
+        await menu(page).getByRole("link", { name: "Contact us", exact: true }).focus();
+      } else {
+        await menu(page).hover();
+        await page.mouse.wheel(0, 800);
+      }
       await expect.poll(() => menu(page).evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
       await expect(menu(page).getByRole("link", { name: "Contact us", exact: true })).toBeInViewport();
       // Further wheel input at the panel's end must not scroll the document.
-      await page.mouse.wheel(0, 800);
+      if (browserName !== "webkit") await page.mouse.wheel(0, 800);
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(pageY);
       await page.keyboard.press("Escape");
       await expectMobileClosed(page);
@@ -135,7 +141,7 @@ test.describe("compact mobile app menu", () => {
     }
   });
 
-  test("locks a scrolled page and restores its position through repeated openings", async ({ page }) => {
+  test("locks a scrolled page and restores its position through repeated openings", async ({ page, browserName }) => {
     await page.goto("/app/new");
     await page.evaluate(() => window.scrollTo(0, 300));
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(300);
@@ -145,12 +151,15 @@ test.describe("compact mobile app menu", () => {
       await openMobileMenu(page);
       await expect(page.locator("body")).toHaveCSS("position", "fixed");
       await expect(page.locator("body")).toHaveCSS("top", "-300px");
+      await expect(page.locator("html")).toHaveCSS("overflow", "hidden");
       const header = (await page.locator(".app-shell > header").boundingBox())!;
       expect(header.y).toBeGreaterThanOrEqual(0);
       expect(header.y + header.height).toBeLessThanOrEqual(page.viewportSize()!.height);
       const lockedY = await page.evaluate(() => window.scrollY);
-      await page.mouse.move(4, 250);
-      await page.mouse.wheel(0, 500);
+      if (browserName !== "webkit") {
+        await page.mouse.move(4, 250);
+        await page.mouse.wheel(0, 500);
+      }
       await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
       expect(await page.evaluate(() => window.scrollY)).toBe(lockedY);
 
