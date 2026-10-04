@@ -40,6 +40,8 @@ export function AppNav({ signedIn = false, operator = false }: { signedIn?: bool
     const scrollY = window.scrollY;
     const body = document.body;
     const root = document.documentElement;
+    const header = button.current?.closest("header");
+    const previousHeaderTop = header?.style.top ?? "";
     const previousRootStyle = { minHeight: root.style.minHeight, overflow: root.style.overflow };
     const previousStyle = {
       position: body.style.position,
@@ -53,7 +55,7 @@ export function AppNav({ signedIn = false, operator = false }: { signedIn?: bool
       // A top-layer dialog stays opaque above Safari's blurred sticky header.
       // Fixing the body also prevents background scrolling on iOS; preserve
       // the exact position and inline styles for every dismissal path.
-      const headerBottom = button.current?.closest("header")?.getBoundingClientRect().bottom
+      const headerBottom = header?.getBoundingClientRect().bottom
         ?? button.current?.getBoundingClientRect().bottom ?? 56;
       menu.style.setProperty("--app-menu-top", `${headerBottom + 8}px`);
       // Preserve the document's scroll extent while its body is out of flow.
@@ -65,6 +67,9 @@ export function AppNav({ signedIn = false, operator = false }: { signedIn?: bool
       body.style.left = `${-scrollX}px`;
       body.style.width = "100%";
       body.style.overflow = "hidden";
+      // The fixed body becomes the sticky header's scroll container. Offset
+      // its sticky inset by the body's negative top so it stays in view.
+      if (header) header.style.top = `${scrollY}px`;
       menu.showModal();
     } else {
       menu.show();
@@ -75,6 +80,7 @@ export function AppNav({ signedIn = false, operator = false }: { signedIn?: bool
       scrollLocked = false;
       Object.assign(body.style, previousStyle);
       Object.assign(root.style, previousRootStyle);
+      if (header) header.style.top = previousHeaderTop;
       window.scrollTo({ left: scrollX, top: scrollY, behavior: "instant" });
     };
     const visibleControls = () => Array.from(menu.querySelectorAll<HTMLElement>("a[href], button:not([disabled])"))
