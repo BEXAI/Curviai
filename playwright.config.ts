@@ -5,6 +5,12 @@ export default defineConfig({
   testIgnore: "**/smoke/**",
   timeout: 60000,
   retries: process.env.CI ? 1 : 0,
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    // The app menu uses a native modal above a blurred sticky header. Run
+    // its mobile regressions in Safari's engine as well as Chromium.
+    { name: "webkit-menu", testMatch: "app-menu.spec.ts", use: { browserName: "webkit" } },
+  ],
   use: {
     baseURL: "http://localhost:3100",
     trace: "retain-on-failure",

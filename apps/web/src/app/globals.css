@@ -274,6 +274,55 @@ body.theme-dark > * {
   background-color: transparent;
 }
 
+/* Navigation is an opaque surface, never part of the translucent page
+ * backdrop above. A modal top layer on phones avoids Safari header blur
+ * compositing and makes the covered page inert to touch and keyboard. */
+.app-navigation-panel {
+  position: fixed;
+  inset: var(--app-menu-top, 4.5rem) max(0.75rem, env(safe-area-inset-right)) auto auto;
+  margin: 0;
+  width: 14rem;
+  max-width: calc(100vw - 1.5rem - env(safe-area-inset-left) - env(safe-area-inset-right));
+  max-height: calc(100vh - var(--app-menu-top, 4.5rem) - max(0.75rem, env(safe-area-inset-bottom)));
+  max-height: calc(100dvh - var(--app-menu-top, 4.5rem) - max(0.75rem, env(safe-area-inset-bottom)));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background-color: var(--color-night);
+}
+
+.app-navigation-panel::backdrop {
+  background-color: rgb(0 0 0 / 0.4);
+}
+
+@media (min-width: 48rem) {
+  .app-navigation-panel {
+    position: absolute;
+    inset: 100% 0 auto auto;
+    z-index: 50;
+    margin-top: 0.5rem;
+    max-height: 75vh;
+  }
+}
+
+@media (max-width: 767px) and (prefers-reduced-motion: no-preference) {
+  .app-shell #app-content {
+    transition: transform 180ms ease-out;
+  }
+
+  .app-shell:has(.app-nav[data-open="true"]) #app-content {
+    transform: translateX(-0.75rem);
+  }
+
+  .app-navigation-panel[open] {
+    animation: app-menu-enter 180ms ease-out;
+  }
+
+  @keyframes app-menu-enter {
+    from { transform: translateX(0.75rem); }
+    to { transform: translateX(0); }
+  }
+}
+
 /* Headings use the display face, set tight. */
 :is(h1, h2) {
   font-family: var(--font-display);
