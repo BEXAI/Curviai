@@ -2,8 +2,29 @@ import { NextResponse, type NextRequest } from "next/server";
 import { finishSignIn, type FinishUser } from "@/lib/auth/finish";
 import { publicOrigin } from "@/lib/http/public-origin";
 import { postAuthDestination, postAuthParamsFrom, type AuthErrorCode } from "@/lib/safe-next";
-import { VIA_PARAM } from "@/lib/signup-callback";
+import { ATTR_PARAM, VIA_PARAM } from "@/lib/signup-callback";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+/** The signup form navigates here from this origin. Unlike a code exchange,
+ * a cookie session alone does not authorize a state-changing GET from a
+ * link on another site. Older browsers can supply Origin or Referer instead
+ * of Fetch Metadata; missing or foreign provenance keeps this a redirect.
+ */
+function isSameOriginNavigation(request: NextRequest, origin: string): boolean {
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite !== null) {
+    return fetchSite === "same-origin";
+  }
+  const source = request.headers.get("origin") ?? request.headers.get("referer");
+  if (!source) {
+    return false;
+  }
+  try {
+    return new URL(source).origin === origin;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Supabase auth code exchange. Email confirmation, password recovery and
@@ -72,6 +93,9 @@ export async function GET(request: NextRequest) {
   // signup form, so it records the terms, where it came from and the
   // welcome page like a confirmation link would. Every step is safe to run
   // again (once per user, or only within a fresh verification).
+  if (!isSameOriginNavigation(request, origin)) {
+    return NextResponse.redirect(new URL(next, origin));
+  }
   let signedIn: FinishUser | null = null;
   try {
     const { data } = await supabase.auth.getUser();
@@ -80,7 +104,12 @@ export async function GET(request: NextRequest) {
     signedIn = null;
   }
   if (signedIn) {
-    const destination = await finishSignIn({ user: signedIn, next, origin, headers: request.headers, params: url.searchParams });
+    // A code-free URL is not bound to the signup. Use the attribution saved
+    // with that user's email signup, so a crafted link cannot replace its
+    // preview, prospect claim or referral. Welcome hints remain in the URL.
+    const params = new URLSearchParams(url.searchParams);
+    params.delete(ATTR_PARAM);
+    const destination = await finishSignIn({ user: signedIn, next, origin, headers: request.headers, params });
     return NextResponse.redirect(new URL(destination, origin));
   }
   return NextResponse.redirect(new URL(next, origin));
