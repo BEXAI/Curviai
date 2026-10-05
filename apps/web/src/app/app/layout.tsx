@@ -49,7 +49,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     loadHeaderBalance(demo || Boolean(user)),
   ]);
   return (
-    <div className="theme-dark flex min-h-screen flex-col bg-night text-ink-900">
+    <div className="app-shell theme-dark flex min-h-screen flex-col bg-night text-ink-900">
       <a href="#app-content" className="sr-only z-50 rounded-lg bg-white px-4 py-3 text-black focus:not-sr-only focus:fixed focus:left-3 focus:top-3">Skip to content</a>
       <BrowserErrors />
       <header className="sticky top-0 z-40 border-b border-ink-100 bg-night/70 backdrop-blur-xl">
