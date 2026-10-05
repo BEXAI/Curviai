@@ -8,6 +8,10 @@ export const AUTH_FAILURE_COPY = {
   over_request_rate_limit: "Please wait a minute, then try again.",
   weak_password: "Choose a stronger password with at least eight characters.",
   same_password: "Choose a password you have not used for this account.",
+  current_password_required: "Enter your current password to choose a new one.",
+  current_password_mismatch: "Your current password does not match. Try again or request a reset link.",
+  reauthentication_needed: "Verify it is you before changing your password. Request a verification code below.",
+  reauthentication_not_valid: "That verification code is invalid or expired. Try again or request a new code.",
   captcha_failed: "We could not check that you are a person. Please try again.",
   otp_expired: "That sign in link has expired or was already used. Send the link again below.",
 } as const;
