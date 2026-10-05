@@ -16,6 +16,19 @@ describe("confirm email", () => {
     expect(await response.text()).not.toContain('<script>'); expect(state.verify).not.toHaveBeenCalled();
     expect(response.headers.get("referrer-policy")).toBe("no-referrer"); expect(response.headers.get("cache-control")).toBe("no-store");
   });
+  it("styles the page with only the stylesheet its CSP hashes, and words it for the link type", async () => {
+    const response = await GET(new NextRequest("https://curvi.ai/auth/confirm?token_hash=abc&type=email"));
+    const html = await response.text();
+    const style = html.match(/<style>([^<]*)<\/style>/)?.[1] ?? "";
+    const { createHash } = await import("node:crypto");
+    const csp = response.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain(`style-src 'sha256-${createHash("sha256").update(style).digest("base64")}'`);
+    expect(csp).toContain("default-src 'none'"); expect(csp).not.toContain("unsafe-inline"); expect(csp).not.toContain("script-src");
+    expect(html).toContain('src="/brand/curvi-wordmark.png"'); expect(html).toContain("Confirm my email");
+    expect(await (await GET(new NextRequest("https://curvi.ai/auth/confirm?type=recovery"))).text()).toContain("Reset your password");
+    expect(await (await GET(new NextRequest("https://curvi.ai/auth/confirm?type=email_change"))).text()).toContain("Confirm your new email");
+    expect(await (await GET(new NextRequest("https://curvi.ai/auth/confirm?type=%3Cb%3E"))).text()).toContain("Confirm your email");
+  });
   it("passes signup through the same finish steps and resumes consent", async () => {
     const response = await POST(request());
     expect(response.headers.get("location")).toBe("https://curvi.ai/oauth/consent?authorization_id=abc");
