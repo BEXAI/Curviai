@@ -30,3 +30,7 @@ eval/golden/generated/
 # Research notes and reports stay local (the repository is public)
 /reports/
 /research_notes/
+
+# Local tool output (uploads, generated images) stays out of the repository
+/attachments/
+/generated_images/
