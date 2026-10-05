@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@curvi/ui";
+import { CHOOSER_OVERLAP_HINT } from "@/lib/preflight/copy";
 import type { PreflightItemView } from "@/lib/preflight/types";
 
 interface ProductChooserProps {
@@ -22,6 +23,9 @@ export function ProductChooser({ items, selected, onChoose, photoLabel }: Produc
     <div className="mt-2" role="group" aria-label={`Which product in ${photoLabel} is this pack for`} data-testid="product-chooser">
       <p className="text-sm text-ink-800">
         We found {items.length} products in this photo. Which one is this pack for?
+      </p>
+      <p className="mt-1 text-xs text-ink-600" data-testid="chooser-overlap-hint">
+        {CHOOSER_OVERLAP_HINT}
       </p>
       <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
         {items.map((item) => {

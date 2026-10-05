@@ -284,6 +284,140 @@ export function isolateTarget(
   };
 }
 
+/** How far past the target's box, as a share of the box's longer side, a
+ * piece pixel inside no product's box still counts as the target's. Model
+ * boxes are loose, so a tight clip would shave the product's own edge. */
+export const SPLIT_SLACK = 0.06;
+
+/** Most of the split product, as a share of its kept pixels, that may sit
+ * where its box overlaps another product's box. Those pixels are given by
+ * position alone, which only holds for a corner or edge overlap; a neighbor
+ * whose box covers much of the target (flowers behind a candle) would leave
+ * its own pixels in the product, so the split is refused instead. */
+export const SPLIT_MAX_CONTESTED = 0.25;
+
+export interface SplitResult {
+  /** The cutout with only the target's share of its pieces left; kept pixels
+   * are byte identical, every other pixel fully transparent. */
+  image: RawImage;
+  /** Product pixels (alpha above CUTOUT_ALPHA_THRESHOLD) kept. */
+  keptArea: number;
+  /** Kept product pixels inside both the target box and another box. */
+  contestedArea: number;
+  /** False when too little of the target is left to be a product, or too
+   * much of it was decided by overlapping boxes (SPLIT_MAX_CONTESTED). */
+  ok: boolean;
+}
+
+function rectDistance(x: number, y: number, r: PixelRect): number {
+  const dx = Math.max(r.left - x, 0, x - (r.left + r.width - 1));
+  const dy = Math.max(r.top - y, 0, y - (r.top + r.height - 1));
+  return Math.hypot(dx, dy);
+}
+
+/**
+ * Splits cutout pieces shared by the target and other products by their
+ * boxes, for photos where products overlap or touch (candles in a row, a
+ * candle on a saucer in front of a vase) and the cutout returned them as
+ * one piece. Each pixel of a piece on the target box goes to one product:
+ * - inside one or more product boxes, to the one nearest the camera, read
+ *   as the box whose bottom edge sits lowest in the frame (the target on a
+ *   tie), since the nearer product hides the farther one where they cross;
+ * - inside no box, to the target when it is within SPLIT_SLACK of the
+ *   target's box and no nearer to another product's box.
+ * Afterwards only pieces that still reach into the target box are kept.
+ * The split is not ok when too much of what is kept was decided by
+ * overlapping boxes (SPLIT_MAX_CONTESTED). Pixels are only kept byte for
+ * byte or zeroed (CLAUDE.md rule 3).
+ */
+export function splitMergedTarget(
+  cutout: RawImage,
+  target: PixelRect,
+  others: readonly PixelRect[],
+  opts: { noiseShare?: number; slack?: number; maxContested?: number } = {},
+): SplitResult {
+  const { width, height } = cutout;
+  const alpha = Buffer.alloc(width * height);
+  for (let i = 0; i < alpha.length; i++) {
+    alpha[i] = cutout.data[i * 4 + 3];
+  }
+  const { labels, components } = maskComponents({ data: alpha, width, height }, CUTOUT_ALPHA_THRESHOLD);
+  const minArea = significantArea(width, height, opts.noiseShare ?? NOISE_AREA_SHARE);
+  const slack = Math.max(target.width, target.height) * (opts.slack ?? SPLIT_SLACK);
+  const targetBottom = target.top + target.height;
+
+  const onTarget = new Uint8Array(components.length + 1);
+  for (let y = target.top; y < target.top + target.height; y++) {
+    for (let x = target.left; x < target.left + target.width; x++) {
+      const label = labels[y * width + x];
+      if (label !== 0) onTarget[label] = 1;
+    }
+  }
+  const pieceBoxes = components.filter((c) => onTarget[c.label] === 1).map((c) => c.bbox);
+
+  const ownedByTarget = (x: number, y: number): boolean => {
+    const inTarget = inRect(x, y, target);
+    let frontOther = -1;
+    for (const r of others) {
+      if (inRect(x, y, r)) frontOther = Math.max(frontOther, r.top + r.height);
+    }
+    if (inTarget || frontOther >= 0) {
+      return inTarget && targetBottom >= frontOther;
+    }
+    const d = rectDistance(x, y, target);
+    return d <= slack && others.every((r) => d <= rectDistance(x, y, r));
+  };
+
+  const out = Buffer.from(cutout.data);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const label = labels[i];
+      const inPiece = label !== 0 ? onTarget[label] === 1 : alpha[i] > 0 && pieceBoxes.some((b) => inRect(x, y, b));
+      if (!inPiece || !ownedByTarget(x, y)) {
+        out.fill(0, i * 4, i * 4 + 4);
+      }
+    }
+  }
+
+  // The split can leave slivers of a neighbor cut loose from it; keep only
+  // the pieces that still reach into the target box.
+  const split = Buffer.alloc(width * height);
+  for (let i = 0; i < split.length; i++) {
+    split[i] = out[i * 4 + 3];
+  }
+  const parts = maskComponents({ data: split, width, height }, CUTOUT_ALPHA_THRESHOLD);
+  const reaches = new Uint8Array(parts.components.length + 1);
+  for (let y = target.top; y < target.top + target.height; y++) {
+    for (let x = target.left; x < target.left + target.width; x++) {
+      const label = parts.labels[y * width + x];
+      if (label !== 0) reaches[label] = 1;
+    }
+  }
+  const keptBoxes = parts.components.filter((c) => reaches[c.label] === 1).map((c) => c.bbox);
+  let keptArea = 0;
+  let contestedArea = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const label = parts.labels[i];
+      const kept = label !== 0 ? reaches[label] === 1 : keptBoxes.some((b) => inRect(x, y, b));
+      if (!kept) {
+        out.fill(0, i * 4, i * 4 + 4);
+      } else if (label !== 0) {
+        keptArea++;
+        if (inRect(x, y, target) && others.some((r) => inRect(x, y, r))) contestedArea++;
+      }
+    }
+  }
+  return {
+    image: { data: out, width, height, channels: 4 },
+    keptArea,
+    contestedArea,
+    ok: keptArea >= minArea && contestedArea <= keptArea * (opts.maxContested ?? SPLIT_MAX_CONTESTED),
+  };
+}
+
 /** A chosen piece must overlap its inventory box at least this much
  * (intersection over union) to be the same piece. On the cutout the
  * inventory was taken from the boxes are identical (IoU 1); the slack only

@@ -810,6 +810,66 @@ export function chooseInventoryTarget(input: InventoryChoiceInput): InventoryDec
   return undecided("ambiguous");
 }
 
+/** Whether an intake label alone fits the signals: none of what they
+ * exclude, and, when they ask for anything, some of it. */
+function labelPasses(label: string, signals: NoteSignals): boolean {
+  const words = wordsOf(label);
+  const colors = new Set(colorsIn(words));
+  const nouns = new Set(productWords(words));
+  const phrase = phraseOf(label);
+  if (signals.excludeColors.some((c) => colors.has(c) && !signals.wantColors.includes(c))) return false;
+  if (phrase && signals.excludePhrases.includes(phrase)) return false;
+  if (signals.excludeWords.some((w) => nouns.has(w))) return false;
+  if (signals.wantColors.length > 0) return signals.wantColors.some((c) => colors.has(c));
+  if (phrase && signals.wantPhrases.includes(phrase)) return true;
+  if (signals.wantWords.length > 0) return signals.wantWords.some((w) => nouns.has(w));
+  return true;
+}
+
+/**
+ * For a touching decision (the featured piece holds other intake products
+ * too, as overlapping candles cut out as one piece do), the one intake
+ * product the pack is for, so the runner can cut it out on its own and split
+ * it from its neighbors by their boxes. Tried in order: the product filling
+ * the box the seller tapped, the model's single yes, the single label that
+ * fits the note or answer, then the product the featured pieces were
+ * labeled with. Null when no single product stands out, or every product is
+ * wanted; the photo is then refused as before.
+ */
+export function touchingTargetProduct(input: InventoryChoiceInput, decision: InventoryDecision): number | null {
+  if (!decision.touching || decision.featured.length === 0) return null;
+  const answer = input.answer ?? null;
+  if (answer?.all || input.multiItem) return null;
+  const signals = answer && !answer.all ? answer.signals : input.signals;
+  const { objects, products } = input;
+  const match = matchProducts(objects, products);
+  const candidates = products
+    .map((_, p) => p)
+    .filter((p) => decision.featured.some((i) => match.objectsOf[p].includes(i)));
+  if (candidates.length < 2) return null;
+  const one = (list: number[]): number | null => (list.length === 1 ? list[0] : null);
+  const chosen = input.chosenBox;
+  const tapped = chosen
+    ? one(
+        candidates.filter(
+          (p) =>
+            containment(products[p].box, chosen) >= MATCH_CONTAINMENT &&
+            containment(chosen, products[p].box) >= MATCH_CONTAINMENT,
+        ),
+      )
+    : null;
+  if (tapped !== null) return tapped;
+  const yes = one(candidates.filter((p) => products[p].matchesIntent === "yes"));
+  if (yes !== null) return yes;
+  if (hasSignal(signals) || signals.wantPhrases.length > 0) {
+    const fits = one(candidates.filter((p) => labelPasses(products[p].label, signals)));
+    if (fits !== null) return fits;
+  }
+  const labeled = new Set(decision.featured.map((i) => match.productOf[i]));
+  const only = labeled.size === 1 ? [...labeled][0] : null;
+  return only !== null && only !== undefined && candidates.includes(only) ? only : null;
+}
+
 // ---------------------------------------------------------------------------
 // The vision tie breaker.
 

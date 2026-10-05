@@ -17,6 +17,7 @@ export const SourceSelection = z.strictObject({
     others: z.array(z.strictObject({ label: z.string(), box })),
     keep: z.array(box).min(1).optional(),
     touching: z.boolean().optional(),
+    recut: z.boolean().optional(),
   }).nullable(),
   exclude: z.array(z.string()),
   otherItems: z.boolean(),

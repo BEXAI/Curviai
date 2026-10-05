@@ -3106,13 +3106,20 @@ describe("seller intent picks the product (PHASE_13 items 1, 3, 6)", () => {
     });
   });
 
-  it("refuses the shot at no charge when the picked product touches the other one", async () => {
-    const { summary, deps } = await liveRun(twoProducts("no", "yes"), await twoProductPhoto(0));
-    expect(summary.chargedCredits).toBe(0);
-    expect(deps.store.assets.length).toBeGreaterThan(0);
-    expect(deps.store.assets.every((a) => a.status === "needs_review")).toBe(true);
-    expect(deps.store.assets[0]?.verdict.repairHint).toBe(PRODUCT_TOUCHING);
-    expect(deps.store.ledger.some((e) => e.reason === "charge")).toBe(false);
+  it("splits the picked product from the one it touches by their boxes and delivers it alone", async () => {
+    const { summary, deps, cutout, calls } = await liveRun(twoProducts("no", "yes"), await twoProductPhoto(0));
+    expect(summary.state).toBe("done");
+    expect(summary.passed).toBeGreaterThan(0);
+    // The merged photo is cut out again from a crop to the picked product.
+    for (const call of calls) {
+      expect(call.target?.recut).toBe(true);
+    }
+    expect(cutout.inputs.length).toBe(2);
+    expect(deps.store.assets.some((a) => a.verdict.repairHint === PRODUCT_TOUCHING)).toBe(false);
+    const colors = await deliveredColors(deps);
+    expect(colors.files).toBeGreaterThan(0);
+    expect(colors.red).toBe(0);
+    expect(colors.blue).toBeGreaterThan(0);
   });
 
   describe("product inventory", () => {

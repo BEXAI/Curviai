@@ -120,6 +120,7 @@ import {
   type SellerIntent,
   analyzeInventory,
   chooseInventoryTarget,
+  touchingTargetProduct,
   containment,
   MATCH_CONTAINMENT,
   inventoryRecord,
@@ -707,9 +708,14 @@ export interface ProductTarget {
   /** The inventory pieces the pack features, normalized to the upright
    * working photo. */
   keep?: NormalizedBox[];
-  /** True when the featured piece also holds another product (they touch):
-   * every shot of the photo is refused at no charge. */
+  /** True when the featured piece also holds another product (they touch)
+   * and the product meant could not be told: every shot of the photo is
+   * refused at no charge. */
   touching?: boolean;
+  /** True when the whole photo's cutout merged this product with another
+   * one: the generator cuts out the crop to box afresh instead of reusing
+   * the whole photo's cutout, then splits what still overlaps by the boxes. */
+  recut?: boolean;
 }
 
 /** The whole photo cut out for the product inventory, and the provider
@@ -1718,6 +1724,19 @@ export function inventorySelection(
     if (decision.rule === "ambiguous" || decision.rule === "conflict") {
       delete selection.targets[photo.mediaId];
       selection.ambiguous.push(photo.mediaId);
+      return;
+    }
+    // Touching products the cutout merged into one piece: when the product
+    // meant is known, it is cut out again from a crop to its own box and
+    // split from its neighbors there, instead of refusing the photo.
+    const split = decision.touching ? touchingTargetProduct(choiceInput, decision) : null;
+    if (split !== null) {
+      selection.targets[photo.mediaId] = {
+        label: products[split].label,
+        box: products[split].box,
+        others: products.flatMap((p, i) => (i === split ? [] : [{ label: p.label, box: p.box }])),
+        recut: true,
+      };
       return;
     }
     if (decision.removed.length === 0 && !decision.touching) {

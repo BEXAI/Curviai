@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "curvi",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Make marketplace and ad images from a real product photo. The product is never redrawn.",
   "author": {
     "name": "SET TO THE VERIFIED DEVELOPER NAME",
@@ -97,7 +97,7 @@
       },
       "publication": {
         "countries": [],
-        "release_notes": "First release. Make marketplace and ad images from a product photo and check Amazon main images."
+        "release_notes": "Package refresh. Make marketplace and ad images from a product photo and check Amazon main images."
       }
     }
   }

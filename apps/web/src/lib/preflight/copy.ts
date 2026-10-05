@@ -98,6 +98,15 @@ export interface SizeShortfall {
   has: number;
 }
 
+/** Under the chooser: products that touch or overlap are fine, since the
+ * pack cuts the tapped one out on its own and splits it from its neighbors. */
+export const CHOOSER_OVERLAP_HINT =
+  "It is fine if the products touch or overlap. Tap the one you want and we will cut it out on its own.";
+
+/** Why a photo with several products cannot start a pack yet. */
+export const CHOOSE_PRODUCT_BLOCK =
+  "Tap the product this pack is for. It can touch or overlap the others.";
+
 /**
  * The selected channels this photo is too small for. A kept photo that feeds
  * no cutout has no product region to measure, so only needs on the whole
@@ -133,7 +142,7 @@ export function sizeShortfallLine(shortfall: SizeShortfall, photo: { width: numb
     shortfall.measure === "product"
       ? `${size} and the product in it is about ${shortfall.has} pixels across. ${name} needs about ${shortfall.needs}.`
       : `${size}. ${name} needs about ${shortfall.needs} on the long side.`;
-  return `Too small for ${name}. ${measured} Upload the original photo from your camera, or untick ${name}.`;
+  return `Small for ${name}. ${measured} We will enlarge it, so it may look a little soft. For the sharpest result, upload the original photo from your camera.`;
 }
 
 /** "Found: silver watch. Ready for Amazon, Shopify and Meta." or null when
@@ -143,8 +152,9 @@ export function readyLine(view: PreflightView, selected: readonly string[], chos
   if (view.status === "blocked" || view.status === "unavailable") return null;
   const label = chosenItem(view, chosen)?.label ?? view.found;
   if (view.status === "choose" && !chosenItem(view, chosen)) return null;
-  const short = new Set(sizeShortfalls(view, selected, chosen).map((s) => s.specId));
-  const families = [...new Set(selected.filter((id) => !short.has(id)).map(familyName))];
+  // A photo small for a channel is still ready for it: a removed photo is
+  // enlarged there and a kept one left out, and the size lines say which.
+  const families = [...new Set(selected.map(familyName))];
   const found = label ? `Found: ${label}.` : "Found your product.";
   return families.length > 0 ? `${found} Ready for ${joinNames(families)}.` : found;
 }
@@ -160,9 +170,9 @@ export interface PreflightBlockOptions {
  * Why this photo cannot start a pack right now, or null when it can. A
  * photo whose role shows several items on purpose (in the box) needs no
  * choice, and neither does one that feeds no cutout: its other items stay
- * in the picture (keptPhotoHeadsUp says so). A kept photo never blocks on
- * size; where it is too small it is left out of that channel at plan time.
- * A removed photo keeps today's rules.
+ * in the picture (keptPhotoHeadsUp says so). No photo blocks on size: a
+ * kept photo is left out of a channel it is too small for at plan time, and
+ * a removed photo's product is enlarged, with a warning under the photo.
  */
 export function preflightBlockReason(
   view: PreflightView,
@@ -175,15 +185,10 @@ export function preflightBlockReason(
   }
   const feedsCutout = opts.output === undefined || opts.output.feedsCutout;
   if (view.status === "choose" && !opts.multiItem && feedsCutout && !chosenItem(view, chosen)) {
-    return "Tap the product this pack is for.";
+    return CHOOSE_PRODUCT_BLOCK;
   }
-  if (opts.output?.kept) {
-    return null;
-  }
-  const short = sizeShortfalls(view, selected, chosen, opts.output);
-  if (short.length > 0) {
-    return `This photo is too small for ${joinNames(short.map((s) => specName(s.specId)))}. Untick ${short.length === 1 ? "it" : "them"} or upload a larger photo.`;
-  }
+  // Size never blocks: a removed photo small for a channel is enlarged
+  // there (sizeShortfallLine warns), a kept one is left out at plan time.
   return null;
 }
 
