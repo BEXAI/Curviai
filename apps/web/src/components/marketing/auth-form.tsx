@@ -230,7 +230,10 @@ export function AuthForm({
       setShowResend(true);
       return;
     }
-    window.location.href = nextPath;
+    // A signup confirmed at once (email confirmation off) goes through the
+    // same callback a confirmation link opens, so the server records the
+    // terms, where the signup came from and shows the welcome page.
+    window.location.href = mode === "signup" ? callback : nextPath;
   }
 
   const switchQuery = carryQuery(intent, source, nextPath);

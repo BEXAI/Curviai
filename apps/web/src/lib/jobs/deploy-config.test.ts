@@ -34,9 +34,9 @@ const EXTERNAL_ENV = new Set([
   "STAGING_OPS_SITE_URL", "STAGING_CRON_SECRET", "STAGING_OPS_RELEASE_TOKEN", "STAGING_OPS_RELEASE_EMAIL",
   "STAGING_RENDER_API_KEY", "STAGING_RENDER_SERVICE_ID", "STAGING_RENDER_BACKUP_CRON_ID", "BACKUP_TIMESTAMP", "TMPDIR",
 ]);
-// Known provider enums/path labels, not environment names. A new uppercase
+// Known provider enums/path labels (and Supabase auth events), not environment names. A new uppercase
 // literal must be classified explicitly so injected readers cannot evade CI.
-const NOT_ENV = new Set(["BLOCK_REASON_UNSPECIFIED", "DRINKING_CUP", "ERR_JOSE_GENERIC", "IMAGE_OTHER", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "IMAGE_SAFETY", "IN_PROGRESS", "IN_QUEUE", "PHASE_19", "PROHIBITED_CONTENT"]);
+const NOT_ENV = new Set(["BLOCK_REASON_UNSPECIFIED", "DRINKING_CUP", "ERR_JOSE_GENERIC", "IMAGE_OTHER", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "IMAGE_SAFETY", "IN_PROGRESS", "IN_QUEUE", "PASSWORD_RECOVERY", "PHASE_19", "PROHIBITED_CONTENT", "SIGNED_IN", "SIGNED_OUT"]);
 const VARIABLE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 function namesIn(text: string, path = "fixture.ts"): Set<string> {
   const names = new Set<string>();
