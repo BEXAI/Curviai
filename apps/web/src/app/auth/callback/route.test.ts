@@ -4,7 +4,7 @@ import { AUTH_ERROR_MESSAGES } from "@/lib/safe-next";
 
 type Exchange = (code: string) => Promise<{ error: { message: string } | null }>;
 
-let supabase: { auth: { exchangeCodeForSession: Exchange } } | null;
+let supabase: { auth: { exchangeCodeForSession: Exchange; getUser?: () => Promise<unknown> } } | null;
 
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServerClient: async () => supabase,
@@ -120,6 +120,26 @@ describe("GET /auth/callback (Update.md 4.3)", () => {
     const odd = location(await callback("code=abc&category=sports&channel=myspace"));
     expect(odd.pathname).toBe("/welcome");
     expect([...odd.searchParams.keys()]).toEqual([]);
+  });
+
+  it("finishes an email signup confirmed at once, signed in and without a code, like a confirmation link", async () => {
+    const PREVIEW = "3c1f0e2d-4b5a-4c6d-8e7f-90a1b2c3d4e5";
+    const fresh = { id: "7e6d5c4b-3a29-4817-a6f5-e4d3c2b1a090", email_confirmed_at: new Date().toISOString() };
+    const exchange = vi.fn<Exchange>(async () => ({ error: null }));
+    supabase = { auth: { exchangeCodeForSession: exchange, getUser: async () => ({ data: { user: fresh }, error: null }) } };
+    claim.fn.mockClear();
+    const attr = Buffer.from(JSON.stringify({ preview: PREVIEW })).toString("base64url");
+    const target = location(await callback(`next=%2Fapp&category=candles&attr=${attr}`));
+    expect(exchange).not.toHaveBeenCalled();
+    expect(target.pathname).toBe("/welcome");
+    expect(target.searchParams.get("category")).toBe("candles");
+    expect(claim.fn).toHaveBeenCalledWith(PREVIEW, fresh.id);
+  });
+
+  it("sends a visitor who is not signed in and has no code on to the destination", async () => {
+    supabase = { auth: { exchangeCodeForSession: vi.fn<Exchange>(async () => ({ error: null })), getUser: async () => ({ data: { user: null }, error: null }) } };
+    const target = location(await callback("next=%2Fapp%2Fnew"));
+    expect(target.pathname).toBe("/app/new");
   });
 
   it("claims a free preview the signup link carried and continues to /app/new on its product (P18-12)", async () => {

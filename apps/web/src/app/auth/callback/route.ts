@@ -16,6 +16,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
  * terms acceptance, with its own clock and the request IP (lib/trust/terms.ts),
  * and, on a fresh verification, where the signup came from and the
  * funnel.signup_confirmed step (lib/services/attribution.ts, P18-01, P18-02).
+ * An email signup confirmed at once (no confirmation email) arrives here
+ * signed in and without a code, and runs the same steps for that user.
  * Those steps, the claims, the referral and the welcome redirect live in
  * lib/auth/finish.ts, which the email confirm route of docs/phases/PHASE_20.md
  * P20-28 will share.
@@ -63,6 +65,22 @@ export async function GET(request: NextRequest) {
     // The terms record, attribution, the conversion, the claims, the
     // referral and the welcome page.
     const destination = await finishSignIn({ user, next, origin, headers: request.headers, params: url.searchParams });
+    return NextResponse.redirect(new URL(destination, origin));
+  }
+  // No code, but already signed in: an email signup the provider confirmed
+  // at once (email confirmation turned off) comes here straight from the
+  // signup form, so it records the terms, where it came from and the
+  // welcome page like a confirmation link would. Every step is safe to run
+  // again (once per user, or only within a fresh verification).
+  let signedIn: FinishUser | null = null;
+  try {
+    const { data } = await supabase.auth.getUser();
+    signedIn = data?.user ?? null;
+  } catch {
+    signedIn = null;
+  }
+  if (signedIn) {
+    const destination = await finishSignIn({ user: signedIn, next, origin, headers: request.headers, params: url.searchParams });
     return NextResponse.redirect(new URL(destination, origin));
   }
   return NextResponse.redirect(new URL(next, origin));
