@@ -242,7 +242,7 @@ export function organizationJsonLd(): JsonLdNode {
     "@id": organizationId(),
     name: SITE_NAME,
     url: absoluteUrl("/"),
-    email: "hello@curvi.ai",
+    email: "support@curvi.ai",
     logo: absoluteUrl("/brand/curvi-mark-512.png"),
     image: absoluteUrl("/brand/curvi-mark-512.png"),
     description: SITE_SUMMARY,

@@ -650,7 +650,7 @@ describe("renewal consent, cadence and the activation email (P20-07)", () => {
       from: openCheckoutEnv().BILLING_EMAIL_FROM,
       to: ["buyer@example.com"],
       subject: "Your Curvi Growth plan is active",
-      reply_to: "hello@curvi.ai",
+      reply_to: "support@curvi.ai",
     });
     expect(calls[0]?.headers["Idempotency-Key"]).toBe(`plan_active:${sub.invoice}`);
     const text = String(calls[0]?.body.text);
@@ -658,7 +658,7 @@ describe("renewal consent, cadence and the activation email (P20-07)", () => {
     expect(text).toContain("billed every month");
     expect(text).toContain("Next renewal: December 1, 2026");
     expect(text).toContain("Cancel any time in Billing: ");
-    expect(text).toContain("Questions? Reply to this email or write to hello@curvi.ai.");
+    expect(text).toContain("Questions? Reply to this email or write to support@curvi.ai.");
 
     // Stripe retries the same invoice.paid: no second email.
     expect((await post(firstInvoice(sub))).status).toBe(200);

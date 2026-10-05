@@ -23,8 +23,8 @@
 import { sql, type Db, type TermsAcceptanceSource } from "@curvi/db";
 import { clientIp } from "@/lib/rate-limit";
 
-/** Matches "Last updated October 2, 2026" on /terms. Change both together. */
-export const TERMS_VERSION = "2026-10-02";
+/** Matches "Last updated October 5, 2026" on /terms. Change both together. */
+export const TERMS_VERSION = "2026-10-05";
 
 export interface TermsAcceptanceInput {
   userId: string;

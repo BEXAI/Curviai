@@ -38,7 +38,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: "billing_not_configured",
-        notice: "Card payments are not open yet, so there is nothing to manage here. Email hello@curvi.ai for any billing question.",
+        notice: "Card payments are not open yet, so there is nothing to manage here. Email support@curvi.ai for any billing question.",
       },
       { status: 503 },
     );

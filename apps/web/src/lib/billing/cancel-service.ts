@@ -349,7 +349,7 @@ export async function applyCancelChoice(deps: CancelDeps, input: CancelChoiceInp
           const priceId = toTier ? deps.priceIdFor(toTier, facts.cadence ?? "monthly") : undefined;
           if (!toTier || !priceId || !facts.itemId || !account.stripeCustomerId || !deps.scheduleChange) {
             await safeRecord(deps, { ...row, error: "downgrade price or subscription item missing" });
-            return fail(503, "plan_unavailable", "That plan cannot be picked online right now. Email hello@curvi.ai and we will switch it for you.");
+            return fail(503, "plan_unavailable", "That plan cannot be picked online right now. Email support@curvi.ai and we will switch it for you.");
           }
           row.effectiveAt = await deps.scheduleChange({ workspaceId: workspace.id, subscriptionId: facts.subscriptionId,
             customerId: account.stripeCustomerId, tier: toTier, cadence: facts.cadence ?? "monthly", priceId });

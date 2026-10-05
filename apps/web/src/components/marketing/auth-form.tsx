@@ -149,8 +149,8 @@ export function AuthForm({
         <CardContent className="space-y-4">
           <p className="text-sm text-ink-600">
             We are doing maintenance on accounts right now. Try again in a few minutes, or email{" "}
-            <a href="mailto:hello@curvi.ai" className="font-medium text-ink-900 underline">
-              hello@curvi.ai
+            <a href="mailto:support@curvi.ai" className="font-medium text-ink-900 underline">
+              support@curvi.ai
             </a>{" "}
             if you need help getting in.
           </p>

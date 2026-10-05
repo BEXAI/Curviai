@@ -35,7 +35,7 @@ The old Apps SDK submission/guidelines paths redirect to `/plugins/`. The curren
 | `packages/openai-plugin/src/manifest.ts` | Rejects identity placeholders; missing recording only warns. Root notified of strict final-readiness gap. |
 | `packages/openai-plugin/src/limits.ts` | Metadata, assets, archive and five/three case checks exist. |
 | `e2e/openai-plugin.spec.ts` | Demo-build URL/photo/preflight/dark-OAuth tests; no real ChatGPT proof. |
-| `apps/web/src/lib/legal/facts.ts` | Legal name/address/governing law null; contact `hello@curvi.ai`. Do not guess publisher. |
+| `apps/web/src/lib/legal/facts.ts` | Legal name/address/governing law null; contact `support@curvi.ai`. Do not guess publisher. |
 | `apps/web/src/app/(marketing)/privacy/privacy-copy.ts` | Assistant data/retention/OpenAI recipient disclosure in source; deployed copy needs read-back. |
 | `apps/web/src/lib/mcp-ui/pack-viewer/resource.ts` | Viewer off at audit time. Assets lane owns implementation; Phase 22 requires it before initial review. |
 
@@ -48,8 +48,8 @@ Read with system `curl` and normal TLS verification at 2026-10-02 15:35:01–15:
 | URL | Response |
 | --- | --- |
 | `https://curvi.ai/` | 200 HTML. |
-| `https://curvi.ai/privacy` | 200 HTML; older deployed policy names `hello@curvi.ai`. |
-| `https://curvi.ai/terms` | 200 HTML; older deployed terms name `hello@curvi.ai`. |
+| `https://curvi.ai/privacy` | 200 HTML; older deployed policy names `support@curvi.ai`. |
+| `https://curvi.ai/terms` | 200 HTML; older deployed terms name `support@curvi.ai`. |
 | `https://curvi.ai/support` | 404. |
 | `https://curvi.ai/review/sample-product.jpg` | 404. |
 

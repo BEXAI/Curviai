@@ -59,7 +59,7 @@ export const CONSENT_COPY = {
   unavailable:
     "Curvi could not open this connection request right now, so nothing was shared. Go back to ChatGPT and press Connect again in a few minutes.",
   noWorkspace:
-    "Curvi could not find a workspace for this account, so nothing was shared. Email hello@curvi.ai and we will sort it out.",
+    "Curvi could not find a workspace for this account, so nothing was shared. Email support@curvi.ai and we will sort it out.",
   notYourWorkspace: "That workspace is not one of yours, so nothing was shared. Pick one from the list.",
   pickWorkspace: "Pick the workspace ChatGPT should use.",
 } as const;

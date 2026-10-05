@@ -33,7 +33,7 @@ export const EMAIL_SETTINGS_HELP = "Emails about packs you make and payments alw
 export const EMAIL_SETTINGS_SAVED_ON = "Saved. Curvi may send you tips and offers.";
 export const EMAIL_SETTINGS_SAVED_OFF = "Saved. Curvi will not send you tips or offers.";
 export const EMAIL_SETTINGS_BLOCKED =
-  "Email to your address bounced or was marked as spam, so Curvi stopped all email to it. Write to hello@curvi.ai to turn it back on.";
+  "Email to your address bounced or was marked as spam, so Curvi stopped all email to it. Write to support@curvi.ai to turn it back on.";
 export const EMAIL_SETTINGS_FAILED = "We could not save that just now. Try again in a minute.";
 export const EMAIL_SETTINGS_NO_ACCOUNT = "Sign in to change your email settings.";
 

@@ -23,7 +23,7 @@ const ready: EmailTemplate<Record<string, never>> = {
 const UNSUBSCRIBE = {
   pageUrl: "https://curvi.ai/email/unsubscribe?t=tok",
   oneClickUrl: "https://curvi.ai/api/email/unsubscribe?t=tok",
-  mailto: "hello@curvi.ai",
+  mailto: "support@curvi.ai",
 };
 
 describe("renderEmail", () => {
@@ -40,7 +40,7 @@ describe("renderEmail", () => {
     expect(email.text).toContain("Curvi, PO Box 100, Springfield, IL 62701");
     expect(email.text).toContain("\n\nSam\n\n");
     expect(email.headers).toEqual({
-      "List-Unsubscribe": "<https://curvi.ai/api/email/unsubscribe?t=tok>, <mailto:hello@curvi.ai?subject=unsubscribe>",
+      "List-Unsubscribe": "<https://curvi.ai/api/email/unsubscribe?t=tok>, <mailto:support@curvi.ai?subject=unsubscribe>",
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     });
     expect(email.html).toContain('<a href="https://curvi.ai/email/unsubscribe?t=tok"');

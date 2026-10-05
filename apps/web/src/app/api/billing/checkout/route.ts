@@ -213,7 +213,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: "price_not_configured",
-        notice: "This option cannot be bought online yet. Email hello@curvi.ai and we will set it up.",
+        notice: "This option cannot be bought online yet. Email support@curvi.ai and we will set it up.",
       },
       { status: 503 },
     );
@@ -231,7 +231,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       return NextResponse.json(
         {
           error: "subscription_exists",
-          notice: "This workspace already has a subscription. Email hello@curvi.ai and we will change the plan for you.",
+          notice: "This workspace already has a subscription. Email support@curvi.ai and we will change the plan for you.",
         },
         { status: 409 },
       );

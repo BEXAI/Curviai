@@ -229,15 +229,14 @@ describe("Last updated dates move with the text", () => {
   // subprocessorsLastUpdated in lib/legal/facts.ts) and record the new date
   // and fingerprint here. Never record a new fingerprint under an old date.
   const RECORDED = {
-    // Same-day revision on 2026-10-02: the founder supplied the public
-    // business name and address. Governing law is still pending; the terms
-    // acceptance version and existing acceptance records are unchanged.
-    terms: { lastUpdated: "2026-10-02", sha256: "8126b07d54c2be8eab50237ced71bd0d60ad35ee398a5fe0f617ccf789c83281" },
-    // The same founder-supplied identity revision also changes privacy.
-    privacy: { lastUpdated: "2026-10-02", sha256: "4ce8b0ac8c12072fcdf0e47158887bb0c4ac0941020b45a8d095dbf6d94a37d8" },
+    // 2026-10-05: the support address changed from hello@curvi.ai to
+    // support@curvi.ai on every page. No other text changed; existing
+    // acceptance records keep their version.
+    terms: { lastUpdated: "2026-10-05", sha256: "85d0f0616579d9872b61cdaed260d4dcd291af2846163dc4ec78f2f642da484a" },
+    privacy: { lastUpdated: "2026-10-05", sha256: "6b5c046e5b71014552841bb4a6ad6fabf9b8ab9ebf4be7604565b1adb0f67ff0" },
     subprocessors: {
-      lastUpdated: "2026-10-02",
-      sha256: "11e13d7a68cec76568f3567ac1f58dd8f43630beaadc6920be25bcbddc6d459c",
+      lastUpdated: "2026-10-05",
+      sha256: "14e80479197f4f38ad8d0c3e9f03935c3363eca0fc6442f66c42166ea34b1e8a",
     },
   };
 

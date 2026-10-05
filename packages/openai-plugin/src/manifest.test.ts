@@ -92,7 +92,7 @@ describe("the checked in plugin folder", () => {
 
   it("carries the plan's listing: name, subtitle, category, the permanent MCP URL and no screenshots", () => {
     const { manifest, mcp } = checkPlugin({ developerName: DEVELOPER });
-    expect(manifest).toMatchObject({ name: "curvi", homepage: "https://curvi.ai", author: { email: "hello@curvi.ai", url: "https://curvi.ai" } });
+    expect(manifest).toMatchObject({ name: "curvi", homepage: "https://curvi.ai", author: { email: "support@curvi.ai", url: "https://curvi.ai" } });
     expect(ui(manifest!)).toMatchObject({
       displayName: "Curvi",
       shortDescription: "Listing images from one photo",

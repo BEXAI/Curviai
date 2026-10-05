@@ -108,7 +108,7 @@ export const LEGAL_FACTS: LegalFacts = {
     postalAddress: "131 Continental Drive, Suite 305, Newark New Castle, DE 19713",
     governingLaw: null,
   },
-  support: { email: "hello@curvi.ai", replyBusinessDays: 2 },
+  support: { email: "support@curvi.ai", replyBusinessDays: 2 },
   creditTermsSentence: CREDIT_TERMS_SENTENCE,
   refundPolicy: "Fees are billed in advance and are non refundable except where the law requires otherwise.",
   retention: {
@@ -133,6 +133,6 @@ export const LEGAL_FACTS: LegalFacts = {
   annualRenewalReminderDays: renewalNotices.annualWindow,
   termsChangeNoticeDays: 30,
   termsLastUpdated: TERMS_VERSION,
-  privacyLastUpdated: "2026-10-02",
-  subprocessorsLastUpdated: "2026-10-02",
+  privacyLastUpdated: "2026-10-05",
+  subprocessorsLastUpdated: "2026-10-05",
 };

@@ -22,13 +22,13 @@ export const CLAIM_COPY = {
   button: "Make it yours",
   footerQuestion: "Not yours, or want this page removed?",
   takedownLink: "Take it down here",
-  footerEmail: "or email hello@curvi.ai.",
-  footerEmailOnly: "Email hello@curvi.ai and we take it down.",
+  footerEmail: "or email support@curvi.ai.",
+  footerEmailOnly: "Email support@curvi.ai and we take it down.",
   confirm: "Take this page down? The link stops working for everyone.",
   confirmButton: "Yes, take it down",
   cancel: "Keep it",
   done: "This page is down. Thank you for telling us.",
-  failed: "That did not work. Email hello@curvi.ai and we take it down.",
+  failed: "That did not work. Email support@curvi.ai and we take it down.",
   notFound: "This link no longer works.",
 } as const;
 

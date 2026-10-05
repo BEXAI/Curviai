@@ -106,7 +106,7 @@ export function cancelFlowReleaseNotice(change: ScheduledChange, currentTier?: s
 
 /** When Stripe refused the change after the schedule was released. */
 export function releasedThenFailedNotice(change: ScheduledChange, currentTier?: string | null): string {
-  return `Stripe could not make that change just now. ${capitalized(scheduledChangeText(change, currentTier))} was already canceled, so email hello@curvi.ai if you still want it. Try again in a minute.`;
+  return `Stripe could not make that change just now. ${capitalized(scheduledChangeText(change, currentTier))} was already canceled, so email support@curvi.ai if you still want it. Try again in a minute.`;
 }
 
 /** The founder's email about one release. */
