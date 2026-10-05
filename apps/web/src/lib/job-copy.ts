@@ -428,7 +428,7 @@ export function needsReviewNote(hint: string | null | undefined, context: ShotCo
 const HELD_RETURNED = "Credits held for it went back to your balance.";
 const HELD_RUN_AGAIN = "Credits held for it went back to your balance, so you can run it again.";
 const NOTHING_CHARGED = "Nothing was charged.";
-const CONTACT = "email hello@curvi.ai";
+const CONTACT = "email support@curvi.ai";
 const WRONG_CALL = "If your product is something else, use a different photo that shows only the product and start a new pack.";
 /** Photo guidance for a refused photo (PHASE_14 item 3.3). */
 const PHOTO_TIPS =

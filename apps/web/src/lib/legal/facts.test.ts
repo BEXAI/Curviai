@@ -41,7 +41,7 @@ describe("LEGAL_FACTS sources", () => {
   });
 
   it("uses the support address and reply time of decision 24", () => {
-    expect(LEGAL_FACTS.support).toEqual({ email: "hello@curvi.ai", replyBusinessDays: 2 });
+    expect(LEGAL_FACTS.support).toEqual({ email: "support@curvi.ai", replyBusinessDays: 2 });
   });
 
   it("dates every page with a real calendar day", () => {

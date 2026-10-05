@@ -11,7 +11,7 @@ Every external setting name, value and limit below was checked against the linke
 | 1 | Legal review of terms and privacy (start early) | Founder with a lawyer | Paid launch |
 | 2 | Resend sending domain with SPF, DKIM and DMARC (start early) | Founder | Step 3 |
 | 3 | Supabase custom SMTP through Resend | Founder | Signups outside the team |
-| 4 | Inbound mail for hello@curvi.ai | Founder | Support replies |
+| 4 | Inbound mail for support@curvi.ai | Founder | Support replies |
 | 5 | Render deploys only after CI passes | Founder | Step 7 |
 | 6 | Apply migrations 0011 to 0013 to production, then run `pnpm db:seed` | Founder | Step 7 |
 | 7 | Add the batch 1 environment variables, then push main (batch 1 goes live) | Founder, engineer for `.env.example` | Steps 8 to 13 |
@@ -90,15 +90,15 @@ Why this blocks launch: without custom SMTP, Supabase Auth sends only to "pre-au
 
 **Sources:** https://supabase.com/docs/guides/auth/auth-smtp, https://resend.com/docs/send-with-supabase-smtp (checked 2026-09-28).
 
-## 4. Inbound mail for hello@curvi.ai
+## 4. Inbound mail for support@curvi.ai
 
-hello@curvi.ai appears across the site as the contact address, and DMARC reports need a mailbox.
+support@curvi.ai appears across the site as the contact address, and DMARC reports need a mailbox.
 
 **Who:** founder.
 
 **Do:** Cloudflare dashboard, Compute, Email Service, Email Routing: onboard curvi.ai (Cloudflare adds its MX, SPF and DKIM records at the root), add the founder's inbox as a verified destination, and create routing rules for `hello` and `dmarc`. Resend's MX lives on `send.updates`, so the two do not collide; remove any other MX records on the root first.
 
-**Verify:** mail sent from an outside account to hello@curvi.ai and dmarc@curvi.ai reaches the founder's inbox.
+**Verify:** mail sent from an outside account to support@curvi.ai and dmarc@curvi.ai reaches the founder's inbox.
 
 **Source:** https://developers.cloudflare.com/email-routing/get-started/enable-email-routing/ (checked 2026-09-28).
 
@@ -477,7 +477,7 @@ What changes for the founder:
 
 1. **Add `OPENAI_APPS_CHALLENGE_TOKEN=` to .env.example by hand,** with the comment `# OpenAI plugin domain verification token (PHASE_19 runbook E3). Server only. Unset: the challenge path answers 404.` (env files are blocked for the agents).
 2. **Confirm the retention defaults before the privacy update ships** (PHASE_19 decision 10). Request logs: "kept for up to 30 days" (Render keeps service logs 7, 14 or 30 days by workspace plan, docs/verification.md, so 30 is the ceiling; also confirm the logs you keep, Render's, Cloudflare's or the app's, are the ones that carry IP addresses). Connection records: "stay until you close your account, including after you disconnect", because a disconnect marks the record revoked instead of deleting it (PHASE_19 "Revocation"); the plan's draft said "until you disconnect or close your account". Original uploads: 30 days, as today. To change a number, edit `REQUEST_LOG_RETENTION_DAYS` and the text in `apps/web/src/app/(marketing)/privacy/privacy-copy.ts`.
-3. **Confirm the support response time,** "two business days" (`SUPPORT_RESPONSE_TIME` in `apps/web/src/components/marketing/support-copy.ts`), and that mail to hello@curvi.ai reaches you (step 4).
+3. **Confirm the support response time,** "two business days" (`SUPPORT_RESPONSE_TIME` in `apps/web/src/components/marketing/support-copy.ts`), and that mail to support@curvi.ai reaches you (step 4).
 4. **Approve the privacy and terms text** (step 1's legal review covers it). The terms now say "Last updated October 1, 2026", so `TERMS_VERSION` is 2026-10-01: new signups record that version, and existing users keep their 2026-09-28 record (lib/trust/terms.ts records only a first acceptance).
 5. **At submission (runbook E3),** paste the token from the OpenAI dashboard into Render as `OPENAI_APPS_CHALLENGE_TOKEN`, Save, and wait for the restart. Open https://curvi.ai/.well-known/openai-apps-challenge and check that it shows exactly the token and nothing else, then press Verify Domain. Cloudflare must let OpenAI reach `/.well-known/*` (runbook B0).
 6. **After the plugin is published (runbook E8),** the agent flips `FEATURES.chatgptPlugin` to live and sets `CHATGPT_LISTING_URL` in `apps/web/src/components/marketing/help-articles.ts`; the help article, llms.txt and the API keys page then say ChatGPT works without a key. Until then they say it is coming soon.
@@ -969,7 +969,7 @@ Official syntax and behavior: [Render Blueprint reference](https://render.com/do
 | `STRIPE_WEBHOOK_SECRET` | web only | Stripe webhook signing secret; missing rejects webhook writes. |
 | `SUPABASE_AUTH_ISSUER` | web only | Optional explicit issuer; unset derives the issuer from the Supabase URL. |
 | `SUPABASE_SERVICE_ROLE_KEY` | web only | Server-only auth administration key; missing disables account deletion/admin operations. |
-| `SUPPORT_INBOX` | web only | Support destination; unset uses hello@curvi.ai. |
+| `SUPPORT_INBOX` | web only | Support destination; unset uses support@curvi.ai. |
 | `TURNSTILE_SECRET_KEY` | web only | Server Turnstile verifier secret; partial configuration fails closed, absent pair uses strict anonymous fallback caps. |
 | `UPSTASH_REDIS_REST_TOKEN` | web only | Rate-limit backend token; keep paired with its URL. |
 | `UPSTASH_REDIS_REST_URL` | web only | Optional shared rate-limit backend URL; absent uses supported database/local fallbacks. |

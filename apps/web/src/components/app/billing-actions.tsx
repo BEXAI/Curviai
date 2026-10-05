@@ -192,9 +192,9 @@ export function RequestPlanButton({
         setSaved(true);
         trackBillingEvent("upgrade_requested", body);
       }
-      setNotice(data.notice ?? data.error ?? "Could not save the request. Email hello@curvi.ai instead.");
+      setNotice(data.notice ?? data.error ?? "Could not save the request. Email support@curvi.ai instead.");
     } catch {
-      setNotice("Could not save the request. Email hello@curvi.ai instead.");
+      setNotice("Could not save the request. Email support@curvi.ai instead.");
     } finally {
       setBusy(false);
     }
@@ -440,8 +440,8 @@ export function CheckoutReturnNotice({
   } else if (timedOut) {
     message =
       kind === "plan_change"
-        ? "Your plan change is saved. If this page still shows the old plan in a few minutes, email hello@curvi.ai."
-        : "Your payment went through, but this page has not caught up yet. Refresh in a few minutes, or email hello@curvi.ai if nothing changes.";
+        ? "Your plan change is saved. If this page still shows the old plan in a few minutes, email support@curvi.ai."
+        : "Your payment went through, but this page has not caught up yet. Refresh in a few minutes, or email support@curvi.ai if nothing changes.";
   } else if (kind === "topup") {
     message = "Payment received. Your credits arrive within a minute.";
   } else if (kind === "plan_change") {

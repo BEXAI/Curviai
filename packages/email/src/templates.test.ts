@@ -40,7 +40,7 @@ const MARKETING: RenderOptions = {
   unsubscribe: {
     pageUrl: "https://curvi.ai/email/unsubscribe?t=TOKEN",
     oneClickUrl: "https://curvi.ai/api/email/unsubscribe?t=TOKEN",
-    mailto: "hello@curvi.ai",
+    mailto: "support@curvi.ai",
   },
   postalAddress: "PO Box 100, Springfield, IL 62701",
 };

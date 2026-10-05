@@ -41,7 +41,7 @@ export function isSelfServeTierKey(value: unknown): value is PaidTierKey {
 export const LARGER_PLAN_LINE = "Need more than Pro? Email us and we will set up a larger plan.";
 
 /** The address the larger plan line sends buyers to (decision 24's inbox). */
-export const LARGER_PLAN_EMAIL = "hello@curvi.ai";
+export const LARGER_PLAN_EMAIL = "support@curvi.ai";
 
 /** docs/phases/PHASE_20.md P20-06, P0 stopgap: a subscriber moves to a
  * smaller plan by email, and the founder schedules it for the period end. */

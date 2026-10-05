@@ -82,8 +82,8 @@ export function SiteFooter() {
                 <CookieSettingsLink className="text-ink-400 transition-colors hover:text-white" />
               </li>
               <li>
-                <a href="mailto:hello@curvi.ai" className="text-ink-400 transition-colors hover:text-white">
-                  hello@curvi.ai
+                <a href="mailto:support@curvi.ai" className="text-ink-400 transition-colors hover:text-white">
+                  support@curvi.ai
                 </a>
               </li>
             </ul>

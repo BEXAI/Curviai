@@ -2297,7 +2297,7 @@ export class DbService implements Services {
     const counters = await this.db.select().from(spendCapCounters).where(inArray(spendCapCounters.key, [`caps:workspace:${workspaceId}:${today}`, `caps:global:${today}`]));
     const spent = (key: string) => Number(counters.find((r) => r.key === key)?.totalMicros ?? 0);
     if (spent(`caps:workspace:${workspaceId}:${today}`) >= costCaps.workspaceExpectedDailyMicrosByTier[tier] * costCaps.workspaceDailyMultiplier) return {
-      outcome: "rejected", reason: "workspace_day_cap", message: "This workspace reached its daily limit. It resets tomorrow, or email hello@curvi.ai.",
+      outcome: "rejected", reason: "workspace_day_cap", message: "This workspace reached its daily limit. It resets tomorrow, or email support@curvi.ai.",
     };
     if (spent(`caps:global:${today}`) >= await resolveGlobalHardStop(this.db)) return {
       outcome: "rejected", reason: "unavailable", message: "New packs are paused for today. Please try again tomorrow.",

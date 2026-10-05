@@ -61,7 +61,7 @@ export const DELETE_ACCOUNT_NOTICES: Record<DeleteAccountRefusal, string> = {
   subscription_open:
     "You still have a paid plan. Cancel it on the Billing page first, then delete your account.",
   shared_workspace:
-    "Your workspace has other members. Email hello@curvi.ai and we will move it to one of them before you delete your account.",
+    "Your workspace has other members. Email support@curvi.ai and we will move it to one of them before you delete your account.",
   not_signed_in: "Sign in to delete your account.",
 };
 

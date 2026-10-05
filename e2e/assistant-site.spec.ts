@@ -8,7 +8,7 @@ test("support page gives the email and links help, Connected apps and the polici
   const response = await page.goto("/support");
   expect(response?.status()).toBe(200);
   await expect(page.getByRole("heading", { level: 1, name: "Support" })).toBeVisible();
-  await expect(page.getByTestId("support-lead")).toContainText("hello@curvi.ai");
+  await expect(page.getByTestId("support-lead")).toContainText("support@curvi.ai");
   await expect(page.getByTestId("support-lead")).toContainText("the pack id ChatGPT showed you");
   const main = page.locator("main");
   for (const href of ["/help", "/app/settings/connections", "/privacy", "/terms"]) {

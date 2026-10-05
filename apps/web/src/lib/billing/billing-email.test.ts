@@ -47,7 +47,7 @@ describe("activationEmail", () => {
     expect(email.text).toContain("Next renewal: December 1, 2026");
     expect(email.text).toContain("To avoid the next charge, cancel before December 1, 2026.");
     expect(email.text).toContain("Cancel any time in Billing: https://curvi.ai/app/billing");
-    expect(email.text).toContain("Questions? Reply to this email or write to hello@curvi.ai.");
+    expect(email.text).toContain("Questions? Reply to this email or write to support@curvi.ai.");
     expect(email.text).not.toContain("days before each renewal");
   });
 
@@ -131,7 +131,7 @@ describe("sendBillingEmail", () => {
       to: "a@b.co",
       subject: "S",
       text: "T",
-      replyTo: "hello@curvi.ai",
+      replyTo: "support@curvi.ai",
       idempotencyKey: "k",
     });
     expect(await sendBillingEmail({ to: "a@b.co", subject: "S", text: "T", idempotencyKey: "k" }, { readEnv: () => undefined, send })).toMatchObject({ ok: false });

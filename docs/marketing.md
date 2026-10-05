@@ -107,7 +107,7 @@ The community templates (T-COM) are outlines. The founder rewrites each one in t
 | Hosting | Render paid plan done 2026-10-01 (1c-2g, 1 CPU, 2 GB, $25 a month). CURVI_INLINE_PACK_CONCURRENCY = 2 still has to be set in the Render dashboard, because the live service was made by hand and does not follow render.yaml. The matching render.yaml change sits uncommitted in the working tree. Packs run inside the web process. | [R9 step 9]; [R10] | MKT-003 |
 | Live health | ok, schema current, warnings empty, commit ccbd555, checked 11:44Z. | [R24] | MKT-012 |
 | Signup email | Unknown whether Supabase sends through Resend. Without it, Supabase sends only to team addresses at 2 messages an hour, so strangers cannot confirm. | [R9 step 3] | G1, MKT-004 |
-| Founder email address | hello@curvi.ai receives mail through Cloudflare Email Routing (inbound only). Resend is verified for updates.curvi.ai, not for curvi.ai itself, so sending as hello@curvi.ai needs its own setup. | [R9 steps 2 and 4, FOUNDER_ALERT_FROM row] | G7, MKT-004 step 2 |
+| Founder email address | support@curvi.ai receives mail through Cloudflare Email Routing (inbound only). Resend is verified for updates.curvi.ai, not for curvi.ai itself, so sending as support@curvi.ai needs its own setup. | [R9 steps 2 and 4, FOUNDER_ALERT_FROM row] | G7, MKT-004 step 2 |
 | Free path | 15 credits once after email confirmation, enough for one typical pack. Free browser tools work even while fal.ai is empty. No Google sign in, no example pack, no try before signup. | [R2 §3]; [R13] | G1, P18-12, P18-13, P18-20 |
 | Welcome flow | After confirming, /welcome, then a dashboard "Get your first pack" card. No welcome email, no nudges. | [R2 §1, §6] | G7, MKT-013, P18-06, P18-07 |
 | Analytics | PostHog code exists but the key is not set in production. Consent banner is opt in for every visitor. No UTM or first touch capture. | [R2 §7] | G2, MKT-005 |
@@ -132,13 +132,13 @@ A gate is a yes or no condition. Tasks that need a gate stay BLOCKED until it pa
 | Gate | Passes when | Owner | How the agent verifies | Task |
 |---|---|---|---|---|
 | G0 Pack works end to end | fal.ai topped up; /api/health has no provider_quota, no_cutout_provider or no_image_provider warning; a founder owned product with a printed label makes a Listing set pack (Amazon main and secondary, Walmart main, Shopify product, Meta feed square, 3 lifestyle scenes) that reaches done; the zips and compliance PDF download; credits are charged only for delivered files; CURVI_INLINE_PACK_CONCURRENCY = 2 is set. The test pack is the proof: a clean /api/health alone never passes G0 (section 3). | FOUNDER | curl -s https://curvi.ai/api/health shows "ok":true and no provider warning; the founder sends the job id, the final status, the report summary (files, passed), a screenshot and the fal.ai balance after the pack; the agent records it in docs/verification.md | MKT-003 |
-| G1 A stranger can sign up | Resend domain verified and Supabase custom SMTP on (LAUNCH_CHECKLIST steps 2 to 4); a fresh address outside the Supabase team gets the confirmation within a minute; the link lands on /welcome; the dashboard shows 15 credits once; a password reset arrives; hello@curvi.ai receives outside mail | FOUNDER | The founder confirms each check; the founder (or the agent with approved read access) runs Q8 (section 12.2) and sees a signup_grants row with 15 credits for the test user | MKT-004 |
+| G1 A stranger can sign up | Resend domain verified and Supabase custom SMTP on (LAUNCH_CHECKLIST steps 2 to 4); a fresh address outside the Supabase team gets the confirmation within a minute; the link lands on /welcome; the dashboard shows 15 credits once; a password reset arrives; support@curvi.ai receives outside mail | FOUNDER | The founder confirms each check; the founder (or the agent with approved read access) runs Q8 (section 12.2) and sees a signup_grants row with 15 credits for the test user | MKT-004 |
 | G2 Analytics and consent work | NEXT_PUBLIC_POSTHOG_KEY set and a fresh build deployed; in a private window, Decline means no request to posthog.com or bzrcdn.openai.com; Accept means $pageview reaches PostHog and the OpenAI pixel loads; Ads Manager shows page_viewed, and registration_completed after a consented test signup in the same browser | FOUNDER | The agent fetches the live layout JS chunk and checks that a phc_ key is now inlined (the method in [R2 §7]); the founder confirms PostHog live events and Ads Manager events | MKT-005 |
 | G3 Money can be taken | Stripe in live mode; one real purchase grants credits exactly once; a refunded top up claws back its credits (docs/STRIPE_SETUP.md checks [R25]) | FOUNDER | Q9 shows the subscription and credit_ledger rows; the founder confirms in Stripe | MKT-006 |
 | G4 Sources are countable (zero code version) | docs/marketing-ops/links.md has one source slug and tagged links per channel; the outreach log records every prospect; exclusions.md lists every founder and test account and workspace | AGENT | The files exist; three sample links return HTTP 200 | MKT-007, MKT-008 |
 | G5 Public proof is clean | The four test packs are off the gallery; the claims register exists; no third party brand appears in public marketing | BOTH | curl -s https://curvi.ai/gallery no longer contains "Blue Car 1" or "Gatorade"; claims.md exists | MKT-009, MKT-010 |
 | G6 Outreach email is compliant | A separate outreach domain with SPF, DKIM and DMARC passing; the outreach signature from section 11 (a postal address, a PO box is allowed [S55]; a line saying the email is promotional; an opt out line); the suppression list exists | FOUNDER | The founder sends a test to a Gmail address and pastes the "Show original" results: SPF, DKIM and DMARC PASS | MKT-011 |
-| G7 Every signup gets a human follow up | The founder can send as hello@curvi.ai (or the address MKT-004 step 2 chose) with SPF, DKIM and DMARC PASS; the manual welcome routine runs daily until P18-06 and P18-07 automate it | BOTH | MKT-004 step 2 result in docs/verification.md; approvals.md holds the approved welcome copy; task-status shows MKT-013 DOING | MKT-004, MKT-013 |
+| G7 Every signup gets a human follow up | The founder can send as support@curvi.ai (or the address MKT-004 step 2 chose) with SPF, DKIM and DMARC PASS; the manual welcome routine runs daily until P18-06 and P18-07 automate it | BOTH | MKT-004 step 2 result in docs/verification.md; approvals.md holds the approved welcome copy; task-status shows MKT-013 DOING | MKT-004, MKT-013 |
 | G8 Promotion stops when packs stop | Manual version: MKT-012 runs daily (health, Q10 and the fal.ai balance) and approvals.md records the founder's agreement to pause promotion the same day it fails. Full version: P18-03 shipped (CTAs switch to "Get notified when packs are back" while packs are paused) | AGENT | Daily lines in metrics-log.md | MKT-012, P18-03 |
 
 What each activity needs:
@@ -206,7 +206,7 @@ Why the doubt is premature: none of that tests Curvi's actual wedge (proof that 
 | Confirmation rate | Q1 confirmed over signups | 60 percent or more (planning threshold) | lower points to an email delivery problem (G1) |
 | Payments from strangers | Q9 | first 1 to 5 by day 30 | none after 100 or more activated users |
 | Repeat use | Q4 | 20 percent or more of payers buy again or use more credits within 30 days | payers never return |
-| Inbound | hello@curvi.ai, upgrade_requested events (Q10), gallery opt ins | any unprompted inbound | none |
+| Inbound | support@curvi.ai, upgrade_requested events (Q10), gallery opt ins | any unprompted inbound | none |
 | Video | platform analytics | one video far above the account median | all flat after 6 weeks |
 
 ### 5.5 Decision dates
@@ -327,7 +327,7 @@ Banned in all copy: "the best", "the only", "the first", "number one", "guarante
 | What if a file fails? | It is marked for review and you are not charged for it. |
 | Do you add models or hands? | Say only after P18-09 parts 3 and 4: "No AI people are added to your images." Before that: "Scenes are made without people; apparel uses flat lay unless you upload photos on a model." |
 | Can my agency white label it? | Not yet. It is planned. Do not promise a date. |
-| Who are you? | A solo founder. Reply to any email or write to hello@curvi.ai and you reach the founder. |
+| Who are you? | A solo founder. Reply to any email or write to support@curvi.ai and you reach the founder. |
 
 ### 6.7 Competitor comparison points (sourced; use rules below)
 
@@ -603,13 +603,13 @@ Each task lists: owner, window, cost, time, depends on, inputs, steps, output (w
 - Inputs: docs/LAUNCH_CHECKLIST.md steps 2, 3 and 4 [R9]; Resend, Supabase and Cloudflare dashboards.
 - Steps:
   1. If not done: LAUNCH_CHECKLIST steps 2, 3 and 4 (Resend sending subdomain updates.curvi.ai with SPF, DKIM and DMARC; Supabase custom SMTP through smtp.resend.com port 465; hello@ and dmarc@ routing) [R9].
-  2. Sending address for MKT-013. Cloudflare Email Routing only receives mail for hello@curvi.ai, and Resend is verified only for updates.curvi.ai [R9]. Pick one, checking Resend's docs on the day: (a) verify curvi.ai itself in Resend and add "Send mail as hello@curvi.ai" in the founder's mail client through smtp.resend.com; or (b) send from an address on updates.curvi.ai with Reply-To hello@curvi.ai. Send a test to a Gmail address; "Show original" must show SPF, DKIM and DMARC PASS.
+  2. Sending address for MKT-013. Cloudflare Email Routing only receives mail for support@curvi.ai, and Resend is verified only for updates.curvi.ai [R9]. Pick one, checking Resend's docs on the day: (a) verify curvi.ai itself in Resend and add "Send mail as support@curvi.ai" in the founder's mail client through smtp.resend.com; or (b) send from an address on updates.curvi.ai with Reply-To support@curvi.ai. Send a test to a Gmail address; "Show original" must show SPF, DKIM and DMARC PASS.
   3. Raise the Supabase email rate limit above the 30 an hour starting value [R9 step 3]; the founder picks the number.
   4. Sign up at https://curvi.ai/signup?source=g1-test with a fresh address outside the team.
   5. The confirmation arrives within a minute; Gmail "Show original" shows SPF, DKIM and DMARC PASS.
   6. The link lands on /welcome; the dashboard shows 15 credits once and the "Get your first pack" card.
   7. A password reset email arrives and works.
-  8. Mail from an outside account to hello@curvi.ai arrives.
+  8. Mail from an outside account to support@curvi.ai arrives.
   9. Agent: add the test address to exclusions.md and record every result, including the sending address chosen in step 2, in docs/verification.md.
 - Output: lines in docs/verification.md; an entry in docs/marketing-ops/exclusions.md.
 - Done when: steps 2 and 4 to 8 pass. Then mark G1 = pass.
@@ -1617,7 +1617,7 @@ OpenAI context hints (plain descriptions, not exact keywords [S80]): Amazon main
 
 ### 11.7 Signup email sequence
 
-Manual (MKT-013) until P18-06 and P18-07 automate it. Sent from the address MKT-004 step 2 set up (hello@curvi.ai, or an updates.curvi.ai address with Reply-To hello@curvi.ai). Every email ends with:
+Manual (MKT-013) until P18-06 and P18-07 automate it. Sent from the address MKT-004 step 2 set up (support@curvi.ai, or an updates.curvi.ai address with Reply-To support@curvi.ai). Every email ends with:
 
 ```
 Curvi, [postal address]
@@ -2199,6 +2199,6 @@ Internal (paths relative to the repo root):
 ## 16. Changelog
 
 - 2026-10-01: Version 1 written from the research report and notes. Corrections carried from the research: the 2026-12-31 date is Curvi's OpenAI provider credit, not seller credits; one main image can pass both Amazon and Google fill rules; Render's paid plan is done (2026-10-01).
-- 2026-10-01: Version 1.1 after an adversarial review. P18 references renumbered to the 25 item PHASE_18 draft and mapped by name (section 14); the MCP Registry and ChatGPT tasks moved onto PHASE_19 (sign in on every tool, no anonymous tools, HTTP domain auth for the registry). The daily check now reads Q10 and the fal.ai balance, because /api/health cannot see an empty fal balance. Every task now lists all ten fields; A4 and A8 wait for G0 and every cash line has a rule row. Founder sending address added to MKT-004 (hello@curvi.ai is receive only). Cold email signature now says it is promotional (CAN-SPAM). Fixed: T-EM-04 said failed files are left out (they are marked for review); T-AD-07 carried a studio price claim in an ad; founder made packs must not be listed under the gallery's "Shared by the seller" label; T-COM-05 solicited contact against Shopify Community rules; MKT-015 let the agent use the founder's API key; MKT-044 suggested hand written credit rows; MKT-046 was due after MKT-013 needed it; Reddit clicks a day corrected to 2.5 to 33; planning thresholds marked.
+- 2026-10-01: Version 1.1 after an adversarial review. P18 references renumbered to the 25 item PHASE_18 draft and mapped by name (section 14); the MCP Registry and ChatGPT tasks moved onto PHASE_19 (sign in on every tool, no anonymous tools, HTTP domain auth for the registry). The daily check now reads Q10 and the fal.ai balance, because /api/health cannot see an empty fal balance. Every task now lists all ten fields; A4 and A8 wait for G0 and every cash line has a rule row. Founder sending address added to MKT-004 (support@curvi.ai is receive only). Cold email signature now says it is promotional (CAN-SPAM). Fixed: T-EM-04 said failed files are left out (they are marked for review); T-AD-07 carried a studio price claim in an ad; founder made packs must not be listed under the gallery's "Shared by the seller" label; T-COM-05 solicited contact against Shopify Community rules; MKT-015 let the agent use the founder's API key; MKT-044 suggested hand written credit rows; MKT-046 was due after MKT-013 needed it; Reddit clicks a day corrected to 2.5 to 33; planning thresholds marked.
 - 2026-10-01: Version 1.2. PHASE_18's review was applied without renumbering, and this file now matches it. Section 14: P18-11 renamed "URL import live and the Growth API line" and its use narrowed to C-17, MKT-010 and MKT-015 (the agentApi flip, llms.txt, the keyless check and server.json are PHASE_19's); P18-16 renamed "Product proof on share pages: report panel"; P18-25 marked moved to PHASE_19 with its ID reserved; P18-09 part 4 is now an inspection; P18-10 is a channel picker linked from the existing requirement pages; P18-12, P18-15, P18-17, P18-21 and P18-24 carry their new conditions. Fixed elsewhere: section 1.3, the section 3 API row and lifecycle row (the email gate notice does say "We keep your email to follow up about Curvi"), section 6.3 (heatmaps now come from P18-17), C-12, C-18, section 7.1 (cron cost), playbooks P-4 and P-5, MKT-006, MKT-035, MKT-036 and section 12.1. The 2026-12-31 date stays the founder's OpenAI provider credit; no seller credit expiry claim was found in this file.
 

@@ -115,7 +115,7 @@ describe("a prospect's share page", () => {
     expect(html).toContain("Juniper Candles listing pack, made by Curvi");
     expect(hrefs(html)).toEqual(["/signup?source=share&s=prospect23"]);
     expect(html).not.toContain('data-testid="prospect-takedown"');
-    expect(html).toContain("Email hello@curvi.ai and we take it down.");
+    expect(html).toContain("Email support@curvi.ai and we take it down.");
   });
 
   it("is an ordinary share page for any other pack", async () => {

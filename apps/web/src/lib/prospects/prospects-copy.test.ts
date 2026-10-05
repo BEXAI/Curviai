@@ -69,7 +69,7 @@ describe("prospect copy", () => {
       "This pack was made for Juniper Candles from your current listing photo. Make it yours: create a free account and your product is ready to go.",
     );
     expect(`${CLAIM_COPY.footerQuestion} ${CLAIM_COPY.takedownLink}, ${CLAIM_COPY.footerEmail}`).toBe(
-      "Not yours, or want this page removed? Take it down here, or email hello@curvi.ai.",
+      "Not yours, or want this page removed? Take it down here, or email support@curvi.ai.",
     );
   });
 });

@@ -323,7 +323,7 @@ describe("the P20-06 stopgap in the cancel flow", () => {
     const result = await applyCancelChoice(d, { ...base, choice: "cancel" });
     expect(result).toMatchObject({ ok: false, status: 502 });
     expect(result.ok ? "" : result.notice).toBe(
-      "Stripe could not make that change just now. Your move to Starter on November 3, 2026 was already canceled, so email hello@curvi.ai if you still want it. Try again in a minute.",
+      "Stripe could not make that change just now. Your move to Starter on November 3, 2026 was already canceled, so email support@curvi.ai if you still want it. Try again in a minute.",
     );
     expect(result.ok ? "" : result.notice).not.toContain("Nothing changed");
     expect(records[0]).toMatchObject({ releasedScheduleId: "sub_sched_3", stripeApplied: false });

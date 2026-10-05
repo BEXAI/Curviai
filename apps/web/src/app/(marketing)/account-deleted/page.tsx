@@ -23,7 +23,7 @@ export default async function AccountDeletedPage({
       </p>
       {signin === "pending" ? (
         <p className="mt-3 text-ink-600" data-testid="signin-pending">
-          We remove your sign in details by hand within a few days. Email hello@curvi.ai if you want to know when it
+          We remove your sign in details by hand within a few days. Email support@curvi.ai if you want to know when it
           is done.
         </p>
       ) : null}

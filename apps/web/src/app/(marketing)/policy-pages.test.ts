@@ -83,6 +83,6 @@ describe("/terms", () => {
     expect(text(html)).toContain(
       "You can connect Curvi to an assistant such as ChatGPT. Actions it takes in your workspace with your permission count as yours, and credits it spends are charged the same way as in the app.",
     );
-    expect(text(html)).toContain("Last updated October 2, 2026");
+    expect(text(html)).toContain("Last updated October 5, 2026");
   });
 });
