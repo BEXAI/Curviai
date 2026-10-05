@@ -289,7 +289,7 @@ describe("the build", () => {
       return;
     }
     expect(first.entries.sort()).toEqual(["assets/composer-icon.png", "assets/logo.png", "mcp.json", "plugin.json"]);
-    expect(first.zipPath).toBe(join(out, "curvi-1.0.0.zip"));
+    expect(first.zipPath).toBe(join(out, "curvi-1.0.1.zip"));
     const zip = readFileSync(first.zipPath);
     expect(readZipListing(zip).names.sort()).toEqual(first.entries.sort());
     const built = JSON.parse(readFileSync(join(first.folder, "plugin.json"), "utf8")) as Manifest;
