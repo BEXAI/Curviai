@@ -4,6 +4,8 @@ import { photoBlockReason, photoTargetBox, type PhotoItem } from "@/components/a
 import {
   addedTextPhotoLine,
   addedTextSpecIds,
+  CHOOSE_PRODUCT_BLOCK,
+  CHOOSER_OVERLAP_HINT,
   CUTOUT_UNAVAILABLE_NOTICE,
   joinNames,
   keptPhotoHeadsUp,
@@ -164,9 +166,10 @@ describe("the form's copy", () => {
     expect(line).toContain("413 by 486 pixels");
     expect(line).toContain("about 400 pixels");
     expect(line).toMatch(/Amazon main needs about \d+/);
-    expect(preflightBlockReason(small, ["amazon.main"], null)).toContain("too small for Amazon main");
-    // Unticking the channel lets the pack start.
-    expect(preflightBlockReason(small, [], null)).toBeNull();
+    expect(line).toContain("We will enlarge it");
+    // A small photo warns but never blocks: the product is enlarged.
+    expect(preflightBlockReason(small, ["amazon.main"], null)).toBeNull();
+    expect(readyLine(small, ["amazon.main"])).toContain("Ready for Amazon");
   });
 
   it("copy is plain: no arrows, no dashes as punctuation", () => {
@@ -180,6 +183,8 @@ describe("the form's copy", () => {
       }),
       CUTOUT_UNAVAILABLE_NOTICE,
       PREFLIGHT_UNAVAILABLE_NOTICE,
+      CHOOSER_OVERLAP_HINT,
+      CHOOSE_PRODUCT_BLOCK,
     ];
     for (const line of lines) {
       expect(line).not.toMatch(/->|→|—|–| - /);
@@ -202,7 +207,7 @@ describe("the form's gate", () => {
   });
 
   it("holds the pack until the seller taps a product, then sends that box", () => {
-    expect(photoBlockReason(photo(), ["amazon.main"])).toBe("Tap the product this pack is for.");
+    expect(photoBlockReason(photo(), ["amazon.main"])).toBe("Tap the product this pack is for. It can touch or overlap the others.");
     expect(photoTargetBox(photo())).toBeUndefined();
     expect(photoBlockReason(photo({ chosen: 2 }), ["amazon.main"])).toBeNull();
     expect(photoTargetBox(photo({ chosen: 2 }))).toEqual(shoeBox);
@@ -245,7 +250,7 @@ describe("the output context (PHASE_15 item 31)", () => {
 
   it("still asks for a tap when the kept photo feeds a cutout, like a white main image", () => {
     expect(preflightBlockReason(several, ["amazon.main"], null, { output: keptWithCutout })).toBe(
-      "Tap the product this pack is for.",
+      "Tap the product this pack is for. It can touch or overlap the others.",
     );
     expect(keptPhotoHeadsUp(several, ["amazon.main"], 1, keptWithCutout)).not.toContain(OTHER_ITEMS_KEPT_COPY);
   });
@@ -260,11 +265,11 @@ describe("the output context (PHASE_15 item 31)", () => {
     expect(photoOnly.every((s) => s.measure === "photo")).toBe(true);
   });
 
-  it("keeps today's rules for a removed photo", () => {
+  it("keeps today's rules for a removed photo, where size warns but never blocks", () => {
     expect(preflightBlockReason(several, ["amazon.main"], null, { output: removed })).toBe(
-      "Tap the product this pack is for.",
+      "Tap the product this pack is for. It can touch or overlap the others.",
     );
-    expect(preflightBlockReason(small, ["amazon.main"], null, { output: removed })).toContain("too small for Amazon main");
+    expect(preflightBlockReason(small, ["amazon.main"], null, { output: removed })).toBeNull();
     expect(keptPhotoHeadsUp(small, ["amazon.main"], null, removed)).toEqual([]);
     expect(keptPhotoHeadsUp(small, ["amazon.main"], null, undefined)).toEqual([]);
   });

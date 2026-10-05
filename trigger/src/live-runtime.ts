@@ -56,6 +56,7 @@ import {
   encodePng,
   HarmonizeAspectError,
   isolateTarget,
+  splitMergedTarget,
   isolateComponents,
   boxToPixels,
   prepareWorkingSource,
@@ -729,8 +730,9 @@ export const ISOLATION_FAILED = "We could not find the product you picked in thi
 
 /**
  * Keeps only the cutout pieces overlapping the target box (mapped into the
- * crop, at whatever size the cutout came back) and zeroes the rest, or a
- * refusal when the target cannot be told apart from another product.
+ * crop, at whatever size the cutout came back) and zeroes the rest. Pieces
+ * the target shares with another product are split by their boxes
+ * (splitMergedTarget); the refusal is left for a split with no product left.
  */
 export function isolateCutout(
   cutout: RawImage,
@@ -747,7 +749,10 @@ export function isolateCutout(
     .filter((rect): rect is PixelRect => rect !== null);
   const result = isolateTarget(cutout, targetRect, others);
   if (result.touching) {
-    return { refusal: PRODUCT_TOUCHING };
+    // Overlapping or touching products came back as one piece: split it by
+    // the product boxes, nearer product first, before refusing the photo.
+    const split = splitMergedTarget(cutout, targetRect, others);
+    return split.ok ? { image: split.image } : { refusal: PRODUCT_TOUCHING };
   }
   return { image: result.image };
 }
@@ -1293,7 +1298,10 @@ export class LiveShotGenerator implements ShotGenerator {
           // One pack never pays twice for the same photo: when the whole
           // photo was already cut out (the product inventory ran), the crop
           // is taken from that cutout instead of a second provider call.
-          const reused = await this.cachedFullCutoutCrop(key, crop.source, crop.rect);
+          // A recut target is the one exception: the whole photo's cutout
+          // merged it with another product, so only a fresh cutout of the
+          // crop can separate them.
+          const reused = cropTarget.recut ? null : await this.cachedFullCutoutCrop(key, crop.source, crop.rect);
           let cutoutRgba: RawImage;
           if (reused) {
             cutoutRgba = reused;

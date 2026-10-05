@@ -281,10 +281,10 @@ describe("kept photos in section 1", () => {
   };
 
   it("does not ask for the product when a kept photo feeds no cutout, and does when it does", () => {
-    expect(photoBlockReason(photo, ["amazon.secondary"])).toBe("Tap the product this pack is for.");
+    expect(photoBlockReason(photo, ["amazon.secondary"])).toBe("Tap the product this pack is for. It can touch or overlap the others.");
     expect(photoBlockReason(photo, ["amazon.secondary"], { kept: true, feedsCutout: false })).toBeNull();
     expect(photoBlockReason(photo, ["amazon.main"], { kept: true, feedsCutout: true })).toBe(
-      "Tap the product this pack is for.",
+      "Tap the product this pack is for. It can touch or overlap the others.",
     );
   });
 
@@ -296,7 +296,7 @@ describe("kept photos in section 1", () => {
     expect(photoTargetBox(both)).toBeUndefined();
     const skipped: PhotoItem = { ...both, ...skipPatchFor(both) };
     expect(skipped.targetAll).toBe(false);
-    expect(photoBlockReason(skipped, ["amazon.main"])).toBe("Tap the product this pack is for.");
+    expect(photoBlockReason(skipped, ["amazon.main"])).toBe("Tap the product this pack is for. It can touch or overlap the others.");
     expect(sellerAnswersBody({ photo: skipped, questions: [], picks: {}, skipped: true })).toBeUndefined();
     // Tapping one product in the chooser afterwards sends its box.
     const chosen: PhotoItem = { ...skipped, chosen: 2 };

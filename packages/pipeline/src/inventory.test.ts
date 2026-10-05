@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   analyzeInventory,
+  answerFor,
   chooseInventoryTarget,
   colorNameOf,
   inventoryRecord,
@@ -10,11 +11,12 @@ import {
   pickerNumbering,
   plainReason,
   shapeOf,
+  touchingTargetProduct,
   visionDecision,
   type InventoryObject,
   type NoteSignals,
 } from "./inventory";
-import { isolateComponents, type PixelRect } from "./isolate";
+import { boxToPixels, isolateComponents, splitMergedTarget, type PixelRect } from "./isolate";
 import type { RawImage } from "./raw";
 import type { IntakeProduct } from "./schemas";
 
@@ -405,5 +407,109 @@ describe("isolateComponents", () => {
   it("says when a chosen box matches no piece", () => {
     const img = twoBottles();
     expect(isolateComponents(img, [{ left: 0, top: 0, width: 10, height: 10 }]).missing).toBe(true);
+  });
+});
+
+describe("touching products the cutout merged", () => {
+  // Three candles in a row on a 450 x 450 cutout, the orange one in front
+  // and lower, overlapping the white one on its left and the yellow one on
+  // its right: the cutout returns all three as one piece.
+  const ORANGE: [number, number, number] = [220, 110, 20];
+  const WHITE: [number, number, number] = [240, 240, 240];
+  const YELLOW: [number, number, number] = [220, 210, 40];
+  const candles = () =>
+    cutout(450, 450, [
+      { left: 45, top: 120, width: 140, height: 125, rgb: WHITE },
+      { left: 295, top: 75, width: 140, height: 125, rgb: YELLOW },
+      { left: 155, top: 170, width: 180, height: 200, rgb: ORANGE },
+    ]);
+  const box = (left: number, top: number, width: number, height: number) => ({
+    x: left / 450,
+    y: top / 450,
+    width: width / 450,
+    height: height / 450,
+  });
+  const products = [
+    product("white candle in glass", box(45, 120, 140, 125)),
+    product("yellow candle in glass", box(295, 75, 140, 125)),
+    product("orange candle in glass", box(155, 170, 180, 200)),
+  ];
+
+  it("names the product the seller picked inside the merged piece", () => {
+    const objects = analyzeInventory(candles()).objects;
+    expect(objects).toHaveLength(1);
+    const answer = answerFor(
+      { value: "p3", label: "orange candle in glass", color: "orange", others: ["white candle in glass", "yellow candle in glass"] },
+      "all",
+    );
+    const input = { objects, products, signals: none, answer };
+    const decision = chooseInventoryTarget(input);
+    expect(decision.touching).toBe(true);
+    expect(touchingTargetProduct(input, decision)).toBe(2);
+  });
+
+  it("takes the model's single yes when nothing else is said", () => {
+    const objects = analyzeInventory(candles()).objects;
+    const yes = products.map((p, i) => ({ ...p, matchesIntent: i === 2 ? ("yes" as const) : ("no" as const) }));
+    const input = { objects, products: yes, signals: none };
+    const decision = chooseInventoryTarget(input);
+    expect(decision.touching).toBe(true);
+    expect(touchingTargetProduct(input, decision)).toBe(2);
+  });
+
+  it("names none when every product is wanted or nothing touches", () => {
+    const objects = analyzeInventory(candles()).objects;
+    const all = { objects, products, signals: none, answer: { all: true } as const };
+    expect(touchingTargetProduct(all, chooseInventoryTarget(all))).toBeNull();
+    const apart = { objects: analyzeInventory(twoBottles()).objects, products: [product("red bottle", redBox, "yes"), product("blue bottle", blueBox)], signals: none };
+    expect(touchingTargetProduct(apart, chooseInventoryTarget(apart))).toBeNull();
+  });
+
+  it("splits the front candle out by the boxes, byte identical, without its neighbors", () => {
+    const img = candles();
+    const px = (b: IntakeProduct["box"]) => boxToPixels(b, 450, 450);
+    const split = splitMergedTarget(img, px(products[2].box), [px(products[0].box), px(products[1].box)]);
+    expect(split.ok).toBe(true);
+    const at = (x: number, y: number) => [...split.image.data.subarray((y * 450 + x) * 4, (y * 450 + x) * 4 + 4)];
+    const src = (x: number, y: number) => [...img.data.subarray((y * 450 + x) * 4, (y * 450 + x) * 4 + 4)];
+    // The orange candle, including where it covers its neighbors, is kept as is.
+    expect(at(240, 300)).toEqual(src(240, 300));
+    expect(at(170, 200)).toEqual(src(170, 200));
+    expect(at(320, 180)).toEqual(src(320, 180));
+    // The white and yellow candles outside it are gone.
+    expect(at(80, 150)[3]).toBe(0);
+    expect(at(400, 100)[3]).toBe(0);
+    expect(split.keptArea).toBe(180 * 200);
+  });
+
+  it("refuses a split where a neighbor's box covers much of the target", () => {
+    // Flowers behind a candle, their box over its whole top half: the box
+    // overlap cannot tell petal from candle, so nothing is delivered.
+    const img = cutout(400, 400, [
+      { left: 0, top: 40, width: 300, height: 200, rgb: ORANGE },
+      { left: 120, top: 120, width: 160, height: 240, rgb: ORANGE },
+    ]);
+    const candle = { left: 120, top: 120, width: 160, height: 240 };
+    const flowers = { left: 0, top: 40, width: 300, height: 200 };
+    const split = splitMergedTarget(img, candle, [flowers]);
+    expect(split.contestedArea / split.keptArea).toBeGreaterThan(0.25);
+    expect(split.ok).toBe(false);
+  });
+
+  it("gives the overlap to the nearer product when the target is behind", () => {
+    // A vase behind and right of a candle, crossing its corner: the candle's
+    // bottom is lower, so the shared corner is the candle's, not the vase's.
+    const img = cutout(400, 400, [
+      { left: 200, top: 40, width: 150, height: 220, rgb: WHITE },
+      { left: 80, top: 160, width: 160, height: 200, rgb: ORANGE },
+    ]);
+    const candle = { left: 80, top: 160, width: 160, height: 200 };
+    const vase = { left: 200, top: 40, width: 150, height: 220 };
+    const vaseOnly = splitMergedTarget(img, vase, [candle]);
+    expect(vaseOnly.ok).toBe(true);
+    const alphaAt = (x: number, y: number) => vaseOnly.image.data[(y * 400 + x) * 4 + 3];
+    expect(alphaAt(300, 100)).toBe(255);
+    expect(alphaAt(220, 200)).toBe(0);
+    expect(alphaAt(120, 300)).toBe(0);
   });
 });

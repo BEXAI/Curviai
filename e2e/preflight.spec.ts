@@ -51,7 +51,7 @@ test("the chooser asks which product, and the tapped box goes with the pack", as
   await expect(items).toHaveCount(2);
   const create = page.getByTestId("create-pack");
   await expect(create).toBeDisabled();
-  await expect(page.getByTestId("preflight-block")).toHaveText("Tap the product this pack is for.");
+  await expect(page.getByTestId("preflight-block")).toHaveText("Tap the product this pack is for. It can touch or overlap the others.");
 
   await items.nth(1).click();
   await expect(items.nth(1)).toHaveAttribute("aria-pressed", "true");
