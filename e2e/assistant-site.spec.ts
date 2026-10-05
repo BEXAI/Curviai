@@ -36,10 +36,12 @@ test("help keeps the unpublished ChatGPT article gated", async ({ page, request 
   expect((await request.get("/help/use-curvi-in-chatgpt")).status()).toBe(404);
 });
 
-test("the domain proof path is a plain 404 without a token", async ({ request }) => {
+test("the domain proof path serves the approved challenge as plain text", async ({ request }) => {
   const response = await request.get("/.well-known/openai-apps-challenge");
-  expect(response.status()).toBe(404);
+  expect(response.status()).toBe(200);
   expect(response.headers()["content-type"]).toMatch(/^text\/plain/);
+  // OpenAI wants the exact token and nothing else: no JSON, list or whitespace.
+  expect(await response.text()).toMatch(/^[A-Za-z0-9_-]{20,}$/);
 });
 
 test("llms.txt does not link the unpublished ChatGPT article", async ({ request }) => {

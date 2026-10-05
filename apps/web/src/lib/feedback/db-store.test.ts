@@ -118,12 +118,14 @@ describe("consented quotes", () => {
   it("lists only consented quotes in the window, leaving excluded workspaces out", async () => {
     const seller = await makeWorkspace("Seller", "00000000-0000-4000-8000-0000000005c1");
     const operator = await makeWorkspace("Operator", "00000000-0000-4000-8000-0000000005c2");
-    const at = new Date("2026-10-06T12:00:00Z");
+    // A fixed past window, so quotes other tests save at the real current
+    // time never fall inside it.
+    const at = new Date("2020-01-15T12:00:00Z");
     await db.insert(packFeedback).values([
       { workspaceId: seller.workspaceId, jobId: seller.jobId, userId: "00000000-0000-4000-8000-0000000005c1", usable: "yes", comment: "Ready to list.", quoteConsent: true, displayName: "Sam", createdAt: at },
       { workspaceId: operator.workspaceId, jobId: operator.jobId, userId: "00000000-0000-4000-8000-0000000005c2", usable: "yes", comment: "Founder test.", quoteConsent: true, createdAt: at },
     ]);
-    const window = { from: new Date("2026-10-05T00:00:00Z"), to: new Date("2026-10-07T00:00:00Z") };
+    const window = { from: new Date("2020-01-14T00:00:00Z"), to: new Date("2020-01-16T00:00:00Z") };
     const quotes = await loadConsentedQuotes(db as unknown as Db, window, {
       excludeWorkspaces: [operator.workspaceId],
       limit: 10,
