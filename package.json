@@ -37,7 +37,7 @@
     "eslint": "^9.15.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.2",
-    "typescript-eslint": "^8.16.0"
+    "typescript-eslint": "^8.71.1"
   },
   "pnpm": {
     "overrides": {

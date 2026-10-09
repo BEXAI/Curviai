@@ -19,7 +19,7 @@
     "@curvi/pipeline": "workspace:*"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.3.0",
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^24.0.0",
     "typescript": "^5.7.2",
     "vitest": "4.1.11"
