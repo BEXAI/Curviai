@@ -14,7 +14,7 @@
     "@curvi/specs": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "remotion": "^4.0.0",
+    "remotion": "^4.0.533",
     "zod": "^4.0.0"
   },
   "devDependencies": {
