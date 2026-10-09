@@ -40,9 +40,9 @@ jobs:
       SMOKE_BASE_URL: http://localhost:3100
       SMOKE_MODE: demo
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
@@ -68,9 +68,9 @@ jobs:
       SMOKE_MODE: production
       SMOKE_EXPECTED_SHA: ${{ inputs.expected_sha }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
@@ -90,9 +90,9 @@ jobs:
       SMOKE_API_KEY: ${{ secrets.SMOKE_STAGING_API_KEY }}
       SMOKE_ALLOW_PACKS: ${{ vars.SMOKE_STAGING_PACK_ENABLED == '1' && (github.event_name == 'schedule' || inputs.allow_pack) && '1' || '0' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
@@ -110,9 +110,9 @@ jobs:
       SMOKE_WORKSPACE_EXCLUDED: "1"
       SMOKE_API_KEY: ${{ secrets.SMOKE_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright test --config=playwright.smoke.config.ts
