@@ -32,12 +32,12 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
-    "@playwright/test": "^1.49.0",
+    "@playwright/test": "^1.64.0",
     "@types/node": "^24.0.0",
     "eslint": "^9.15.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.2",
-    "typescript-eslint": "^8.16.0"
+    "typescript-eslint": "^8.71.2"
   },
   "pnpm": {
     "overrides": {
